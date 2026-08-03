@@ -104,7 +104,12 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         expect(queueButtons.length).toBeGreaterThan(0)
         fireEvent.click(queueButtons[0]!)
 
-        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text', undefined))
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+            'send-to-queue text',
+            undefined,
+            undefined,
+            'queue',
+        ))
         expect(onExitScratchlistMode).toHaveBeenCalledTimes(1)
         expect(setText).not.toHaveBeenCalled()
     })
@@ -132,7 +137,12 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         const queueButtons = screen.getAllByRole('button', { name: /queue|send/i })
         fireEvent.click(queueButtons[0]!)
 
-        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text', undefined))
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+            'send-to-queue text',
+            undefined,
+            undefined,
+            'queue',
+        ))
         expect(onExitScratchlistMode).not.toHaveBeenCalled()
         expect(setText).not.toHaveBeenCalled()
     })

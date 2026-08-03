@@ -883,6 +883,35 @@ describe('sendPiRpcAndWait', () => {
         await expect(promise).resolves.toBeUndefined();
     });
 
+    it('steer response resolves its matching RPC without changing the main thinking state', async () => {
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport, reply } = recordingTransport(handlers);
+        const session = createMockSession();
+        session.updateThinkingState(true);
+        wireTransportEvents(transport, session, []);
+
+        const promise = sendPiRpcAndWait(session, transport, {
+            type: 'steer', message: 'redirect current work', images: [],
+        }, 10_000);
+        reply({ command: 'steer', success: true });
+
+        await expect(promise).resolves.toBeUndefined();
+        expect(session.piIsStreaming).toBe(true);
+    });
+
+    it('does not double-report a matching steer failure outside its dispatcher', async () => {
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport, reply } = recordingTransport(handlers);
+        const session = createMockSession();
+        wireTransportEvents(transport, session, []);
+
+        const promise = sendPiRpcAndWait(session, transport, { type: 'steer', message: 'reject me' }, 10_000);
+        reply({ command: 'steer', success: false, error: 'native steer rejected' });
+
+        await expect(promise).rejects.toThrow('native steer rejected');
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalled();
+    });
+
     it('get_available_models response resolves the awaited promise before timeout', async () => {
         const handlers = new Map<string, (...args: unknown[]) => void>();
         const { transport, reply } = recordingTransport(handlers);
@@ -1261,7 +1290,7 @@ describe('Pi conversation-history transport integration', () => {
         const h = setup();
         const rpc = vi.fn(async () => ({ entries: [], leafId: null }));
         const history = new PiConversationHistory(h.session, rpc);
-        history.registerPrompt('local-1');
+        history.registerUserEntry('local-1');
         const onAgentSettled = vi.fn();
         const controller = wireTransportEvents(h.transport, h.session, [], {
             conversationHistory: history,

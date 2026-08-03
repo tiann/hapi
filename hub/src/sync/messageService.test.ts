@@ -1106,6 +1106,113 @@ describe('MessageService.sendMessage with scheduledAt', () => {
     })
 })
 
+describe('MessageService.sendMessage deliveryMode', () => {
+    function makeTrackingIo(): { io: Server; cliEmitted: unknown[] } {
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (ns: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (ns === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} })
+                }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server
+        return { io, cliEmitted }
+    }
+
+    it('persists and preserves Pi steer intent through immediate, replay, and backfill delivery', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'delivery-mode-pi',
+            { path: '/tmp/delivery-mode-pi', host: 'localhost', flavor: 'pi' },
+            null,
+            'default'
+        )
+        const publisher = makePublisher()
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, publisher as any)
+
+        await service.sendMessage(session.id, {
+            text: 'steer this Pi turn',
+            localId: 'pi-steer',
+            deliveryMode: 'steer'
+        })
+
+        const stored = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stored).toHaveLength(1)
+        expect(stored[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
+        })
+        expect(cliEmitted).toHaveLength(1)
+        expect(cliEmitted[0]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'steer' } } } }
+        })
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(2)
+        expect(cliEmitted[1]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'steer' } } } }
+        })
+
+        const backfill = service.getDeliverableMessagesAfter(session.id, {
+            afterSeq: 0,
+            limit: 10,
+            now: Date.now()
+        })
+        expect(backfill).toHaveLength(1)
+        expect(backfill[0]?.content).toMatchObject({ meta: { deliveryMode: 'steer' } })
+    })
+
+    it('downgrades forged steer intent for non-Pi sessions and defaults omitted intent to queue', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'delivery-mode-non-pi')
+        const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)
+
+        await service.sendMessage(session.id, {
+            text: 'forged steer',
+            localId: 'non-pi-steer',
+            deliveryMode: 'steer'
+        })
+        await service.sendMessage(session.id, {
+            text: 'missing mode',
+            localId: 'missing-mode'
+        })
+
+        const rows = store.messages.getUninvokedLocalMessages(session.id)
+        expect(rows).toHaveLength(2)
+        expect(rows.map((row) => {
+            const content = row.content as { meta?: { deliveryMode?: unknown } }
+            return content.meta?.deliveryMode
+        })).toEqual(['queue', 'queue'])
+    })
+
+    it('normalizes direct scheduled steer requests to queue', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'delivery-mode-pi-scheduled',
+            { path: '/tmp/delivery-mode-pi-scheduled', host: 'localhost', flavor: 'pi' },
+            null,
+            'default'
+        )
+        const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)
+
+        await service.sendMessage(session.id, {
+            text: 'scheduled steer',
+            localId: 'pi-scheduled-steer',
+            scheduledAt: Date.now() + 60_000,
+            deliveryMode: 'steer'
+        })
+
+        expect(store.messages.getUninvokedLocalMessages(session.id)[0]?.content).toMatchObject({
+            meta: { deliveryMode: 'queue' }
+        })
+    })
+})
+
 // ---------------------------------------------------------------------------
 // releaseMatureScheduledMessages
 // ---------------------------------------------------------------------------

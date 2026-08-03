@@ -103,6 +103,40 @@ describe('useSendMessage', () => {
         })
     })
 
+    it('forwards delivery mode and retains it on the optimistic message', async () => {
+        const sendMock = vi.fn(async () => {})
+        const api = createMockApi(sendMock)
+        const { appendOptimisticMessage } = await import('@/lib/message-window-store')
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A'),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            void result.current.sendMessage('steer this', undefined, null, 'steer')
+        })
+
+        await waitFor(() => {
+            expect(sendMock).toHaveBeenCalledWith(
+                'session-A',
+                'steer this',
+                'local-id-1',
+                undefined,
+                null,
+                'steer',
+            )
+        })
+        expect(appendOptimisticMessage).toHaveBeenCalledWith(
+            'session-A',
+            expect.objectContaining({
+                content: expect.objectContaining({
+                    meta: { deliveryMode: 'steer' },
+                }),
+            }),
+        )
+    })
+
     it('calls onSuccess with resolved session ID, not the original', async () => {
         const onSuccess = vi.fn()
         const api = createMockApi()
@@ -178,6 +212,31 @@ describe('useSendMessage', () => {
             expect(info.error).toBeInstanceOf(Error)
             expect((info.error as Error).message).toContain('503')
             expect(onSuccess).not.toHaveBeenCalled()
+        })
+
+        it('keeps a failed send\'s delivery mode for error restoration', async () => {
+            const onError = vi.fn()
+            const api = createMockApi(async () => {
+                throw new Error('HTTP 503 Service Unavailable: hub down')
+            })
+
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A', { onError }),
+                { wrapper: createWrapper() },
+            )
+
+            act(() => {
+                void result.current.sendMessage('restore the explicit queue', undefined, null, 'queue')
+            })
+
+            await waitFor(() => {
+                expect(onError).toHaveBeenCalledTimes(1)
+            })
+            expect(onError.mock.calls[0]?.[0]).toMatchObject({
+                text: 'restore the explicit queue',
+                deliveryMode: 'queue',
+                mutationStarted: true,
+            })
         })
 
         it('network: onError fires with the original text on a fetch-level rejection', async () => {
@@ -712,13 +771,57 @@ describe('useSendMessage', () => {
             expect(sendMock).toHaveBeenCalled()
         })
 
-        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt)
+        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt, deliveryMode)
         expect(sendMock).toHaveBeenCalledWith(
             'session-A',
             'hi later',
             'local-retry-1',
             undefined,
             scheduledAt,
+            'queue',
         )
+    })
+
+    it('preserves deliveryMode when retrying a failed message', async () => {
+        const sendMock = vi.fn(async () => {})
+        const api = createMockApi(sendMock)
+        const { getMessageWindowState } = await import('@/lib/message-window-store')
+        vi.mocked(getMessageWindowState).mockReturnValueOnce({
+            messages: [{
+                id: 'local-steer-1',
+                seq: null,
+                localId: 'local-steer-1',
+                content: {
+                    role: 'user',
+                    content: { type: 'text', text: 'keep steering' },
+                    meta: { deliveryMode: 'steer' },
+                },
+                createdAt: 1_000,
+                invokedAt: null,
+                scheduledAt: null,
+                status: 'failed',
+                originalText: 'keep steering',
+            } as never],
+        } as never)
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A'),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            result.current.retryMessage('local-steer-1')
+        })
+
+        await waitFor(() => {
+            expect(sendMock).toHaveBeenCalledWith(
+                'session-A',
+                'keep steering',
+                'local-steer-1',
+                undefined,
+                null,
+                'steer',
+            )
+        })
     })
 })

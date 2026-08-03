@@ -420,11 +420,15 @@ export const MessagesQuerySchema = z.object({
 
 export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 
+export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
+export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
+
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
     attachments: z.array(AttachmentMetadataSchema).optional(),
-    scheduledAt: z.number().int().positive().nullable().optional()
+    scheduledAt: z.number().int().positive().nullable().optional(),
+    deliveryMode: MessageDeliveryModeSchema.optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',
     { message: 'scheduledAt requires localId', path: ['localId'] }
@@ -434,6 +438,9 @@ export const SendMessageRequestSchema = z.object({
 ).refine(
     (data) => data.scheduledAt == null || !data.attachments?.length,
     { message: 'scheduled messages with attachments are not supported', path: ['attachments'] }
+).refine(
+    (data) => data.scheduledAt == null || data.deliveryMode !== 'steer',
+    { message: 'scheduled messages cannot use steer delivery', path: ['deliveryMode'] }
 )
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>

@@ -14,6 +14,24 @@ function Probe(props: { onClick: () => void; onLongPress?: () => void }) {
     )
 }
 
+function NativeButtonProbe(props: {
+    onClick: () => void
+    onLongPress: () => void
+    longPressEnabled?: boolean
+}) {
+    const handlers = useLongPress({
+        onClick: props.onClick,
+        onLongPress: props.onLongPress,
+        interaction: 'touch-only-native-click',
+        longPressEnabled: props.longPressEnabled,
+    })
+    return (
+        <button type="button" data-testid="native-button" {...handlers}>
+            send
+        </button>
+    )
+}
+
 describe('useLongPress', () => {
     let now = 10_000
 
@@ -116,5 +134,193 @@ describe('useLongPress', () => {
         fireEvent.mouseUp(row, { button: 0, clientX: 10, clientY: 10 })
 
         expect(onClick).toHaveBeenCalledTimes(2)
+    })
+
+    it('keeps native button click semantics for a touch tap', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+        fireEvent.click(button)
+
+        expect(onLongPress).not.toHaveBeenCalled()
+        expect(onClick).toHaveBeenCalledOnce()
+    })
+
+    it('fires a touch-only long press once and consumes exactly its following touch-derived click', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+        // A browser compatibility click has click detail 1. Keyboard and
+        // assistive activation instead reports detail 0.
+        fireEvent.click(button, { detail: 1 })
+
+        expect(onLongPress).toHaveBeenCalledOnce()
+        expect(onClick).not.toHaveBeenCalled()
+        expect(vi.getTimerCount()).toBe(0)
+
+        // Only the touch compatibility click is suppressed. The next ordinary
+        // click is the button's normal action.
+        fireEvent.click(button, { detail: 1 })
+        expect(onClick).toHaveBeenCalledOnce()
+    })
+
+    it('keeps keyboard and assistive native activation after a long touch with no compatibility click', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+
+        // No compatibility click arrives. A detail-zero native click models
+        // keyboard or assistive-technology activation and must not be lost.
+        fireEvent.click(button, { detail: 0 })
+
+        expect(onLongPress).toHaveBeenCalledOnce()
+        expect(onClick).toHaveBeenCalledOnce()
+    })
+
+    it('expires native touch-click suppression so later mouse click and context menu stay native', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+
+        // No compatibility click arrives during the bounded suppression window.
+        act(() => {
+            now += 700
+            vi.advanceTimersByTime(700)
+        })
+        const contextMenuWasNotPrevented = fireEvent.contextMenu(button, { clientX: 10, clientY: 10 })
+        fireEvent.click(button, { detail: 1 })
+
+        expect(onLongPress).toHaveBeenCalledOnce()
+        expect(contextMenuWasNotPrevented).toBe(true)
+        expect(onClick).toHaveBeenCalledOnce()
+    })
+
+    it('clears pending native click suppression when a new touch is cancelled', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+
+        // A new touch clears the old long-touch suppression; cancellation also
+        // clears the new touch's hold timer before any native click arrives.
+        fireEvent.touchStart(button, { touches: [{ clientX: 20, clientY: 20 }] })
+        fireEvent.touchCancel(button)
+        fireEvent.click(button, { detail: 1 })
+
+        expect(onLongPress).toHaveBeenCalledOnce()
+        expect(onClick).toHaveBeenCalledOnce()
+        expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('cleans the pending native click suppression timer on unmount', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId, unmount } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+        expect(vi.getTimerCount()).toBe(1)
+
+        unmount()
+
+        expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('does not turn desktop hold or right-click into a touch-only long press', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.mouseDown(button, { button: 0, clientX: 10, clientY: 10 })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.mouseUp(button, { button: 0, clientX: 10, clientY: 10 })
+        fireEvent.click(button)
+        const contextMenuWasNotPrevented = fireEvent.contextMenu(button, { clientX: 10, clientY: 10 })
+
+        expect(onLongPress).not.toHaveBeenCalled()
+        expect(onClick).toHaveBeenCalledOnce()
+        expect(contextMenuWasNotPrevented).toBe(true)
+    })
+
+    it('can disable only the long-press override without disabling normal click', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(
+            <NativeButtonProbe onClick={onClick} onLongPress={onLongPress} longPressEnabled={false} />,
+        )
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+        fireEvent.click(button)
+
+        expect(onLongPress).not.toHaveBeenCalled()
+        expect(onClick).toHaveBeenCalledOnce()
+    })
+
+    it('cancels a touch-only long press when the browser cancels the touch', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<NativeButtonProbe onClick={onClick} onLongPress={onLongPress} />)
+        const button = getByTestId('native-button')
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        fireEvent.touchCancel(button)
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.click(button)
+
+        expect(onLongPress).not.toHaveBeenCalled()
+        expect(onClick).toHaveBeenCalledOnce()
     })
 })

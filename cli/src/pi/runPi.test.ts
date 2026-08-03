@@ -583,10 +583,30 @@ describe('Pi abort queue boundary', () => {
         const abortPromise = abort({});
         await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(1));
         const abortCommand = harness.sent.find((item) => (item as { type?: string }).type === 'abort') as { id: string };
+
+        // A steer arriving behind the abort mutation targets the generation
+        // being aborted. Abort success must invalidate it before releasing the
+        // mutex so the message becomes an ordinary prompt instead of entering
+        // Pi's now-idle native steer queue.
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
+            role: 'user';
+            content: { type: 'text'; text: string };
+            meta?: { deliveryMode?: 'queue' | 'steer' };
+        }, localId: string) => void;
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: 'after abort' },
+            meta: { deliveryMode: 'steer' },
+        }, 'post-abort-steer');
+
         harness.onEvent!({ type: 'response', id: abortCommand.id, command: 'abort', success: true });
 
         await expect(abortPromise).resolves.toEqual({ success: true });
         expect(harness.session.keepAlive).toHaveBeenLastCalledWith(false, 'remote', undefined);
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({
+            type: 'prompt', message: 'after abort',
+        })));
+        expect(harness.sent.some((item) => (item as { type?: string }).type === 'steer')).toBe(false);
 
         harness.onError?.(new Error('finish test'));
         await running;
@@ -661,6 +681,138 @@ describe('Pi abort queue boundary', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'command-c' }));
         vi.useRealTimers();
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+});
+
+describe('Pi native steering delivery mode', () => {
+    beforeEach(() => {
+        harness.sent.length = 0;
+        harness.throwOnGetCommands = false;
+        harness.onEvent = null;
+        harness.rpcHandlers.clear();
+        harness.session.onUserMessage.mockReset();
+        harness.session.onCancelQueuedMessage.mockReset();
+        harness.session.emitMessagesConsumed.mockReset();
+        harness.session.sendSessionEvent.mockReset();
+        harness.session.updateMetadata.mockReset();
+        harness.cleanupCount = 0;
+        harness.killCount = 0;
+        harness.session.rpcHandlerManager.registerHandler.mockReset();
+        harness.session.rpcHandlerManager.registerHandler.mockImplementation((method: string, handler: (payload: unknown) => Promise<unknown>) => {
+            harness.rpcHandlers.set(method, handler);
+        });
+    });
+
+    it('routes explicit steer messages natively while streaming and retains explicit queue FIFO', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'pi-steering-session', sessionFile: '/tmp/pi-steering.jsonl', isStreaming: true },
+        });
+        await completeHistoryInitialization();
+
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
+            role: 'user';
+            content: { type: 'text'; text: string };
+            meta?: { deliveryMode?: 'queue' | 'steer' };
+        }, localId: string) => void;
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: 'steer the active turn' },
+            meta: { deliveryMode: 'steer' },
+        }, 'native-steer-id');
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: 'keep this in the normal queue' },
+            meta: { deliveryMode: 'queue' },
+        }, 'queue-id');
+
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({
+            type: 'steer', message: 'steer the active turn',
+        })));
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({
+            type: 'prompt', message: 'keep this in the normal queue',
+        }));
+        const steer = harness.sent.find((item) => (item as { type?: string }).type === 'steer') as { id: string };
+        harness.onEvent!({ type: 'response', id: steer.id, command: 'steer', success: true });
+        await vi.waitFor(() => expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['native-steer-id'], undefined));
+
+        // The main turn ending releases only the explicit queue mode. The steer
+        // response itself never changes Pi's main streaming/thinking state.
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'pi-steering-session', sessionFile: '/tmp/pi-steering.jsonl', isStreaming: false },
+        });
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({
+            type: 'prompt', message: 'keep this in the normal queue',
+        })));
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('does not steer a later streaming generation and preserves fallback arrival order', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'pi-steering-session', sessionFile: '/tmp/pi-steering.jsonl', isStreaming: true },
+        });
+        await completeHistoryInitialization();
+
+        // Hold the shared mutation lock, then simulate turn A ending and turn B
+        // starting before the queued steer can reach Pi.
+        const setConfig = harness.rpcHandlers.get(RPC_METHODS.SetSessionConfig)!;
+        const configRequest = setConfig({ effort: 'low' });
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'set_thinking_level' })));
+        const setThinking = harness.sent.find((item) => (item as { type?: string }).type === 'set_thinking_level') as { id: string };
+
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
+            role: 'user';
+            content: { type: 'text'; text: string };
+            meta?: { deliveryMode?: 'queue' | 'steer' };
+        }, localId: string) => void;
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: 'earlier steer fallback' },
+            meta: { deliveryMode: 'steer' },
+        }, 'steer-id');
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: 'later ordinary prompt' },
+            meta: { deliveryMode: 'queue' },
+        }, 'queue-id');
+
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'pi-steering-session', sessionFile: '/tmp/pi-steering.jsonl', isStreaming: false },
+        });
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'pi-steering-session', sessionFile: '/tmp/pi-steering.jsonl', isStreaming: true },
+        });
+        harness.onEvent!({ type: 'response', id: setThinking.id, command: 'set_thinking_level', success: true });
+        await configRequest;
+
+        // The stale steer is a normal prompt now, but Pi turn B is still
+        // streaming, so neither fallback nor later queue item may start yet.
+        await vi.waitFor(() => expect(harness.sent.some((item) => (item as { type?: string }).type === 'steer')).toBe(false));
+        expect(harness.sent.some((item) => (item as { type?: string; message?: string }).type === 'prompt' && (item as { message?: string }).message === 'later ordinary prompt')).toBe(false);
+
+        // When B settles, delayed fallback must win its original reservation.
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'pi-steering-session', sessionFile: '/tmp/pi-steering.jsonl', isStreaming: false },
+        });
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({
+            type: 'prompt', message: 'earlier steer fallback',
+        })));
+        const prompts = harness.sent.filter((item) => (item as { type?: string }).type === 'prompt') as Array<{ message: string }>;
+        expect(prompts.map((prompt) => prompt.message)).toEqual(['earlier steer fallback']);
 
         harness.onError?.(new Error('finish test'));
         await running;

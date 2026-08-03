@@ -10,7 +10,7 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
-import type { MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
+import type { MessageDeliveryMode, MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -79,6 +79,18 @@ function isExportVisibleStoredMessage(message: StoredMessageForDelivery): boolea
     }
 
     return isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype })
+}
+
+function getNormalizedDeliveryMode(
+    metadata: unknown,
+    requestedDeliveryMode: MessageDeliveryMode | undefined,
+    scheduledAt: number | null | undefined
+): MessageDeliveryMode {
+    if (requestedDeliveryMode !== 'steer' || scheduledAt != null) {
+        return 'queue'
+    }
+
+    return isObject(metadata) && metadata.flavor === 'pi' ? 'steer' : 'queue'
 }
 
 export class MessageService {
@@ -574,6 +586,7 @@ export class MessageService {
             attachments?: AttachmentMetadata[]
             sentFrom?: 'telegram-bot' | 'webapp'
             scheduledAt?: number | null
+            deliveryMode?: MessageDeliveryMode
         }
     ): Promise<string> {
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
@@ -589,6 +602,11 @@ export class MessageService {
         }
 
         const sentFrom = payload.sentFrom ?? 'webapp'
+        const deliveryMode = getNormalizedDeliveryMode(
+            this.store.sessions.getSession(sessionId)?.metadata,
+            payload.deliveryMode,
+            payload.scheduledAt
+        )
 
         const content = {
             role: 'user',
@@ -598,7 +616,8 @@ export class MessageService {
                 attachments: payload.attachments
             },
             meta: {
-                sentFrom
+                sentFrom,
+                deliveryMode
             }
         }
 

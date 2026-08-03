@@ -6,6 +6,7 @@ import {
     type ClipboardEvent as ReactClipboardEvent,
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
+    type MutableRefObject,
     type SyntheticEvent as ReactSyntheticEvent,
     useCallback,
     useEffect,
@@ -52,6 +53,8 @@ import { PiThinkingLevelPanel } from './PiThinkingLevelPanel'
 import type { ApiClient } from '@/api/client'
 import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
+import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import type { MessageDeliveryMode } from '@hapi/protocol'
 
 export interface TextInputState {
     text: string
@@ -98,6 +101,8 @@ export type ComposerSendError = {
     scheduledAt: number | null
     /** False for guards that reject before the underlying message mutation starts. */
     mutationStarted: boolean
+    /** Wire mode retained for retry/error provenance; composer rendering is mode-agnostic. */
+    deliveryMode?: MessageDeliveryMode
     /** True once the user has retried; retain UI but never restore this id again. */
     restoreSuppressed: boolean
     action?: {
@@ -290,6 +295,12 @@ export function HappyComposer(props: {
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
     onSuppressSendErrorRestore?: (id: number) => void
+    /**
+     * One-shot intent bridge consumed by useHappyRuntime's onNew callback.
+     * SessionChat owns this ref so the composer never retains an explicit
+     * queue request after a scratchlist/scheduled/failed early path.
+     */
+    pendingSendIntentRef?: MutableRefObject<ComposerSendIntent>
     /** Chip hover / aria-label resolver (SessionChat → useSessions). */
     resolveSessionMentionTooltip?: (id: string, title: string) => SessionMentionResolveResult
 }) {
@@ -344,6 +355,7 @@ export function HappyComposer(props: {
         sendError = null,
         onClearSendError,
         onSuppressSendErrorRestore,
+        pendingSendIntentRef,
         resolveSessionMentionTooltip,
     } = props
 
@@ -875,7 +887,24 @@ export function HappyComposer(props: {
         ? undefined
         : handleUserClearSchedule
 
-    const handleSend = useCallback(async () => {
+    const resetPendingSendIntent = useCallback(() => {
+        if (pendingSendIntentRef) pendingSendIntentRef.current = 'default'
+    }, [pendingSendIntentRef])
+
+    const handleSend = useCallback(async (intent: ComposerSendIntent = 'default') => {
+        // SessionChat preloads the ref only when restoring a rejected send:
+        // queue retries remain queue, while an ordinary fresh send always
+        // starts from the explicit/default argument. Capture it before the
+        // mandatory early-path reset below, then consume it at send time.
+        const restoredIntent = intent === 'default'
+            ? (pendingSendIntentRef?.current ?? 'default')
+            : intent
+        // The runtime consumes this ref from assistant-ui's onNew callback.
+        // Clear any prior one-shot value before paths that do not call send(),
+        // so a rejected park/schedule path can never leak a stale queue intent
+        // into the next normal submission.
+        resetPendingSendIntent()
+
         // Rich chips must be serialized into composer.text before any send or
         // scratchlist park snapshot (RichComposerInput contract).
         if (richMentionsEnabled && richInputRef.current) {
@@ -929,7 +958,19 @@ export function HappyComposer(props: {
             userScheduleGeneration: userScheduleGenerationRef.current,
             userAttachmentGeneration: userAttachmentGenerationRef.current,
         }
-        api.composer().send()
+        // Scheduled sends retain their existing route. The same is true for a
+        // scratchlist route above; only an immediate chat submit may carry the
+        // explicit queue intent to SessionChat.
+        const effectiveIntent = pendingSchedule == null ? restoredIntent : 'default'
+        try {
+            // Must be adjacent to send(): useHappyRuntime consumes and resets
+            // this ref synchronously from assistant-ui's onNew callback.
+            if (pendingSendIntentRef) pendingSendIntentRef.current = effectiveIntent
+            api.composer().send()
+        } catch (error) {
+            resetPendingSendIntent()
+            throw error
+        }
         // SessionChat owns clearing the schedule — it clears only after awaiting
         // the send hook's accepted result, which covers both pre-mutation guards
         // and async inactive-session resume failure. Clearing here unconditionally
@@ -950,11 +991,19 @@ export function HappyComposer(props: {
         props.scratchlistMode,
         richMentionsEnabled,
         sendError,
+        pendingSendIntentRef,
+        resetPendingSendIntent,
     ])
 
-    const flushAndSend = useCallback(() => {
-        void handleSend()
+    const flushAndSend = useCallback((intent: ComposerSendIntent = 'default') => {
+        void handleSend(intent)
     }, [handleSend])
+
+    const canQueueSend = agentFlavor === 'pi'
+        && thinking
+        && threadIsRunning
+        && pendingSchedule == null
+        && !props.scratchlistMode
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
@@ -974,6 +1023,22 @@ export function HappyComposer(props: {
             e.preventDefault()
             const indexToSelect = selectedIndex >= 0 ? selectedIndex : 0
             handleSuggestionSelect(indexToSelect)
+            return
+        }
+
+        // Alt/Option+Enter is an explicit Pi follow-up request. It is
+        // orthogonal to the normal Enter preference but never overrides IME,
+        // Shift+Enter, autocomplete, scheduling, or scratchlist routing.
+        if (
+            key === 'Enter'
+            && e.altKey
+            && !e.ctrlKey
+            && !e.metaKey
+            && canQueueSend
+        ) {
+            e.preventDefault()
+            flushAndSend('queue')
+            setShowContinueHint(false)
             return
         }
 
@@ -1055,6 +1120,7 @@ export function HappyComposer(props: {
         composerEnterBehavior,
         richMentionsEnabled,
         flushAndSend,
+        canQueueSend,
         isExpanded,
         handleExpandedToggle,
     ])
@@ -1845,6 +1911,7 @@ export function HappyComposer(props: {
                             onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
                             onVoiceMicToggle={dictationActive ? undefined : onVoiceMicToggle}
                             onSend={handleSend}
+                            allowQueueGesture={canQueueSend}
                             pendingSchedule={pendingSchedule}
                             onSchedule={handleUserSchedule}
                             onClearSchedule={onUserClearSchedule}

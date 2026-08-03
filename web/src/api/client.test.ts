@@ -116,6 +116,24 @@ describe('ApiClient error mapping', () => {
         expect(new Headers(init?.headers).get('content-type')).toBe('application/json')
     })
 
+    it('forwards the selected delivery mode when sending a message', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await api.sendMessage('session /?#', 'steer this', 'local-1', undefined, null, 'steer')
+
+        const [url, init] = fetchMock.mock.calls[0] ?? []
+        expect(url).toBe('/api/sessions/session%20%2F%3F%23/messages')
+        expect(init).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({
+                text: 'steer this',
+                localId: 'local-1',
+                deliveryMode: 'steer',
+            })
+        })
+    })
+
     it('requests usage buckets in the viewer IANA time zone', async () => {
         fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
 

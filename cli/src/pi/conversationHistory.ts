@@ -211,7 +211,12 @@ export class PiConversationHistory {
         await this.probeCapabilities().catch(() => {})
     }
 
-    registerPrompt(localId: string | undefined): void {
+    /**
+     * Register a HAPI user message before its corresponding native command is
+     * written. Prompts and native steers both append Pi user entries, so their
+     * associations share one strict FIFO rather than a prompt-only queue.
+     */
+    registerUserEntry(localId: string | undefined): void {
         if (this.historySyncDisabled) return
         if (localId) this.pendingUserEntries.push({ localId })
     }

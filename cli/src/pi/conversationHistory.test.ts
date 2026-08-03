@@ -38,8 +38,8 @@ describe('PiConversationHistory entry mapping', () => {
     it('pairs duplicate prompts to native user entries strictly FIFO without reading text', () => {
         const { session, metadata } = createSession()
         const history = new PiConversationHistory(session, vi.fn())
-        history.registerPrompt('local-1')
-        history.registerPrompt('local-2')
+        history.registerUserEntry('local-1')
+        history.registerUserEntry('local-2')
 
         history.observeEntry({ type: 'message', id: 'entry-1', message: { role: 'user', content: 'same' } })
         history.observeEntry({ type: 'message', id: 'assistant-1', message: { role: 'assistant', content: 'same' } })
@@ -69,7 +69,7 @@ describe('PiConversationHistory entry mapping', () => {
             return { entries: [], leafId: 'older-active-leaf' }
         })
         const history = new PiConversationHistory(session, rpc)
-        history.registerPrompt('local-1')
+        history.registerUserEntry('local-1')
         await history.syncEntries()
         expect(history.getEntryIds()).toEqual({ 'local-1': 'native-1' })
         await history.syncEntries()
@@ -96,8 +96,8 @@ describe('PiConversationHistory entry mapping', () => {
             return Promise.resolve({ entries: [{ type: 'message', id: 'entry-1', message: { role: 'user' } }], leafId: 'entry-1' })
         })
         const history = new PiConversationHistory(session, rpc)
-        history.registerPrompt('local-1')
-        history.registerPrompt('local-2')
+        history.registerUserEntry('local-1')
+        history.registerUserEntry('local-2')
 
         const first = history.syncEntries()
         history.observeEntry({ type: 'message', id: 'entry-1', message: { role: 'user' } })
@@ -120,8 +120,8 @@ describe('PiConversationHistory entry mapping', () => {
         await history.initialize()
         await history.syncEntries()
         await history.syncEntries()
-        history.registerPrompt('disabled-1')
-        history.registerPrompt('disabled-2')
+        history.registerUserEntry('disabled-1')
+        history.registerUserEntry('disabled-2')
         history.observeEntry({ type: 'message', id: 'late-user', message: { role: 'user' } })
 
         expect(rpc).toHaveBeenCalledTimes(1)
@@ -139,7 +139,7 @@ describe('PiConversationHistory entry mapping', () => {
         const history = new PiConversationHistory(session, rpc)
 
         await history.initialize()
-        history.registerPrompt('new-local')
+        history.registerUserEntry('new-local')
         history.observeEntry({ type: 'message', id: 'old-native-user', message: { role: 'user' } })
         await history.syncEntries()
 
@@ -169,13 +169,13 @@ describe('PiConversationHistory entry mapping', () => {
     it('removes a failed local FIFO prompt by exact localId without consuming its neighbor', () => {
         const { session } = createSession()
         const history = new PiConversationHistory(session, vi.fn())
-        history.registerPrompt('prompt-failed')
-        history.registerPrompt('prompt-ok')
+        history.registerUserEntry('prompt-failed')
+        history.registerUserEntry('prompt-ok')
         history.rejectPendingEntry('prompt-failed')
         history.observeEntry({ type: 'message', id: 'prompt-entry', message: { role: 'user' } })
         expect(history.getEntryIds()).toEqual({ 'prompt-ok': 'prompt-entry' })
 
-        history.registerPrompt('aborted-before-turn')
+        history.registerUserEntry('aborted-before-turn')
         history.rejectPendingEntry('aborted-before-turn')
         history.observeEntry({ type: 'message', id: 'unrelated-user-entry', message: { role: 'user' } })
         expect(history.getEntryIds()).toEqual({ 'prompt-ok': 'prompt-entry' })
@@ -355,7 +355,7 @@ describe('PiConversationHistory native transactions', () => {
             piSessionId: 'rewind-id',
             piSelectedModel: { provider: 'rewind-provider', modelId: 'rewind-model' },
         })
-        history.registerPrompt('next-local')
+        history.registerUserEntry('next-local')
         history.observeEntry({ type: 'message', id: 'next-entry', message: { role: 'user' } })
         expect(history.getEntryIds()).toEqual({ 'next-local': 'next-entry' })
         expect(rpc.mock.calls.map(([command]) => command)).toEqual([
@@ -518,7 +518,7 @@ describe('PiConversationHistory native transactions', () => {
         const rewind = await rewindPending
         expect(rewind.success).toBe(true)
 
-        history.registerPrompt('next')
+        history.registerUserEntry('next')
         history.observeEntry({ type: 'message', id: 'next-user', message: { role: 'user' } })
         expect(history.getEntryIds()).toEqual({ next: 'next-user' })
     })
@@ -536,7 +536,7 @@ describe('PiConversationHistory native transactions', () => {
         const preflight = createSession()
         const preflightRpc = vi.fn()
         const preflightHistory = new PiConversationHistory(preflight.session, preflightRpc)
-        preflightHistory.registerPrompt('local-preflight')
+        preflightHistory.registerUserEntry('local-preflight')
         preflightHistory.observeEntry({ type: 'message', id: 'native-preflight', message: { role: 'user' } })
         preflight.session.setPromptInFlight(true)
         await expect(preflightHistory.fork()).rejects.toThrow('busy')

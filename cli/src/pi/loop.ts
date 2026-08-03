@@ -188,7 +188,7 @@ function handleResponse(
         // get_session_stats is a best-effort compatibility probe. Older Pi
         // versions may reject it, so fall back silently instead of surfacing an
         // error event to the user on every completed turn.
-        if (command !== 'get_session_stats') {
+        if (command !== 'get_session_stats' && command !== 'steer') {
             session.sendSessionEvent({ type: 'message', message: error });
         }
         if (command === 'prompt' && pendingLocalIds.length > 0) {
@@ -340,6 +340,10 @@ function handleResponse(
             break;
         case 'prompt':
             logger.debug('[pi] Prompt accepted');
+            break;
+        case 'steer':
+            logger.debug('[pi] Steer accepted');
+            resolvePendingRpc(resolver, response);
             break;
         default:
             logger.debug(`[pi] Response for ${command}`);

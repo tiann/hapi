@@ -12,6 +12,7 @@ import { parsePiModels, parsePiCommands, PiRpcTimeoutError, sendPiRpcAndWait, wi
 import { PiThinkingLevelSchema, SetSessionConfigPayloadSchema } from './schemas';
 import type { PiImageContent, PiThinkingLevel } from './types';
 import { PiPromptQueue, type PiPreparedPrompt } from './promptQueue';
+import { PiSteerDispatcher } from './steerDispatcher';
 import type { ListPiModelsResponse, PiCommandSummary, SlashCommand, SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { ListSkillsResponse, SkillSummary } from '@/modules/common/skills';
@@ -93,7 +94,7 @@ export function formatPiUserMessage(
     return attachmentText ? `${skillPrompt}\n\n${attachmentText}` : skillPrompt;
 }
 
-export type PiPromptPreparation = PiPreparedPrompt & { imageReadErrors: string[] };
+export type PiPromptPreparation = Omit<PiPreparedPrompt, 'outboundSequence'> & { imageReadErrors: string[] };
 
 export async function preparePiUserMessage(
     message: string,
@@ -256,9 +257,11 @@ export async function runPi(opts: {
     registerLocalHandoffHandler(apiSession.rpcHandlerManager, lifecycle);
 
     let cleanupInitiated = false;
+    let steerDispatcher: PiSteerDispatcher | null = null;
     const safeCleanup = async () => {
         if (cleanupInitiated) return;
         cleanupInitiated = true;
+        steerDispatcher?.stop();
         piSession.cancelReadyGate();
         await lifecycle.cleanupAndExit();
     };
@@ -283,6 +286,7 @@ export async function runPi(opts: {
 
     // --- Transport error/close handlers ---
     transport.onError((error) => {
+        steerDispatcher?.stop();
         transportEvents?.flush();
         transportEvents?.cancelPendingExtensionUi('Pi transport failed', { sendResponse: false });
         transportEvents?.terminatePendingRpc(error);
@@ -295,6 +299,7 @@ export async function runPi(opts: {
     });
 
     transport.onClose((code, signal) => {
+        steerDispatcher?.stop();
         transportEvents?.flush();
         transportEvents?.cancelPendingExtensionUi('Pi session ended', { sendResponse: false });
         transportEvents?.terminatePendingRpc(new Error('Pi session ended'));
@@ -352,6 +357,7 @@ export async function runPi(opts: {
     let activePromptLocalId: string | undefined;
     let historyPumpDeferred = false;
     let agentLifecycleStarted = false;
+    let nextOutboundSequence = 0;
 
     const setPromptCommandInFlight = (value: boolean): void => {
         promptCommandInFlight = value;
@@ -440,7 +446,15 @@ export async function runPi(opts: {
             }
             return;
         }
-        if (!piSession.isReady || piSession.piIsStreaming || promptCommandInFlight || abortInFlight) return;
+        if (
+            !piSession.isReady
+            || piSession.piIsStreaming
+            || promptCommandInFlight
+            || abortInFlight
+            // Earlier steers can fall back only after async preparation/runtime
+            // lock wait. Do not let a later normal prompt overtake that result.
+            || steerDispatcher?.hasPending
+        ) return;
         const next = promptQueue.dequeue();
         if (!next) return;
         setPromptCommandInFlight(true);
@@ -449,7 +463,7 @@ export async function runPi(opts: {
         const promptId = randomUUID();
         transportEvents?.beginPromptLifecycle(promptId);
         if (next.localId) {
-            conversationHistory.registerPrompt(next.localId);
+            conversationHistory.registerUserEntry(next.localId);
             pendingLocalIds.push(next.localId);
         }
         transport.send({ id: promptId, type: 'prompt', message: next.message, ...(next.images.length > 0 ? { images: next.images } : {}) });
@@ -507,6 +521,20 @@ export async function runPi(opts: {
             markPromptBoundarySettled();
             return true;
         },
+    });
+
+    steerDispatcher = new PiSteerDispatcher({
+        session: piSession,
+        transport,
+        conversationHistory,
+        enqueuePrompt: (entry) => {
+            if (cleanupInitiated) return;
+            promptQueue.enqueue(entry);
+        },
+        onIndeterminateTimeout: (error) => {
+            failNativeStartup(new Error(`Pi steer outcome is indeterminate: ${error.message}`));
+        },
+        onPendingStateChange: pumpPromptQueue,
     });
 
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
@@ -712,6 +740,13 @@ export async function runPi(opts: {
     // Preparation reads image files asynchronously. A single promise chain keeps
     // attachment completion order identical to user-message arrival order.
     apiSession.onUserMessage((message, localId) => {
+        const deliveryMode = message.meta?.deliveryMode ?? 'queue';
+        // Reserve message order and, for native steering, the exact turn before
+        // attachment preparation or a runtime-lock wait can yield execution.
+        const outboundSequence = nextOutboundSequence++;
+        const targetStreamingGeneration = deliveryMode === 'steer'
+            ? piSession.currentStreamingGeneration
+            : null;
         if (localId) preparingLocalIds.add(localId);
         preparationChain = preparationChain.then(async () => {
             if (localId && cancelledWhilePreparing.delete(localId)) {
@@ -741,12 +776,18 @@ export async function runPi(opts: {
                 if (localId) piSession.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
                 return;
             }
-            promptQueue.enqueue({
+            const entry = {
                 message: prepared.message,
                 images: prepared.images,
+                outboundSequence,
                 ...(localId ? { localId } : {}),
-            });
-            pumpPromptQueue();
+            };
+            if (deliveryMode === 'steer') {
+                steerDispatcher?.enqueue({ ...entry, targetStreamingGeneration });
+            } else {
+                promptQueue.enqueue(entry);
+                pumpPromptQueue();
+            }
         }).catch((error: unknown) => {
             const wasCancelled = localId ? cancelledWhilePreparing.delete(localId) : false;
             if (localId) preparingLocalIds.delete(localId);
@@ -768,7 +809,7 @@ export async function runPi(opts: {
             cancelledWhilePreparing.add(localId);
             return true;
         }
-        return promptQueue.cancelByLocalId(localId);
+        return promptQueue.cancelByLocalId(localId) || steerDispatcher?.cancelByLocalId(localId) === true;
     });
 
     // --- Abort handler ---
@@ -798,6 +839,7 @@ export async function runPi(opts: {
             ? piSession.acquireRuntimeMutation()
             : null;
 
+        let streamingInvalidatedUnderLock = false;
         abortPromise = (async (): Promise<{ success: true }> => {
             let releaseRuntimeMutation: (() => void) | null = null;
             let nativeAbortIssued = false;
@@ -839,6 +881,11 @@ export async function runPi(opts: {
                     firstAbortConfirmed = true;
                 }
                 if (abortBoundary) await abortBoundary.promise;
+                // Invalidate the aborted turn while still holding the runtime
+                // mutation lease. A queued steer waiter must observe idle (and
+                // therefore fall back) before it can acquire this same lease.
+                piSession.updateThinkingState(false);
+                streamingInvalidatedUnderLock = true;
                 return { success: true };
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
@@ -899,7 +946,9 @@ export async function runPi(opts: {
             }
             activePromptLocalId = undefined;
             agentLifecycleStarted = false;
-            piSession.updateThinkingState(false);
+            // The native-work path already invalidated the generation under
+            // the runtime mutex. The no-work fast path reaches only this hook.
+            if (!streamingInvalidatedUnderLock) piSession.updateThinkingState(false);
             setPromptCommandInFlight(false);
             abortInFlight = false;
             pumpPromptQueue();

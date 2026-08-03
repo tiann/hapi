@@ -52,8 +52,11 @@ export class PiSession {
     expectedNativeSessionId: string | null;
     currentNativeSessionFile: string | null = null;
 
-    // Streaming state
-    piIsStreaming = false;
+    // Streaming state. A generation identifies one concrete Pi turn, rather
+    // than merely the transient boolean reported by get_state/lifecycle events.
+    // Native steers capture it at arrival and must not cross into a later turn.
+    private _piIsStreaming = false;
+    private streamingGeneration = 0;
     private promptInFlight = false;
     currentSteeringMode: 'all' | 'one-at-a-time' = 'all';
 
@@ -155,6 +158,22 @@ export class PiSession {
         return this.promptInFlight;
     }
 
+    get piIsStreaming(): boolean {
+        return this._piIsStreaming;
+    }
+
+    set piIsStreaming(value: boolean) {
+        // Keep direct state reconciliation (including test adapters) on the
+        // same transition invariant as updateThinkingState().
+        if (value && !this._piIsStreaming) this.streamingGeneration += 1;
+        this._piIsStreaming = value;
+    }
+
+    /** Exact identity of the active Pi stream; absent while Pi is idle. */
+    get currentStreamingGeneration(): number | null {
+        return this._piIsStreaming ? this.streamingGeneration : null;
+    }
+
     setPromptInFlight(value: boolean): void {
         this.promptInFlight = value;
     }
@@ -253,6 +272,14 @@ export class PiSession {
         runtime: PiNativeRuntimeState,
         metadataUpdater?: (metadata: Metadata) => Metadata,
     ): void {
+        const identityChanged = this.expectedNativeSessionId !== identity.sessionId
+            || this.currentNativeSessionFile !== identity.sessionFile;
+        // A rewind can replace the native branch while both snapshots report
+        // streaming=true. Invalidate any steer captured for the old branch
+        // even though the boolean never passed through an observable idle edge.
+        if (identityChanged && this._piIsStreaming && runtime.isStreaming !== false) {
+            this.streamingGeneration += 1;
+        }
         this.expectedNativeSessionId = identity.sessionId;
         this.currentNativeSessionFile = identity.sessionFile;
         this.applyNativeRuntimeState(runtime);

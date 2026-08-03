@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { ClearOpencodeSessionCallbackRequestSchema, ClearOpencodeSessionResponseSchema, ListCodexSessionsRpcResponseSchema, MessagesQuerySchema } from './apiTypes'
+import {
+    ClearOpencodeSessionCallbackRequestSchema,
+    ClearOpencodeSessionResponseSchema,
+    ListCodexSessionsRpcResponseSchema,
+    MessagesQuerySchema,
+    SendMessageRequestSchema
+} from './apiTypes'
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
     it('preserves Codex session messages when parsing runner RPC responses', () => {
@@ -83,5 +89,28 @@ describe('MessagesQuerySchema', () => {
 
     it('rejects epoch without a forward cursor', () => {
         expect(MessagesQuerySchema.safeParse({ epoch: 1 }).success).toBe(false)
+    })
+})
+
+describe('SendMessageRequestSchema deliveryMode', () => {
+    it('accepts queue and steer delivery modes while leaving the field optional', () => {
+        expect(SendMessageRequestSchema.parse({ text: 'queue' }).deliveryMode).toBeUndefined()
+        expect(SendMessageRequestSchema.parse({ text: 'steer', deliveryMode: 'steer' }).deliveryMode).toBe('steer')
+        expect(SendMessageRequestSchema.parse({ text: 'queue', deliveryMode: 'queue' }).deliveryMode).toBe('queue')
+    })
+
+    it('rejects scheduled steer delivery', () => {
+        const parsed = SendMessageRequestSchema.safeParse({
+            text: 'later',
+            localId: 'scheduled-steer',
+            scheduledAt: Date.now() + 60_000,
+            deliveryMode: 'steer'
+        })
+
+        expect(parsed.success).toBe(false)
+        if (!parsed.success) {
+            expect(parsed.error.issues.some((issue) => issue.path[0] === 'deliveryMode')).toBe(true)
+            expect(parsed.error.issues.some((issue) => issue.message.includes('cannot use steer'))).toBe(true)
+        }
     })
 })

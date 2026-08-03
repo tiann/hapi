@@ -245,6 +245,41 @@ describe('PiSession runtime mutation mutex', () => {
     });
 });
 
+describe('PiSession streaming generation', () => {
+    it('increments only on false-to-true transitions and is hidden while idle', () => {
+        const session = createMockSession();
+
+        expect(session.currentStreamingGeneration).toBeNull();
+        session.updateThinkingState(true);
+        const firstGeneration = session.currentStreamingGeneration;
+        expect(firstGeneration).toBe(1);
+
+        // Repeated lifecycle/get_state confirmations for the same turn do not
+        // mint a new identity.
+        session.updateThinkingState(true);
+        expect(session.currentStreamingGeneration).toBe(firstGeneration);
+
+        session.applyNativeRuntimeState({ isStreaming: false });
+        expect(session.currentStreamingGeneration).toBeNull();
+        session.applyNativeRuntimeState({ isStreaming: true });
+        expect(session.currentStreamingGeneration).toBe(2);
+    });
+
+    it('invalidates a streaming generation when rewind commits a new native branch', () => {
+        const session = createMockSession();
+        session.updateThinkingState(true);
+        const sourceGeneration = session.currentStreamingGeneration;
+
+        session.commitNativeSessionState(
+            { sessionId: 'rewound-session', sessionFile: '/tmp/rewound-session.jsonl' },
+            { isStreaming: true },
+        );
+
+        expect(session.currentStreamingGeneration).not.toBe(sourceGeneration);
+        expect(session.currentStreamingGeneration).toBe(2);
+    });
+});
+
 describe('PiSession native runtime reconciliation', () => {
     it('preserves an omitted provider only when the reported model is unchanged', () => {
         const session = createMockSession();

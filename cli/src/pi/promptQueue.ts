@@ -3,15 +3,25 @@ import type { PiImageContent } from './types';
 export type PiPreparedPrompt = {
     message: string;
     images: PiImageContent[];
+    /** Monotonic arrival reservation assigned before asynchronous preparation. */
+    outboundSequence: number;
     localId?: string;
 };
 
-/** Small cancellable FIFO: HAPI owns queueing, Pi receives only real turns. */
+/**
+ * Small cancellable FIFO: HAPI owns queueing, Pi receives only real turns.
+ *
+ * A native steer can asynchronously degrade to a prompt after a later ordinary
+ * prompt was prepared. Arrival reservations preserve original message order at
+ * that boundary instead of using completion order.
+ */
 export class PiPromptQueue {
     private readonly entries: PiPreparedPrompt[] = [];
 
     enqueue(prompt: PiPreparedPrompt): void {
-        this.entries.push(prompt);
+        const index = this.entries.findIndex((entry) => entry.outboundSequence > prompt.outboundSequence);
+        if (index === -1) this.entries.push(prompt);
+        else this.entries.splice(index, 0, prompt);
     }
 
     dequeue(): PiPreparedPrompt | undefined {

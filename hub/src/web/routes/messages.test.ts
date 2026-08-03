@@ -259,6 +259,50 @@ describe('POST /api/sessions/:id/messages — #2 scheduledAt upper bound', () =>
     })
 })
 
+describe('POST /api/sessions/:id/messages — deliveryMode', () => {
+    it('forwards an immediate steer intent to the hub', async () => {
+        const { app, sentMessages } = createApp({})
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'steer now', localId: 'local-steer', deliveryMode: 'steer' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(sentMessages).toEqual([{
+            sessionId: 'session-1',
+            payload: {
+                text: 'steer now',
+                localId: 'local-steer',
+                attachments: undefined,
+                sentFrom: 'webapp',
+                scheduledAt: undefined,
+                deliveryMode: 'steer'
+            }
+        }])
+    })
+
+    it('rejects scheduled steer delivery before calling the hub', async () => {
+        const { app, sentMessages } = createApp({})
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                text: 'steer later',
+                localId: 'local-scheduled-steer',
+                scheduledAt: Date.now() + 60_000,
+                deliveryMode: 'steer'
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(JSON.stringify(await response.json())).toContain('deliveryMode')
+        expect(sentMessages).toHaveLength(0)
+    })
+})
+
 // ---------------------------------------------------------------------------
 // #4 Zod error details in response body
 // ---------------------------------------------------------------------------
