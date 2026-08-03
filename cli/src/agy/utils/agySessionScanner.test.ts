@@ -121,17 +121,14 @@ describe('AgySessionScanner — resume support', () => {
         // PLANNER_RESPONSE would be exactly the "tool-result/response false
         // positive" this scanner deliberately avoids.
         const line = makeTranscriptLine(0, 'USER_INPUT', needle)
-        makeTempBrain(TEST_UUID, line + '\n')
-
         const emitted: AgyTranscriptEntry[] = []
         const scanner = await createAgySessionScanner({ onEntry: (e) => emitted.push(e) })
+        makeTempBrain(TEST_UUID, line + '\n')
 
         // Arm the scanner with the session message text so it can match.
         scanner.setSessionMessageText(needle)
         // Allow a scan cycle to run.
-        await new Promise((r) => setTimeout(r, 200))
-
-        expect(scanner.getBrainUuid()).toBe(TEST_UUID)
+        await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
         await scanner.cleanup()
     })
 
@@ -234,19 +231,16 @@ describe('AgySessionScanner — resume support', () => {
         const needle = `hapi-test-onbrainFound-${Date.now()}`
         // USER_INPUT — see the "getBrainUuid()...content match" test above for why.
         const line = makeTranscriptLine(0, 'USER_INPUT', needle)
-        makeTempBrain(TEST_UUID, line + '\n')
-
         const emitted: AgyTranscriptEntry[] = []
         const foundUuids: string[] = []
         const scanner = await createAgySessionScanner({
             onEntry: (e) => emitted.push(e),
             onBrainFound: (uuid) => foundUuids.push(uuid),
         })
+        makeTempBrain(TEST_UUID, line + '\n')
 
         scanner.setSessionMessageText(needle)
-        await new Promise((r) => setTimeout(r, 300))
-
-        expect(scanner.getBrainUuid()).toBe(TEST_UUID)
+        await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
         expect(foundUuids).toEqual([TEST_UUID])
 
         await scanner.cleanup()
@@ -297,13 +291,10 @@ describe('AgySessionScanner — resume support', () => {
             'USER_INPUT',
             `<USER_REQUEST>\n@/tmp/c.png @/tmp/a.png @/tmp/b.png\n${bodyText}`
         )
-        makeTempBrain(TEST_UUID, reorderedLine + '\n')
-
         const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        makeTempBrain(TEST_UUID, reorderedLine + '\n')
         scanner.setSessionMessageText(needle)
-        await new Promise((r) => setTimeout(r, 300))
-
-        expect(scanner.getBrainUuid()).toBe(TEST_UUID)
+        await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
 
         await scanner.cleanup()
     })
@@ -362,6 +353,32 @@ describe('AgySessionScanner — resume support', () => {
         await scanner.cleanup()
     })
 
+    it('does not bind an early exact match when a second matching brain appears during discovery settling', async () => {
+        const prompt = `staggered-match-${Date.now()}`
+        const foreignUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        const realUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        const ambiguityCounts: number[] = []
+
+        try {
+            makeTempBrain(foreignUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
+            const scanner = await createAgySessionScanner({
+                onEntry: () => {},
+                onDiscoveryAmbiguous: (count) => ambiguityCounts.push(count),
+            })
+            scanner.setSessionMessageText(prompt)
+            await new Promise((resolve) => setTimeout(resolve, 50))
+            makeTempBrain(realUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
+
+            await vi.waitFor(() => expect(ambiguityCounts).toEqual([2]), { timeout: 1200 })
+            expect(scanner.getBrainUuid()).toBeNull()
+            await scanner.cleanup()
+        } finally {
+            for (const uuid of [foreignUuid, realUuid]) {
+                try { rmSync(join(BRAIN_BASE, uuid), { recursive: true, force: true }) } catch { /* best-effort */ }
+            }
+        }
+    })
+
     it('fails closed when two in-window brains have the same exact first prompt', async () => {
         const otherUuid = '00000000-0000-4000-8000-000000000002'
         const prompt = `hapi-ambiguous-${Date.now()}`
@@ -392,9 +409,8 @@ describe('AgySessionScanner — resume support', () => {
 
     it('does not match a USER_INPUT that only contains the first prompt as a substring', async () => {
         const prompt = `yes-${Date.now()}`
-        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', `please say ${prompt} now`) + '\n')
-
         const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', `please say ${prompt} now`) + '\n')
         scanner.setSessionMessageText(prompt)
         await new Promise((r) => setTimeout(r, 300))
 
@@ -408,13 +424,10 @@ describe('AgySessionScanner — resume support', () => {
         // nothing, and giving up there would blank the chat forever (the old
         // whole-file read matched this input).
         const needle = `${'x'.repeat(70 * 1024)} hapi-huge-needle-${Date.now()}`
-        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', needle) + '\n')
-
         const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', needle) + '\n')
         scanner.setSessionMessageText(needle)
-        await new Promise((r) => setTimeout(r, 400))
-
-        expect(scanner.getBrainUuid()).toBe(TEST_UUID)
+        await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
         await scanner.cleanup()
     })
 
@@ -488,13 +501,10 @@ describe('AgySessionScanner — resume support', () => {
     it('matches a multi-line first user message (decoded-content match, not raw-file substring)', async () => {
         const bodyText = `line one\nline two\nhapi-multiline-${Date.now()}`
         const line = makeTranscriptLine(0, 'USER_INPUT', bodyText)
-        makeTempBrain(TEST_UUID, line + '\n')
-
         const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        makeTempBrain(TEST_UUID, line + '\n')
         scanner.setSessionMessageText(bodyText)
-        await new Promise((r) => setTimeout(r, 300))
-
-        expect(scanner.getBrainUuid()).toBe(TEST_UUID)
+        await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
         await scanner.cleanup()
     })
 })

@@ -12,6 +12,7 @@ const {
     runClaudeMock,
     runGrokMock,
     runPiMock,
+    runAgyMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -26,6 +27,7 @@ const {
     runClaudeMock: vi.fn(async () => {}),
     runGrokMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
+    runAgyMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -50,6 +52,7 @@ vi.mock('@/codex/runCodex', () => ({ runCodex: runCodexMock }))
 vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
+vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -80,6 +83,7 @@ describe('resumeCommand', () => {
         runClaudeMock.mockClear()
         runGrokMock.mockClear()
         runPiMock.mockClear()
+        runAgyMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -113,6 +117,36 @@ describe('resumeCommand', () => {
             model: 'gpt-5.4',
             modelReasoningEffort: 'xhigh',
             collaborationMode: 'default'
+        })
+    })
+
+    it('resumes an AGY target in PTY mode instead of falling through to Cursor', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-agy',
+            flavor: 'agy',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'agy-brain-1',
+            model: 'gemini-3.1-pro',
+            effort: 'high',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-agy']))
+
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runAgyMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-agy',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'agy-brain-1',
+            startedBy: 'terminal',
+            permissionMode: 'default',
+            startingMode: 'pty',
+            model: 'gemini-3.1-pro',
+            effort: 'high'
         })
     })
 

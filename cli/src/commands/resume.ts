@@ -4,6 +4,7 @@ import { render } from 'ink'
 import { existsSync } from 'node:fs'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import type {
+    AgyPermissionMode,
     ClaudePermissionMode,
     CodexPermissionMode,
     CursorPermissionMode,
@@ -146,6 +147,21 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             permissionMode: base.permissionMode as KimiPermissionMode | undefined,
             startingMode: 'local',
             model: target.model ?? undefined
+        })
+        return
+    }
+
+    if (target.flavor === 'agy') {
+        const { runAgy } = await import('@/agy/runAgy')
+        await runAgy({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as AgyPermissionMode | undefined,
+            startingMode: 'pty',
+            model: target.model ?? undefined,
+            effort: target.effort ?? undefined,
         })
         return
     }

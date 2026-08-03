@@ -34,6 +34,10 @@ const DISCOVERY_WINDOW_SLACK_MS = 30_000
 // prefix read below and by the early exit on the first match.
 const SCAN_CANDIDATE_WARN_THRESHOLD = 50
 const MODEL_SETTLING_RETRY_DELAYS_MS = [100, 200, 300] as const
+// Require a unique content match to remain unique briefly before binding. This
+// lets a concurrently-starting real brain surface before an earlier foreign
+// brain with the same first prompt can be committed permanently.
+const DISCOVERY_SETTLE_MS = 150
 
 type ResolveModels = typeof resolveAgyTurnModels
 type Sleep = (delayMs: number, signal?: AbortSignal) => Promise<void>
@@ -147,6 +151,8 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
     private sessionMessageText: string | null = null
     private foundBrainUuid: string | null = null
     private ambiguityReported = false
+    private pendingDiscoveryMatch: { uuid: string; firstSeenAt: number } | null = null
+    private discoverySettleTimer: ReturnType<typeof setTimeout> | null = null
     private readonly modelSettlingAbortController = new AbortController()
 
     constructor(opts: CreateAgySessionScannerOpts) {
@@ -167,6 +173,7 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
     }
 
     public override async cleanup(): Promise<void> {
+        this.clearPendingDiscoveryMatch()
         this.modelSettlingAbortController.abort()
         await super.cleanup()
     }
@@ -181,6 +188,7 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         // content-match discovers a brain.
         if (this.foundBrainUuid === uuid) return
         logger.debug(`[agy-scanner] onNewSession: switching brain to ${uuid}`)
+        this.clearPendingDiscoveryMatch()
         this.foundBrainUuid = uuid
         this.invalidate()
     }
@@ -272,6 +280,19 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
 
         if (matches.length === 1) {
             const [{ uuid, logPath }] = matches
+            const now = Date.now()
+            if (this.pendingDiscoveryMatch?.uuid !== uuid) {
+                this.clearPendingDiscoveryMatch()
+                this.pendingDiscoveryMatch = { uuid, firstSeenAt: now }
+                this.scheduleDiscoveryConfirmation(DISCOVERY_SETTLE_MS)
+                return []
+            }
+            const elapsed = now - this.pendingDiscoveryMatch.firstSeenAt
+            if (elapsed < DISCOVERY_SETTLE_MS) {
+                this.scheduleDiscoveryConfirmation(DISCOVERY_SETTLE_MS - elapsed)
+                return []
+            }
+            this.clearPendingDiscoveryMatch()
             this.foundBrainUuid = uuid
             // Notify the caller immediately so it can persist the UUID to
             // session metadata without waiting for onMessage polling.
@@ -279,6 +300,7 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
             logger.debug(`[agy-scanner] found brain ${uuid}, watching 1 file`)
             return [logPath]
         }
+        this.clearPendingDiscoveryMatch()
         if (matches.length > 1) {
             logger.warn(`[agy-scanner] ${matches.length} brains matched the first message exactly; refusing ambiguous attachment`)
             if (!this.ambiguityReported) {
@@ -291,6 +313,20 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         // this chat (the raw-JSON noise). Watch nothing until the session message
         // text appears in exactly one brain's transcript on a later scan.
         return []
+    }
+
+    private scheduleDiscoveryConfirmation(delayMs: number): void {
+        if (this.discoverySettleTimer) clearTimeout(this.discoverySettleTimer)
+        this.discoverySettleTimer = setTimeout(() => {
+            this.discoverySettleTimer = null
+            this.invalidate()
+        }, delayMs)
+    }
+
+    private clearPendingDiscoveryMatch(): void {
+        if (this.discoverySettleTimer) clearTimeout(this.discoverySettleTimer)
+        this.discoverySettleTimer = null
+        this.pendingDiscoveryMatch = null
     }
 
     // Incremental byte-offset read: `cursor` is a byte offset into the
