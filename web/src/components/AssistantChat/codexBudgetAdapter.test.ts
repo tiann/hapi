@@ -172,6 +172,24 @@ describe('toCodexBudgetState', () => {
         expect(toCodexBudgetState(weeklyOnly)?.effective).toBe('blocked')
     })
 
+    it('does not paint red for empty top-up credits while subscription windows remain open', () => {
+        const usage: CodexUsage = {
+            contextWindow: { usedTokens: 20_000, limitTokens: 100_000, percent: 20, updatedAt: 1 },
+            rateLimits: {
+                fiveHour: { usedPercent: 12, windowMinutes: 300 },
+                weekly: { usedPercent: 40, windowMinutes: 10080 }
+            },
+            credits: { hasCredits: false, unlimited: false, balance: '0' }
+        }
+        const state = toCodexBudgetState(usage)
+        expect(state?.effective).toBe('green')
+        const creditsAxis = state?.axes.find((axis) => axis.id === 'credits')
+        expect(creditsAxis?.pressure).toBe(0)
+        expect(creditsAxis?.critical).toBeFalsy()
+        expect(creditsAxis?.detail).toBe('top-up credits exhausted')
+        expect(state?.dominantAxisId).not.toBe('credits')
+    })
+
     it('flags blocked with the codex reached-type code when codex sets one', () => {
         const usage: CodexUsage = {
             rateLimits: {
