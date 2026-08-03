@@ -247,7 +247,18 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         } else {
                             session.recordCodexUsage(message);
                         }
-                        session.sendAgentMessage(message);
+                        const scopedUsage = context.replayedHistory
+                            ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' as const }
+                            : primarySessionId
+                                ? {
+                                    ...message,
+                                    model: transcriptModel,
+                                    threadId: primarySessionId,
+                                    thread_id: primarySessionId,
+                                    hapiUsageScope: 'managed' as const
+                                }
+                                : { ...message, model: transcriptModel };
+                        session.sendAgentMessage(scopedUsage);
                     } else if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.
                         pendingPlansByTurnId.set(message.turnId, message);
@@ -269,20 +280,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                             flushPendingExecWrapper(message.callId, message);
                         }
                     } else {
-                        const scopedMessage = message.type !== 'token_count'
-                            ? message
-                            : context.replayedHistory
-                                ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' }
-                                : primarySessionId
-                                    ? {
-                                        ...message,
-                                        model: transcriptModel,
-                                        threadId: primarySessionId,
-                                        thread_id: primarySessionId,
-                                        hapiUsageScope: 'managed'
-                                    }
-                                    : { ...message, model: transcriptModel };
-                        session.sendAgentMessage(scopedMessage);
+                        session.sendAgentMessage(message);
                     }
                 }
                 if (converted?.finishedTurnId) {
