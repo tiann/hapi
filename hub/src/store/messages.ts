@@ -766,19 +766,38 @@ export function moveUninvokedScheduledMessages(
     }
 }
 
-/** Move every still-held prompt to a reserved replacement, preserving FIFO. */
+/**
+ * Move every still-held prompt to a reserved replacement, preserving FIFO.
+ * If both sessions already contain the same non-null localId, the replacement
+ * row is authoritative (it represents the retry/new owner) and only the
+ * uninvoked source duplicate is discarded.
+ */
 export function moveUninvokedMessages(db: Database, fromSessionId: string, toSessionId: string): number {
     if (fromSessionId === toSessionId) return 0
-    const rows = db.prepare(`SELECT id FROM messages WHERE session_id = ? AND invoked_at IS NULL ORDER BY seq ASC`)
-        .all(fromSessionId) as Array<{ id: string }>
-    if (rows.length === 0) return 0
     return db.transaction(() => {
+        const discarded = db.prepare(`
+            DELETE FROM messages
+            WHERE session_id = ?
+              AND invoked_at IS NULL
+              AND local_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM messages AS target
+                  WHERE target.session_id = ?
+                    AND target.local_id = messages.local_id
+              )
+        `).run(fromSessionId, toSessionId).changes
+        const rows = db.prepare(`
+            SELECT id FROM messages
+            WHERE session_id = ? AND invoked_at IS NULL
+            ORDER BY seq ASC
+        `).all(fromSessionId) as Array<{ id: string }>
+        if (discarded === 0 && rows.length === 0) return 0
         let nextSeq = getMaxSeq(db, toSessionId)
         const update = db.prepare('UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
         for (const row of rows) update.run(toSessionId, ++nextSeq, row.id)
         bumpMessageEpoch(db, fromSessionId)
         bumpMessageEpoch(db, toSessionId)
-        return rows.length
+        return discarded + rows.length
     })()
 }
 

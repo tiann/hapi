@@ -647,6 +647,39 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         }
     })
 
+    it('keeps the replacement copy when source and target share a queued localId', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('duplicate-held-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            store.messages.addMessage(reserved.sessionId, { text: 'authoritative retry' }, 'duplicate-local-id')
+            store.messages.addMessage(source.id, { text: 'stale source copy' }, 'duplicate-local-id')
+            store.messages.addMessage(source.id, { text: 'unique immediate' }, 'unique-immediate')
+            store.messages.addMessage(source.id, { text: 'unique scheduled' }, 'unique-scheduled', Date.now() + 60_000)
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default', reserved.sessionId)).toMatchObject({ type: 'success' })
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'cleared' })
+            setSpawn(engine, mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string })))
+
+            await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+            expect(store.messages.getAllMessages(reserved.sessionId).map((message) => ({
+                localId: message.localId,
+                text: (message.content as { text: string }).text,
+                invokedAt: message.invokedAt
+            }))).toEqual([
+                { localId: 'duplicate-local-id', text: 'authoritative retry', invokedAt: null },
+                { localId: 'unique-immediate', text: 'unique immediate', invokedAt: null },
+                { localId: 'unique-scheduled', text: 'unique scheduled', invokedAt: null }
+            ])
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.supersededBySessionId).toBe(reserved.sessionId)
+        } finally { engine.stop() }
+    })
+
     it('refuses before spawning while the source is still active', async () => {
         const { engine } = createEngine()
         try {
