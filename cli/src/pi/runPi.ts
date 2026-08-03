@@ -715,6 +715,10 @@ export async function runPi(opts: {
     apiSession.onUserMessage((message, localId) => {
         if (localId) preparingLocalIds.add(localId);
         preparationChain = preparationChain.then(async () => {
+            if (localId && cancelledWhilePreparing.delete(localId)) {
+                preparingLocalIds.delete(localId);
+                return;
+            }
             const prepared = await preparePiUserMessage(
                 message.content.text,
                 message.content.attachments,

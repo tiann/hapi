@@ -26,7 +26,7 @@ describe('PiMessageAccumulator', () => {
         expect(accumulator.handleEvent(event('message_update', {
             assistantMessageEvent: { type: 'text_delta', delta: '!' },
         }))).toEqual([{
-            type: 'text', text: 'answer!', id: 'pi-nonce-turn-1-message-1-text-0', live: true,
+            type: 'text', text: 'answer!', id: 'pi-nonce-turn-1-message-1-text-0', streamSnapshot: true, live: true,
         }]);
     });
 
@@ -42,7 +42,7 @@ describe('PiMessageAccumulator', () => {
             assistantMessageEvent: { type: 'text_delta', delta: ' second' },
         }))).toEqual([]);
         expect(accumulator.handleEvent(event('message_end'))).toEqual([{
-            type: 'text', text: 'first second', id: 'pi-nonce-turn-0-message-1-text-0',
+            type: 'text', text: 'first second', id: 'pi-nonce-turn-0-message-1-text-0', streamSnapshot: true,
         }]);
         expect(accumulator.handleEvent(event('message_end'))).toEqual([]);
 
@@ -55,7 +55,7 @@ describe('PiMessageAccumulator', () => {
             assistantMessageEvent: { type: 'text_delta', delta: ' answer' },
         }));
         expect(accumulator.flush()).toEqual([{
-            type: 'text', text: 'partial answer', id: 'pi-nonce-turn-0-message-2-text-0',
+            type: 'text', text: 'partial answer', id: 'pi-nonce-turn-0-message-2-text-0', streamSnapshot: true,
         }]);
         expect(accumulator.flush()).toEqual([]);
     });
@@ -73,7 +73,7 @@ describe('PiMessageAccumulator', () => {
             assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'beta' },
         }));
         expect(second).toEqual([{
-            type: 'text', text: 'beta', id: 'pi-nonce-turn-0-message-1-text-1', live: true,
+            type: 'text', text: 'beta', id: 'pi-nonce-turn-0-message-1-text-1', streamSnapshot: true, live: true,
         }]);
     });
 

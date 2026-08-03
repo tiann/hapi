@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentMessage, PlanItem } from './types';
 
 export type CodexMessage =
-    | { type: 'message'; message: string; id?: string }
+    | { type: 'message'; message: string; id?: string; streamSnapshot?: boolean }
     | { type: 'reasoning'; message: string; id: string }
     | {
         type: 'token_count';
@@ -45,7 +45,8 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
             return {
                 type: 'message',
                 message: message.text,
-                ...(message.id !== undefined ? { id: message.id } : {})
+                ...(message.id !== undefined ? { id: message.id } : {}),
+                ...(message.streamSnapshot === true ? { streamSnapshot: true } : {})
             };
         case 'reasoning':
             // AgentMessage uses `text` (consistent with the `text` variant);

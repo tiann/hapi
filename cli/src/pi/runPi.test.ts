@@ -395,6 +395,30 @@ describe('Pi abort queue boundary', () => {
         await running;
     });
 
+    it('short-circuits a canceled queued preparation before attachment I/O', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+        let pathReads = 0;
+        const attachment = {
+            id: 'cancel-image', filename: 'cancel.png', mimeType: 'image/png', size: 4,
+            get path() { pathReads += 1; return '/etc/hosts'; },
+        };
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: any, localId: string) => void;
+        const cancelQueued = harness.session.onCancelQueuedMessage.mock.calls.at(-1)![0] as (localId: string) => boolean;
+
+        onUserMessage({ role: 'user', content: { type: 'text', text: '', attachments: [attachment] } }, 'cancel-id');
+        expect(cancelQueued('cancel-id')).toBe(true);
+        onUserMessage({ role: 'user', content: { type: 'text', text: 'next valid prompt' } }, 'next-id');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'next valid prompt' })));
+
+        expect(pathReads).toBe(0);
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: '' }));
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
     it('does not pump the next prompt when cleanup rejects a pending settlement sync', async () => {
         const running = runPi({ workingDirectory: '/work' });
         await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());

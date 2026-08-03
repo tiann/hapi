@@ -7,13 +7,15 @@ describe('convertAgentMessage', () => {
             type: 'text',
             text: 'partial response',
             id: 'text-stream-1',
-            live: true
+            live: true,
+            streamSnapshot: true
         });
 
         expect(converted).toEqual({
             type: 'message',
             message: 'partial response',
-            id: 'text-stream-1'
+            id: 'text-stream-1',
+            streamSnapshot: true
         });
     });
 

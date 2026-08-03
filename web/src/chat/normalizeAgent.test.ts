@@ -41,6 +41,59 @@ describe('normalizeAgentRecord — agentTimestamp exposure', () => {
         expect((normalized as any).content[0].streamId).toBeUndefined()
     })
 
+    it('keeps cumulative review-like snapshots in the same text stream', () => {
+        const partial = normalizeAgentRecord('review-row-1', null, 1, {
+            type: 'codex',
+            data: { type: 'message', id: 'review-stream', streamSnapshot: true, message: '{"overall_correctness":' }
+        })
+        const complete = normalizeAgentRecord('review-row-2', null, 2, {
+            type: 'codex',
+            data: { type: 'message', id: 'review-stream', streamSnapshot: true, message: '{"overall_correctness":"patch is correct"}' }
+        })
+
+        expect(partial).toMatchObject({ content: [{ type: 'text', streamId: 'review-stream' }] })
+        expect(complete).toMatchObject({
+            content: [{
+                type: 'text',
+                streamId: 'review-stream',
+                text: '{"overall_correctness":"patch is correct"}'
+            }]
+        })
+    })
+
+    it('keeps legacy Pi snapshot IDs type-stable without the provenance marker', () => {
+        const streamId = 'pi-legacy-nonce-turn-1-message-1-text-0'
+        const partial = normalizeAgentRecord('legacy-review-1', null, 1, {
+            type: 'codex',
+            data: { type: 'message', id: streamId, message: '{"overall_correctness":' }
+        })
+        const complete = normalizeAgentRecord('legacy-review-2', null, 2, {
+            type: 'codex',
+            data: { type: 'message', id: streamId, message: '{"overall_correctness":"patch is correct"}' }
+        })
+
+        expect(partial).toMatchObject({ content: [{ type: 'text', streamId }] })
+        expect(complete).toMatchObject({ content: [{ type: 'text', streamId }] })
+    })
+
+    it('still parses a standalone review message that has a normal UUID', () => {
+        const normalized = normalizeAgentRecord('review-row', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'message',
+                id: '550e8400-e29b-41d4-a716-446655440000',
+                message: '{"overall_correctness":"patch is correct"}'
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            content: [{
+                type: 'codex-review',
+                review: { overallCorrectness: 'patch is correct' }
+            }]
+        })
+    })
+
     it('preserves normalized native tool presentation metadata', () => {
         const normalized = normalizeAgentRecord('msg-native', null, 1, {
             type: 'codex',

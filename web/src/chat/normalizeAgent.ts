@@ -629,7 +629,10 @@ export function normalizeAgentRecord(
         }
 
         if (data.type === 'message' && typeof data.message === 'string') {
-            const review = parseCodexReviewMessage(data.message)
+            const streamId = asString(data.id)
+            const isPiStreamSnapshot = data.streamSnapshot === true
+                || (streamId !== null && /^pi-.+-turn-\d+-message-\d+-text-\d+$/.test(streamId))
+            const review = isPiStreamSnapshot ? null : parseCodexReviewMessage(data.message)
             if (review) {
                 return {
                     id: messageId,
@@ -641,7 +644,6 @@ export function normalizeAgentRecord(
                     meta
                 }
             }
-            const streamId = asString(data.id)
             return {
                 id: messageId,
                 localId,

@@ -29,7 +29,7 @@ export type PlanItem = {
 };
 
 export type AgentMessage =
-    | { type: 'text'; text: string; id?: string; live?: boolean }
+    | { type: 'text'; text: string; id?: string; live?: boolean; streamSnapshot?: boolean }
     | { type: 'reasoning'; text: string; id?: string; live?: boolean }
     | {
         type: 'tool_call';

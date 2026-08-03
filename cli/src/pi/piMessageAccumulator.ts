@@ -123,7 +123,13 @@ export class PiMessageAccumulator {
             if (!segment.text.trim() || segment.text === segment.lastSnapshot) continue;
             segment.lastSnapshot = segment.text;
             const id = `pi-${this.streamNonce}-turn-${this.turnSequence}-message-${this.messageSequence}-${kind}-${index}`;
-            output.push({ type: kind, text: segment.text, id, ...(live ? { live: true } : {}) });
+            output.push({
+                type: kind,
+                text: segment.text,
+                id,
+                ...(kind === 'text' ? { streamSnapshot: true } : {}),
+                ...(live ? { live: true } : {}),
+            });
         }
     }
 
