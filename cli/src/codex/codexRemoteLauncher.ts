@@ -681,6 +681,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let scheduleReadyAfterTurn: (() => void) | null = null;
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
+        let usageModel: string | null = null;
         let allowAnonymousTerminalEvent = false;
         let invalidThreadId: string | null = null;
         let childAgentActivityInCurrentTurn = false;
@@ -2874,6 +2875,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const threadId = eventThreadId ?? this.currentThreadId;
                 session.sendAgentMessage({
                     ...addCodexEventScope(msg, 'parent', threadId),
+                    model: asString(msg.model) ?? usageModel,
                     id: randomUUID()
                 });
             }
@@ -3784,6 +3786,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     ...message.mode,
                     model: session.getModel() ?? message.mode.model
                 };
+                usageModel = typeof mode.model === 'string' && mode.model.trim()
+                    ? mode.model.trim()
+                    : null;
                 const shouldSendCollaborationMode = supportsTurnCollaborationMode
                     && Boolean(mode.collaborationMode);
                 const clientUserMessageId = message.items

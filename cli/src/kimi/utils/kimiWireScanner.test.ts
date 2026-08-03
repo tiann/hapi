@@ -77,9 +77,10 @@ describe('convertKimiWireEvent', () => {
                 uuid: 's1',
                 usage: { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 }
             }
-        })).toEqual({
+        }, 'kimi-k2.5')).toEqual({
             message: {
                 type: 'token_count',
+                model: 'kimi-k2.5',
                 info: { total: { inputTokens: 160, outputTokens: 20, cachedInputTokens: 50 } }
             }
         });

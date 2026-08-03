@@ -2,8 +2,18 @@ import { describe, expect, it } from 'bun:test'
 import { Store } from '../store'
 import { getUsageSummary } from './usageService'
 
-function addAgentMessage(store: Store, sessionId: string, content: unknown): void {
-    store.messages.addMessage(sessionId, { role: 'agent', content })
+function addAgentMessage(store: Store, sessionId: string, content: unknown, createdAt?: number): void {
+    if (createdAt === undefined) {
+        store.messages.addMessage(sessionId, { role: 'agent', content })
+        return
+    }
+    store.messages.copyMessageToSession(sessionId, {
+        content: { role: 'agent', content },
+        createdAt,
+        localId: null,
+        invokedAt: createdAt,
+        scheduledAt: null
+    })
 }
 
 describe('usage service', () => {
@@ -172,6 +182,85 @@ describe('usage service', () => {
         expect(result.totals.requests).toBe(1)
         expect(result.totals.totalTokens).toBe(110)
         expect(result.totals.uncachedTokens).toBe(30)
+        expect(result.byModel).toEqual([expect.objectContaining({ key: 'unknown' })])
+        store.close()
+    })
+
+    it('preserves event-level models across model switches and epoch rebuilds', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'codex-model-switch-test',
+            { path: '/tmp', host: 'test', flavor: 'codex' },
+            null,
+            'default',
+            'initial-model'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                model: 'old-model',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                info: {
+                    total_token_usage: { input_tokens: 100, output_tokens: 10 },
+                    last_token_usage: { input_tokens: 100, output_tokens: 10 }
+                }
+            }
+        })
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                model: 'new-model',
+                thread_id: 'thread-1',
+                turn_id: 'turn-2',
+                info: {
+                    total_token_usage: { input_tokens: 140, output_tokens: 15 },
+                    last_token_usage: { input_tokens: 40, output_tokens: 5 }
+                }
+            }
+        })
+        store.sessions.setSessionModel(session.id, 'latest-session-model', 'default')
+
+        const expectedModels = [
+            expect.objectContaining({ key: 'old-model', totalTokens: 110 }),
+            expect.objectContaining({ key: 'new-model', totalTokens: 45 })
+        ]
+        expect(getUsageSummary(store, 'default', 'all').byModel).toEqual(expectedModels)
+
+        store.messages.bumpMessageEpoch(session.id)
+        expect(getUsageSummary(store, 'default', 'all').byModel).toEqual(expectedModels)
+        store.close()
+    })
+
+    it('buckets daily usage using positive and negative viewer offsets', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'timezone-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'claude' },
+            null,
+            'default'
+        )
+        const usage = (id: string) => ({
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: { id, usage: { input_tokens: 10, output_tokens: 2 } }
+            }
+        })
+        addAgentMessage(store, session.id, usage('after-utc-midnight'), Date.parse('2026-01-15T00:30:00Z'))
+        addAgentMessage(store, session.id, usage('before-utc-midnight'), Date.parse('2026-01-15T23:30:00Z'))
+
+        expect(getUsageSummary(store, 'default', 'all', 60).daily.map((row) => row.key)).toEqual([
+            '2026-01-14',
+            '2026-01-15'
+        ])
+        expect(getUsageSummary(store, 'default', 'all', -60).daily.map((row) => row.key)).toEqual([
+            '2026-01-15',
+            '2026-01-16'
+        ])
         store.close()
     })
 

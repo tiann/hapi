@@ -42,7 +42,7 @@ export async function kimiLocalLauncher(
                     if (shuttingDown) {
                         return;
                     }
-                    const converted = convertKimiWireEvent(event);
+                    const converted = convertKimiWireEvent(event, session.getModel() ?? opts.model);
                     if (!converted) {
                         return;
                     }

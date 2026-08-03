@@ -31,10 +31,6 @@ function sessionAgent(session: StoredSession): string {
     return typeof flavor === 'string' && flavor.trim() ? flavor.trim() : 'unknown'
 }
 
-function sessionModel(session: StoredSession): string | null {
-    return typeof session.model === 'string' && session.model.trim() ? session.model.trim() : null
-}
-
 function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageEvent | null {
     const envelope = asRecord(message.content)
     if (envelope?.role !== 'agent') return null
@@ -58,7 +54,7 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
         const providerId = typeof assistant?.id === 'string' ? assistant.id : message.id
         const model = typeof assistant?.model === 'string' && assistant.model.trim()
             ? assistant.model.trim()
-            : sessionModel(session)
+            : null
         return {
             sessionId: session.id,
             sourceKey: `claude|${providerId}`,
@@ -124,6 +120,9 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
             : typeof data.turn_id === 'string'
                 ? data.turn_id
                 : ''
+        const model = typeof data.model === 'string' && data.model.trim()
+            ? data.model.trim()
+            : null
         return {
             sessionId: session.id,
             sourceKey: isCumulative
@@ -141,7 +140,7 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
             sourceSeq: message.seq,
             createdAt: message.createdAt,
             agent,
-            model: sessionModel(session),
+            model,
             kind: isCumulative ? 'cumulative' : 'delta',
             inputTokens,
             outputTokens,
@@ -225,11 +224,16 @@ function toBucket(key: string, totals: Totals): UsageSummaryBucket {
     return { key, ...totals }
 }
 
-function dayKey(timestamp: number): string {
-    return new Date(timestamp).toISOString().slice(0, 10)
+function dayKey(timestamp: number, timezoneOffset: number): string {
+    return new Date(timestamp - timezoneOffset * 60_000).toISOString().slice(0, 10)
 }
 
-export function getUsageSummary(store: Store, namespace: string, range: string | undefined): UsageSummaryResponse {
+export function getUsageSummary(
+    store: Store,
+    namespace: string,
+    range: string | undefined,
+    timezoneOffset: number = 0
+): UsageSummaryResponse {
     const sessions = store.sessions.getSessionsByNamespace(namespace)
     // This is intentionally lazy. Existing HAPI databases have no usage table;
     // the first dashboard request backfills history, while later requests only
@@ -289,9 +293,10 @@ export function getUsageSummary(store: Store, namespace: string, range: string |
             ? inputTokens + cacheReadTokens + cacheCreationTokens
             : inputTokens
         addTotals(totals, normalizedInputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
-        const dailyTotals = daily.get(dayKey(event.createdAt)) ?? emptyTotals()
+        const eventDayKey = dayKey(event.createdAt, timezoneOffset)
+        const dailyTotals = daily.get(eventDayKey) ?? emptyTotals()
         addTotals(dailyTotals, normalizedInputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
-        daily.set(dayKey(event.createdAt), dailyTotals)
+        daily.set(eventDayKey, dailyTotals)
         const agentTotals = byAgent.get(event.agent) ?? emptyTotals()
         addTotals(agentTotals, normalizedInputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
         byAgent.set(event.agent, agentTotals)

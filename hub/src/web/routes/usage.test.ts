@@ -42,4 +42,20 @@ describe('GET /api/usage/summary', () => {
             store.close()
         }
     })
+
+    it('validates positive and negative timezone offset bounds', async () => {
+        const store = new Store(':memory:')
+        try {
+            for (const offset of [-840, 840]) {
+                const response = await createApp(store, 'default').request(`/api/usage/summary?timezoneOffset=${offset}`)
+                expect(response.status).toBe(200)
+            }
+            for (const offset of [-841, 841, 1.5]) {
+                const response = await createApp(store, 'default').request(`/api/usage/summary?timezoneOffset=${offset}`)
+                expect(response.status).toBe(400)
+            }
+        } finally {
+            store.close()
+        }
+    })
 })

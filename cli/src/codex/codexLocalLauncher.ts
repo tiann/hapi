@@ -36,6 +36,16 @@ function extractTurnContextReasoningEffort(event: CodexSessionEvent): ReasoningE
     return effort.trim().toLowerCase();
 }
 
+function extractTurnContextModel(event: CodexSessionEvent): string | null | undefined {
+    if (event.type !== 'turn_context' || !event.payload || typeof event.payload !== 'object') {
+        return undefined;
+    }
+    const model = (event.payload as Record<string, unknown>).model;
+    if (model === null) return null;
+    if (typeof model !== 'string' || !model.trim()) return undefined;
+    return model.trim();
+}
+
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
     let primarySessionId = resumeSessionId;
@@ -47,6 +57,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let transcriptLocator: CodexTranscriptLocator | null = null;
     let scannerTranscriptPath: string | null = null;
     let scannerReplayedExistingHistory = false;
+    let transcriptModel: string | null = null;
     const pendingPlansByTurnId = new Map<string, ProposedPlanMessage>();
     const pendingExecWrappers = new Map<string, PendingExecWrapper>();
     const toolHookBridge = new CodexToolHookBridge();
@@ -203,6 +214,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 session.onSessionFound(sessionId);
             },
             onEvent: (event, context) => {
+                const observedModel = extractTurnContextModel(event);
+                if (observedModel !== undefined) {
+                    transcriptModel = observedModel;
+                }
                 const observedReasoningEffort = extractTurnContextReasoningEffort(event);
                 if (observedReasoningEffort !== undefined) {
                     session.setModelReasoningEffort(observedReasoningEffort);
@@ -245,15 +260,16 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         const scopedMessage = message.type !== 'token_count'
                             ? message
                             : context.replayedHistory
-                                ? { ...message, hapiUsageScope: 'imported-history' }
+                                ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' }
                                 : primarySessionId
                                     ? {
                                         ...message,
+                                        model: transcriptModel,
                                         threadId: primarySessionId,
                                         thread_id: primarySessionId,
                                         hapiUsageScope: 'managed'
                                     }
-                                    : message;
+                                    : { ...message, model: transcriptModel };
                         session.sendAgentMessage(scopedMessage);
                     }
                 }

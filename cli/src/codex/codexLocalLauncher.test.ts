@@ -373,9 +373,9 @@ describe('codexLocalLauncher', () => {
         });
     });
 
-    it('tracks explicit and default reasoning effort from local turn context', async () => {
+    it('tracks local turn context and stamps its model on usage', async () => {
         const transcriptPath = await writeTranscriptMeta('codex-turn-context.jsonl', 'codex-thread-effort');
-        const { session, getModelReasoningEffort, getModelReasoningEffortUpdates } = createSessionStub('default');
+        const { session, agentMessages, getModelReasoningEffort, getModelReasoningEffortUpdates } = createSessionStub('default');
         let releaseRunBarrier: (() => void) | undefined;
         harness.runBarrier = new Promise((resolve) => {
             releaseRunBarrier = resolve;
@@ -394,12 +394,12 @@ describe('codexLocalLauncher', () => {
                 payload: { effort: 'max' }
             }),
             JSON.stringify({
-                type: 'event_msg',
-                payload: { type: 'token_count', info: {} }
-            }),
-            JSON.stringify({
                 type: 'turn_context',
                 payload: { model: 'gpt-5.4' }
+            }),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: { type: 'token_count', info: {} }
             })
         ].join('\n') + '\n');
         await wait(700);
@@ -409,6 +409,10 @@ describe('codexLocalLauncher', () => {
 
         expect(getModelReasoningEffortUpdates()).toEqual(['max', null]);
         expect(getModelReasoningEffort()).toBeNull();
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            model: 'gpt-5.4'
+        }));
     });
 
     it('renders nested Code Mode plans and commands without their covered exec wrapper', async () => {

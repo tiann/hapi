@@ -384,7 +384,7 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleAgentMessage(message: AgentMessage): void {
-        const converted = convertAgentMessage(message)
+        const converted = convertAgentMessage(message, this.currentBackendModel)
         if (converted) this.session.sendAgentMessage(converted)
 
         switch (message.type) {
