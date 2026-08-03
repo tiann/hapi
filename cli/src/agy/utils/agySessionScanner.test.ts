@@ -329,10 +329,9 @@ describe('AgySessionScanner — resume support', () => {
 
         // Transcript re-packages the SAME attachments in a different order and a
         // different wrapper/separator — same shape as the real agy <USER_REQUEST> repackaging.
-        const reorderedLine = makeTranscriptLine(
+        const reorderedLine = makeAgyUserInputLine(
             0,
-            'USER_INPUT',
-            `<USER_REQUEST>\n@/tmp/c.png @/tmp/a.png @/tmp/b.png\n${bodyText}`
+            `@/tmp/c.png @/tmp/a.png @/tmp/b.png\n${bodyText}`
         )
         const scanner = await createAgySessionScanner({ onEntry: () => {} })
         makeTempBrain(TEST_UUID, reorderedLine + '\n')
