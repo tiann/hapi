@@ -46,6 +46,15 @@
       },
       "description": "Allowed CORS origins. ENV: CORS_ORIGINS (comma-separated)"
     },
+    "customClaudeModels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "description": "Additional model names offered by the Claude model picker when using a custom ANTHROPIC_BASE_URL."
+    },
     "telegramBotToken": {
       "type": "string",
       "description": "Telegram Bot API token from @BotFather. ENV: TELEGRAM_BOT_TOKEN"

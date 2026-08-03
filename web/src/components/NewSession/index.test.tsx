@@ -307,6 +307,37 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
+    it('waits for custom Claude models before restoring a saved model', async () => {
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'deepseek-v4-flash[1m]',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        })
+        const claudeApi = {
+            getClaudeCustomModels: vi.fn().mockResolvedValue({
+                models: ['deepseek-v4-flash[1m]']
+            })
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('deepseek-v4-flash[1m]')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('high')
+        })
+    })
+
     it.each([
         ['model', 'gpt-5.6-sol', 'default'],
         ['reasoning effort', 'auto', 'xhigh']

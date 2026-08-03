@@ -15,8 +15,11 @@ export function createClaudeModelsRoutes(dataDir: string): Hono<WebAppEnv> {
         const settings = await readSettings(getSettingsFile(dataDir))
         const models = Array.isArray(settings?.customClaudeModels)
             ? settings.customClaudeModels
+                .filter((value): value is string => typeof value === 'string')
+                .map((value) => value.trim())
+                .filter(Boolean)
             : []
-        return c.json({ models })
+        return c.json({ models: [...new Set(models)] })
     })
 
     return app

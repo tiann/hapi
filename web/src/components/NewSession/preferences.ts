@@ -116,10 +116,11 @@ function resolvePreferredOptionValue(
 
 export function resolvePreferredLaunchSettings(
     agent: AgentType,
-    preferred: PreferredLaunchSettings | null
+    preferred: PreferredLaunchSettings | null,
+    availableModelValues?: readonly string[]
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
-    const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
+    const staticModelValues = availableModelValues ?? MODEL_OPTIONS[agent].map((option) => option.value)
     const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel

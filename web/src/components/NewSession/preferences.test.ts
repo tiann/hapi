@@ -135,6 +135,20 @@ describe('NewSession preferences', () => {
         })
     })
 
+    it('keeps a remembered custom Claude model after its catalog loads', () => {
+        expect(resolvePreferredLaunchSettings('claude', {
+            model: 'deepseek-v4-flash[1m]',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        }, ['auto', 'sonnet', 'deepseek-v4-flash[1m]'])).toEqual({
+            model: 'deepseek-v4-flash[1m]',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        })
+    })
+
     it('keeps dynamic model values for catalog validation after restore', () => {
         expect(resolvePreferredLaunchSettings('codex', {
             model: 'gpt-5.6-sol',
