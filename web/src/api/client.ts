@@ -951,7 +951,7 @@ export class ApiClient {
         return this.getToken ? this.getToken() : this.token
     }
 
-    async fetchVoiceBackend(): Promise<{ backend: string; backends: string[] }> {
+    async fetchVoiceBackend(): Promise<{ backend: string | null; backends: string[] }> {
         return await this.request('/api/voice/backend')
     }
 

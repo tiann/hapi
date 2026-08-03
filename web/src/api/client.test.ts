@@ -127,4 +127,14 @@ describe('ApiClient error mapping', () => {
         expect(init?.body).toBeInstanceOf(FormData)
         expect(new Headers(init?.headers).has('content-type')).toBe(false)
     })
+
+    it('preserves an unavailable voice backend response', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ backend: null, backends: [] }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.fetchVoiceBackend()).resolves.toEqual({ backend: null, backends: [] })
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/voice/backend')
+    })
 })

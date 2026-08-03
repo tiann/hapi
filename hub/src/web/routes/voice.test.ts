@@ -488,6 +488,21 @@ describe('GET /api/voice/backend', () => {
         }
     })
 
+    test('returns no backend when no voice credentials are configured', async () => {
+        delete process.env.VOICE_BACKEND
+        delete process.env.ELEVENLABS_API_KEY
+        delete process.env.GEMINI_API_KEY
+        delete process.env.GOOGLE_API_KEY
+        delete process.env.DASHSCOPE_API_KEY
+        delete process.env.QWEN_API_KEY
+        const app = createApp()
+        const headers = await authHeaders()
+        const res = await app.request('/api/voice/backend', { headers })
+        expect(res.status).toBe(200)
+        const body = await res.json() as { backend: string | null; backends: string[] }
+        expect(body).toEqual({ backend: null, backends: [] })
+    })
+
     test('returns elevenlabs by default with backends list', async () => {
         delete process.env.VOICE_BACKEND
         delete process.env.GEMINI_API_KEY

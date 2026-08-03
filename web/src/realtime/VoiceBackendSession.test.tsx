@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VoiceBackendSession } from '@/realtime/VoiceBackendSession'
 import type { ApiClient } from '@/api/client'
@@ -10,15 +10,15 @@ vi.mock('@/api/voice', () => ({
 }))
 
 vi.mock('@/realtime/RealtimeVoiceSession', () => ({
-    RealtimeVoiceSession: () => null,
+    RealtimeVoiceSession: () => <div data-testid="elevenlabs-session" />,
 }))
 
 vi.mock('@/realtime/GeminiLiveVoiceSession', () => ({
-    GeminiLiveVoiceSession: () => null,
+    GeminiLiveVoiceSession: () => <div data-testid="gemini-session" />,
 }))
 
 vi.mock('@/realtime/QwenVoiceSession', () => ({
-    QwenVoiceSession: () => null,
+    QwenVoiceSession: () => <div data-testid="qwen-session" />,
 }))
 
 const api = {} as ApiClient
@@ -46,6 +46,29 @@ describe('VoiceBackendSession', () => {
         expect(onStatusChange).not.toHaveBeenCalled()
 
         consoleError.mockRestore()
+    })
+
+    it('does not mount a voice session when no backend is configured', async () => {
+        fetchVoiceBackendMock.mockResolvedValue({ backend: null, backends: [] })
+        const onReadyChange = vi.fn()
+
+        const view = render(
+            <VoiceBackendSession
+                api={api}
+                micMuted={false}
+                onStatusChange={vi.fn()}
+                onReadyChange={onReadyChange}
+            />
+        )
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(fetchVoiceBackendMock).toHaveBeenCalledWith(api)
+        expect(view.queryByTestId('elevenlabs-session')).toBeNull()
+        expect(view.queryByTestId('gemini-session')).toBeNull()
+        expect(view.queryByTestId('qwen-session')).toBeNull()
+        expect(onReadyChange).not.toHaveBeenCalled()
     })
 
     it('reports the detected backend as ready', async () => {
