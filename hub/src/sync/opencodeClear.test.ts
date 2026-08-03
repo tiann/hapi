@@ -261,6 +261,61 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
+    it('treats a lost cleanup-confirm success response as an idempotent retry', () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('lost-confirm-response', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            const original = store.transitionOpenCodeClearOperation.bind(store)
+            let loseResponse = true
+            store.transitionOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
+                const result = original(...args)
+                if (loseResponse && result.result === 'success') {
+                    loseResponse = false
+                    return { result: 'version-mismatch' as const }
+                }
+                return result
+            }) as typeof store.transitionOpenCodeClearOperation
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toEqual({
+                type: 'success', sessionId: reserved.sessionId
+            })
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toEqual({
+                type: 'success', sessionId: reserved.sessionId
+            })
+        } finally { engine.stop() }
+    })
+
+    it('treats a lost abort success response as an idempotent retry', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('lost-abort-response', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            await engine.sendMessage(source.id, { text: 'restore once', localId: 'restore-once' })
+            const original = store.abortOpenCodeClearOperation.bind(store)
+            let loseResponse = true
+            store.abortOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
+                const result = original(...args)
+                if (loseResponse && result.result === 'success') {
+                    loseResponse = false
+                    return { result: 'version-mismatch' as const }
+                }
+                return result
+            }) as typeof store.abortOpenCodeClearOperation
+            expect(engine.abortOpenCodeClearSession(source.id, 'default')).toEqual({ type: 'success', sessionId: source.id })
+            expect(engine.abortOpenCodeClearSession(source.id, 'default')).toEqual({ type: 'success', sessionId: source.id })
+            expect(store.messages.getAllMessages(source.id)).toEqual([
+                expect.objectContaining({ localId: 'restore-once', invokedAt: null })
+            ])
+        } finally { engine.stop() }
+    })
+
     it('aborts a reservation after native cleanup failure and restores held rows to the source', async () => {
         const { store, engine } = createEngine()
         try {

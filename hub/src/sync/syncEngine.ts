@@ -1252,7 +1252,11 @@ async uploadScratchlistAttachment(
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
-        if (operation.state === 'completed') return { type: 'success', sessionId: operation.replacementSessionId }
+        if (operation.state === 'aborted') {
+            return !expected || expected.replacementSessionId === operation.replacementSessionId
+                ? { type: 'success', sessionId }
+                : { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        }
         const required = expected ?? (operation.state === 'reserved'
             ? { replacementSessionId: operation.replacementSessionId, state: 'reserved' as const }
             : undefined)
@@ -1262,6 +1266,9 @@ async uploadScratchlistAttachment(
             if (!latest?.metadata) break
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
+            if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
+                return { type: 'success', sessionId }
+            }
             if ((required.requireInactive && latest.active)
                 || current.replacementSessionId !== required.replacementSessionId
                 || current.state !== required.state) break
@@ -1283,7 +1290,9 @@ async uploadScratchlistAttachment(
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
-        if (!operation || operation.state !== 'reserved') return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        if (operation.state === 'cleanup-confirmed') return { type: 'success', sessionId: operation.replacementSessionId }
+        if (operation.state !== 'reserved') return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (!this.transitionClearOperation(sessionId, namespace, operation, 'cleanup-confirmed')) {
             return { type: 'error', message: 'Could not confirm native cleanup', code: 'replacement_link_failed' }
         }
@@ -1483,6 +1492,9 @@ async uploadScratchlistAttachment(
             const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
                 ?? this.sessionCache.refreshSession(sessionId)
             if (!latest?.metadata) return false
+            const current = latest.metadata.opencodeClearOperation
+            if (current?.replacementSessionId === expected.replacementSessionId && current.state === state) return true
+            if (current?.replacementSessionId !== expected.replacementSessionId || current.state !== expected.state) return false
             const result = this.store.transitionOpenCodeClearOperation(sessionId, {
                 ...latest.metadata,
                 opencodeClearOperation: { ...expected, state, updatedAt: Date.now(), error: undefined }
