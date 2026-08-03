@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
 import { logger } from '@/ui/logger';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
@@ -113,14 +112,14 @@ export async function preparePiUserMessage(
     for (const attachment of attachments ?? []) {
         if (!attachment.mimeType.toLowerCase().startsWith('image/')) continue;
         try {
-            const resolvedPath = await realpath(attachment.path);
-            if (!options.authorizeImagePath(resolvedPath)) {
+            const uploadPath = attachment.path;
+            if (!options.authorizeImagePath(uploadPath)) {
                 throw new Error('invalid upload path');
             }
             const data = await readBoundedAttachmentFile(
-                resolvedPath,
+                uploadPath,
                 MAX_UPLOAD_BYTES - totalImageBytes,
-                (identity) => options.authorizeOpenedImage(resolvedPath, identity),
+                (identity) => options.authorizeOpenedImage(uploadPath, identity),
             );
             totalImageBytes += data.length;
             images.push({ type: 'image', data: data.toString('base64'), mimeType: attachment.mimeType });

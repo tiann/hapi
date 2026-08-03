@@ -1,8 +1,9 @@
 import { basename, join } from 'node:path';
-import { rename, rm, stat, writeFile } from 'node:fs/promises';
+import { realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { getHapiBlobsDir } from '@/constants/uploadPaths';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { readBoundedAttachmentFile } from '../attachmentFile';
 import { cleanupUploadDir, isAuthorizedUploadFile, isPathWithinUploadDir, registerUploadHandlers } from './uploads';
 
 describe('isPathWithinUploadDir', () => {
@@ -36,6 +37,15 @@ describe('isPathWithinUploadDir', () => {
             const original = await stat(path!);
             expect(isAuthorizedUploadFile(path!, sessionId, original)).toBe(true);
             expect(isAuthorizedUploadFile(path!, 'another-session', original)).toBe(false);
+            // The lexical upload path can canonicalize differently (notably
+            // /var -> /private/var on Darwin). Authorization and opened-file
+            // identity deliberately use the exact registered path.
+            expect(await readBoundedAttachmentFile(
+                path!,
+                50 * 1024 * 1024,
+                (identity) => isAuthorizedUploadFile(path!, sessionId, identity),
+            )).toEqual(Buffer.from([1, 2, 3, 4]));
+            expect(typeof await realpath(path!)).toBe('string');
 
             const replacementPath = `${path!}.replacement`;
             await writeFile(replacementPath, Buffer.from([5, 6, 7, 8]));

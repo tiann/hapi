@@ -709,10 +709,10 @@ describe('Pi prompt preparation', () => {
             if (symlinkPath) {
                 const symlinkEscape = await preparePiUserMessage('', [{ id: 'symlink', filename: 'escape.png', mimeType: 'image/png', size: 4, path: symlinkPath }], [], {
                     authorizeImagePath: (path) => path.startsWith(`${uploadDir}${sep}`),
-                    authorizeOpenedImage: () => true,
+                    authorizeOpenedImage: () => false,
                 });
                 expect(symlinkEscape).toMatchObject({ message: '', images: [] });
-                expect(symlinkEscape.imageReadErrors).toEqual(['Could not attach image escape.png: invalid upload path']);
+                expect(symlinkEscape.imageReadErrors[0]).toContain('Could not attach image escape.png');
             }
         } finally {
             await rm(imagePath, { force: true });

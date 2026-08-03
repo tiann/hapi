@@ -20,8 +20,8 @@ export async function readBoundedAttachmentFile(
     if (byteLimit === 0) {
         throw new Error('Attachment exceeds the remaining image budget');
     }
-    // The caller passes an authorized realpath. O_NOFOLLOW closes the final
-    // replacement window on POSIX if that path is swapped back to a symlink
+    // The caller passes the exact registered upload path. O_NOFOLLOW closes the
+    // final replacement window on POSIX if it is swapped to a symlink
     // before open; Windows falls back to its normal read-only flag.
     const flags = process.platform === 'win32'
         ? 'r'
