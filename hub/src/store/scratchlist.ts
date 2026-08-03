@@ -76,6 +76,23 @@ export function countScratchlistEntries(db: Database, sessionId: string): number
     return row?.n ?? 0
 }
 
+export function maxScratchlistUpdatedAtBySessionIds(
+    db: Database,
+    sessionIds: string[]
+): Map<string, number> {
+    if (sessionIds.length === 0) return new Map()
+
+    const placeholders = sessionIds.map(() => '?').join(',')
+    const rows = db.prepare(
+        `SELECT session_id, MAX(updated_at) AS updated_at
+         FROM session_scratchlist
+         WHERE session_id IN (${placeholders})
+         GROUP BY session_id`
+    ).all(...sessionIds) as Array<{ session_id: string; updated_at: number }>
+
+    return new Map(rows.map(row => [row.session_id, row.updated_at]))
+}
+
 export function getScratchlistEntry(
     db: Database,
     sessionId: string,

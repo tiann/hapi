@@ -110,6 +110,7 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort
         && current.effort === next.effort
+        && current.scratchlistUpdatedAt === next.scratchlistUpdatedAt
         && current.pendingRequestsCount === next.pendingRequestsCount
 }
 
@@ -376,7 +377,9 @@ export function useSSE(options: {
                 const summary = {
                     ...toSessionSummary(session),
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
-                    nextScheduledAt: existing?.nextScheduledAt ?? null
+                    uninvokedScheduledMessageCount: existing?.uninvokedScheduledMessageCount ?? 0,
+                    nextScheduledAt: existing?.nextScheduledAt ?? null,
+                    scratchlistUpdatedAt: existing?.scratchlistUpdatedAt
                 }
                 const nextSessions = previous.sessions.slice()
                 if (existingIndex >= 0) {
@@ -421,6 +424,9 @@ export function useSSE(options: {
                         ? patch.modelReasoningEffort ?? null
                         : current.modelReasoningEffort,
                     effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
+                }
+                if (Object.prototype.hasOwnProperty.call(patch, 'scratchlistUpdatedAt')) {
+                    nextSummary.scratchlistUpdatedAt = patch.scratchlistUpdatedAt
                 }
 
                 patched = true

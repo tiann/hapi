@@ -536,6 +536,23 @@ export function countFutureScheduledBySessionIds(
     return counts
 }
 
+export function countUninvokedScheduledBySessionIds(
+    db: Database,
+    sessionIds: string[]
+): Map<string, number> {
+    const counts = new Map<string, number>()
+    if (sessionIds.length === 0) return counts
+    const placeholders = sessionIds.map(() => '?').join(',')
+    const rows = db.prepare(`
+        SELECT session_id, COUNT(*) AS count FROM messages
+        WHERE session_id IN (${placeholders})
+          AND invoked_at IS NULL AND local_id IS NOT NULL AND scheduled_at IS NOT NULL
+        GROUP BY session_id
+    `).all(...sessionIds) as { session_id: string; count: number }[]
+    for (const row of rows) counts.set(row.session_id, row.count)
+    return counts
+}
+
 /** Earliest future scheduled_at per session (session-list clock tooltip). */
 export function minFutureScheduledAtBySessionIds(
     db: Database,

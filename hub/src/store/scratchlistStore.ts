@@ -7,6 +7,7 @@ import {
     deleteScratchlistEntry,
     getScratchlistEntry,
     listScratchlistEntries,
+    maxScratchlistUpdatedAtBySessionIds,
     sumScratchlistAttachmentBytesForSession,
     transferScratchlistEntries,
     updateScratchlistEntry,
@@ -26,6 +27,10 @@ export class ScratchlistStore {
 
     count(sessionId: string): number {
         return countScratchlistEntries(this.db, sessionId)
+    }
+
+    maxUpdatedAtBySessionIds(sessionIds: string[]): Map<string, number> {
+        return maxScratchlistUpdatedAtBySessionIds(this.db, sessionIds)
     }
 
     get(sessionId: string, entryId: string): StoredScratchlistEntry | null {

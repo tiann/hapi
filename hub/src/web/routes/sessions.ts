@@ -31,6 +31,7 @@ import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeFo
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const OLD_SESSION_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -91,13 +92,17 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 return b.updatedAt - a.updatedAt
             })
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
+        const uninvokedScheduledCounts = engine.getUninvokedScheduledMessageCounts(sessionRecords.map((session) => session.id))
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
+        const scratchlistUpdatedAt = engine.getScratchlistUpdatedAtBySessionIds(sessionRecords.map((session) => session.id))
         const sessions = sessionRecords.map((session) => {
             const summary = toSessionSummary(session)
             return {
                 ...summary,
                 futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
-                nextScheduledAt: nextScheduledAt.get(session.id) ?? null
+                uninvokedScheduledMessageCount: uninvokedScheduledCounts.get(session.id) ?? 0,
+                nextScheduledAt: nextScheduledAt.get(session.id) ?? null,
+                scratchlistUpdatedAt: scratchlistUpdatedAt.get(session.id)
             }
         })
 
@@ -754,6 +759,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         if (sessionResult.session.active) {
             return c.json({ error: 'Cannot delete active session. Archive it first.' }, 409)
+        }
+
+        if (c.req.query('requireArchived') === '1'
+            && sessionResult.session.metadata?.lifecycleState !== 'archived') {
+            return c.json({ error: 'Session is no longer archived' }, 409)
+        }
+
+        if (c.req.query('cleanOld') === '1') {
+            const pending = engine.getUninvokedScheduledMessageCounts([sessionResult.sessionId]).get(sessionResult.sessionId) ?? 0
+            const scratchAt = engine.getScratchlistUpdatedAtBySessionIds([sessionResult.sessionId]).get(sessionResult.sessionId) ?? 0
+            if (pending > 0 || Math.max(sessionResult.session.updatedAt, scratchAt) > Date.now() - OLD_SESSION_AGE_MS) {
+                return c.json({ error: 'Session is no longer eligible for cleanup' }, 409)
+            }
         }
 
         try {
