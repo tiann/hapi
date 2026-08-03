@@ -3,9 +3,11 @@ import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
 import { SyncEngine, type SyncEvent } from './syncEngine'
 
-function createEngine() {
+function createEngine(onCliEmit?: (payload: unknown) => void) {
     const store = new Store(':memory:')
-    const engine = new SyncEngine(store, { of: () => ({ to: () => ({ emit() {} }) }) } as never, new RpcRegistry(), { broadcast() {} } as never)
+    const engine = new SyncEngine(store, {
+        of: () => ({ to: () => ({ emit: (_event: string, payload: unknown) => onCliEmit?.(payload) }) })
+    } as never, new RpcRegistry(), { broadcast() {} } as never)
     engine.getOrCreateMachine(
         'machine-1',
         { host: 'host', platform: 'linux', happyCliVersion: 'test' },
@@ -123,6 +125,49 @@ describe('SyncEngine.clearOpenCodeSession', () => {
 
             expect(store.messages.getAllMessages(reserved.sessionId).map((message) => message.localId)).toEqual(['fifo-a', 'fifo-b'])
             expect(store.messages.getAllMessages(source.id)).toEqual([])
+        } finally { engine.stop() }
+    })
+
+    it('gates replacement delivery during spawn and releases finalized FIFO after linking', async () => {
+        const emitted: Array<{ body?: { message?: { localId?: string | null } } }> = []
+        const { store, engine } = createEngine((payload) => emitted.push(payload as typeof emitted[number]))
+        try {
+            const source = engine.getOrCreateSession('spawn-delivery-gate', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            emitted.length = 0
+            store.messages.addMessage(source.id, { text: 'A before reservation' }, 'gated-a')
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            await engine.sendMessage(source.id, { text: 'B after reservation', localId: 'gated-b' })
+            store.messages.addMessage(reserved.sessionId, { text: 'mature but gated' }, 'gated-scheduled', Date.now() - 1)
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default', reserved.sessionId)).toMatchObject({ type: 'success' })
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'cleared' })
+            let releaseSpawn!: () => void
+            let spawnStarted = false
+            const spawnWait = new Promise<void>((resolve) => { releaseSpawn = resolve })
+            setSpawn(engine, mock(async (...args: unknown[]) => {
+                spawnStarted = true
+                await spawnWait
+                return { type: 'success' as const, sessionId: args[12] as string }
+            }))
+
+            const reconcile = (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+            while (!spawnStarted) await Promise.resolve()
+            expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(true)
+            engine.handleSessionAlive({ sid: reserved.sessionId, time: Date.now() })
+            engine.handleSessionAlive({ sid: reserved.sessionId, time: Date.now() + 1 })
+            ;(engine as unknown as { messageService: { releaseMatureScheduledMessages(now: number): void } })
+                .messageService.releaseMatureScheduledMessages(Date.now())
+            expect(emitted).toEqual([])
+
+            releaseSpawn()
+            await reconcile
+            expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(false)
+            expect(emitted.map((update) => update.body?.message?.localId)).toEqual([
+                'gated-a', 'gated-b', 'gated-scheduled'
+            ])
         } finally { engine.stop() }
     })
 
@@ -467,7 +512,9 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             if (reserved.type !== 'success') throw new Error('reservation failed')
             await engine.sendMessage(source.id, { text: 'held', localId: 'held' })
             expect(store.messages.getAllMessages(reserved.sessionId)).toHaveLength(1)
+            expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(true)
             expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
+            expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(false)
             expect(store.messages.getAllMessages(source.id).map((m) => m.localId)).toEqual(['held'])
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })

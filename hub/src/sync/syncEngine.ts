@@ -1963,6 +1963,7 @@ async uploadScratchlistAttachment(
                 code: 'replacement_link_failed'
             }
         }
+        this.messageService.releaseDeliverableQueuedMessages(replacementSessionId)
         return { type: 'success', sessionId: replacementSessionId }
     }
 

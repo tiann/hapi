@@ -619,7 +619,7 @@ export class MessageService {
         // the pre-insert `now` capture could misclassify a borderline scheduledAt
         // as future when it has already become past by the time we check.
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
-        if (!isFutureScheduled) {
+        if (!isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -689,7 +689,35 @@ export class MessageService {
 
     /** Replay durable immediate prompts whenever their CLI session attaches. */
     replayImmediateQueuedMessages(sessionId: string): number {
+        if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+        for (const msg of queued) {
+            const update = {
+                id: msg.id,
+                seq: msg.seq,
+                createdAt: msg.createdAt,
+                body: {
+                    t: 'new-message' as const,
+                    sid: sessionId,
+                    message: {
+                        id: msg.id,
+                        seq: msg.seq,
+                        createdAt: msg.createdAt,
+                        localId: msg.localId,
+                        content: msg.content
+                    }
+                }
+            }
+            this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
+        }
+        return queued.length
+    }
+
+    /** Release a completed clear handoff in finalized seq order. */
+    releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): number {
+        if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
+        const queued = this.store.messages.getUninvokedLocalMessages(sessionId)
+            .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
         for (const msg of queued) {
             const update = {
                 id: msg.id,
@@ -730,8 +758,14 @@ export class MessageService {
     releaseMatureScheduledMessages(now: number, skipSessionIds?: ReadonlySet<string>): void {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
+        const deliveryGateBySession = new Map<string, boolean>()
         for (const msg of mature) {
-            if (skipSessionIds?.has(msg.sessionId)) {
+            let deliveryGated = deliveryGateBySession.get(msg.sessionId)
+            if (deliveryGated === undefined) {
+                deliveryGated = this.store.isOpenCodeClearDeliveryGated(msg.sessionId)
+                deliveryGateBySession.set(msg.sessionId, deliveryGated)
+            }
+            if (skipSessionIds?.has(msg.sessionId) || deliveryGated) {
                 continue
             }
             const localId = msg.localId

@@ -167,6 +167,27 @@ export class Store {
         })()
     }
 
+    /** Durable delivery gate for a preallocated replacement owned by an unfinished clear. */
+    isOpenCodeClearDeliveryGated(sessionId: string): boolean {
+        const target = this.db.prepare('SELECT namespace FROM sessions WHERE id = ?')
+            .get(sessionId) as { namespace: string } | undefined
+        if (!target) return false
+        const rows = this.db.prepare('SELECT metadata FROM sessions WHERE namespace = ? AND metadata IS NOT NULL')
+            .all(target.namespace) as Array<{ metadata: string }>
+        return rows.some((row) => {
+            try {
+                const operation = (JSON.parse(row.metadata) as {
+                    opencodeClearOperation?: { replacementSessionId?: string; state?: string }
+                }).opencodeClearOperation
+                return operation?.replacementSessionId === sessionId
+                    && operation.state !== 'completed'
+                    && operation.state !== 'aborted'
+            } catch {
+                return false
+            }
+        })
+    }
+
     abortOpenCodeClearOperation(
         sessionId: string,
         replacementSessionId: string,
