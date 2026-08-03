@@ -292,9 +292,13 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private enqueuePtyInteraction(
         task: () => Promise<void>,
         isCurrent: () => boolean = () => true,
+        staleError?: string,
     ): Promise<void> {
         const result = this.interactionTail.then(async () => {
-            if (!isCurrent()) return
+            if (!isCurrent()) {
+                if (staleError) throw new Error(staleError)
+                return
+            }
             this.ptyControls?.invalidateInputReady()
             await task()
         })
@@ -311,6 +315,14 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             }, timeoutMs)
             this.outputWaiter = { expected, resolve, reject, timer }
         })
+    }
+
+    private rejectOutputWaiter(reason: string): void {
+        const waiter = this.outputWaiter
+        this.outputWaiter = null
+        if (!waiter) return
+        clearTimeout(waiter.timer)
+        waiter.reject(new Error(reason))
     }
 
     private feedOutput(chunk: string): void {
@@ -377,7 +389,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 controls.sendKeys('\x1b')
                 throw error
             }
-        })
+        }, () => generation === this.ptyGeneration, 'AGY PTY restarted before the live model change')
     }
 
     private applyLiveModel(model: string | null): Promise<void> {
@@ -548,6 +560,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 onExit: (code: number | null) => {
                     logger.debug(`[agy-pty]: agy PTY exited with code ${code}`)
                     this.questionInteractionEpoch += 1
+                    this.rejectOutputWaiter('AGY PTY ended while waiting for model output')
                     this.ptyControls = null
                     this.ptyGeneration += 1
                     this.agentRunInProgress = false
@@ -606,6 +619,12 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         const resumeBrainUuid = this.agySessionId ?? undefined
         this.scanner = await createAgySessionScanner({
             resumeBrainUuid,
+            onDiscoveryAmbiguous: (count) => {
+                session.client.sendSessionEvent({
+                    type: 'error',
+                    message: `Antigravity session could not be identified because ${count} conversations matched the first message. Continue in the terminal or start a new session with a more specific prompt.`,
+                })
+            },
             onBrainFound: (uuid) => {
                 if (!this.agySessionId) {
                     logger.debug(`[agy-pty]: brain UUID discovered via onBrainFound: ${uuid}`)

@@ -370,15 +370,20 @@ describe('AgySessionScanner — resume support', () => {
 
         try {
             const foundUuids: string[] = []
+            const ambiguityCounts: number[] = []
             const scanner = await createAgySessionScanner({
                 onEntry: () => {},
                 onBrainFound: (uuid) => foundUuids.push(uuid),
+                onDiscoveryAmbiguous: (count) => ambiguityCounts.push(count),
             })
+            scanner.setSessionMessageText(prompt)
+            await new Promise((r) => setTimeout(r, 300))
             scanner.setSessionMessageText(prompt)
             await new Promise((r) => setTimeout(r, 300))
 
             expect(scanner.getBrainUuid()).toBeNull()
             expect(foundUuids).toEqual([])
+            expect(ambiguityCounts).toEqual([2])
             await scanner.cleanup()
         } finally {
             rmSync(join(BRAIN_BASE, otherUuid), { recursive: true, force: true })

@@ -118,6 +118,8 @@ type CreateAgySessionScannerOpts = {
      * discovery rather than relying on the onMessage PTY polling path.
      */
     onBrainFound?: (uuid: string) => void
+    /** Called once when discovery cannot safely choose among exact matches. */
+    onDiscoveryAmbiguous?: (matchCount: number) => void
 }
 
 export async function createAgySessionScanner(opts: CreateAgySessionScannerOpts) {
@@ -137,12 +139,14 @@ export async function createAgySessionScanner(opts: CreateAgySessionScannerOpts)
 class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
     private readonly onEntry: (entry: AgyTranscriptEntry) => void
     private readonly onBrainFoundCallback: ((uuid: string) => void) | undefined
+    private readonly onDiscoveryAmbiguousCallback: ((matchCount: number) => void) | undefined
     // Recorded at construction time — the scanner is created right as the
     // launcher is about to start agy, so our real brain dir cannot predate
     // this. Anchors the discovery scan window (see DISCOVERY_WINDOW_SLACK_MS).
     private readonly scannerStartMs: number
     private sessionMessageText: string | null = null
     private foundBrainUuid: string | null = null
+    private ambiguityReported = false
     private readonly modelSettlingAbortController = new AbortController()
 
     constructor(opts: CreateAgySessionScannerOpts) {
@@ -150,6 +154,7 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         this.scannerStartMs = Date.now()
         this.onEntry = opts.onEntry
         this.onBrainFoundCallback = opts.onBrainFound
+        this.onDiscoveryAmbiguousCallback = opts.onDiscoveryAmbiguous
         if (opts.resumeBrainUuid) {
             this.foundBrainUuid = opts.resumeBrainUuid
             logger.debug(`[agy-scanner] resume: pre-seeded brain UUID ${opts.resumeBrainUuid}`)
@@ -276,6 +281,10 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         }
         if (matches.length > 1) {
             logger.warn(`[agy-scanner] ${matches.length} brains matched the first message exactly; refusing ambiguous attachment`)
+            if (!this.ambiguityReported) {
+                this.ambiguityReported = true
+                this.onDiscoveryAmbiguousCallback?.(matches.length)
+            }
         }
         // Brain not yet identified — do NOT fall back to watching all candidates.
         // Emitting from unmatched brains leaks another session's transcript into

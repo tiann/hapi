@@ -216,6 +216,19 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         expect(session.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
     })
 
+    it('surfaces ambiguous brain discovery without exposing conversation identities', async () => {
+        const { session } = createSessionStub()
+
+        await agyPtyLauncher(session as never)
+        const onDiscoveryAmbiguous = harness.scannerOpts!.onDiscoveryAmbiguous as (count: number) => void
+        onDiscoveryAmbiguous(2)
+
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'error',
+            message: 'Antigravity session could not be identified because 2 conversations matched the first message. Continue in the terminal or start a new session with a more specific prompt.',
+        })
+    })
+
     it('changes the live AGY model only after the picker and completion markers are observed', async () => {
         const { session } = createSessionStub()
         const msgPromise = deferred<{ message: string } | null>()
@@ -240,6 +253,31 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         msgPromise.resolve(null)
         await launcherPromise
         expect(harness.liveModelHandler).toBeNull()
+    })
+
+    it('rejects an active model waiter on exit and does not invalidate the respawned prompt for a stale queued change', async () => {
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        const first = harness.liveModelHandler!('gemini-3.5-flash-low')
+        await tick(10)
+        const second = harness.liveModelHandler!('gemini-3.6-flash-low')
+        await tick(5)
+
+        ptyOptsCaptured.onExit(1)
+        const respawnedInvalidateInputReady = vi.fn()
+        ptyOptsCaptured.registerControls?.({ sendKeys: vi.fn(), invalidateInputReady: respawnedInvalidateInputReady })
+
+        await expect(first).rejects.toThrow('AGY PTY ended')
+        await expect(second).rejects.toThrow('AGY PTY restarted')
+        expect(respawnedInvalidateInputReady).not.toHaveBeenCalled()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
     })
 
     it('waits for the current agent run to complete before changing the model', async () => {
