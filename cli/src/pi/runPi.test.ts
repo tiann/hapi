@@ -274,6 +274,7 @@ describe('Pi abort queue boundary', () => {
     }
 
     beforeEach(() => {
+        vi.useRealTimers();
         harness.sent.length = 0;
         harness.throwOnGetCommands = false;
         harness.onEvent = null;
@@ -308,7 +309,7 @@ describe('Pi abort queue boundary', () => {
         await running;
     });
 
-    it('confirms abort, consumes a pre-turn prompt exactly once, then starts the next FIFO item', async () => {
+    it('compensates a preflight abort when the prompt starts late, then releases the FIFO once settled', async () => {
         const running = runPi({ workingDirectory: '/work' });
         await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
         harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
@@ -319,22 +320,139 @@ describe('Pi abort queue boundary', () => {
         onUserMessage(userMessage('first'), 'first-id');
         onUserMessage(userMessage('second'), 'second-id');
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'first' })));
+        const promptCommand = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
 
         const abort = harness.rpcHandlers.get(RPC_METHODS.Abort);
         expect(abort).toBeDefined();
         const abortPromise = abort!({});
-        await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ type: 'abort' }));
-        const command = harness.sent.at(-1) as { id: string };
-        // Pi emits agent_end while session.abort() is waiting for idle, before the
-        // RPC response. The next queued prompt must remain blocked until that
-        // response commits the aborted prompt boundary.
-        harness.onEvent!({ type: 'agent_end', messages: [], willRetry: false });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(1));
+        const firstAbort = harness.sent.filter((item) => (item as { type?: string }).type === 'abort')[0] as { id: string };
+        harness.onEvent!({ type: 'response', id: firstAbort.id, command: 'abort', success: true });
+
+        // Pi 0.83 may acknowledge abort while prompt preflight is still running.
+        // A later agent_start must issue one compensating abort and keep the next
+        // FIFO item blocked until both the real settlement and compensation ack.
+        harness.onEvent!({ type: 'response', id: promptCommand.id, command: 'prompt', success: true });
+        let abortResolved = false;
+        void abortPromise.then(() => { abortResolved = true; });
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        expect(abortResolved).toBe(false);
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'second' }));
-        harness.onEvent!({ type: 'response', id: command.id, command: 'abort', success: true });
+        harness.onEvent!({ type: 'agent_start' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(2));
+        const compensatingAbort = harness.sent.filter((item) => (item as { type?: string }).type === 'abort')[1] as { id: string };
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'second' }));
+
+        harness.onEvent!({ type: 'agent_end', messages: [], willRetry: false });
+        harness.onEvent!({ type: 'agent_settled' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(3));
+        const settlementSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        harness.onEvent!({ type: 'response', id: settlementSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        harness.onEvent!({ type: 'response', id: compensatingAbort.id, command: 'abort', success: true });
         await expect(abortPromise).resolves.toEqual({ success: true });
 
         expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['first-id'], { clearQueuedThinkingGrace: true });
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'second' })));
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('installs the abort barrier before waiting for a config mutation and never aborts the next prompt', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('first'), 'first-id');
+        onUserMessage(userMessage('second'), 'second-id');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'first' })));
+        const promptCommand = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+        harness.onEvent!({ type: 'response', id: promptCommand.id, command: 'prompt', success: true });
+        harness.onEvent!({ type: 'agent_start' });
+
+        const setConfig = harness.rpcHandlers.get(RPC_METHODS.SetSessionConfig)!;
+        const configPromise = setConfig({ model: { provider: 'provider', modelId: 'model' } });
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'set_model' })));
+        const setModelCommand = harness.sent.find((item) => (item as { type?: string }).type === 'set_model') as { id: string };
+
+        const abort = harness.rpcHandlers.get(RPC_METHODS.Abort)!;
+        const abortPromise = abort({});
+        harness.onEvent!({ type: 'agent_end', messages: [], willRetry: false });
+        harness.onEvent!({ type: 'agent_settled' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(3));
+        const settlementSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        harness.onEvent!({ type: 'response', id: settlementSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(0);
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'second' }));
+
+        harness.onEvent!({
+            type: 'response', id: setModelCommand.id, command: 'set_model', success: true,
+            data: { id: 'model', provider: 'provider' },
+        });
+        await expect(configPromise).resolves.toMatchObject({ applied: { model: { provider: 'provider', modelId: 'model' } } });
+        await expect(abortPromise).resolves.toEqual({ success: true });
+        expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(0);
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'second' })));
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('keeps a command-only abort guard after an ordinary abort error until the stability deadline', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('command-only'), 'command-id');
+        onUserMessage(userMessage('next'), 'next-id');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'command-only' })));
+        const promptCommand = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+
+        vi.useFakeTimers();
+        const abort = harness.rpcHandlers.get(RPC_METHODS.Abort)!;
+        const abortPromise = abort({});
+        await Promise.resolve();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        const abortCommand = harness.sent.find((item) => (item as { type?: string }).type === 'abort') as { id: string };
+        expect(abortCommand).toBeDefined();
+        harness.onEvent!({ type: 'response', id: promptCommand.id, command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+        harness.onEvent!({ type: 'response', id: abortCommand.id, command: 'abort', success: false, error: 'No active agent to abort' });
+        await Promise.resolve();
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'next' }));
+
+        await vi.advanceTimersByTimeAsync(24_000);
+        await expect(abortPromise).resolves.toEqual({ success: true });
+        expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'next' }));
+        vi.useRealTimers();
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('still sends native abort when Pi is streaming without a local prompt boundary', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: { isStreaming: true } });
+        await completeHistoryInitialization();
+
+        const abort = harness.rpcHandlers.get(RPC_METHODS.Abort)!;
+        const abortPromise = abort({});
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(1));
+        const abortCommand = harness.sent.find((item) => (item as { type?: string }).type === 'abort') as { id: string };
+        harness.onEvent!({ type: 'response', id: abortCommand.id, command: 'abort', success: true });
+
+        await expect(abortPromise).resolves.toEqual({ success: true });
+        expect(harness.session.keepAlive).toHaveBeenLastCalledWith(false, 'remote', undefined);
+
         harness.onError?.(new Error('finish test'));
         await running;
     });

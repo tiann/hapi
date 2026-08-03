@@ -14,6 +14,20 @@ export { parsePiModels, parsePiCommands, parsePiContextUsage } from './schemas';
 
 // --- Pending RPC resolver ---
 // Instance-scoped: created once by wireTransportEvents, stored on PiSession.
+export class PiRpcTimeoutError extends Error {
+    readonly command: string;
+    readonly requestId: number;
+    readonly timeoutMs: number;
+
+    constructor(command: string, requestId: number, timeoutMs: number) {
+        super(`Pi RPC ${command} (id=${requestId}) timed out after ${timeoutMs}ms`);
+        this.name = 'PiRpcTimeoutError';
+        this.command = command;
+        this.requestId = requestId;
+        this.timeoutMs = timeoutMs;
+    }
+}
+
 export class PiRpcResolver {
     private idCounter = 0;
     private terminalError: Error | null = null;
@@ -29,7 +43,7 @@ export class PiRpcResolver {
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(id);
-                reject(new Error(`Pi RPC ${command.type} (id=${id}) timed out after ${timeoutMs}ms`));
+                reject(new PiRpcTimeoutError(String(command.type), id, timeoutMs));
             }, timeoutMs);
 
             this.pending.set(id, {
@@ -162,9 +176,8 @@ function handleResponse(
     transport?: PiTransport,
     onStartupFailure?: (error: Error) => void,
     conversationHistory?: PiConversationHistory,
-    onPromptRejected?: (localId?: string) => void,
     onReady?: () => void,
-): void {
+): { rejectedPromptLocalId?: string } {
     const { command, success } = response;
     const resolver = session.rpcResolver!;
 
@@ -181,8 +194,8 @@ function handleResponse(
         if (command === 'prompt' && pendingLocalIds.length > 0) {
             const oldestLocalId = pendingLocalIds.shift()!;
             session.emitMessagesConsumed([oldestLocalId], { clearQueuedThinkingGrace: true });
-            conversationHistory?.rejectPendingEntry(oldestLocalId, 'prompt');
-            onPromptRejected?.(oldestLocalId);
+            conversationHistory?.rejectPendingEntry(oldestLocalId);
+            return { rejectedPromptLocalId: oldestLocalId };
         }
         // A failed initial get_state means Pi did not load its native session.
         // Do not leave the HAPI wrapper alive until the hub's ready timeout: the
@@ -192,7 +205,7 @@ function handleResponse(
         if (command === 'get_state' && session.expectedNativeSessionId && !session.isNativeReady) {
             onStartupFailure?.(new Error(`Pi get_state failed: ${error}`));
         }
-        return;
+        return {};
     }
 
     switch (command) {
@@ -282,14 +295,16 @@ function handleResponse(
                     if (match) {
                         void (async () => {
                             try {
-                                await sendPiRpcAndWait(session, transport, {
-                                    type: 'set_model',
-                                    provider: match.provider,
-                                    modelId: match.modelId,
+                                await session.runRuntimeMutation(async () => {
+                                    await sendPiRpcAndWait(session, transport, {
+                                        type: 'set_model',
+                                        provider: match.provider,
+                                        modelId: match.modelId,
+                                    });
+                                    session.currentModel = match.modelId;
+                                    session.currentProvider = match.provider;
+                                    persistSelectedPiModel(session);
                                 });
-                                session.currentModel = match.modelId;
-                                session.currentProvider = match.provider;
-                                persistSelectedPiModel(session);
                                 logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
                             } catch (error) {
                                 logger.debug(`[pi] Startup model set_model rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
@@ -327,6 +342,8 @@ function handleResponse(
             resolvePendingRpc(resolver, response);
             break;
     }
+
+    return {};
 }
 
 const PI_CONTEXT_USAGE_RPC_TIMEOUT_MS = 1_000;
@@ -379,9 +396,12 @@ export type PiTransportEventController = {
 type PiTransportEventOptions = {
     onStartupFailure?: (error: Error) => void;
     onReady?: () => void;
+    /** Observes each Pi agent_start/turn_start without releasing the prompt queue. */
+    onAgentLifecycleStarted?: () => void;
     onAgentSettled?: () => void;
     onPromptRejected?: (localId?: string) => void;
-    onPromptLifecycleMissing?: (localId?: string) => void;
+    /** Return false to keep this prompt generation open for a late lifecycle. */
+    onPromptLifecycleMissing?: (localId?: string) => void | boolean;
     conversationHistory?: PiConversationHistory;
 };
 
@@ -475,6 +495,10 @@ export function wireTransportEvents(
     let activePromptResponseAccepted = false;
     let activeAgentSettledSeen = false;
     let promptLifecycleAborted = false;
+    // turn_start consumes the FIFO entry before the prompt response is known.
+    // Retain that exact local ID so a later matching response failure can reject
+    // the history registration even after pendingLocalIds has been drained.
+    let activePromptLocalId: string | undefined;
 
     const clearLegacySettleFallback = (): void => {
         if (legacySettleTimer) clearTimeout(legacySettleTimer);
@@ -490,6 +514,7 @@ export function wireTransportEvents(
         promptLifecycleAborted = false;
         activePromptResponseAccepted = false;
         activeAgentSettledSeen = false;
+        activePromptLocalId = undefined;
         deliveredSettlement = false;
         agentEndObserved = false;
         agentLifecycleSeen = false;
@@ -503,12 +528,33 @@ export function wireTransportEvents(
         promptLifecycleAborted = true;
         activePromptResponseAccepted = false;
         activeAgentSettledSeen = false;
+        activePromptLocalId = undefined;
         deliveredSettlement = false;
         agentEndObserved = false;
         agentLifecycleSeen = false;
         maintenanceActive.clear();
         clearLegacySettleFallback();
         clearPromptLifecycleFallback();
+    };
+    const rejectPromptLifecycle = (): void => {
+        // A rejected prompt is terminal for this generation. Invalidate all
+        // delayed settlement work before notifying runPi so it can immediately
+        // resume FIFO pumping without a stale grace timer changing its state.
+        lifecycleGeneration += 1;
+        activePromptId = null;
+        promptLifecycleAborted = true;
+        activePromptResponseAccepted = false;
+        activeAgentSettledSeen = false;
+        activePromptLocalId = undefined;
+        deliveredSettlement = true;
+        agentEndObserved = false;
+        agentLifecycleSeen = false;
+        maintenanceActive.clear();
+        latestContextUsageRequest += 1;
+        clearLegacySettleFallback();
+        clearPromptLifecycleFallback();
+        flushAccumulator();
+        session.updateThinkingState(false);
     };
     const deliverSettlement = (): void => {
         if (deliveredSettlement || (activePromptId !== null && !activePromptResponseAccepted)) return;
@@ -538,9 +584,9 @@ export function wireTransportEvents(
         promptLifecycleTimer = setTimeout(() => {
             promptLifecycleTimer = null;
             if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
+            if (options.onPromptLifecycleMissing?.(pendingLocalIds[0]) === false) return;
             deliveredSettlement = true;
             session.updateThinkingState(false);
-            options.onPromptLifecycleMissing?.(pendingLocalIds[0]);
         }, PI_PROMPT_LIFECYCLE_GRACE_MS);
         promptLifecycleTimer.unref?.();
     };
@@ -554,27 +600,50 @@ export function wireTransportEvents(
     const flushAccumulator = (): void => sendMessages(assistantMessageAccumulator.flush());
 
     transport.onEvent((event) => {
+        // Legacy Pi emitted auto_compaction_*; normalize it before every
+        // lifecycle consumer so both the maintenance gate and timeline see the
+        // same current event names. PiTransport performs this for subprocess
+        // traffic too; retaining it here keeps direct/test transports aligned.
+        const parsedLifecycle = PiLifecycleEventSchema.safeParse(event);
+        if (parsedLifecycle.success) {
+            event = parsedLifecycle.data;
+        }
         if (event.type !== 'keep_alive') {
             logger.debug(`[pi][event] ${event.type}`);
         }
         if (event.type === 'response') {
             const parsed = PiResponseEventSchema.safeParse(event);
             if (parsed.success) {
-                const isCurrentPrompt = parsed.data.command === 'prompt' && (activePromptId === null ? !promptLifecycleAborted : parsed.data.id === activePromptId);
+                const isCurrentPrompt = parsed.data.command === 'prompt'
+                    && !deliveredSettlement
+                    && !activePromptResponseAccepted
+                    && (activePromptId === null ? !promptLifecycleAborted : parsed.data.id === activePromptId);
                 if (parsed.data.command === 'prompt' && !isCurrentPrompt) {
                     logger.debug(`[pi] Ignoring stale prompt response id=${parsed.data.id ?? 'missing'}`);
                     return;
                 }
-                handleResponse(
+                const responseOutcome = handleResponse(
                     parsed.data,
                     session,
                     pendingLocalIds,
                     transport,
                     options.onStartupFailure,
                     options.conversationHistory,
-                    options.onPromptRejected,
                     options.onReady,
                 );
+                if (isCurrentPrompt && !parsed.data.success) {
+                    const rejectedLocalId = responseOutcome.rejectedPromptLocalId ?? activePromptLocalId;
+                    // A Pi 0.83 turn_start can consume the HAPI FIFO before Pi
+                    // replies that prompt failed. handleResponse only has the
+                    // still-pending list, so finish the exact consumed history
+                    // entry here when the FIFO was already shifted.
+                    if (responseOutcome.rejectedPromptLocalId === undefined && rejectedLocalId) {
+                        options.conversationHistory?.rejectPendingEntry(rejectedLocalId);
+                    }
+                    rejectPromptLifecycle();
+                    options.onPromptRejected?.(rejectedLocalId);
+                    return;
+                }
                 if (isCurrentPrompt && parsed.data.success) {
                     activePromptResponseAccepted = true;
                     if (activeAgentSettledSeen) {
@@ -609,6 +678,7 @@ export function wireTransportEvents(
             agentLifecycleSeen = true;
             clearLegacySettleFallback();
             clearPromptLifecycleFallback();
+            options.onAgentLifecycleStarted?.();
         }
         if (event.type === 'compaction_start') {
             maintenanceActive.add('compaction');
@@ -643,6 +713,7 @@ export function wireTransportEvents(
             session.updateThinkingState(true);
             if (pendingLocalIds.length > 0) {
                 const oldestLocalId = pendingLocalIds.shift()!;
+                activePromptLocalId = oldestLocalId;
                 session.emitMessagesConsumed([oldestLocalId]);
             }
             // Some Pi integrations omit entry_appended forwarding. Incremental

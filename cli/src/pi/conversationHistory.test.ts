@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PiConversationHistory, PiHistoryRestoreError } from './conversationHistory'
+import { PI_HISTORY_OPERATION_TIMEOUT_MS, PiConversationHistory, PiHistoryRestoreError } from './conversationHistory'
 import { PiSession } from './session'
 
 function createSession(options?: { nativeReady?: boolean }) {
@@ -57,7 +57,7 @@ describe('PiConversationHistory entry mapping', () => {
 
     it('uses the append cursor for an entry event fallback', async () => {
         const { session } = createSession()
-        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+        const rpc = vi.fn(async (command: Record<string, unknown>, _timeoutMs?: number) => {
             if (rpc.mock.calls.length === 1) {
                 expect(command).toEqual({ type: 'get_entries' })
                 return {
@@ -110,40 +110,19 @@ describe('PiConversationHistory entry mapping', () => {
         expect(history.getEntryIds()).toEqual({ 'local-1': 'entry-1', 'local-2': 'entry-2' })
     })
 
-    it('maps an accepted streaming steer as a conversation-history point', () => {
-        const { session, metadata } = createSession()
+    it('removes a failed local FIFO prompt by exact localId without consuming its neighbor', () => {
+        const { session } = createSession()
         const history = new PiConversationHistory(session, vi.fn())
-        history.registerSteer('steer-local-id')
-        history.observeEntry({ type: 'message', id: 'steer-entry-id', message: { role: 'user' } })
+        history.registerPrompt('prompt-failed')
+        history.registerPrompt('prompt-ok')
+        history.rejectPendingEntry('prompt-failed')
+        history.observeEntry({ type: 'message', id: 'prompt-entry', message: { role: 'user' } })
+        expect(history.getEntryIds()).toEqual({ 'prompt-ok': 'prompt-entry' })
 
-        expect(history.getEntryIds()).toEqual({ 'steer-local-id': 'steer-entry-id' })
-        expect(metadata).toMatchObject({
-            conversationHistoryPoints: { 'steer-local-id': true },
-            conversationHistoryEntryIds: { 'steer-local-id': 'steer-entry-id' },
-        })
-    })
-
-    it('removes failed prompt/steer records by exact localId without cross-kind consumption', () => {
-        const first = createSession()
-        const firstHistory = new PiConversationHistory(first.session, vi.fn())
-        firstHistory.registerPrompt('prompt-ok')
-        firstHistory.registerSteer('steer-failed')
-        firstHistory.rejectPendingEntry('steer-failed', 'steer')
-        firstHistory.observeEntry({ type: 'message', id: 'prompt-entry', message: { role: 'user' } })
-        expect(firstHistory.getEntryIds()).toEqual({ 'prompt-ok': 'prompt-entry' })
-
-        const second = createSession()
-        const secondHistory = new PiConversationHistory(second.session, vi.fn())
-        secondHistory.registerPrompt('prompt-failed')
-        secondHistory.registerSteer('steer-ok')
-        secondHistory.rejectPendingEntry('prompt-failed', 'prompt')
-        secondHistory.observeEntry({ type: 'message', id: 'steer-entry', message: { role: 'user' } })
-        expect(secondHistory.getEntryIds()).toEqual({ 'steer-ok': 'steer-entry' })
-
-        secondHistory.registerPrompt('aborted-before-turn')
-        secondHistory.rejectPendingEntry('aborted-before-turn', 'prompt')
-        secondHistory.observeEntry({ type: 'message', id: 'unrelated-user-entry', message: { role: 'user' } })
-        expect(secondHistory.getEntryIds()).toEqual({ 'steer-ok': 'steer-entry' })
+        history.registerPrompt('aborted-before-turn')
+        history.rejectPendingEntry('aborted-before-turn')
+        history.observeEntry({ type: 'message', id: 'unrelated-user-entry', message: { role: 'user' } })
+        expect(history.getEntryIds()).toEqual({ 'prompt-ok': 'prompt-entry' })
     })
 })
 
@@ -151,7 +130,7 @@ describe('PiConversationHistory native transactions', () => {
     it('rejects before native fork when final source locator metadata does not flush', async () => {
         const { session, client } = createSession()
         client.flushMetadata.mockResolvedValue(false)
-        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+        const rpc = vi.fn(async (command: Record<string, unknown>, _timeoutMs?: number) => {
             if (command.type === 'get_entries') return { entries: [], leafId: null }
             throw new Error(`native fork must not run: ${command.type}`)
         })
@@ -164,7 +143,7 @@ describe('PiConversationHistory native transactions', () => {
     it('forks current by clone then restores the exact source identity', async () => {
         const { session } = createSession()
         let stateCalls = 0
-        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+        const rpc = vi.fn(async (command: Record<string, unknown>, _timeoutMs?: number) => {
             if (command.type === 'get_entries') return { entries: [], leafId: null }
             if (command.type === 'get_state') return [source, clone, clone, source][stateCalls++]
             if (command.type === 'clone') return { cancelled: false }
@@ -178,13 +157,75 @@ describe('PiConversationHistory native transactions', () => {
             { type: 'get_entries' }, { type: 'get_state' }, { type: 'clone' }, { type: 'get_state' },
             { type: 'get_state' }, { type: 'switch_session', sessionPath: source.sessionFile }, { type: 'get_state' },
         ])
+        const mutationTimeouts = rpc.mock.calls
+            .filter(([command]) => command.type === 'clone' || command.type === 'switch_session')
+            .map(([, timeoutMs]) => timeoutMs)
+        expect(mutationTimeouts).toHaveLength(2)
+        for (const timeoutMs of mutationTimeouts) {
+            expect(timeoutMs).toBeGreaterThan(0)
+            expect(timeoutMs).toBeLessThanOrEqual(PI_HISTORY_OPERATION_TIMEOUT_MS)
+        }
         expect(session.isHistoryTransactionActive).toBe(false)
+    })
+
+    it('uses one absolute transaction deadline across clone and source restoration', async () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(0)
+        try {
+            const { session } = createSession()
+            let stateCalls = 0
+            const mutationTimeouts: number[] = []
+            const rpc = vi.fn(async (command: Record<string, unknown>, timeoutMs?: number) => {
+                if (command.type === 'get_entries') return { entries: [], leafId: null }
+                if (command.type === 'get_state') return [source, clone, clone, source][stateCalls++]
+                if (command.type === 'clone') {
+                    mutationTimeouts.push(timeoutMs ?? 0)
+                    vi.setSystemTime(60_000)
+                    return { cancelled: false }
+                }
+                if (command.type === 'switch_session') {
+                    mutationTimeouts.push(timeoutMs ?? 0)
+                    return { cancelled: false }
+                }
+                throw new Error(`unexpected ${command.type}`)
+            })
+            const history = new PiConversationHistory(session, rpc)
+
+            await expect(history.fork()).resolves.toEqual({ nativeSessionId: 'clone-id' })
+            expect(mutationTimeouts).toHaveLength(2)
+            expect(mutationTimeouts[0]).toBeLessThanOrEqual(PI_HISTORY_OPERATION_TIMEOUT_MS - 10_000)
+            expect(mutationTimeouts[1]).toBeLessThanOrEqual(PI_HISTORY_OPERATION_TIMEOUT_MS - 60_000)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('treats a pre-mutation read timeout as an ordinary rejection and drains queued work', async () => {
+        const { session } = createSession()
+        const timeout = Object.assign(new Error('Pi RPC get_state (id=1) timed out after 10000ms'), {
+            name: 'PiRpcTimeoutError',
+        })
+        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+            if (command.type === 'get_entries') return { entries: [], leafId: null }
+            if (command.type === 'get_state') throw timeout
+            throw new Error(`mutation must not run: ${command.type}`)
+        })
+        const history = new PiConversationHistory(session, rpc)
+        let delivered = false
+
+        const pending = history.fork()
+        session.runWhenHistoryIdle(() => { delivered = true }, 'queued-after-read-timeout')
+
+        await expect(pending).rejects.toBe(timeout)
+        expect(delivered).toBe(true)
+        expect(session.isHistoryTransactionActive).toBe(false)
+        expect(rpc.mock.calls.map(([command]) => command.type)).toEqual(['get_entries', 'get_state'])
     })
 
     it('forks a historical boundary from source and restores source afterward', async () => {
         const { session } = createSession()
         let stateCalls = 0
-        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+        const rpc = vi.fn(async (command: Record<string, unknown>, _timeoutMs?: number) => {
             if (command.type === 'get_entries') return { entries: [], leafId: null }
             if (command.type === 'get_state') return [source, clone, clone, source][stateCalls++]
             if (command.type === 'fork' || command.type === 'switch_session') return { cancelled: false }
@@ -198,21 +239,43 @@ describe('PiConversationHistory native transactions', () => {
             { type: 'get_entries' }, { type: 'get_state' }, { type: 'fork', entryId: 'entry-user' }, { type: 'get_state' },
             { type: 'get_state' }, { type: 'switch_session', sessionPath: source.sessionFile }, { type: 'get_state' },
         ])
+        const mutationTimeouts = rpc.mock.calls
+            .filter(([command]) => command.type === 'fork' || command.type === 'switch_session')
+            .map(([, timeoutMs]) => timeoutMs)
+        expect(mutationTimeouts).toHaveLength(2)
+        for (const timeoutMs of mutationTimeouts) {
+            expect(timeoutMs).toBeGreaterThan(0)
+            expect(timeoutMs).toBeLessThanOrEqual(PI_HISTORY_OPERATION_TIMEOUT_MS)
+        }
     })
 
     it('commits the rewound branch identity, resets its cursor, and maps the next prompt', async () => {
         const { session, metadata } = createSession()
-        const rewound = { sessionId: 'rewind-id', sessionFile: '/tmp/rewind.jsonl' }
+        const sourceState = {
+            ...source,
+            model: { id: 'source-model', provider: 'source-provider' },
+            thinkingLevel: 'low',
+            steeringMode: 'all',
+            isStreaming: false,
+        }
+        const rewound = {
+            sessionId: 'rewind-id',
+            sessionFile: '/tmp/rewind.jsonl',
+            model: { id: 'rewind-model', provider: 'rewind-provider' },
+            thinkingLevel: 'high',
+            steeringMode: 'one-at-a-time',
+            isStreaming: true,
+        }
         let entriesCalls = 0
         let stateCalls = 0
-        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+        const rpc = vi.fn(async (command: Record<string, unknown>, _timeoutMs?: number) => {
             if (command.type === 'get_entries') {
                 entriesCalls += 1
                 return entriesCalls === 1
                     ? { entries: [], leafId: null }
                     : { entries: [{ id: 'entry-before-user', type: 'message', message: { role: 'assistant' } }], leafId: 'entry-before-user' }
             }
-            if (command.type === 'get_state') return [source, rewound][stateCalls++]
+            if (command.type === 'get_state') return [sourceState, rewound][stateCalls++]
             if (command.type === 'get_fork_messages') return { messages: [{ entryId: 'entry-user', text: 'ignored' }] }
             if (command.type === 'fork') return { cancelled: false }
             throw new Error(`unexpected ${command.type}`)
@@ -227,7 +290,15 @@ describe('PiConversationHistory native transactions', () => {
         })
         expect(session.expectedNativeSessionId).toBe('rewind-id')
         expect(session.currentNativeSessionFile).toBe('/tmp/rewind.jsonl')
-        expect(metadata).toMatchObject({ piSessionId: 'rewind-id' })
+        expect(session.currentModel).toBe('rewind-model')
+        expect(session.currentProvider).toBe('rewind-provider')
+        expect(session.currentThinkingLevel).toBe('high')
+        expect(session.currentSteeringMode).toBe('one-at-a-time')
+        expect(session.piIsStreaming).toBe(true)
+        expect(metadata).toMatchObject({
+            piSessionId: 'rewind-id',
+            piSelectedModel: { provider: 'rewind-provider', modelId: 'rewind-model' },
+        })
         history.registerPrompt('next-local')
         history.observeEntry({ type: 'message', id: 'next-entry', message: { role: 'user' } })
         expect(history.getEntryIds()).toEqual({ 'next-local': 'next-entry' })
@@ -235,12 +306,57 @@ describe('PiConversationHistory native transactions', () => {
             { type: 'get_entries' }, { type: 'get_state' }, { type: 'get_fork_messages' }, { type: 'fork', entryId: 'entry-user' },
             { type: 'get_state' }, { type: 'get_entries' },
         ])
+        expect(rpc.mock.calls.find(([command]) => command.type === 'fork')?.[1])
+            .toBeLessThanOrEqual(PI_HISTORY_OPERATION_TIMEOUT_MS)
+    })
+
+    it('does not combine a changed rewind model with a provider omitted by Pi', async () => {
+        const { session, metadata } = createSession()
+        session.currentModel = 'old-model'
+        session.currentProvider = 'old-provider'
+        const sourceState = { ...source, model: { id: 'old-model', provider: 'old-provider' }, isStreaming: false }
+        const rewound = { sessionId: 'rewind-id', sessionFile: '/tmp/rewind.jsonl', model: { id: 'branch-model' }, isStreaming: false }
+        let stateCalls = 0
+        let entriesCalls = 0
+        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+            if (command.type === 'get_entries') {
+                entriesCalls += 1
+                return entriesCalls === 1
+                    ? { entries: [], leafId: null }
+                    : { entries: [{ id: 'prefix', type: 'message', message: { role: 'assistant' } }], leafId: 'prefix' }
+            }
+            if (command.type === 'get_state') return [sourceState, rewound][stateCalls++]
+            if (command.type === 'get_fork_messages') return { messages: [{ entryId: 'entry-user', text: 'user' }] }
+            if (command.type === 'fork') return { cancelled: false }
+            throw new Error(`unexpected ${command.type}`)
+        })
+        const history = new PiConversationHistory(session, rpc)
+        history.restoreEntryIds({ local: 'entry-user' })
+
+        await expect(history.rewind('local')).resolves.toMatchObject({ success: true })
+        expect(session.currentModel).toBe('branch-model')
+        expect(session.currentProvider).toBeNull()
+        expect(metadata.piSelectedModel).toBeUndefined()
     })
 
     it('restores source and rolls back identity/locators when rewind metadata flush fails', async () => {
         const { session, client } = createSession()
         client.flushMetadata.mockResolvedValueOnce(true).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
-        const rewound = { sessionId: 'rewind-id', sessionFile: '/tmp/rewind.jsonl' }
+        const sourceState = {
+            ...source,
+            model: { id: 'source-model', provider: 'source-provider' },
+            thinkingLevel: 'medium',
+            steeringMode: 'all',
+            isStreaming: false,
+        }
+        const rewound = {
+            sessionId: 'rewind-id',
+            sessionFile: '/tmp/rewind.jsonl',
+            model: { id: 'rewind-model', provider: 'rewind-provider' },
+            thinkingLevel: 'high',
+            steeringMode: 'one-at-a-time',
+            isStreaming: true,
+        }
         let stateCalls = 0
         let entryCalls = 0
         const rpc = vi.fn(async (command: Record<string, unknown>) => {
@@ -250,7 +366,7 @@ describe('PiConversationHistory native transactions', () => {
                     ? { entries: [], leafId: null }
                     : { entries: [{ id: 'branch-prefix', type: 'message', message: { role: 'assistant' } }], leafId: 'branch-prefix' }
             }
-            if (command.type === 'get_state') return [source, rewound, rewound, source][stateCalls++]
+            if (command.type === 'get_state') return [sourceState, rewound, rewound, sourceState][stateCalls++]
             if (command.type === 'get_fork_messages') return { messages: [{ entryId: 'entry-user', text: 'user' }] }
             if (command.type === 'fork' || command.type === 'switch_session') return { cancelled: false }
             throw new Error(`unexpected ${command.type}`)
@@ -264,6 +380,11 @@ describe('PiConversationHistory native transactions', () => {
             outcome: 'source_restored',
         })
         expect(session.expectedNativeSessionId).toBe(source.sessionId)
+        expect(session.currentModel).toBe('source-model')
+        expect(session.currentProvider).toBe('source-provider')
+        expect(session.currentThinkingLevel).toBe('medium')
+        expect(session.currentSteeringMode).toBe('all')
+        expect(session.piIsStreaming).toBe(false)
         expect(history.getEntryIds()).toEqual({ local: 'entry-user' })
     })
 
@@ -381,6 +502,69 @@ describe('PiConversationHistory native transactions', () => {
         await expect(pending).rejects.toBeInstanceOf(PiHistoryRestoreError)
         expect(delivered).toBe(false)
         expect(session.isHistoryTransactionActive).toBe(false)
+    })
+
+    it('treats a late clone timeout as indeterminate, discards the history queue, and never classifies state', async () => {
+        const { session } = createSession()
+        let cloneTimedOut = false
+        let rejectClone!: (error: Error) => void
+        let cloneTimeoutMs = 0
+        const rpc = vi.fn(async (command: Record<string, unknown>, timeoutMs?: number) => {
+            if (command.type === 'get_entries') return { entries: [], leafId: null }
+            if (command.type === 'get_state') {
+                if (cloneTimedOut) throw new Error('must not read state after an indeterminate clone timeout')
+                return source
+            }
+            if (command.type === 'clone') {
+                cloneTimeoutMs = timeoutMs ?? 0
+                expect(cloneTimeoutMs).toBeGreaterThan(0)
+                expect(cloneTimeoutMs).toBeLessThan(PI_HISTORY_OPERATION_TIMEOUT_MS)
+                return new Promise<unknown>((_, reject) => {
+                    rejectClone = (error) => {
+                        cloneTimedOut = true
+                        reject(error)
+                    }
+                })
+            }
+            if (command.type === 'switch_session') throw new Error('must not switch after an indeterminate clone timeout')
+            throw new Error(`unexpected ${command.type}`)
+        })
+        const history = new PiConversationHistory(session, rpc)
+        let delivered = false
+
+        const pending = history.fork()
+        await vi.waitFor(() => expect(rejectClone).toBeTypeOf('function'))
+        session.runWhenHistoryIdle(() => { delivered = true }, 'queued-after-clone-timeout')
+        rejectClone(new Error(`Pi RPC clone (id=42) timed out after ${cloneTimeoutMs}ms`))
+
+        await expect(pending).rejects.toBeInstanceOf(PiHistoryRestoreError)
+        expect(rpc.mock.calls.map(([command]) => command.type)).toEqual(['get_entries', 'get_state', 'clone'])
+        expect(delivered).toBe(false)
+        expect(session.isHistoryTransactionActive).toBe(false)
+    })
+
+    it('closes the history gate before waiting for an in-flight config mutation', async () => {
+        const { session } = createSession()
+        const releaseConfigMutation = await session.acquireRuntimeMutation()
+        let stateCalls = 0
+        const rpc = vi.fn(async (command: Record<string, unknown>) => {
+            if (command.type === 'get_entries') return { entries: [], leafId: null }
+            if (command.type === 'get_state') return [source, clone, clone, source][stateCalls++]
+            if (command.type === 'clone' || command.type === 'switch_session') return { cancelled: false }
+            throw new Error(`unexpected ${command.type}`)
+        })
+        const history = new PiConversationHistory(session, rpc)
+        let deferredDelivered = false
+
+        const pending = history.fork()
+        session.runWhenHistoryIdle(() => { deferredDelivered = true }, 'prompt-after-history-begin')
+
+        expect(session.isHistoryTransactionActive).toBe(true)
+        expect(rpc).not.toHaveBeenCalled()
+        releaseConfigMutation()
+
+        await expect(pending).resolves.toEqual({ nativeSessionId: 'clone-id' })
+        expect(deferredDelivered).toBe(true)
     })
 
     it('keeps history operations mutually exclusive and revokes a command that Pi rejects as unknown', async () => {

@@ -33,6 +33,33 @@ type PiExtensionUiHandlerOptions = {
     sendResponse: (response: PiExtensionUiResponse) => void;
 };
 
+// Pi starts its dialog timeout before the event reaches the HAPI process. Keep
+// HAPI's cleanup timer ahead of that deadline so a late browser response cannot
+// race Pi's own timeout. The 10% allowance covers transport/UI propagation,
+// has a 5s ceiling for long-lived dialogs, and is capped at a quarter of a
+// short timeout so valid short dialogs still retain at least 75% of their
+// requested duration.
+const EXTENSION_UI_TIMEOUT_MARGIN_RATIO = 0.1;
+const EXTENSION_UI_TIMEOUT_MARGIN_MIN_MS = 100;
+const EXTENSION_UI_TIMEOUT_MARGIN_MAX_MS = 5_000;
+const EXTENSION_UI_TIMEOUT_MARGIN_MAX_RATIO = 0.25;
+
+export function getExtensionUiCleanupTimeout(timeout: number | undefined): number | undefined {
+    if (timeout === undefined || timeout === 0) return undefined;
+
+    const requestedMargin = Math.min(
+        EXTENSION_UI_TIMEOUT_MARGIN_MAX_MS,
+        Math.max(EXTENSION_UI_TIMEOUT_MARGIN_MIN_MS, Math.ceil(timeout * EXTENSION_UI_TIMEOUT_MARGIN_RATIO)),
+    );
+    // Even a very short positive timeout must clean up before Pi's timer. Such
+    // dialogs are not realistically interactive, so reserve at least 1ms.
+    const margin = Math.min(timeout, Math.max(1, Math.min(
+        Math.floor(timeout * EXTENSION_UI_TIMEOUT_MARGIN_MAX_RATIO),
+        requestedMargin,
+    )));
+    return timeout - margin;
+}
+
 function requestToolName(request: PendingExtensionRequest): string {
     return request.method === 'confirm' ? 'PiExtensionConfirm' : 'request_user_input';
 }
@@ -164,8 +191,10 @@ export class PiExtensionUiHandler {
             return;
         }
 
-        const timeout = request.method === 'editor' ? undefined : request.timeout;
-        const timer = timeout === undefined || timeout === 0
+        const timeout = request.method === 'editor' ? undefined : getExtensionUiCleanupTimeout(request.timeout);
+        // Start this timer before publishing the HAPI request. Pi's deadline
+        // began before it emitted the extension_ui_request event.
+        const timer = timeout === undefined
             ? null
             : setTimeout(() => this.cancel(request.id, 'Extension UI request timed out'), timeout);
         timer?.unref?.();

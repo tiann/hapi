@@ -59,7 +59,34 @@ const asOptThinkingLevelMap = z.unknown().optional().transform((v): Record<strin
 /** Minimal shape: must be an object with a string `type` field. */
 export const PiAgentEventSchema = z.object({
     type: z.string(),
-}).passthrough();
+}).passthrough().transform((event) => {
+    // Legacy Pi used auto_compaction_* for the same maintenance lifecycle that
+    // current Pi calls compaction_*. Normalize while decoding stdout so every
+    // downstream event consumer has one canonical protocol vocabulary.
+    if (event.type === 'auto_compaction_start') {
+        return {
+            ...event,
+            type: 'compaction_start',
+            reason: event.reason === 'manual' || event.reason === 'threshold' || event.reason === 'overflow'
+                ? event.reason
+                : 'threshold',
+        };
+    }
+    if (event.type === 'auto_compaction_end') {
+        const { errorMessage: _legacyErrorMessage, ...rest } = event;
+        return {
+            ...rest,
+            type: 'compaction_end',
+            reason: event.reason === 'manual' || event.reason === 'threshold' || event.reason === 'overflow'
+                ? event.reason
+                : 'threshold',
+            aborted: typeof event.aborted === 'boolean' ? event.aborted : false,
+            willRetry: typeof event.willRetry === 'boolean' ? event.willRetry : false,
+            ...(typeof event.errorMessage === 'string' ? { errorMessage: event.errorMessage } : {}),
+        };
+    }
+    return event;
+});
 
 // ============================================================================
 // Extension UI requests
@@ -133,6 +160,28 @@ const PiCompactionEndEventSchema = z.object({
     errorMessage: z.string().optional(),
 });
 
+// Legacy Pi used the auto_compaction_* aliases. Their payloads are equivalent
+// in practice, but accept omitted lifecycle detail from older extensions so
+// the maintenance gate can still block a legacy agent_end settlement.
+const PiLegacyAutoCompactionStartEventSchema = z.object({
+    type: z.literal('auto_compaction_start'),
+    reason: z.enum(['manual', 'threshold', 'overflow']).optional().default('threshold'),
+}).passthrough().transform(({ type: _type, ...event }) => ({
+    ...event,
+    type: 'compaction_start' as const,
+}));
+
+const PiLegacyAutoCompactionEndEventSchema = z.object({
+    type: z.literal('auto_compaction_end'),
+    reason: z.enum(['manual', 'threshold', 'overflow']).optional().default('threshold'),
+    aborted: z.boolean().optional().default(false),
+    willRetry: z.boolean().optional().default(false),
+    errorMessage: z.string().optional(),
+}).passthrough().transform(({ type: _type, ...event }) => ({
+    ...event,
+    type: 'compaction_end' as const,
+}));
+
 const PiAutoRetryStartEventSchema = z.object({
     type: z.literal('auto_retry_start'),
     attempt: z.number().int().positive(),
@@ -159,6 +208,8 @@ const PiSummarizationRetryScheduledEventSchema = z.object({
 export const PiLifecycleEventSchema = z.union([
     PiCompactionStartEventSchema,
     PiCompactionEndEventSchema,
+    PiLegacyAutoCompactionStartEventSchema,
+    PiLegacyAutoCompactionEndEventSchema,
     PiAutoRetryStartEventSchema,
     PiAutoRetryEndEventSchema,
     PiSummarizationRetryScheduledEventSchema,

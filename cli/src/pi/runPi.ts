@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { logger } from '@/ui/logger';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
@@ -9,7 +8,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
 import { PiSession } from './session';
 import { PiConversationHistory, PiHistoryRestoreError } from './conversationHistory';
-import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents } from './loop';
+import { parsePiModels, parsePiCommands, PiRpcTimeoutError, sendPiRpcAndWait, wireTransportEvents } from './loop';
 import { PiThinkingLevelSchema, SetSessionConfigPayloadSchema } from './schemas';
 import type { PiImageContent, PiThinkingLevel } from './types';
 import { PiPromptQueue, type PiPreparedPrompt } from './promptQueue';
@@ -17,11 +16,14 @@ import type { ListPiModelsResponse, PiCommandSummary, SlashCommand, SlashCommand
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { ListSkillsResponse, SkillSummary } from '@/modules/common/skills';
 import type { AttachmentMetadata } from '@/api/types';
+import { readBoundedAttachmentFile } from '@/modules/common/attachmentFile';
+import { MAX_UPLOAD_BYTES } from '@/modules/common/attachmentLimits';
 
 // Grace period before force-draining prompts buffered during Pi startup when no
 // get_state response arrives. Comfortably above the 10s Pi RPC timeout so a slow
 // but healthy startup still flips ready via get_state first (issue #1143).
 const PI_READY_FALLBACK_MS = 30_000;
+const PI_ABORT_OPERATION_TIMEOUT_MS = 25_000;
 
 function getPiSkillName(commandName: string): string {
     return commandName.startsWith('skill:') ? commandName.slice('skill:'.length) : commandName;
@@ -100,11 +102,13 @@ export async function preparePiUserMessage(
     const formattedMessage = formatPiUserMessage(message, attachments, commands);
     const images: PiImageContent[] = [];
     const imageReadErrors: string[] = [];
+    let totalImageBytes = 0;
 
     for (const attachment of attachments ?? []) {
         if (!attachment.mimeType.toLowerCase().startsWith('image/')) continue;
         try {
-            const data = await readFile(attachment.path);
+            const data = await readBoundedAttachmentFile(attachment.path, MAX_UPLOAD_BYTES - totalImageBytes);
+            totalImageBytes += data.length;
             images.push({ type: 'image', data: data.toString('base64'), mimeType: attachment.mimeType });
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
@@ -186,7 +190,7 @@ export async function runPi(opts: {
     });
     const conversationHistory = new PiConversationHistory(
         piSession,
-        (command) => sendPiRpcAndWait(piSession, transport, command),
+        (command, timeoutMs) => sendPiRpcAndWait(piSession, transport, command, timeoutMs),
     );
     piSession.setNativeReadyPreparation(async () => await conversationHistory.initialize());
 
@@ -321,6 +325,77 @@ export async function runPi(opts: {
     let abortInFlight = false;
     let activePromptLocalId: string | undefined;
     let historyPumpDeferred = false;
+    let agentLifecycleStarted = false;
+
+    type ActiveAbortGuard = {
+        deadlineAt: number;
+        lifecycleStartedAtRequest: boolean;
+        compensationRequired: boolean;
+        compensationStarted: boolean;
+        compensationConfirmed: boolean;
+        lifecycleMissingObserved: boolean;
+        settled: boolean;
+        timer: ReturnType<typeof setTimeout>;
+        resolve: () => void;
+        reject: (error: Error) => void;
+    };
+    let activeAbortGuard: ActiveAbortGuard | null = null;
+
+    const maybeResolveAbortGuard = (): void => {
+        const guard = activeAbortGuard;
+        if (!guard?.settled) return;
+        if (guard.compensationRequired && !guard.compensationConfirmed) return;
+        clearTimeout(guard.timer);
+        guard.resolve();
+    };
+
+    const markPromptBoundarySettled = (): void => {
+        if (activeAbortGuard) {
+            activeAbortGuard.settled = true;
+            maybeResolveAbortGuard();
+            return;
+        }
+        promptCommandInFlight = false;
+        activePromptLocalId = undefined;
+        agentLifecycleStarted = false;
+        pumpPromptQueue();
+    };
+
+    const createAbortGuard = (deadlineAt: number): { guard: ActiveAbortGuard; promise: Promise<void> } => {
+        let resolve!: () => void;
+        let reject!: (error: Error) => void;
+        const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+            resolve = resolvePromise;
+            reject = rejectPromise;
+        });
+        let guard!: ActiveAbortGuard;
+        const timer = setTimeout(() => {
+            // A successful prompt response with no agent lifecycle is how Pi
+            // reports extension-command-only prompts. During abort we keep the
+            // guard for the entire stability window so a genuinely late
+            // agent_start can still trigger compensation.
+            if (guard.lifecycleMissingObserved && !guard.compensationRequired) {
+                guard.settled = true;
+                maybeResolveAbortGuard();
+                return;
+            }
+            reject(new Error(`Pi prompt did not settle within ${PI_ABORT_OPERATION_TIMEOUT_MS}ms after abort`));
+        }, Math.max(1, deadlineAt - Date.now()));
+        timer.unref?.();
+        guard = {
+            deadlineAt,
+            lifecycleStartedAtRequest: agentLifecycleStarted,
+            compensationRequired: false,
+            compensationStarted: false,
+            compensationConfirmed: false,
+            lifecycleMissingObserved: false,
+            settled: false,
+            timer,
+            resolve,
+            reject,
+        };
+        return { guard, promise };
+    };
 
     const pumpPromptQueue = (): void => {
         if (piSession.isHistoryTransactionActive) {
@@ -338,6 +413,7 @@ export async function runPi(opts: {
         if (!next) return;
         promptCommandInFlight = true;
         activePromptLocalId = next.localId;
+        agentLifecycleStarted = false;
         const promptId = randomUUID();
         transportEvents?.beginPromptLifecycle(promptId);
         if (next.localId) {
@@ -351,26 +427,53 @@ export async function runPi(opts: {
         onStartupFailure: failNativeStartup,
         conversationHistory,
         onReady: () => piSession.runWhenReady(pumpPromptQueue),
-        onAgentSettled: () => {
-            promptCommandInFlight = false;
-            activePromptLocalId = undefined;
-            pumpPromptQueue();
+        onAgentLifecycleStarted: () => {
+            const wasStarted = agentLifecycleStarted;
+            agentLifecycleStarted = true;
+            const guard = activeAbortGuard;
+            if (!guard || guard.lifecycleStartedAtRequest || wasStarted || guard.compensationStarted) return;
+
+            // Pi 0.83 can acknowledge abort while a prompt is still in async
+            // preflight. If that prompt starts afterwards, compensate only once
+            // now that agent.abort() has an active run to cancel.
+            guard.compensationRequired = true;
+            guard.compensationStarted = true;
+            const remainingMs = Math.floor(guard.deadlineAt - Date.now());
+            if (remainingMs <= 0) {
+                guard.reject(new Error('Pi compensating abort missed the abort deadline'));
+                return;
+            }
+            void sendPiRpcAndWait(piSession, transport, { type: 'abort' }, Math.min(10_000, remainingMs))
+                .then(() => {
+                    if (activeAbortGuard !== guard) return;
+                    guard.compensationConfirmed = true;
+                    maybeResolveAbortGuard();
+                })
+                .catch((error: unknown) => {
+                    if (activeAbortGuard !== guard) return;
+                    const detail = error instanceof Error ? error.message : String(error);
+                    guard.reject(new Error(`Pi compensating abort failed: ${detail}`));
+                });
         },
-        onPromptRejected: () => {
-            promptCommandInFlight = false;
-            activePromptLocalId = undefined;
-            pumpPromptQueue();
+        onAgentSettled: markPromptBoundarySettled,
+        onPromptRejected: (localId) => {
+            const rejectedLocalId = localId ?? activePromptLocalId;
+            if (rejectedLocalId) conversationHistory.rejectPendingEntry(rejectedLocalId);
+            markPromptBoundarySettled();
         },
         onPromptLifecycleMissing: (localId) => {
-            promptCommandInFlight = false;
             const rejectedLocalId = localId ?? activePromptLocalId;
             if (rejectedLocalId) {
-                conversationHistory.rejectPendingEntry(rejectedLocalId, 'prompt');
+                conversationHistory.rejectPendingEntry(rejectedLocalId);
                 if (pendingLocalIds[0] === rejectedLocalId) pendingLocalIds.shift();
                 piSession.emitMessagesConsumed([rejectedLocalId], { clearQueuedThinkingGrace: true });
             }
-            activePromptLocalId = undefined;
-            pumpPromptQueue();
+            if (activeAbortGuard) {
+                activeAbortGuard.lifecycleMissingObserved = true;
+                return false;
+            }
+            markPromptBoundarySettled();
+            return true;
         },
     });
 
@@ -453,54 +556,56 @@ export async function runPi(opts: {
             }
         }
 
-        // Forward changes to Pi process — wait for Pi to confirm before
-        // committing to PiSession or reporting applied, so the hub does not
-        // persist a model/effort that Pi rejected (e.g. invalid provider/model
-        // or thinking level) or that the RPC timed out on.
-        if (requestedModel) {
-            if (requestedModel.modelId && requestedModel.provider) {
-                await sendPiRpcAndWait(piSession, transport, {
-                    type: 'set_model',
-                    provider: requestedModel.provider,
-                    modelId: requestedModel.modelId,
-                });
-                piSession.currentModel = requestedModel.modelId;
-                piSession.currentProvider = requestedModel.provider;
-            } else if (requestedModel.modelId && !requestedModel.provider) {
-                // Provider is unknown until get_state/get_available_models resolve.
-                // Committing now would persist piSelectedModel while Pi never received
-                // set_model — contradicting the "await Pi confirmation" contract above.
-                // Throw so the hub returns 409 and the web client can retry once the
-                // provider is known.
-                logger.debug('[pi] set_model suppressed: provider unknown until get_state');
-                throw new Error('Model cannot be applied yet: provider is not yet known');
-            } else if (requestedModel.modelId === null) {
-                // Clearing the model needs no Pi RPC (nothing to confirm), so commit
-                // immediately. This path is not reachable from the web Pi picker today.
-                piSession.currentModel = null;
-                piSession.currentProvider = null;
+        return await piSession.runRuntimeMutation(async () => {
+            // Forward changes to Pi process — wait for Pi to confirm before
+            // committing to PiSession or reporting applied. The runtime mutation
+            // lock is shared with clone/fork/switch_session so a slow set_model
+            // can never finish against a temporary history branch.
+            if (requestedModel) {
+                if (requestedModel.modelId && requestedModel.provider) {
+                    await sendPiRpcAndWait(piSession, transport, {
+                        type: 'set_model',
+                        provider: requestedModel.provider,
+                        modelId: requestedModel.modelId,
+                    });
+                    piSession.currentModel = requestedModel.modelId;
+                    piSession.currentProvider = requestedModel.provider;
+                } else if (requestedModel.modelId && !requestedModel.provider) {
+                    // Provider is unknown until get_state/get_available_models resolve.
+                    // Committing now would persist piSelectedModel while Pi never received
+                    // set_model — contradicting the "await Pi confirmation" contract above.
+                    // Throw so the hub returns 409 and the web client can retry once the
+                    // provider is known.
+                    logger.debug('[pi] set_model suppressed: provider unknown until get_state');
+                    throw new Error('Model cannot be applied yet: provider is not yet known');
+                } else if (requestedModel.modelId === null) {
+                    // Clearing the model needs no Pi RPC (nothing to confirm), so commit
+                    // immediately. This path is not reachable from the web Pi picker today.
+                    piSession.currentModel = null;
+                    piSession.currentProvider = null;
+                }
             }
-        }
-        if (requestedThinkingLevel !== undefined) {
-            const level = requestedThinkingLevel ?? 'off';
-            await sendPiRpcAndWait(piSession, transport, { type: 'set_thinking_level', level });
-            piSession.currentThinkingLevel = requestedThinkingLevel;
-        }
-        piSession.pushKeepAlive();
+            if (requestedThinkingLevel !== undefined) {
+                const level = requestedThinkingLevel ?? 'off';
+                await sendPiRpcAndWait(piSession, transport, { type: 'set_thinking_level', level });
+                piSession.currentThinkingLevel = requestedThinkingLevel;
+            }
+            piSession.pushKeepAlive();
 
-        // Return provider-qualified model so the hub persists piSelectedModel.
-        // A bare modelId string would make applySessionConfig clear the
-        // provider metadata (object check fails), defeating Fix #3.
-        const appliedModel = piSession.currentModel && piSession.currentProvider
-            ? { provider: piSession.currentProvider, modelId: piSession.currentModel }
-            : piSession.currentModel;
+            // Return provider-qualified model so the hub persists piSelectedModel.
+            // A bare modelId string would make applySessionConfig clear the
+            // provider metadata (object check fails), defeating Fix #3.
+            const appliedModel = piSession.currentModel && piSession.currentProvider
+                ? { provider: piSession.currentProvider, modelId: piSession.currentModel }
+                : piSession.currentModel;
 
-        return {
-            applied: {
-                model: appliedModel,
-                effort: piSession.currentThinkingLevel,
-            },
-        };
+            return {
+                applied: {
+                    model: appliedModel,
+                    effort: piSession.currentThinkingLevel,
+                },
+            };
+        });
     });
 
     // --- Pi model discovery RPC ---
@@ -624,42 +729,135 @@ export async function runPi(opts: {
     // Pi's `abort` command cancels the active turn but the process stays in RPC mode.
     let abortPromise: Promise<{ success: true }> | null = null;
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
-        piSession.assertNoHistoryTransaction('abort Pi');
         if (abortPromise) return await abortPromise;
+        piSession.assertNoHistoryTransaction('abort Pi');
+        const deadlineAt = Date.now() + PI_ABORT_OPERATION_TIMEOUT_MS;
+        abortInFlight = true;
+        transportEvents?.cancelPendingExtensionUi('Pi prompt aborted', { sendResponse: true });
+        const abortedLocalId = activePromptLocalId;
+        const hadActivePrompt = promptCommandInFlight;
+        const hadNativeWork = hadActivePrompt || piSession.piIsStreaming;
+        const abortBoundary = hadActivePrompt ? createAbortGuard(deadlineAt) : null;
+        if (abortBoundary) {
+            activeAbortGuard = abortBoundary.guard;
+            // The runtime lock can be queued behind a config mutation; attach a
+            // handler immediately so a deadline rejection is never unhandled.
+            void abortBoundary.promise.catch(() => {});
+        }
+        // Reserve our mutation slot synchronously, after installing the pump
+        // barrier. A prompt that settles while an older config mutation owns the
+        // lock therefore cannot start the next FIFO item or change our target.
+        const acquireRuntimeMutation = hadNativeWork
+            ? piSession.acquireRuntimeMutation()
+            : null;
+
         abortPromise = (async (): Promise<{ success: true }> => {
-            abortInFlight = true;
-            transportEvents?.cancelPendingExtensionUi('Pi prompt aborted', { sendResponse: true });
-            // Keep the current lifecycle intact until Pi confirms abort. If abort
-            // fails, the canceled extension can still finish through its normal
-            // prompt response or agent-settled path.
-            const abortedLocalId = activePromptLocalId;
+            let releaseRuntimeMutation: (() => void) | null = null;
+            let nativeAbortIssued = false;
+            let firstAbortConfirmed = false;
             try {
-                await sendPiRpcAndWait(piSession, transport, { type: 'abort' });
+                if (!acquireRuntimeMutation) {
+                    return { success: true };
+                }
+
+                let lockTimer: ReturnType<typeof setTimeout> | null = null;
+                try {
+                    releaseRuntimeMutation = await Promise.race([
+                        acquireRuntimeMutation,
+                        new Promise<never>((_, reject) => {
+                            lockTimer = setTimeout(() => reject(new PiRpcTimeoutError(
+                                'abort-lock',
+                                -1,
+                                PI_ABORT_OPERATION_TIMEOUT_MS,
+                            )), Math.max(1, deadlineAt - Date.now()));
+                            lockTimer.unref?.();
+                        }),
+                    ]);
+                } finally {
+                    if (lockTimer) clearTimeout(lockTimer);
+                }
+
+                if (!abortBoundary?.guard.settled) {
+                    const remainingMs = Math.floor(deadlineAt - Date.now());
+                    if (remainingMs <= 0) {
+                        throw new PiRpcTimeoutError('abort', -1, PI_ABORT_OPERATION_TIMEOUT_MS);
+                    }
+                    nativeAbortIssued = true;
+                    await sendPiRpcAndWait(
+                        piSession,
+                        transport,
+                        { type: 'abort' },
+                        Math.min(10_000, remainingMs),
+                    );
+                    firstAbortConfirmed = true;
+                }
+                if (abortBoundary) await abortBoundary.promise;
+                return { success: true };
             } catch (error) {
-                abortInFlight = false;
                 const detail = error instanceof Error ? error.message : String(error);
-                piSession.sendSessionEvent({ type: 'message', message: `Pi abort failed: ${detail}` });
+                const targetSettled = abortBoundary?.guard.settled === true;
+                if (!(error instanceof PiRpcTimeoutError)
+                    && !firstAbortConfirmed
+                    && abortBoundary?.guard.lifecycleMissingObserved) {
+                    try {
+                        // The synthetic 1s command-only fallback was deliberately
+                        // suppressed. Keep the guard alive after an ordinary
+                        // "nothing active" abort error so a genuinely late
+                        // agent_start can still be compensated; otherwise the
+                        // full stability window completes this boundary.
+                        await abortBoundary.promise;
+                        return { success: true };
+                    } catch (guardError) {
+                        const fatal = new Error(`Pi abort failed closed: ${guardError instanceof Error ? guardError.message : String(guardError)}`);
+                        failNativeStartup(fatal);
+                        throw fatal;
+                    }
+                }
+                if (error instanceof PiRpcTimeoutError || firstAbortConfirmed || (!nativeAbortIssued && !targetSettled)) {
+                    const fatal = new Error(`Pi abort failed closed: ${detail}`);
+                    failNativeStartup(fatal);
+                    throw fatal;
+                }
+                if (activeAbortGuard === abortBoundary?.guard) {
+                    clearTimeout(abortBoundary.guard.timer);
+                    activeAbortGuard = null;
+                }
+                abortInFlight = false;
+                if (targetSettled) {
+                    promptCommandInFlight = false;
+                    activePromptLocalId = undefined;
+                    agentLifecycleStarted = false;
+                }
                 pumpPromptQueue();
+                piSession.sendSessionEvent({ type: 'message', message: `Pi abort failed: ${detail}` });
                 throw new Error(`Pi abort failed: ${detail}`);
+            } finally {
+                releaseRuntimeMutation?.();
+                if (!releaseRuntimeMutation && acquireRuntimeMutation) {
+                    void acquireRuntimeMutation.then((lateRelease) => lateRelease());
+                }
+            }
+        })().then((result) => {
+            if (activeAbortGuard === abortBoundary?.guard) {
+                clearTimeout(abortBoundary.guard.timer);
+                activeAbortGuard = null;
             }
             transportEvents?.abortPromptLifecycle();
-            abortInFlight = false;
-            // Pi confirmed abort before we clear the local streaming indicator.
-            // Remove the exact history registration even when turn_start already
-            // consumed the HAPI queued row and removed it from pendingLocalIds.
             if (abortedLocalId) {
-                conversationHistory.rejectPendingEntry(abortedLocalId, 'prompt');
+                conversationHistory.rejectPendingEntry(abortedLocalId);
                 if (pendingLocalIds[0] === abortedLocalId) {
                     pendingLocalIds.shift();
                     piSession.emitMessagesConsumed([abortedLocalId], { clearQueuedThinkingGrace: true });
                 }
             }
             activePromptLocalId = undefined;
+            agentLifecycleStarted = false;
             piSession.updateThinkingState(false);
             promptCommandInFlight = false;
+            abortInFlight = false;
             pumpPromptQueue();
-            return { success: true };
-        })().finally(() => { abortPromise = null; });
+            return result;
+        }).finally(() => { abortPromise = null; });
         return await abortPromise;
     });
 
@@ -710,12 +908,14 @@ export async function runPi(opts: {
         if (startupThinkingLevel) {
             void (async () => {
                 try {
-                    await sendPiRpcAndWait(piSession, transport, {
-                        type: 'set_thinking_level',
-                        level: startupThinkingLevel,
+                    await piSession.runRuntimeMutation(async () => {
+                        await sendPiRpcAndWait(piSession, transport, {
+                            type: 'set_thinking_level',
+                            level: startupThinkingLevel,
+                        });
+                        piSession.currentThinkingLevel = startupThinkingLevel;
+                        piSession.pushKeepAlive();
                     });
-                    piSession.currentThinkingLevel = startupThinkingLevel;
-                    piSession.pushKeepAlive();
                     logger.debug(`[pi] Startup effort applied: ${startupThinkingLevel}`);
                 } catch (error) {
                     logger.debug(`[pi] Startup effort rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);

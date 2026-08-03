@@ -7,13 +7,23 @@ import {
     type ConversationHistoryCapabilityStates
 } from '@hapi/protocol/conversationHistory'
 import type { ForkConversationRpcResult, RewindConversationRpcResult } from '@hapi/protocol/apiTypes'
-import type { PiSession } from './session'
+import { PI_THINKING_LEVELS } from '@hapi/protocol'
+import type { PiThinkingLevel } from './types'
+import type { PiNativeRuntimeState, PiSession } from './session'
 
-type PiRpc = (command: Record<string, unknown>) => Promise<unknown>
+/** Keep the complete native history transaction below the Hub's 120s ceiling. */
+export const PI_HISTORY_OPERATION_TIMEOUT_MS = 110_000
+const PI_HISTORY_RESTORE_RESERVE_MS = 10_000
+
+type PiRpc = (command: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>
 
 type PiIdentity = {
     sessionId: string
     sessionFile: string
+}
+
+type PiState = PiIdentity & {
+    runtime: PiNativeRuntimeState
 }
 
 type PiEntry = {
@@ -24,7 +34,6 @@ type PiEntry = {
 
 type PendingUserEntry = {
     localId: string
-    kind: 'prompt' | 'steer'
 }
 
 /** Source identity could not be restored; caller must terminate this Pi wrapper. */
@@ -32,6 +41,20 @@ export class PiHistoryRestoreError extends Error {
     constructor(message: string) {
         super(message)
         this.name = 'PiHistoryRestoreError'
+    }
+}
+
+class PiHistoryDeadlineError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'PiHistoryDeadlineError'
+    }
+}
+
+class PiHistoryIndeterminateMutationError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'PiHistoryIndeterminateMutationError'
     }
 }
 
@@ -50,18 +73,47 @@ function isUnknownCommand(error: unknown): boolean {
     return /unknown command|method not found|-32601/i.test(message)
 }
 
+/**
+ * PiRpcResolver currently emits this message for elapsed requests. Keep this
+ * matcher deliberately narrow so ordinary native errors still use the normal
+ * source-restore path. A typed error name is supported for adapters/tests.
+ */
+function isPiRpcTimeout(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+    return error.name === 'PiRpcTimeoutError'
+        || /^Pi RPC \S+ \(id=\d+\) timed out after \d+ms$/.test(error.message)
+}
+
 function wasCancelled(data: unknown): boolean {
     return asRecord(data)?.cancelled === true
 }
 
-function readIdentity(data: unknown): PiIdentity {
+function readState(data: unknown): PiState {
     const state = asRecord(data)
     const sessionId = asString(state?.sessionId)
     const sessionFile = asString(state?.sessionFile)
     if (!sessionId || !sessionFile) {
         throw new Error('Pi get_state did not return sessionId and sessionFile')
     }
-    return { sessionId, sessionFile }
+    const model = asRecord(state?.model)
+    const thinkingLevel = asString(state?.thinkingLevel)
+    const hasModelId = model !== null && ('id' in model || 'modelId' in model)
+    const hasProvider = model !== null && 'provider' in model
+    return {
+        sessionId,
+        sessionFile,
+        runtime: {
+            model: hasModelId ? asString(model.id) ?? asString(model.modelId) ?? null : undefined,
+            provider: hasProvider ? asString(model.provider) ?? null : undefined,
+            thinkingLevel: thinkingLevel && PI_THINKING_LEVELS.includes(thinkingLevel as PiThinkingLevel)
+                ? thinkingLevel as PiThinkingLevel
+                : undefined,
+            steeringMode: state?.steeringMode === 'all' || state?.steeringMode === 'one-at-a-time'
+                ? state.steeringMode
+                : undefined,
+            isStreaming: typeof state?.isStreaming === 'boolean' ? state.isStreaming : undefined,
+        },
+    }
 }
 
 function readEntries(data: unknown): { entries: PiEntry[]; leafId: string | null } {
@@ -143,18 +195,13 @@ export class PiConversationHistory {
     }
 
     registerPrompt(localId: string | undefined): void {
-        this.registerUserEntry(localId, 'prompt')
+        if (localId) this.pendingUserEntries.push({ localId })
     }
 
-    /** Steer is persisted as a Pi user entry once accepted, just like prompt. */
-    registerSteer(localId: string | undefined): void {
-        this.registerUserEntry(localId, 'steer')
-    }
-
-    /** Remove a rejected/aborted entry by exact localId; never cross-consume kinds. */
-    rejectPendingEntry(localId: string | undefined, kind: PendingUserEntry['kind']): void {
+    /** Remove a rejected/aborted local FIFO entry by exact localId. */
+    rejectPendingEntry(localId: string | undefined): void {
         if (!localId) return
-        const index = this.pendingUserEntries.findIndex((entry) => entry.localId === localId && entry.kind === kind)
+        const index = this.pendingUserEntries.findIndex((entry) => entry.localId === localId)
         if (index !== -1) this.pendingUserEntries.splice(index, 1)
     }
 
@@ -190,11 +237,14 @@ export class PiConversationHistory {
         } while (this.syncRequestedWhileInFlight && !this.session.isHistoryTransactionActive)
     }
 
-    private async syncEntriesOnce(): Promise<void> {
+    private async syncEntriesOnce(timeoutMs?: number): Promise<void> {
         const generation = this.syncGeneration
-        const data = await this.rpc(this.appendCursor
-            ? { type: 'get_entries', since: this.appendCursor }
-            : { type: 'get_entries' })
+        const data = await this.rpc(
+            this.appendCursor
+                ? { type: 'get_entries', since: this.appendCursor }
+                : { type: 'get_entries' },
+            timeoutMs,
+        )
         if (generation !== this.syncGeneration) return
         const result = readEntries(data)
         for (const entry of result.entries) this.observeParsedEntry(entry)
@@ -230,8 +280,8 @@ export class PiConversationHistory {
         if (messageLocalId) return await this.forkHistorical(messageLocalId)
         if (this.states.forkCurrent === 'unsupported') throw new Error('Fork current is not supported')
 
-        return await this.withSourceRestored('forkCurrent', async (source) => {
-            const clone = await this.cloneAndReadIdentity(source)
+        return await this.withSourceRestored('forkCurrent', async (source, deadlineAt, markMutationIssued) => {
+            const clone = await this.cloneAndReadIdentity(source, deadlineAt, markMutationIssued)
             return { nativeSessionId: clone.sessionId }
         })
     }
@@ -255,29 +305,38 @@ export class PiConversationHistory {
             transaction.release()
             return { success: false, error: transaction.rejection, outcome: 'rejected' }
         }
-        const { release } = transaction
-        let source: PiIdentity | null = null
+        const { release, deadlineAt } = transaction
+        let source: PiState | null = null
         let committed = false
+        let mutationIssued = false
+        let mutationCompleted = false
         let rollbackRewindMetadata = false
+        let indeterminateTimeout: unknown
         const locatorSnapshot = this.captureLocatorState()
         let success: Extract<RewindConversationRpcResult, { success: true }> | null = null
         let failure: { error: string; outcome: 'rejected' | 'cancelled' | 'source_restored' } | null = null
         try {
-            source = await this.getState()
-            const forkMessages = await this.rpc({ type: 'get_fork_messages' })
+            source = await this.getState(deadlineAt)
+            const forkMessages = await this.rpcWithinDeadline({ type: 'get_fork_messages' }, deadlineAt)
             if (!containsForkEntry(forkMessages, entryId)) {
                 throw new Error('Pi rewind point is no longer available')
             }
-            const result = await this.rpc({ type: 'fork', entryId })
+            const result = await this.nativeMutation(
+                { type: 'fork', entryId },
+                deadlineAt,
+                true,
+                () => { mutationIssued = true },
+            )
+            mutationCompleted = true
             if (wasCancelled(result)) {
                 failure = { error: 'Pi rewind was cancelled', outcome: 'cancelled' }
                 throw new Error(failure.error)
             }
-            const forked = await this.getState()
+            const forked = await this.getState(deadlineAt)
             this.assertDistinctIdentity(source, forked, 'Pi rewind')
-            const entries = readEntries(await this.rpc({ type: 'get_entries' }))
-            this.commitRewindIdentity(forked, entries)
-            if (!await this.session.flushMetadata()) {
+            const entries = readEntries(await this.rpcWithinDeadline({ type: 'get_entries' }, deadlineAt))
+            this.commitRewindState(forked, entries)
+            if (!await this.session.flushMetadata(Math.min(5_000, this.remainingMs(deadlineAt)))) {
                 rollbackRewindMetadata = true
                 throw new Error('Pi rewind metadata did not persist')
             }
@@ -285,6 +344,13 @@ export class PiConversationHistory {
             this.states = markSupported(this.states, 'rewindToMessage')
             success = { success: true, truncateFromLocalId: messageLocalId, messages: [] }
         } catch (error) {
+            if (error instanceof PiHistoryIndeterminateMutationError) {
+                indeterminateTimeout = error
+            } else if (mutationCompleted && (isPiRpcTimeout(error) || error instanceof PiHistoryDeadlineError)) {
+                indeterminateTimeout = new PiHistoryIndeterminateMutationError(
+                    `Pi rewind completed but its resulting state is indeterminate: ${error instanceof Error ? error.message : String(error)}`,
+                )
+            }
             if (!failure) {
                 failure = {
                     error: error instanceof Error ? error.message : String(error),
@@ -294,25 +360,34 @@ export class PiConversationHistory {
             if (isUnknownCommand(error)) this.states = markUnsupported(this.states, 'rewindToMessage')
         } finally {
             let restoreError: unknown
+            let restoredSource: PiState | null = null
             // Before commit this is a failed transaction and the old source must
             // remain active. After commit, the branched Pi session *is* rewind.
-            if (!committed && source) {
+            // A timeout is indeterminate: Pi may have committed its native
+            // mutation after the client gave up. Do not issue a momentary
+            // get_state/switch classification against an unknown active branch.
+            if (!indeterminateTimeout && !committed && source && mutationIssued) {
                 try {
-                    await this.restoreSource(source)
+                    const restored = await this.restoreSource(source, deadlineAt)
+                    restoredSource = restored
+                    this.session.applyNativeRuntimeState(restored.runtime)
                 } catch (error) {
                     restoreError = error
                 }
             }
-            if (!restoreError && rollbackRewindMetadata && source) {
+            if (!restoreError && rollbackRewindMetadata && restoredSource) {
                 this.restoreLocatorState(locatorSnapshot)
-                this.session.commitNativeSessionIdentity(source, (metadata) =>
+                this.session.commitNativeSessionState(restoredSource, restoredSource.runtime, (metadata) =>
                     this.metadataWithLocators(metadata, locatorSnapshot.entryIds, locatorSnapshot.points)
                 )
-                if (!await this.session.flushMetadata()) {
+                if (!await this.session.flushMetadata(Math.min(5_000, this.remainingMs(deadlineAt)))) {
                     restoreError = new Error('Pi rewind metadata rollback did not persist')
                 }
             }
-            release({ drain: !restoreError })
+            release({ drain: !restoreError && !indeterminateTimeout })
+            if (indeterminateTimeout) {
+                throw new PiHistoryRestoreError(`Pi rewind timed out with indeterminate native state: ${indeterminateTimeout instanceof Error ? indeterminateTimeout.message : String(indeterminateTimeout)}`)
+            }
             if (restoreError) {
                 await this.publishCapabilities?.().catch(() => {})
                 throw new PiHistoryRestoreError(`Pi rewind failed closed: source session restoration failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`)
@@ -335,31 +410,53 @@ export class PiConversationHistory {
         const entryId = this.entryIdByLocalId.get(messageLocalId)
         if (!entryId) throw new Error(`No native history point for message ${messageLocalId}`)
 
-        return await this.withSourceRestored('forkAtMessage', async (source) => {
-            const result = await this.rpc({ type: 'fork', entryId })
-            if (wasCancelled(result)) throw new Error('Pi historical fork was cancelled')
-            const afterFork = await this.getState()
-            this.assertDistinctIdentity(source, afterFork, 'Pi historical fork')
-            return { nativeSessionId: afterFork.sessionId }
+        return await this.withSourceRestored('forkAtMessage', async (source, deadlineAt, markMutationIssued) => {
+            let mutationCompleted = false
+            try {
+                const result = await this.nativeMutation(
+                    { type: 'fork', entryId },
+                    deadlineAt,
+                    true,
+                    markMutationIssued,
+                )
+                mutationCompleted = true
+                if (wasCancelled(result)) throw new Error('Pi historical fork was cancelled')
+                const afterFork = await this.getState(deadlineAt)
+                this.assertDistinctIdentity(source, afterFork, 'Pi historical fork')
+                return { nativeSessionId: afterFork.sessionId }
+            } catch (error) {
+                if (mutationCompleted && (isPiRpcTimeout(error) || error instanceof PiHistoryDeadlineError)) {
+                    throw new PiHistoryIndeterminateMutationError(
+                        `Pi historical fork completed but its resulting state is indeterminate: ${error instanceof Error ? error.message : String(error)}`,
+                    )
+                }
+                throw error
+            }
         })
     }
 
-    private async withSourceRestored<T>(capability: keyof ConversationHistoryCapabilityStates, work: (source: PiIdentity) => Promise<T>): Promise<T> {
+    private async withSourceRestored<T>(
+        capability: keyof ConversationHistoryCapabilityStates,
+        work: (source: PiState, deadlineAt: number, markMutationIssued: () => void) => Promise<T>,
+    ): Promise<T> {
         const transaction = await this.beginHistoryTransaction()
         if (transaction.rejection) {
             transaction.release()
             throw new Error(transaction.rejection)
         }
-        const { release } = transaction
-        let source: PiIdentity | null = null
+        const { release, deadlineAt } = transaction
+        let source: PiState | null = null
         let outcome: T | undefined
         let operationError: unknown
+        let indeterminateTimeout: unknown
+        let mutationIssued = false
         try {
-            source = await this.getState()
-            outcome = await work(source)
+            source = await this.getState(deadlineAt)
+            outcome = await work(source, deadlineAt, () => { mutationIssued = true })
             this.states = markSupported(this.states, capability)
         } catch (error) {
             operationError = error
+            if (error instanceof PiHistoryIndeterminateMutationError) indeterminateTimeout = error
             if (isUnknownCommand(error)) {
                 this.states = markUnsupported(this.states, capability)
                 // Both fork flows start with Pi's clone command; a real
@@ -371,14 +468,20 @@ export class PiConversationHistory {
             }
         } finally {
             let restoreError: unknown
-            if (source) {
+            // A timed-out native mutation could have completed late. Any read or
+            // switch used to classify it is itself a divergent mutation race.
+            if (!indeterminateTimeout && source && mutationIssued) {
                 try {
-                    await this.restoreSource(source)
+                    const restored = await this.restoreSource(source, deadlineAt)
+                    this.session.applyNativeRuntimeState(restored.runtime)
                 } catch (error) {
                     restoreError = error
                 }
             }
-            release({ drain: !restoreError })
+            release({ drain: !restoreError && !indeterminateTimeout })
+            if (indeterminateTimeout) {
+                throw new PiHistoryRestoreError(`Pi history operation timed out with indeterminate native state: ${indeterminateTimeout instanceof Error ? indeterminateTimeout.message : String(indeterminateTimeout)}`)
+            }
             if (restoreError) {
                 await this.publishCapabilities?.().catch(() => {})
                 throw new PiHistoryRestoreError(`Pi history operation failed closed: source session restoration failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`)
@@ -394,6 +497,63 @@ export class PiConversationHistory {
         if (this.session.piIsStreaming) throw new Error('Pi session is busy')
     }
 
+    private remainingMs(deadlineAt: number, reserveMs: number = 0): number {
+        const remaining = Math.floor(deadlineAt - Date.now() - reserveMs)
+        if (remaining <= 0) {
+            throw new PiHistoryDeadlineError('Pi history operation exceeded its transaction deadline')
+        }
+        return remaining
+    }
+
+    private async rpcWithinDeadline(
+        command: Record<string, unknown>,
+        deadlineAt: number,
+        reserveMs: number = 0,
+    ): Promise<unknown> {
+        return await this.rpc(command, this.remainingMs(deadlineAt, reserveMs))
+    }
+
+    private async nativeMutation(
+        command: Record<string, unknown>,
+        deadlineAt: number,
+        reserveRestore: boolean = true,
+        onIssued?: () => void,
+    ): Promise<unknown> {
+        const timeoutMs = this.remainingMs(
+            deadlineAt,
+            reserveRestore ? PI_HISTORY_RESTORE_RESERVE_MS : 0,
+        )
+        onIssued?.()
+        try {
+            return await this.rpc(command, timeoutMs)
+        } catch (error) {
+            if (isPiRpcTimeout(error)) {
+                throw new PiHistoryIndeterminateMutationError(
+                    `Pi ${String(command.type)} timed out with indeterminate native state: ${error instanceof Error ? error.message : String(error)}`,
+                )
+            }
+            throw error
+        }
+    }
+
+    private async waitWithinDeadline<T>(promise: Promise<T>, deadlineAt: number, operation: string): Promise<T> {
+        const timeoutMs = this.remainingMs(deadlineAt)
+        let timer: ReturnType<typeof setTimeout> | null = null
+        try {
+            return await Promise.race([
+                promise,
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new PiHistoryDeadlineError(
+                        `Pi history operation timed out while waiting to ${operation}`,
+                    )), timeoutMs)
+                    timer.unref?.()
+                }),
+            ])
+        } finally {
+            if (timer) clearTimeout(timer)
+        }
+    }
+
     /**
      * Lock new prompts before waiting for old reads, then take one final source
      * snapshot. This closes the mapping race between Pi persistence and a
@@ -401,34 +561,86 @@ export class PiConversationHistory {
      */
     private async beginHistoryTransaction(): Promise<{
         release: (options?: { drain?: boolean }) => void
+        deadlineAt: number
         rejection?: string
     }> {
-        const release = this.session.beginHistoryTransaction()
+        const deadlineAt = Date.now() + PI_HISTORY_OPERATION_TIMEOUT_MS
+        // The history gate is intentionally acquired before the first await.
+        // This queues later runtime mutations behind us while an already-active
+        // config/abort mutation drains, closing the final-sync/fork race.
+        const releaseHistoryGate = this.session.beginHistoryTransaction()
+        let releaseRuntimeMutation: (() => void) | null = null
+        let released = false
+        const release = (options?: { drain?: boolean }) => {
+            if (released) return
+            released = true
+            // Drain (or discard) prompt work while the runtime mutex remains
+            // held, then make the next config/abort mutation eligible.
+            releaseHistoryGate(options)
+            releaseRuntimeMutation?.()
+        }
         try {
-            await this.syncInFlight
-            await this.syncEntriesOnce()
-            if (!await this.session.flushMetadata()) {
-                return { release, rejection: 'Pi history metadata did not persist before native fork' }
+            const acquireRuntimeMutation = this.session.acquireRuntimeMutation()
+            try {
+                releaseRuntimeMutation = await this.waitWithinDeadline(
+                    acquireRuntimeMutation,
+                    deadlineAt,
+                    'acquire the runtime mutation lock',
+                )
+            } catch (error) {
+                // The FIFO mutex acquisition cannot be cancelled. Release its
+                // eventual lease immediately so a timed-out history request
+                // cannot wedge later config/abort operations.
+                void acquireRuntimeMutation.then((lateRelease) => lateRelease())
+                throw error
+            }
+            if (this.syncInFlight) {
+                await this.waitWithinDeadline(this.syncInFlight, deadlineAt, 'finish the previous history sync')
+            }
+            await this.syncEntriesOnce(this.remainingMs(deadlineAt))
+            if (!await this.session.flushMetadata(Math.min(5_000, this.remainingMs(deadlineAt)))) {
+                return { release, deadlineAt, rejection: 'Pi history metadata did not persist before native fork' }
             }
         } catch (error) {
             return {
                 release,
+                deadlineAt,
                 rejection: `Pi history synchronization failed: ${error instanceof Error ? error.message : String(error)}`
             }
         }
         if (this.pendingUserEntries.length > 0) {
-            return { release, rejection: 'Pi session has pending user entries' }
+            return { release, deadlineAt, rejection: 'Pi session has pending user entries' }
         }
         this.invalidatePendingSync()
-        return { release }
+        return { release, deadlineAt }
     }
 
-    private async cloneAndReadIdentity(source: PiIdentity): Promise<PiIdentity> {
-        const cloned = await this.rpc({ type: 'clone' })
-        if (wasCancelled(cloned)) throw new Error('Pi clone was cancelled')
-        const clone = await this.getState()
-        this.assertDistinctIdentity(source, clone, 'Pi clone')
-        return clone
+    private async cloneAndReadIdentity(
+        source: PiState,
+        deadlineAt: number,
+        markMutationIssued: () => void,
+    ): Promise<PiState> {
+        let mutationCompleted = false
+        try {
+            const cloned = await this.nativeMutation(
+                { type: 'clone' },
+                deadlineAt,
+                true,
+                markMutationIssued,
+            )
+            mutationCompleted = true
+            if (wasCancelled(cloned)) throw new Error('Pi clone was cancelled')
+            const clone = await this.getState(deadlineAt)
+            this.assertDistinctIdentity(source, clone, 'Pi clone')
+            return clone
+        } catch (error) {
+            if (mutationCompleted && (isPiRpcTimeout(error) || error instanceof PiHistoryDeadlineError)) {
+                throw new PiHistoryIndeterminateMutationError(
+                    `Pi clone completed but its resulting state is indeterminate: ${error instanceof Error ? error.message : String(error)}`,
+                )
+            }
+            throw error
+        }
     }
 
     private assertDistinctIdentity(source: PiIdentity, next: PiIdentity, operation: string): void {
@@ -438,7 +650,7 @@ export class PiConversationHistory {
     }
 
     /** Reset the append cursor and retain only Pi entry mappings copied into the new branch. */
-    private commitRewindIdentity(identity: PiIdentity, entries: { entries: PiEntry[]; leafId: string | null }): void {
+    private commitRewindState(state: PiState, entries: { entries: PiEntry[]; leafId: string | null }): void {
         const validEntryIds = new Set(entries.entries.map((entry) => entry.id))
         for (const [localId, entryId] of this.entryIdByLocalId.entries()) {
             if (!validEntryIds.has(entryId)) this.entryIdByLocalId.delete(localId)
@@ -448,7 +660,7 @@ export class PiConversationHistory {
         this.invalidatePendingSync()
         const entryIds = this.getEntryIds()
         const points = this.getHistoryPoints()
-        this.session.commitNativeSessionIdentity(identity, (metadata) => this.metadataWithLocators(metadata, entryIds, points))
+        this.session.commitNativeSessionState(state, state.runtime, (metadata) => this.metadataWithLocators(metadata, entryIds, points))
     }
 
     private captureLocatorState(): {
@@ -485,19 +697,26 @@ export class PiConversationHistory {
         return next
     }
 
-    private async restoreSource(source: PiIdentity): Promise<void> {
-        const current = await this.getState()
-        if (current.sessionId === source.sessionId && current.sessionFile === source.sessionFile) return
-        const switched = await this.rpc({ type: 'switch_session', sessionPath: source.sessionFile })
+    private async restoreSource(source: PiState, deadlineAt: number): Promise<PiState> {
+        const current = await this.getState(deadlineAt)
+        if (current.sessionId === source.sessionId && current.sessionFile === source.sessionFile) return current
+        const switched = await this.nativeMutation(
+            { type: 'switch_session', sessionPath: source.sessionFile },
+            deadlineAt,
+            false,
+        )
         if (wasCancelled(switched)) throw new Error('Pi source session restoration was cancelled')
-        const restored = await this.getState()
+        const restored = await this.getState(deadlineAt)
         if (restored.sessionId !== source.sessionId || restored.sessionFile !== source.sessionFile) {
             throw new Error('Pi source session restoration returned a different identity')
         }
+        return restored
     }
 
-    private async getState(): Promise<PiIdentity> {
-        return readIdentity(await this.rpc({ type: 'get_state' }))
+    private async getState(deadlineAt?: number): Promise<PiState> {
+        return readState(await (deadlineAt === undefined
+            ? this.rpc({ type: 'get_state' })
+            : this.rpcWithinDeadline({ type: 'get_state' }, deadlineAt)))
     }
 
     private observeParsedEntry(entry: PiEntry): void {
@@ -520,10 +739,6 @@ export class PiConversationHistory {
                 [localId]: entry.id,
             },
         }))
-    }
-
-    private registerUserEntry(localId: string | undefined, kind: PendingUserEntry['kind']): void {
-        if (localId) this.pendingUserEntries.push({ localId, kind })
     }
 
     private invalidatePendingSync(): void {

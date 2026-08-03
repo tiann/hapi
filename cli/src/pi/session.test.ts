@@ -185,3 +185,56 @@ describe('PiSession history transaction gate', () => {
         expect(session.isHistoryTransactionActive).toBe(false);
     });
 });
+
+describe('PiSession runtime mutation mutex', () => {
+    it('serializes config-like mutations FIFO and releases after the active mutation settles', async () => {
+        const session = createMockSession();
+        const order: string[] = [];
+        let finishFirst!: () => void;
+
+        const first = session.runRuntimeMutation(async () => {
+            order.push('first-start');
+            await new Promise<void>((resolve) => { finishFirst = resolve; });
+            order.push('first-end');
+        });
+        const second = session.runRuntimeMutation(async () => {
+            order.push('second-start');
+        });
+
+        await vi.waitFor(() => expect(order).toEqual(['first-start']));
+        expect(order).not.toContain('second-start');
+
+        finishFirst();
+        await Promise.all([first, second]);
+
+        expect(order).toEqual(['first-start', 'first-end', 'second-start']);
+    });
+});
+
+describe('PiSession native runtime reconciliation', () => {
+    it('preserves an omitted provider only when the reported model is unchanged', () => {
+        const session = createMockSession();
+        session.currentModel = 'same-model';
+        session.currentProvider = 'known-provider';
+
+        session.applyNativeRuntimeState({ model: 'same-model' });
+        expect(session.currentProvider).toBe('known-provider');
+
+        session.applyNativeRuntimeState({ model: 'different-model' });
+        expect(session.currentProvider).toBeNull();
+    });
+
+    it('infers an omitted provider only from a unique available-model match', () => {
+        const session = createMockSession();
+        session.currentModel = 'old-model';
+        session.currentProvider = 'old-provider';
+        session.cachedPiModels = [
+            { modelId: 'new-model', provider: 'new-provider' },
+            { modelId: 'other-model', provider: 'other-provider' },
+        ];
+
+        session.applyNativeRuntimeState({ model: 'new-model' });
+
+        expect(session.currentProvider).toBe('new-provider');
+    });
+});

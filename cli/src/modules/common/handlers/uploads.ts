@@ -7,6 +7,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 import { getHapiBlobsDir } from '@/constants/uploadPaths'
+import { MAX_UPLOAD_BYTES } from '../attachmentLimits'
 
 interface UploadFileRequest {
     sessionId?: string
@@ -24,7 +25,6 @@ const uploadDirs = new Map<string, string>()
 const uploadDirPromises = new Map<string, Promise<string>>()
 const uploadDirCleanupRequested = new Set<string>()
 let cleanupRegistered = false
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 function sanitizeFilename(filename: string): string {
     // Remove path separators and limit length

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PiExtensionUiHandler } from './extensionUiHandler';
+import { getExtensionUiCleanupTimeout, PiExtensionUiHandler } from './extensionUiHandler';
 
 type PermissionHandler = (response: unknown) => Promise<void>;
 
@@ -63,17 +63,38 @@ describe('PiExtensionUiHandler', () => {
         expect(harness.state().requests).toMatchObject({
             'editor-1': { arguments: { questions: [{ inputType: 'editor', prefill: 'existing text' }] } },
         });
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(harness.sendResponse).not.toHaveBeenCalled();
         harness.handler.cancelAll('session shutdown');
         expect(harness.sendResponse).toHaveBeenCalledWith({ type: 'extension_ui_response', id: 'editor-1', cancelled: true });
         expect(harness.state().completedRequests).toMatchObject({ 'editor-1': { status: 'canceled', decision: 'abort' } });
 
         harness.handler.handle({ type: 'extension_ui_request', id: 'input-1', method: 'input', title: 'Name', placeholder: 'Ada', timeout: 50 });
-        await vi.advanceTimersByTimeAsync(50);
+        await vi.advanceTimersByTimeAsync(38);
         expect(harness.sendResponse).toHaveBeenLastCalledWith({ type: 'extension_ui_response', id: 'input-1', cancelled: true });
 
         harness.handler.handle({ type: 'extension_ui_request', id: 'no-timeout', method: 'input', title: 'Name', timeout: 0 });
         await vi.advanceTimersByTimeAsync(1_000);
         expect(harness.sendResponse).not.toHaveBeenLastCalledWith({ type: 'extension_ui_response', id: 'no-timeout', cancelled: true });
+    });
+
+    it('reserves a capped proportional margin before Pi expires the dialog', async () => {
+        vi.useFakeTimers();
+        expect(getExtensionUiCleanupTimeout(undefined)).toBeUndefined();
+        expect(getExtensionUiCleanupTimeout(0)).toBeUndefined();
+        expect(getExtensionUiCleanupTimeout(0.5)).toBe(0);
+        expect(getExtensionUiCleanupTimeout(1)).toBe(0);
+        expect(getExtensionUiCleanupTimeout(2)).toBe(1);
+        expect(getExtensionUiCleanupTimeout(50)).toBe(38);
+        expect(getExtensionUiCleanupTimeout(1_000)).toBe(900);
+        expect(getExtensionUiCleanupTimeout(100_000)).toBe(95_000);
+
+        const harness = createHarness();
+        harness.handler.handle({ type: 'extension_ui_request', id: 'margin-1', method: 'input', title: 'Name', timeout: 1_000 });
+        await vi.advanceTimersByTimeAsync(899);
+        expect(harness.sendResponse).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(harness.sendResponse).toHaveBeenCalledWith({ type: 'extension_ui_response', id: 'margin-1', cancelled: true });
     });
 
     it('puts notify on the timeline and ignores unsupported transient UI operations', () => {

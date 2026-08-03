@@ -5,6 +5,19 @@ import type { PiModelSummary } from '@hapi/protocol/apiTypes';
 import type { PiRpcResolver } from './loop';
 
 /**
+ * The parts of `get_state` which must move atomically with a native session
+ * identity transition. `undefined` means the Pi version did not report that
+ * field, so an already-confirmed value must remain intact.
+ */
+export type PiNativeRuntimeState = {
+    model?: string | null;
+    provider?: string | null;
+    thinkingLevel?: PiThinkingLevel | null;
+    steeringMode?: 'all' | 'one-at-a-time';
+    isStreaming?: boolean;
+};
+
+/**
  * Pi session state and hub communication wrapper.
  *
  * Unlike other agents that extend AgentSessionBase (which requires MessageQueue2),
@@ -61,6 +74,11 @@ export class PiSession {
     private nativeReadyPreparation: (() => Promise<void>) | null = null;
     private nativeReadyPreparationStarted = false;
     private historyTransaction: symbol | null = null;
+    // All commands that mutate the native Pi runtime (history clone/fork/switch,
+    // model/thinking changes, and abort) share one FIFO lock. A history action
+    // closes its prompt gate before waiting on this tail, which prevents a later
+    // runtime mutation from slipping between its final source sync and fork.
+    private runtimeMutationTail: Promise<void> = Promise.resolve();
     // Buffered sends carry their localId so a cancel-queued-message that arrives
     // while a prompt is still held (before drain) can drop it instead of firing
     // a cancelled prompt on markReady (issue #1143 review — MAJOR).
@@ -137,6 +155,37 @@ export class PiSession {
         };
     }
 
+    /**
+     * Acquire exclusive ownership of the native Pi runtime. Callers which need
+     * a transaction spanning multiple RPCs (conversation history) can retain
+     * the release callback; single RPC handlers should use runRuntimeMutation.
+     */
+    async acquireRuntimeMutation(): Promise<() => void> {
+        const previous = this.runtimeMutationTail;
+        let releaseCurrent!: () => void;
+        this.runtimeMutationTail = new Promise<void>((resolve) => {
+            releaseCurrent = resolve;
+        });
+        await previous;
+
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            releaseCurrent();
+        };
+    }
+
+    /** Serialize one Pi runtime mutation behind any active history operation. */
+    async runRuntimeMutation<T>(operation: () => Promise<T>): Promise<T> {
+        const release = await this.acquireRuntimeMutation();
+        try {
+            return await operation();
+        } finally {
+            release();
+        }
+    }
+
     assertNoHistoryTransaction(operation: string): void {
         if (this.historyTransaction) {
             throw new Error(`Cannot ${operation} while a conversation history action is in progress`);
@@ -166,15 +215,73 @@ export class PiSession {
         identity: { sessionId: string; sessionFile: string },
         metadataUpdater?: (metadata: Metadata) => Metadata,
     ): void {
+        this.commitNativeSessionState(identity, {}, metadataUpdater);
+    }
+
+    /**
+     * Commit a confirmed get_state snapshot after a native session transition.
+     * This intentionally updates runtime values before metadata is made visible
+     * so the next keepAlive cannot report the old branch configuration.
+     */
+    commitNativeSessionState(
+        identity: { sessionId: string; sessionFile: string },
+        runtime: PiNativeRuntimeState,
+        metadataUpdater?: (metadata: Metadata) => Metadata,
+    ): void {
         this.expectedNativeSessionId = identity.sessionId;
         this.currentNativeSessionFile = identity.sessionFile;
-        this.updateMetadata((metadata) => metadataUpdater?.({
-            ...metadata,
-            piSessionId: identity.sessionId,
-        }) ?? {
-            ...metadata,
-            piSessionId: identity.sessionId,
+        this.applyNativeRuntimeState(runtime);
+        this.updateMetadata((metadata) => {
+            let next = metadataUpdater?.({
+                ...metadata,
+                piSessionId: identity.sessionId,
+            }) ?? {
+                ...metadata,
+                piSessionId: identity.sessionId,
+            };
+            // A get_state model/provider pair is the authoritative provider-
+            // qualified selection for the newly active native branch. Preserve
+            // existing metadata only when an older Pi omitted both fields.
+            if (runtime.model !== undefined || runtime.provider !== undefined) {
+                next = { ...next };
+                delete next.piSelectedModel;
+                if (this.currentModel && this.currentProvider) {
+                    next.piSelectedModel = {
+                        provider: this.currentProvider,
+                        modelId: this.currentModel,
+                    };
+                }
+            }
+            return next;
         });
+    }
+
+    /** Apply a confirmed state snapshot without changing native identity metadata. */
+    applyNativeRuntimeState(runtime: PiNativeRuntimeState): void {
+        if (runtime.model !== undefined) {
+            if (runtime.provider === undefined && runtime.model !== this.currentModel) {
+                if (runtime.model === null) {
+                    this.currentProvider = null;
+                } else {
+                    const matchingProviders = new Set(
+                        this.cachedPiModels
+                            .filter((model) => model.modelId === runtime.model)
+                            .map((model) => model.provider),
+                    );
+                    // Never combine a newly reported model id with the previous
+                    // branch's provider. Infer only from an unambiguous catalog.
+                    this.currentProvider = matchingProviders.size === 1
+                        ? matchingProviders.values().next().value ?? null
+                        : null;
+                }
+            }
+            this.currentModel = runtime.model;
+        }
+        if (runtime.provider !== undefined) this.currentProvider = runtime.provider;
+        if (runtime.thinkingLevel !== undefined) this.currentThinkingLevel = runtime.thinkingLevel;
+        if (runtime.steeringMode !== undefined) this.currentSteeringMode = runtime.steeringMode;
+        if (runtime.isStreaming !== undefined) this.piIsStreaming = runtime.isStreaming;
+        this.pushKeepAlive();
     }
 
     /** Wait for queued metadata writes before exposing a native history result. */
