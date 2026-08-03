@@ -38,7 +38,7 @@ vi.mock('./piMessageAccumulator', () => {
     };
 });
 
-function createMockSession(): PiSession {
+function createMockSession(model?: string): PiSession {
     return new PiSession({
         api: {} as any,
         client: {
@@ -56,6 +56,7 @@ function createMockSession(): PiSession {
         logPath: '/tmp/test.log',
         startedBy: 'terminal',
         startingMode: 'local',
+        model,
     });
 }
 
@@ -722,6 +723,38 @@ describe('wireTransportEvents', () => {
             { provider: 'openai', modelId: 'gpt-4o' },
             { provider: 'anthropic', modelId: 'claude-3' },
         ]);
+    });
+
+    it('fails closed and poisons the mutation lease when the detached startup model times out', async () => {
+        vi.useFakeTimers();
+        try {
+            session = createMockSession('startup-model');
+            const transport = createMockTransport();
+            const onStartupFailure = vi.fn();
+            wireTransportEvents(transport, session, [], { onStartupFailure });
+
+            emitEvent({
+                type: 'response',
+                command: 'get_available_models',
+                success: true,
+                data: { models: [{ id: 'startup-model', provider: 'provider' }] },
+            });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'set_model', provider: 'provider', modelId: 'startup-model',
+            }));
+
+            await vi.advanceTimersByTimeAsync(10_000);
+            await vi.waitFor(() => expect(onStartupFailure).toHaveBeenCalledWith(expect.objectContaining({
+                message: expect.stringContaining('startup model outcome is indeterminate'),
+            })));
+            let secondMutationStarted = false;
+            void session.runRuntimeMutation(async () => { secondMutationStarted = true; });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(secondMutationStarted).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('handles get_commands response — caches commands', () => {

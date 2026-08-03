@@ -467,7 +467,7 @@ describe('PiConversationHistory native transactions', () => {
         expect(history.getEntryIds()).toEqual({ next: 'next-user' })
     })
 
-    it('refuses history actions before native-ready or while Pi is streaming', async () => {
+    it('refuses history actions before native-ready or while Pi is streaming/prompting', async () => {
         const unready = createSession({ nativeReady: false })
         const unreadyHistory = new PiConversationHistory(unready.session, vi.fn())
         await expect(unreadyHistory.fork()).rejects.toThrow('not ready')
@@ -476,6 +476,15 @@ describe('PiConversationHistory native transactions', () => {
         busy.session.piIsStreaming = true
         const busyHistory = new PiConversationHistory(busy.session, vi.fn())
         await expect(busyHistory.fork()).rejects.toThrow('busy')
+
+        const preflight = createSession()
+        const preflightRpc = vi.fn()
+        const preflightHistory = new PiConversationHistory(preflight.session, preflightRpc)
+        preflightHistory.registerPrompt('local-preflight')
+        preflightHistory.observeEntry({ type: 'message', id: 'native-preflight', message: { role: 'user' } })
+        preflight.session.setPromptInFlight(true)
+        await expect(preflightHistory.fork()).rejects.toThrow('busy')
+        expect(preflightRpc).not.toHaveBeenCalled()
     })
 
     it('returns deterministic failure after restoring source instead of throwing/diverging', async () => {

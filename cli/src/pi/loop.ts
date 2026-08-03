@@ -304,9 +304,13 @@ function handleResponse(
                                     session.currentModel = match.modelId;
                                     session.currentProvider = match.provider;
                                     persistSelectedPiModel(session);
-                                });
+                                }, { poisonOnError: (error) => error instanceof PiRpcTimeoutError });
                                 logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
                             } catch (error) {
+                                if (error instanceof PiRpcTimeoutError) {
+                                    onStartupFailure?.(new Error(`Pi startup model outcome is indeterminate: ${error.message}`));
+                                    return;
+                                }
                                 logger.debug(`[pi] Startup model set_model rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
                             }
                         })();

@@ -209,6 +209,22 @@ describe('PiSession runtime mutation mutex', () => {
 
         expect(order).toEqual(['first-start', 'first-end', 'second-start']);
     });
+
+    it('keeps the lease poisoned when a mutation outcome is indeterminate', async () => {
+        const session = createMockSession();
+        const timeout = new Error('timed out');
+        let secondStarted = false;
+
+        await expect(session.runRuntimeMutation(
+            async () => { throw timeout; },
+            { poisonOnError: (error) => error === timeout },
+        )).rejects.toBe(timeout);
+        void session.runRuntimeMutation(async () => { secondStarted = true; });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(secondStarted).toBe(false);
+    });
 });
 
 describe('PiSession native runtime reconciliation', () => {

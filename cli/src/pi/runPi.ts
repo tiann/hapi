@@ -333,6 +333,11 @@ export async function runPi(opts: {
     let historyPumpDeferred = false;
     let agentLifecycleStarted = false;
 
+    const setPromptCommandInFlight = (value: boolean): void => {
+        promptCommandInFlight = value;
+        piSession.setPromptInFlight(value);
+    };
+
     type ActiveAbortGuard = {
         deadlineAt: number;
         lifecycleStartedAtRequest: boolean;
@@ -361,7 +366,7 @@ export async function runPi(opts: {
             maybeResolveAbortGuard();
             return;
         }
-        promptCommandInFlight = false;
+        setPromptCommandInFlight(false);
         activePromptLocalId = undefined;
         agentLifecycleStarted = false;
         pumpPromptQueue();
@@ -417,7 +422,7 @@ export async function runPi(opts: {
         if (!piSession.isReady || piSession.piIsStreaming || promptCommandInFlight || abortInFlight) return;
         const next = promptQueue.dequeue();
         if (!next) return;
-        promptCommandInFlight = true;
+        setPromptCommandInFlight(true);
         activePromptLocalId = next.localId;
         agentLifecycleStarted = false;
         const promptId = randomUUID();
@@ -562,56 +567,63 @@ export async function runPi(opts: {
             }
         }
 
-        return await piSession.runRuntimeMutation(async () => {
-            // Forward changes to Pi process — wait for Pi to confirm before
-            // committing to PiSession or reporting applied. The runtime mutation
-            // lock is shared with clone/fork/switch_session so a slow set_model
-            // can never finish against a temporary history branch.
-            if (requestedModel) {
-                if (requestedModel.modelId && requestedModel.provider) {
-                    await sendPiRpcAndWait(piSession, transport, {
-                        type: 'set_model',
-                        provider: requestedModel.provider,
-                        modelId: requestedModel.modelId,
-                    });
-                    piSession.currentModel = requestedModel.modelId;
-                    piSession.currentProvider = requestedModel.provider;
-                } else if (requestedModel.modelId && !requestedModel.provider) {
-                    // Provider is unknown until get_state/get_available_models resolve.
-                    // Committing now would persist piSelectedModel while Pi never received
-                    // set_model — contradicting the "await Pi confirmation" contract above.
-                    // Throw so the hub returns 409 and the web client can retry once the
-                    // provider is known.
-                    logger.debug('[pi] set_model suppressed: provider unknown until get_state');
-                    throw new Error('Model cannot be applied yet: provider is not yet known');
-                } else if (requestedModel.modelId === null) {
-                    // Clearing the model needs no Pi RPC (nothing to confirm), so commit
-                    // immediately. This path is not reachable from the web Pi picker today.
-                    piSession.currentModel = null;
-                    piSession.currentProvider = null;
+        try {
+            return await piSession.runRuntimeMutation(async () => {
+                // Forward changes to Pi process — wait for Pi to confirm before
+                // committing to PiSession or reporting applied. The runtime mutation
+                // lock is shared with clone/fork/switch_session so a slow set_model
+                // can never finish against a temporary history branch.
+                if (requestedModel) {
+                    if (requestedModel.modelId && requestedModel.provider) {
+                        await sendPiRpcAndWait(piSession, transport, {
+                            type: 'set_model',
+                            provider: requestedModel.provider,
+                            modelId: requestedModel.modelId,
+                        });
+                        piSession.currentModel = requestedModel.modelId;
+                        piSession.currentProvider = requestedModel.provider;
+                    } else if (requestedModel.modelId && !requestedModel.provider) {
+                        // Provider is unknown until get_state/get_available_models resolve.
+                        // Committing now would persist piSelectedModel while Pi never received
+                        // set_model — contradicting the "await Pi confirmation" contract above.
+                        // Throw so the hub returns 409 and the web client can retry once the
+                        // provider is known.
+                        logger.debug('[pi] set_model suppressed: provider unknown until get_state');
+                        throw new Error('Model cannot be applied yet: provider is not yet known');
+                    } else if (requestedModel.modelId === null) {
+                        // Clearing the model needs no Pi RPC (nothing to confirm), so commit
+                        // immediately. This path is not reachable from the web Pi picker today.
+                        piSession.currentModel = null;
+                        piSession.currentProvider = null;
+                    }
                 }
-            }
-            if (requestedThinkingLevel !== undefined) {
-                const level = requestedThinkingLevel ?? 'off';
-                await sendPiRpcAndWait(piSession, transport, { type: 'set_thinking_level', level });
-                piSession.currentThinkingLevel = requestedThinkingLevel;
-            }
-            piSession.pushKeepAlive();
+                if (requestedThinkingLevel !== undefined) {
+                    const level = requestedThinkingLevel ?? 'off';
+                    await sendPiRpcAndWait(piSession, transport, { type: 'set_thinking_level', level });
+                    piSession.currentThinkingLevel = requestedThinkingLevel;
+                }
+                piSession.pushKeepAlive();
 
-            // Return provider-qualified model so the hub persists piSelectedModel.
-            // A bare modelId string would make applySessionConfig clear the
-            // provider metadata (object check fails), defeating Fix #3.
-            const appliedModel = piSession.currentModel && piSession.currentProvider
-                ? { provider: piSession.currentProvider, modelId: piSession.currentModel }
-                : piSession.currentModel;
+                // Return provider-qualified model so the hub persists piSelectedModel.
+                // A bare modelId string would make applySessionConfig clear the
+                // provider metadata (object check fails), defeating Fix #3.
+                const appliedModel = piSession.currentModel && piSession.currentProvider
+                    ? { provider: piSession.currentProvider, modelId: piSession.currentModel }
+                    : piSession.currentModel;
 
-            return {
-                applied: {
-                    model: appliedModel,
-                    effort: piSession.currentThinkingLevel,
-                },
-            };
-        });
+                return {
+                    applied: {
+                        model: appliedModel,
+                        effort: piSession.currentThinkingLevel,
+                    },
+                };
+            }, { poisonOnError: (error) => error instanceof PiRpcTimeoutError });
+        } catch (error) {
+            if (error instanceof PiRpcTimeoutError) {
+                failNativeStartup(new Error(`Pi configuration outcome is indeterminate: ${error.message}`));
+            }
+            throw error;
+        }
     });
 
     // --- Pi model discovery RPC ---
@@ -831,7 +843,7 @@ export async function runPi(opts: {
                 }
                 abortInFlight = false;
                 if (targetSettled) {
-                    promptCommandInFlight = false;
+                    setPromptCommandInFlight(false);
                     activePromptLocalId = undefined;
                     agentLifecycleStarted = false;
                 }
@@ -860,7 +872,7 @@ export async function runPi(opts: {
             activePromptLocalId = undefined;
             agentLifecycleStarted = false;
             piSession.updateThinkingState(false);
-            promptCommandInFlight = false;
+            setPromptCommandInFlight(false);
             abortInFlight = false;
             pumpPromptQueue();
             return result;
@@ -922,9 +934,13 @@ export async function runPi(opts: {
                         });
                         piSession.currentThinkingLevel = startupThinkingLevel;
                         piSession.pushKeepAlive();
-                    });
+                    }, { poisonOnError: (error) => error instanceof PiRpcTimeoutError });
                     logger.debug(`[pi] Startup effort applied: ${startupThinkingLevel}`);
                 } catch (error) {
+                    if (error instanceof PiRpcTimeoutError) {
+                        failNativeStartup(new Error(`Pi startup effort outcome is indeterminate: ${error.message}`));
+                        return;
+                    }
                     logger.debug(`[pi] Startup effort rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
                 }
             })();

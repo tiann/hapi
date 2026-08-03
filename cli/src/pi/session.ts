@@ -54,6 +54,7 @@ export class PiSession {
 
     // Streaming state
     piIsStreaming = false;
+    private promptInFlight = false;
     currentSteeringMode: 'all' | 'one-at-a-time' = 'all';
 
     // Cached data from Pi
@@ -141,6 +142,15 @@ export class PiSession {
         return this.historyTransaction !== null;
     }
 
+    /** True from prompt dispatch until rejection, abort, or true settlement. */
+    get hasPromptInFlight(): boolean {
+        return this.promptInFlight;
+    }
+
+    setPromptInFlight(value: boolean): void {
+        this.promptInFlight = value;
+    }
+
     beginHistoryTransaction(): (options?: { drain?: boolean }) => void {
         if (this.historyTransaction) throw new Error('Conversation history action already in progress');
         const token = Symbol('pi-history-transaction');
@@ -177,12 +187,19 @@ export class PiSession {
     }
 
     /** Serialize one Pi runtime mutation behind any active history operation. */
-    async runRuntimeMutation<T>(operation: () => Promise<T>): Promise<T> {
+    async runRuntimeMutation<T>(
+        operation: () => Promise<T>,
+        options: { poisonOnError?: (error: unknown) => boolean } = {},
+    ): Promise<T> {
         const release = await this.acquireRuntimeMutation();
+        let releaseLease = true;
         try {
             return await operation();
+        } catch (error) {
+            if (options.poisonOnError?.(error)) releaseLease = false;
+            throw error;
         } finally {
-            release();
+            if (releaseLease) release();
         }
     }
 

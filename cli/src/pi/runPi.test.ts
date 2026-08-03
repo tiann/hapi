@@ -284,6 +284,8 @@ describe('Pi abort queue boundary', () => {
         harness.session.onCancelQueuedMessage.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
         harness.session.sendSessionEvent.mockReset();
+        harness.cleanupCount = 0;
+        harness.killCount = 0;
         harness.session.rpcHandlerManager.registerHandler.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockImplementation((method: string, handler: (payload: unknown) => Promise<unknown>) => {
             harness.rpcHandlers.set(method, handler);
@@ -455,6 +457,48 @@ describe('Pi abort queue boundary', () => {
         expect(harness.session.keepAlive).toHaveBeenLastCalledWith(false, 'remote', undefined);
 
         harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('fails closed and poisons the mutation lease when configuration times out', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        vi.useFakeTimers();
+        const setConfig = harness.rpcHandlers.get(RPC_METHODS.SetSessionConfig)!;
+        const configPromise = setConfig({ model: { provider: 'provider', modelId: 'model' } });
+        const configRejection = expect(configPromise).rejects.toThrow('timed out');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'set_model', provider: 'provider', modelId: 'model' }));
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        await configRejection;
+        await Promise.resolve();
+        expect(harness.cleanupCount).toBe(1);
+        vi.useRealTimers();
+
+        await running;
+    });
+
+    it('fails closed when the detached startup effort mutation times out', async () => {
+        vi.useFakeTimers();
+        const running = runPi({ workingDirectory: '/work', effort: 'high' });
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+        expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'set_thinking_level', level: 'high' }));
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        await Promise.resolve();
+        expect(harness.cleanupCount).toBe(1);
+        const setConfig = harness.rpcHandlers.get(RPC_METHODS.SetSessionConfig)!;
+        const blockedConfig = setConfig({ model: { provider: 'provider', modelId: 'model' } });
+        void blockedConfig.catch(() => {});
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'set_model' }));
+        vi.useRealTimers();
+
         await running;
     });
 

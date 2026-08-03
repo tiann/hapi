@@ -503,7 +503,7 @@ export class PiConversationHistory {
 
     private assertHistoryIdle(): void {
         if (!this.session.isNativeReady) throw new Error('Pi native session is not ready')
-        if (this.session.piIsStreaming) throw new Error('Pi session is busy')
+        if (this.session.piIsStreaming || this.session.hasPromptInFlight) throw new Error('Pi session is busy')
     }
 
     private remainingMs(deadlineAt: number, reserveMs: number = 0): number {
