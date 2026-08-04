@@ -54,7 +54,9 @@ const SESSION_PATH_IN_TEXT_RE =
 /** Decode a path segment; return null if not a plausible hub session id. */
 function decodeSessionIdSegment(raw: string): string | null {
     try {
-        const id = decodeURIComponent(raw)
+        // Bare citations in prose often trail `,` / `.` / `!` - strip those only.
+        // Internal dots (e.g. `chat.tsx`) stay and fail isPlausibleSessionId.
+        const id = decodeURIComponent(raw).replace(/[.,;:!?]+$/u, '')
         return isPlausibleSessionId(id) ? id : null
     } catch {
         return null
@@ -81,8 +83,10 @@ export function extractSessionCitationIds(text: string): string[] {
 }
 
 /**
- * If `raw` is a pasted citation blob containing `/sessions/<id>`, return that id.
- * Otherwise return the trimmed input (normal id / prefix).
+ * If `raw` is a pasted citation blob containing exactly one `/sessions/<id>`,
+ * return that id. Bare prefixes/ids (no `/sessions/`) pass through trimmed.
+ * Ambiguous or empty citation blobs fail closed as `""` so callers refuse
+ * rather than silently picking the first peer (inspect + ping share this path).
  */
 export function normalizeSessionIdPrefix(raw: string): string {
     const trimmed = raw.trim()
@@ -90,7 +94,7 @@ export function normalizeSessionIdPrefix(raw: string): string {
         return trimmed
     }
     const ids = extractSessionCitationIds(trimmed)
-    return ids[0] ?? trimmed
+    return ids.length === 1 ? ids[0]! : ''
 }
 
 export type SessionCitationSteerTools = {

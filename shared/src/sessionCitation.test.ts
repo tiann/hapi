@@ -34,6 +34,11 @@ describe('extractSessionCitationIds', () => {
         expect(extractSessionCitationIds(`please read /sessions/${UUID}`)).toEqual([UUID])
     })
 
+    it('strips trailing prose punctuation from bare citations', () => {
+        expect(extractSessionCitationIds(`see /sessions/${UUID}.`)).toEqual([UUID])
+        expect(extractSessionCitationIds(`see /sessions/${UUID}, then continue`)).toEqual([UUID])
+    })
+
     it('rejects dotted tails that look like source paths', () => {
         expect(extractSessionCitationIds('see web/src/routes/sessions/chat.tsx')).toEqual([])
         expect(extractSessionCitationIds('/sessions/chat.tsx')).toEqual([])
@@ -64,6 +69,15 @@ describe('normalizeSessionIdPrefix', () => {
 
     it('pulls the id out of a markdown citation', () => {
         expect(normalizeSessionIdPrefix(`[Coding](/sessions/${UUID})`)).toBe(UUID)
+    })
+
+    it('fails closed on ambiguous multi-citation blobs', () => {
+        const other = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        expect(
+            normalizeSessionIdPrefix(
+                `[A](/sessions/${UUID}) and See session "B" (/sessions/${other}) for context`
+            )
+        ).toBe('')
     })
 })
 
