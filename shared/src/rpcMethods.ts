@@ -32,6 +32,7 @@ export const RPC_METHODS = {
     ArchiveCodexSession: 'archiveCodexSession',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',
+    ListPiSessions: 'listPiSessions',
     ListOpencodeModels: 'listOpencodeModels',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
     ListGrokModelsForCwd: 'listGrokModelsForCwd',

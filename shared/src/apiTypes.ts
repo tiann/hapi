@@ -197,6 +197,50 @@ export type ListCodexSessionsRpcResponse = z.infer<typeof ListCodexSessionsRpcRe
 export type ArchiveCodexSessionRpcRequest = z.infer<typeof ArchiveCodexSessionRpcRequestSchema>
 export type ArchiveCodexSessionRpcResponse = z.infer<typeof ArchiveCodexSessionRpcResponseSchema>
 
+export const PiImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const PiImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    entryId: z.string().min(1),
+    parentEntryId: z.string().nullable().optional(),
+    createdAt: z.number(),
+    content: PiImportedMessageContentSchema
+})
+
+export const PiLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    model: z.string().nullable().optional(),
+    thinkingLevel: z.string().nullable().optional(),
+    leafEntryId: z.string().nullable().optional(),
+    messageCount: z.number().int().nonnegative()
+})
+
+export const PiLocalSessionWithMessagesSchema = PiLocalSessionSummarySchema.extend({
+    messages: z.array(PiImportedMessageSchema)
+})
+
+export const ListPiSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).optional()
+})
+
+export const ListPiSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(z.union([PiLocalSessionWithMessagesSchema, PiLocalSessionSummarySchema])) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type PiImportedMessageContent = z.infer<typeof PiImportedMessageContentSchema>
+export type PiImportedMessage = z.infer<typeof PiImportedMessageSchema>
+export type PiLocalSessionSummary = z.infer<typeof PiLocalSessionSummarySchema>
+export type PiLocalSessionWithMessages = z.infer<typeof PiLocalSessionWithMessagesSchema>
+export type ListPiSessionsRpcRequest = z.infer<typeof ListPiSessionsRpcRequestSchema>
+export type ListPiSessionsRpcResponse = z.infer<typeof ListPiSessionsRpcResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })
