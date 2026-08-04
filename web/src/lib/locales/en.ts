@@ -96,7 +96,7 @@ export default {
   'piImport.inline.choose': 'Choose history',
   'piImport.dialog.title': 'Import Pi sessions',
   'piImport.dialog.description': 'Select local Pi histories. One selection is continued now; multiple selections are imported in the background.',
-  'piImport.dialog.concurrentWarning': 'Before continuing a session, close any standalone Pi process using it. Pi does not provide a cross-process session ownership lock.',
+  'piImport.dialog.concurrentWarning': 'Multiple processes can open the same Pi session, but avoid writing from stale copies. Before continuing in HAPI, reload or close any other Pi process to avoid an unintended branch.',
   'piImport.loading': 'Scanning Pi sessions…',
   'piImport.empty': 'No importable Pi sessions found.',
   'piImport.selectedCount': '{n} selected',

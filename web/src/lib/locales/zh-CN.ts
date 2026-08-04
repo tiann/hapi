@@ -96,7 +96,7 @@ export default {
   'piImport.inline.choose': '选择历史',
   'piImport.dialog.title': '导入 Pi sessions',
   'piImport.dialog.description': '选择本机 Pi 历史。单选会立即继续，多选会批量导入到会话列表。',
-  'piImport.dialog.concurrentWarning': '继续 session 前，请先关闭正在使用它的独立 Pi 进程。Pi 当前没有跨进程 session ownership lock。',
+  'piImport.dialog.concurrentWarning': '多个进程可以同时打开同一个 Pi session，但不要从未刷新的副本交替写入。继续在 HAPI 中操作前，请重新加载或关闭其他 Pi 进程，避免产生意外分支。',
   'piImport.loading': '正在扫描 Pi sessions…',
   'piImport.empty': '没有找到可导入的 Pi session。',
   'piImport.selectedCount': '已选择 {n} 个',
