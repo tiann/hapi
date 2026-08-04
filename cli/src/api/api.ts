@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
+import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
@@ -84,6 +85,10 @@ export class ApiClient {
             throw apiValidationError('Invalid /cli/sessions response', response)
         }
 
+        if (typeof parsed.data.sessionSummaryContract === 'boolean') {
+            applyHubSessionSummaryContract(parsed.data.sessionSummaryContract)
+        }
+
         const raw = parsed.data.session
 
         const metadata = (() => {
@@ -134,6 +139,10 @@ export class ApiClient {
         const parsed = GetSessionResponseSchema.safeParse(response.data)
         if (!parsed.success) {
             throw apiValidationError('Invalid /cli/sessions/:id response', response)
+        }
+
+        if (typeof parsed.data.sessionSummaryContract === 'boolean') {
+            applyHubSessionSummaryContract(parsed.data.sessionSummaryContract)
         }
 
         const raw = parsed.data.session

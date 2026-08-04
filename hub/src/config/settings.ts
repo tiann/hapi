@@ -22,6 +22,11 @@ export interface Settings {
     corsOrigins?: string[]
     /** Per-hub relay auth key issued by the relay server (/issue) */
     relayAuthKey?: string
+    /**
+     * When true, CLI injects the AGENT_NOTIFY_SUMMARY trailing-line contract
+     * into supported flavor system / developer instructions. Default off.
+     */
+    sessionSummaryContract?: boolean
 }
 
 export function getSettingsFile(dataDir: string): string {

@@ -1,6 +1,7 @@
 import { trimIdent } from "@/utils/trimIdent";
 import { buildSessionCitationSteerInstruction } from "@hapi/protocol/sessionCitation";
 import { shouldIncludeCoAuthoredBy } from "./claudeSettings";
+import { withSessionSummaryInstruction } from "@/modules/common/sessionSummaryInstruction";
 
 /**
  * Base system prompt shared across all configurations
@@ -28,15 +29,14 @@ const CO_AUTHORED_CREDITS = (() => trimIdent(`
 `))();
 
 /**
- * System prompt with conditional Co-Authored-By lines based on Claude's settings.json configuration.
- * Settings are read once on startup for performance.
+ * Resolve the Claude append-system-prompt text.
+ * Co-Authored-By is read once from Claude settings; session-summary contract
+ * is resolved at call time so hub toggle / env apply after session bootstrap.
  */
-export const systemPrompt = (() => {
-  const includeCoAuthored = shouldIncludeCoAuthoredBy();
-  
-  if (includeCoAuthored) {
-    return BASE_SYSTEM_PROMPT + '\n\n' + CO_AUTHORED_CREDITS;
-  } else {
-    return BASE_SYSTEM_PROMPT;
-  }
-})();
+export function getSystemPrompt(): string {
+    const includeCoAuthored = shouldIncludeCoAuthoredBy();
+    const base = includeCoAuthored
+        ? BASE_SYSTEM_PROMPT + '\n\n' + CO_AUTHORED_CREDITS
+        : BASE_SYSTEM_PROMPT;
+    return withSessionSummaryInstruction(base);
+}

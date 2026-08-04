@@ -6,7 +6,7 @@ import {
     buildCodexHookConfigArgs,
     buildModelReasoningEffortConfigArgs
 } from './utils/codexMcpConfig';
-import { codexSystemPrompt } from './utils/systemPrompt';
+import { getCodexSystemPrompt } from './utils/systemPrompt';
 import type { ReasoningEffort } from './appServerTypes';
 import { resolveCodexCommand } from './utils/codexExecutable';
 import type { McpServersConfig } from './utils/buildHapiMcpBridge';
@@ -153,7 +153,7 @@ export async function codexLocal(opts: {
     }
 
     // Add developer instructions (system prompt)
-    args.push(...buildDeveloperInstructionsArg(codexSystemPrompt));
+    args.push(...buildDeveloperInstructionsArg(getCodexSystemPrompt()));
 
     if (opts.codexArgs) {
         // Before the first launch, Codex still needs the user's selector (for

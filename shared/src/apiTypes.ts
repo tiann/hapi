@@ -50,10 +50,24 @@ export const CliMessagesResponseSchema = z.object({
 export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 
 export const CreateSessionResponseSchema = z.object({
-    session: SessionSchema
+    session: SessionSchema,
+    /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
+    sessionSummaryContract: z.boolean().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
+
+export const HubSettingsResponseSchema = z.object({
+    sessionSummaryContract: z.boolean()
+})
+
+export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
+
+export const UpdateHubSettingsRequestSchema = z.object({
+    sessionSummaryContract: z.boolean()
+})
+
+export type UpdateHubSettingsRequest = z.infer<typeof UpdateHubSettingsRequestSchema>
 
 export const CreateMachineResponseSchema = z.object({
     machine: MachineSchema

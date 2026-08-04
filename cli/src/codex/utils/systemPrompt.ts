@@ -7,6 +7,7 @@
 
 import { trimIdent } from '@/utils/trimIdent';
 import { buildSessionCitationSteerInstruction } from '@hapi/protocol/sessionCitation';
+import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
  * Title instruction for Codex to call the hapi MCP tool.
@@ -28,5 +29,11 @@ export const TITLE_INSTRUCTION = trimIdent(`
 
 /**
  * The system prompt to inject via developer_instructions in local mode.
+ * Session-summary contract is resolved at call time (hub toggle / env).
  */
-export const codexSystemPrompt = TITLE_INSTRUCTION;
+export function getCodexSystemPrompt(env: NodeJS.ProcessEnv = process.env): string {
+    return withSessionSummaryInstruction(TITLE_INSTRUCTION, env)
+}
+
+/** Alias kept for existing call sites / tests that expect a string constant name. */
+export const codexSystemPrompt = TITLE_INSTRUCTION
