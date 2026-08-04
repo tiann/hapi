@@ -84,6 +84,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     /** True while backend.prompt() is in flight — lets stderr model_not_found
      *  surface as modelError during a turn without breaking setup/load remap. */
     private promptInFlight = false;
+    /**
+     * Set in handleAbort before session/cancel. Cursor often rejects the
+     * in-flight prompt as `Error: T: [canceled] Operation aborted`, which the
+     * classifier maps to kind=canceled (real model cancel). Intent tracking
+     * keeps deliberate Abort/Exit/Switch out of the emergency model-error path.
+     */
+    private userAbortRequested = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -407,6 +414,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             session.onThinkingChange(true);
             this.turnHasModelError = false;
+            this.userAbortRequested = false;
             this.lastAssistantText = null;
             this.pendingTextFailure = null;
 
@@ -616,6 +624,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             logger.debug(
                 `[cursor-acp] modelError already recorded for this turn, dropping ${failure.source}/${failure.kind}`
             );
+            return;
+        }
+        if (this.userAbortRequested && failure.kind === 'canceled') {
+            logger.debug(
+                '[cursor-acp] dropping canceled modelError after user abort'
+            );
+            this.pendingTextFailure = null;
             return;
         }
         this.turnHasModelError = true;
@@ -838,6 +853,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         const backend = this.backend;
         const sessionId = this.session.sessionId;
+        // Mark before cancel so the in-flight prompt rejection cannot promote
+        // Cursor's canceled/aborted wire shape into lastModelError + notify.
+        this.userAbortRequested = true;
         if (backend && sessionId) {
             await backend.cancelPrompt(sessionId);
         }

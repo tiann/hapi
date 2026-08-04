@@ -28,6 +28,10 @@ const harness = vi.hoisted(() => ({
     } | null,
     emitTextOnPrompt: null as string | null,
     promptReject: null as Error | null,
+    deferPrompt: null as Promise<void> | null,
+    releasePrompt: null as (() => void) | null,
+    /** When cancelPrompt runs, reject the deferred prompt with this error. */
+    rejectPromptOnCancel: null as Error | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null
 }));
@@ -117,11 +121,20 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (harness.emitStderrOnPrompt && harness.stderrErrorHandler) {
                     harness.stderrErrorHandler(harness.emitStderrOnPrompt);
                 }
+                if (harness.deferPrompt) {
+                    await harness.deferPrompt;
+                }
                 if (harness.promptReject) {
                     throw harness.promptReject;
                 }
             }),
-            cancelPrompt: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {
+                // Settlement of a deferred prompt is owned by the test so
+                // userAbortRequested is visible before classifyAcpRpcRejection.
+                if (harness.rejectPromptOnCancel) {
+                    harness.promptReject = harness.rejectPromptOnCancel;
+                }
+            }),
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn((handler: typeof harness.stderrErrorHandler) => {
                 harness.stderrErrorHandler = handler;
@@ -243,6 +256,9 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.emitStderrOnPrompt = null;
         harness.emitTextOnPrompt = null;
         harness.promptReject = null;
+        harness.deferPrompt = null;
+        harness.releasePrompt = null;
+        harness.rejectPromptOnCancel = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         legacyLauncher.mockClear();
@@ -1071,5 +1087,64 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'ready'
         )).toBe(false);
+    });
+
+    it('still records modelError for canceled RPC rejection without user abort', async () => {
+        harness.promptReject = new Error('Error: T: [canceled] Operation aborted');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError' && call[0]?.kind === 'canceled'
+        )).toBe(true);
+    });
+
+    it('does not promote user Abort cancel rejection to modelError', async () => {
+        // Cursor rejects session/prompt after session/cancel with this wire shape;
+        // classifier maps it to kind=canceled, but Abort must not page/notify.
+        // Switch → requestExit → handleAbort sets shouldExit + userAbortRequested
+        // before we settle the deferred prompt rejection (ordering matches
+        // cancel-then-reject on the wire; avoids queue.reset hang in tests).
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        harness.rejectPromptOnCancel = new Error('Error: T: [canceled] Operation aborted');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const switchHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === 'switch'
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(switchHandler).toBeTypeOf('function');
+        await switchHandler!();
+        harness.releasePrompt?.();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
     });
 });
