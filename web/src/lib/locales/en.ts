@@ -1014,7 +1014,7 @@ export default {
   'settings.notifications.testPushError': 'Failed to send test notification',
   'settings.notifications.saveError': 'Failed to save preferences',
   'settings.notifications.copy.title': 'Push notification copy',
-  'settings.notifications.copy.description': 'Customize the title and body of push notifications. {variable} placeholders are replaced when sending. Leave a field empty to use the default copy.',
+  'settings.notifications.copy.description': 'Notification titles and messages.',
   'settings.notifications.copy.titleLabel': 'Title',
   'settings.notifications.copy.bodyLabel': 'Body',
   'settings.notifications.copy.preview': 'Preview',

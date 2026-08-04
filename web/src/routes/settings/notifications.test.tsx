@@ -125,39 +125,68 @@ describe('SettingsNotificationsPage', () => {
         expect(await screen.findByText('Session completed')).toBeTruthy()
     })
 
+    it('does not expose the editor before existing copy is loaded', async () => {
+        let resolveCopy: (value: typeof defaultCopyResponse) => void = () => {}
+        getNotificationCopy.mockReturnValue(new Promise((resolve) => {
+            resolveCopy = resolve
+        }))
+        renderPage()
+        await screen.findByLabelText('Permission requests')
+
+        expect(screen.queryByText('Push notification copy')).toBeNull()
+        resolveCopy(defaultCopyResponse)
+        expect(await screen.findByText('Push notification copy')).toBeTruthy()
+    })
+
     it('saves edited copy through the API', async () => {
         renderPage()
-        const titleInputs = await screen.findAllByLabelText('Title')
-        // Index 1 = "ready" block (after permissionRequest).
-        fireEvent.change(titleInputs[1], { target: { value: 'Custom {agentName}' } })
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
+        fireEvent.click(readyRow)
+        fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Custom {agentName}' } })
         const saveButton = screen.getByRole('button', { name: 'Save copy' })
         fireEvent.click(saveButton)
         await waitFor(() => {
             expect(updateNotificationCopy).toHaveBeenCalledWith({
-                ready: { title: 'Custom {agentName}', body: '' },
+                ready: {
+                    title: 'Custom {agentName}',
+                    body: '{agentName} is waiting in {sessionName}'
+                },
             })
         })
     })
 
-    it('inserts a variable chip into the focused body field', async () => {
+    it('keeps copy editors collapsed and prefills defaults when opened', async () => {
         renderPage()
-        await screen.findByText('Push notification copy')
-        const chip = screen.getAllByText('{agentName}')[0]
-        fireEvent.click(chip)
-        const bodyInputs = screen.getAllByLabelText('Body') as HTMLTextAreaElement[]
-        expect(bodyInputs[0].value).toBe('{agentName}')
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
+        expect(screen.queryByLabelText('Title')).toBeNull()
+
+        fireEvent.click(readyRow)
+        expect(screen.getByLabelText('Title')).toHaveValue('Ready for input')
+        expect(screen.getByLabelText('Body')).toHaveValue('{agentName} is waiting in {sessionName}')
     })
 
-    it('shows a live preview with sample values', async () => {
+    it('updates the collapsed summary while editing', async () => {
         renderPage()
-        expect(await screen.findByText(/Claude is waiting in My Project/)).toBeTruthy()
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
+        fireEvent.click(readyRow)
+        fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Custom {agentName}' } })
+
+        expect(await screen.findByRole('button', { name: /Custom Claude.*Claude is waiting in My Project/ })).toBeTruthy()
     })
 
-    it('previews a title-only override with the default body', async () => {
+    it('restores a customized block to its visible defaults', async () => {
+        getNotificationCopy.mockResolvedValue({
+            ...defaultCopyResponse,
+            copy: {
+                ready: { title: 'Custom title', body: 'Custom body' }
+            }
+        })
         renderPage()
-        const titleInputs = await screen.findAllByLabelText('Title')
-        fireEvent.change(titleInputs[1], { target: { value: 'Custom {agentName}' } })
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Custom title.*Custom body/ })
+        fireEvent.click(readyRow)
+        fireEvent.click(screen.getByRole('button', { name: 'Reset to default' }))
 
-        expect(await screen.findByText(/Custom Claude.*Claude is waiting in My Project/)).toBeTruthy()
+        expect(screen.getByLabelText('Title')).toHaveValue('Ready for input')
+        expect(screen.getByLabelText('Body')).toHaveValue('{agentName} is waiting in {sessionName}')
     })
 })
