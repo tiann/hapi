@@ -523,6 +523,7 @@ export function HappyThread(props: {
     const pendingLoadResolveRef = useRef<((value: OlderHistoryLoadResult) => void) | null>(null)
     const coverageCheckTimerRef = useRef<number | null>(null)
     const failureRetryTimerRef = useRef<number | null>(null)
+    const tailScrollInProgressRef = useRef(false)
     const historyLoaderRef = useRef<HistoryLoaderState>({
         runId: 0,
         phase: 'idle',
@@ -760,14 +761,24 @@ export function HappyThread(props: {
             }
 
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
+                tailScrollInProgressRef.current = false
                 setAutoScrollMode(false)
                 setAtBottomMode(false)
                 return
             }
 
             if (intent.isNearBottom) {
+                tailScrollInProgressRef.current = false
                 setAutoScrollMode(true)
                 setAtBottomMode(true)
+                return
+            }
+
+            // An explicit jump-to-tail uses native smooth scrolling. Its
+            // intermediate scroll events are still far from the bottom and
+            // must not be mistaken for ordinary history browsing. Keep tail
+            // mode armed until the animation arrives or the user reverses it.
+            if (tailScrollInProgressRef.current) {
                 return
             }
 
@@ -976,6 +987,7 @@ export function HappyThread(props: {
     const scrollToBottom = useCallback(() => {
         const viewport = viewportRef.current
         if (viewport) {
+            tailScrollInProgressRef.current = true
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
             lastScrollTopRef.current = viewport.scrollTop
         }
@@ -989,6 +1001,7 @@ export function HappyThread(props: {
     // Reset state when session changes
     useLayoutEffect(() => {
         autoScrollEnabledRef.current = true
+        tailScrollInProgressRef.current = false
         lastScrollTopRef.current = viewportRef.current?.scrollTop ?? 0
         atBottomRef.current = true
         onViewModeChangeRef.current('tail')
