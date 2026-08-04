@@ -88,6 +88,20 @@ export async function runAgy(opts: {
     let hapiMcpBridge: Awaited<ReturnType<typeof buildHapiMcpBridge>> | null = null;
     let hookCarrierDir: string | undefined;
 
+    // Adopts a brain UUID discovered via an agy hook into session metadata,
+    // first-wins: never overwrites an already-set sessionId (set by a resume
+    // seed or an earlier hook firing), so a resumed session's seeded UUID is
+    // never clobbered by a later hook, and a UUID discovered by one hook is
+    // never re-adopted (as a no-op) by another.
+    const adoptBrainUuidIfUnset = (conversationId: string | undefined, source: string): void => {
+        if (!conversationId) return;
+        const wrapper = sessionWrapperRef.current as { sessionId?: string | null; onSessionFound?: (id: string) => void } | null;
+        if (wrapper && !wrapper.sessionId && typeof wrapper.onSessionFound === 'function') {
+            logger.debug(`[agy] brain UUID from ${source} hook: ${conversationId}`);
+            wrapper.onSessionFound(conversationId);
+        }
+    };
+
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'agy',
@@ -121,16 +135,10 @@ export async function runAgy(opts: {
                 }
                 // Reliable path: every PreToolUse hook carries the brain's
                 // conversationId. Persist it to session metadata on first sight
-                // so resume works even if the scanner's content-match hasn't
-                // fired yet. No-op if the session already has a UUID (set by
-                // the scanner's onBrainFound or a resume seed).
-                if (data.conversationId) {
-                    const wrapper = sessionWrapperRef.current as { sessionId?: string | null; onSessionFound?: (id: string) => void } | null;
-                    if (wrapper && !wrapper.sessionId && typeof wrapper.onSessionFound === 'function') {
-                        logger.debug(`[agy] brain UUID from PreToolUse hook: ${data.conversationId}`);
-                        wrapper.onSessionFound(data.conversationId);
-                    }
-                }
+                // so resume works even if no other hook has fired yet. No-op
+                // if the session already has a UUID (set by an earlier hook
+                // or a resume seed).
+                adoptBrainUuidIfUnset(data.conversationId, 'PreToolUse');
                 const toolName = extractToolName(data) ?? '';
                 const toolInput = extractToolInput(data);
                 const toolUseId = extractToolUseId(data) ?? `${toolName}-${Date.now()}`;
