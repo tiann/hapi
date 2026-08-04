@@ -84,6 +84,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 vi.mock('./utils/agyHookCarrier', () => ({
     prepareAgyHookCarrier: vi.fn(() => h.failAt === 'carrier' ? null : { carrierDir: '/tmp/carrier' }),
     cleanupAgyHookCarrier: h.carrierCleanup,
+    sweepAgyHookCarriers: vi.fn(),
 }))
 vi.mock('./utils/agyPermissionHandler', () => ({
     AgyPermissionHandler: class {

@@ -16,7 +16,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { AgyPermissionHandler } from './utils/agyPermissionHandler';
 import { buildAgyHooksJson } from '@/modules/common/hooks/generateHookSettings';
-import { prepareAgyHookCarrier, cleanupAgyHookCarrier } from './utils/agyHookCarrier';
+import { prepareAgyHookCarrier, cleanupAgyHookCarrier, sweepAgyHookCarriers } from './utils/agyHookCarrier';
 import type { AgyMcpServerEntry } from './utils/agyHookCarrier';
 import { shellJoin } from '@/modules/common/shellQuote';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
@@ -140,6 +140,13 @@ export async function runAgy(opts: {
 
     try {
         if (isPtyMode) {
+        // Best-effort: reclaim carriers left behind by sessions whose
+        // owning process has since died (crash, kill -9 — anything that
+        // skips onAfterClose's cleanupAgyHookCarrier). Never throws; see
+        // sweepAgyHookCarriers's docstring for why over-preservation is the
+        // only safe failure mode here.
+        sweepAgyHookCarriers();
+
         hookServer = await startHookServer({
             onSessionHook: () => {
                 // agy does not fire a SessionStart hook; this callback is a

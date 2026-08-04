@@ -1,12 +1,34 @@
-import { describe, expect, it } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import {
     agyHookCarrierIsIntact,
     cleanupAgyHookCarrier,
     prepareAgyHookCarrier,
+    sweepAgyHookCarriers,
     writeAgyHooksJsonAtomic
 } from './agyHookCarrier';
+
+/**
+ * Spawns a real child process, waits for it to exit, and returns its PID.
+ * By the time this resolves the PID is guaranteed dead — a stronger,
+ * non-vacuous stand-in for "some unrelated orphaned carrier's owner" than a
+ * made-up large integer, which could in theory collide with a live PID.
+ */
+function spawnAndReapDeadPid(): Promise<number> {
+    return new Promise((resolvePid, reject) => {
+        const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+        const pid = child.pid;
+        if (!pid) {
+            reject(new Error('failed to obtain a PID for the throwaway child process'));
+            return;
+        }
+        child.once('exit', () => resolvePid(pid));
+        child.once('error', reject);
+    });
+}
 
 describe('agy hook carrier', () => {
     it('creates workspace-local hooks and a session-scoped HAPI MCP plugin', () => {
@@ -63,6 +85,32 @@ describe('writeAgyHooksJsonAtomic', () => {
     it('throws when the carrier does not exist — callers must check agyHookCarrierIsIntact() first', () => {
         expect(() => writeAgyHooksJsonAtomic('/tmp/hapi-agy-carrier-does-not-exist', '{}')).toThrow();
     });
+
+    it('cleans up the temp file when the atomic rename fails (Fix N5)', () => {
+        const result = prepareAgyHookCarrier('{"hapi-bridge":{"PreToolUse":[]}}');
+        expect(result).toBeDefined();
+        if (!result) return;
+
+        try {
+            const agentsDir = join(result.carrierDir, '.agents');
+            // Force renameSync to fail without mocking fs: renaming a
+            // regular file onto an existing (non-empty-capable) directory
+            // fails with EISDIR — a real, OS-enforced failure mode, not a
+            // simulated one.
+            rmSync(join(agentsDir, 'hooks.json'), { force: true });
+            mkdirSync(join(agentsDir, 'hooks.json'));
+
+            expect(() => writeAgyHooksJsonAtomic(result.carrierDir, '{"hapi-bridge":{"PreInvocation":[]}}')).toThrow();
+
+            // Fails (mutation check: drop the try/finally around renameSync)
+            // if a leftover .hooks.json.<pid>.<uuid>.tmp file is left behind
+            // in .agents/ after the failed rename.
+            const leftoverTmpFiles = readdirSync(agentsDir).filter((name) => name.startsWith('.hooks.json.') && name.endsWith('.tmp'));
+            expect(leftoverTmpFiles).toEqual([]);
+        } finally {
+            cleanupAgyHookCarrier(result.carrierDir);
+        }
+    });
 });
 
 describe('agyHookCarrierIsIntact', () => {
@@ -85,5 +133,293 @@ describe('agyHookCarrierIsIntact', () => {
 
         cleanupAgyHookCarrier(result.carrierDir);
         expect(agyHookCarrierIsIntact(result.carrierDir)).toBe(false);
+    });
+});
+
+// Phase 2.8: carriers used to live under the OS tmp dir (mkdtempSync(join(
+// tmpdir(), ...))), where a machine's periodic tmpfiles.d sweep can delete a
+// still-in-use carrier out from under a long-lived session (agy re-reads
+// hooks.json on every model call — see the plan's §6.6 — so a carrier isn't
+// a one-shot file, it must survive for the session's entire lifetime).
+// Moving it under HAPI_HOME gets it out of that blast radius and gives HAPI
+// its own directory to run a liveness-based sweep over at session start.
+describe('agy hook carrier location (Phase 2.8)', () => {
+    let previousHapiHome: string | undefined;
+    let customHapiHome: string;
+
+    beforeEach(() => {
+        previousHapiHome = process.env.HAPI_HOME;
+        customHapiHome = mkdtempSync(join(tmpdir(), 'hapi-phase28-home-'));
+        process.env.HAPI_HOME = customHapiHome;
+    });
+
+    afterEach(() => {
+        if (previousHapiHome === undefined) delete process.env.HAPI_HOME;
+        else process.env.HAPI_HOME = previousHapiHome;
+        rmSync(customHapiHome, { recursive: true, force: true });
+    });
+
+    it('creates a new carrier under HAPI_HOME/agy-carriers, not the OS tmp dir', () => {
+        const result = prepareAgyHookCarrier('{}');
+        expect(result).toBeDefined();
+        if (!result) return;
+
+        try {
+            const expectedRoot = join(customHapiHome, 'agy-carriers');
+            expect(result.carrierDir.startsWith(expectedRoot + '/')).toBe(true);
+            // A stale (unmodified) implementation would place it directly
+            // under the OS tmp dir instead — assert it did not.
+            expect(result.carrierDir.startsWith(join(tmpdir(), 'hapi-agy-carrier-'))).toBe(false);
+        } finally {
+            cleanupAgyHookCarrier(result.carrierDir);
+        }
+    });
+
+    it('writes owner metadata (pid, hostname) at the carrier root, outside .agents/', () => {
+        const result = prepareAgyHookCarrier('{}');
+        expect(result).toBeDefined();
+        if (!result) return;
+
+        try {
+            const ownerPath = join(result.carrierDir, 'owner.json');
+            expect(existsSync(ownerPath)).toBe(true);
+            const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
+            expect(owner.pid).toBe(process.pid);
+            // Fix N6: hostname is the over-delete guard for a shared
+            // HAPI_HOME (devcontainer bind-mount, NFS home) — a pid
+            // recorded by a different host's PID namespace must never be
+            // probed by this host's sweep.
+            expect(owner.hostname).toBe(hostname());
+            // Must not land inside .agents/ — that's the directory agy itself
+            // reads (hooks.json, plugins/), and owner metadata is HAPI-only
+            // bookkeeping that must not pollute it.
+            expect(existsSync(join(result.carrierDir, '.agents', 'owner.json'))).toBe(false);
+        } finally {
+            cleanupAgyHookCarrier(result.carrierDir);
+        }
+    });
+});
+
+describe('sweepAgyHookCarriers', () => {
+    let previousHapiHome: string | undefined;
+    let customHapiHome: string;
+
+    beforeEach(() => {
+        previousHapiHome = process.env.HAPI_HOME;
+        customHapiHome = mkdtempSync(join(tmpdir(), 'hapi-phase28-sweep-home-'));
+        process.env.HAPI_HOME = customHapiHome;
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        if (previousHapiHome === undefined) delete process.env.HAPI_HOME;
+        else process.env.HAPI_HOME = previousHapiHome;
+        rmSync(customHapiHome, { recursive: true, force: true });
+    });
+
+    // Every real carrier is mkdtemp'd under this prefix (see
+    // prepareAgyHookCarrier / CARRIER_DIR_PREFIX in agyHookCarrier.ts) — the
+    // hand-built carriers below must match it so Fix N3's prefix filter
+    // doesn't skip them for reasons unrelated to what each test wants to
+    // exercise.
+    const CARRIER_PREFIX = 'hapi-agy-carrier-';
+
+    /** Builds a carrier directory by hand (not via prepareAgyHookCarrier) so
+     * the test can control the owner.json contents independently of this
+     * test process's own PID. */
+    function makeCarrierDir(name: string): string {
+        const root = join(customHapiHome, 'agy-carriers');
+        mkdirSync(root, { recursive: true });
+        const carrierDir = join(root, `${CARRIER_PREFIX}${name}`);
+        mkdirSync(join(carrierDir, '.agents'), { recursive: true });
+        writeFileSync(join(carrierDir, '.agents', 'hooks.json'), '{}');
+        return carrierDir;
+    }
+
+    it('sweeps a carrier whose owner process has died', async () => {
+        const deadPid = await spawnAndReapDeadPid();
+        const carrierDir = makeCarrierDir('dead-owner');
+        writeFileSync(
+            join(carrierDir, 'owner.json'),
+            JSON.stringify({ pid: deadPid, hostname: hostname() })
+        );
+
+        sweepAgyHookCarriers();
+
+        expect(existsSync(carrierDir)).toBe(false);
+    });
+
+    it('preserves a carrier whose owner process is alive — the costliest mistake is deleting a live session\'s carrier', () => {
+        const carrierDir = makeCarrierDir('alive-owner');
+        // This test process's own PID is guaranteed alive for the duration
+        // of the test.
+        writeFileSync(
+            join(carrierDir, 'owner.json'),
+            JSON.stringify({ pid: process.pid, hostname: hostname() })
+        );
+
+        sweepAgyHookCarriers();
+
+        expect(existsSync(carrierDir)).toBe(true);
+    });
+
+    it('treats EPERM (process exists but is owned by someone else) as alive, not dead', () => {
+        const carrierDir = makeCarrierDir('eperm-owner');
+        writeFileSync(
+            join(carrierDir, 'owner.json'),
+            JSON.stringify({ pid: 1, hostname: hostname() })
+        );
+        vi.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+            if (pid === 1) {
+                const error = new Error('EPERM') as NodeJS.ErrnoException;
+                error.code = 'EPERM';
+                throw error;
+            }
+            return true;
+        }) as typeof process.kill);
+
+        sweepAgyHookCarriers();
+
+        expect(existsSync(carrierDir)).toBe(true);
+    });
+
+    it('preserves a carrier with unreadable/missing owner metadata unless it is old enough to be a stale leftover', () => {
+        const carrierDir = makeCarrierDir('no-owner-metadata');
+
+        // Fresh, no owner.json at all — simulates a carrier from before this
+        // feature shipped, or a partial write. Must be preserved: deleting
+        // it on sight would be exactly the mtime/name-based guessing this
+        // Phase was written to avoid.
+        sweepAgyHookCarriers();
+        expect(existsSync(carrierDir)).toBe(true);
+
+        // Age it well past the staleness threshold and sweep again — now it
+        // is old enough to be treated as a genuine leftover.
+        const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+        utimesSync(carrierDir, staleTime, staleTime);
+        sweepAgyHookCarriers();
+        expect(existsSync(carrierDir)).toBe(false);
+    });
+
+    it('treats a legacy owner.json (pid only, no hostname field) as unreadable metadata, not as a same-host dead pid, and sweeps it on the age-based ownerless path instead', async () => {
+        // Sanity companion to the Fix N6 test below: a same-host dead pid
+        // (no hostname field at all, i.e. legacy owner.json) still falls
+        // back to the age-based ownerless path rather than being probed —
+        // readOwnerMetadata requires `hostname` now, so a pre-Fix-N6
+        // owner.json (pid only) is treated as unreadable, not as "same
+        // host, dead pid".
+        const carrierDir = makeCarrierDir('legacy-owner-no-hostname');
+        writeFileSync(join(carrierDir, 'owner.json'), JSON.stringify({ pid: 999999 }));
+
+        sweepAgyHookCarriers();
+        expect(existsSync(carrierDir)).toBe(true);
+
+        const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+        utimesSync(carrierDir, staleTime, staleTime);
+        sweepAgyHookCarriers();
+        expect(existsSync(carrierDir)).toBe(false);
+    });
+
+    it('preserves a carrier owned by a different host even when its recorded pid is dead (Fix N6)', async () => {
+        const deadPid = await spawnAndReapDeadPid();
+        const carrierDir = makeCarrierDir('other-host-dead-pid');
+        writeFileSync(
+            join(carrierDir, 'owner.json'),
+            // A pid namespace from a different host — this deadPid is only
+            // meaningfully "dead" in THIS process's PID namespace; recorded
+            // under another host it must never be probed at all.
+            JSON.stringify({ pid: deadPid, hostname: 'some-other-host-4a1c9e' })
+        );
+
+        sweepAgyHookCarriers();
+
+        // Fails (mutation check: drop the `owner.hostname !== hostname()`
+        // guard in sweepAgyHookCarriers) if the carrier gets deleted because
+        // its pid happens to be dead in THIS host's namespace too.
+        expect(existsSync(carrierDir)).toBe(true);
+    });
+
+    it('never inspects (or deletes) an entry that does not carry the carrier prefix, no matter how old (Fix N3)', () => {
+        const root = join(customHapiHome, 'agy-carriers');
+        mkdirSync(root, { recursive: true });
+        // Deliberately NOT prefixed with hapi-agy-carrier- — simulates
+        // unrelated content sharing the agy-carriers/ root (HAPI_HOME
+        // misconfiguration/reuse).
+        const strangerDir = join(root, 'not-a-hapi-carrier');
+        mkdirSync(strangerDir, { recursive: true });
+        writeFileSync(join(strangerDir, 'important-unrelated-file.txt'), 'do not delete me');
+
+        // Age it well past the ownerless staleness threshold — the ONLY
+        // other reason sweepAgyHookCarriers would ever delete an
+        // owner-metadata-less entry.
+        const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+        utimesSync(strangerDir, staleTime, staleTime);
+
+        sweepAgyHookCarriers();
+
+        // Fails (mutation check: drop the `entry.startsWith(CARRIER_DIR_PREFIX)`
+        // guard) if the stale-ownerless branch deletes this non-carrier
+        // directory purely because it is old.
+        expect(existsSync(strangerDir)).toBe(true);
+        expect(existsSync(join(strangerDir, 'important-unrelated-file.txt'))).toBe(true);
+    });
+
+    it('judges a carrier-prefixed entry by the entry itself, not a symlink target (Fix N4)', () => {
+        const root = join(customHapiHome, 'agy-carriers');
+        mkdirSync(root, { recursive: true });
+
+        // A real, live-owned, otherwise-untouchable directory elsewhere —
+        // the "attack surface" a naive statSync-based sweep would
+        // dereference into.
+        const targetDir = mkdtempSync(join(tmpdir(), 'hapi-n4-symlink-target-'));
+        try {
+            const linkPath = join(root, `${CARRIER_PREFIX}symlinked`);
+            symlinkSync(targetDir, linkPath, 'dir');
+
+            sweepAgyHookCarriers();
+
+            // Fails (mutation check: revert lstatSync back to statSync) if
+            // the sweep dereferences the symlink and evaluates the TARGET
+            // directory's contents/owner as if it were the carrier entry
+            // itself — lstatSync().isDirectory() on a symlink is false, so
+            // the loop must skip it outright (preserve both the link and
+            // whatever it points at) rather than treat it as a carrier.
+            expect(existsSync(linkPath)).toBe(true);
+            expect(existsSync(targetDir)).toBe(true);
+        } finally {
+            rmSync(targetDir, { recursive: true, force: true });
+        }
+    });
+
+    it('does not let two different HAPI_HOME roots interfere with each other', () => {
+        const hapiHomeA = customHapiHome;
+        const carrierA = prepareAgyHookCarrier('{"a":true}');
+        expect(carrierA).toBeDefined();
+        if (!carrierA) return;
+
+        const hapiHomeB = mkdtempSync(join(tmpdir(), 'hapi-phase28-home-b-'));
+        try {
+            process.env.HAPI_HOME = hapiHomeB;
+
+            // Sweeping under HAPI_HOME B must never touch A's carrier, even
+            // though A's carrier has no owner.json reachable from B's root.
+            sweepAgyHookCarriers();
+            expect(existsSync(carrierA.carrierDir)).toBe(true);
+
+            const carrierB = prepareAgyHookCarrier('{"b":true}');
+            expect(carrierB).toBeDefined();
+            if (!carrierB) return;
+            expect(carrierB.carrierDir.startsWith(join(hapiHomeB, 'agy-carriers') + '/')).toBe(true);
+
+            // B's root must contain exactly B's own carrier, not A's.
+            const bEntries = readdirSync(join(hapiHomeB, 'agy-carriers'));
+            expect(bEntries).toEqual([carrierB.carrierDir.split('/').pop()]);
+
+            cleanupAgyHookCarrier(carrierB.carrierDir);
+        } finally {
+            process.env.HAPI_HOME = hapiHomeA;
+            cleanupAgyHookCarrier(carrierA.carrierDir);
+            rmSync(hapiHomeB, { recursive: true, force: true });
+        }
     });
 });
