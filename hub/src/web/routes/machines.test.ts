@@ -129,8 +129,9 @@ describe('machines routes', () => {
 
         expect(response.status).toBe(200)
         expect(captured).not.toBeNull()
-        // startingMode follows existingSessionId in the positional API.
-        expect(captured![13]).toBe('pty')
+        // startingMode is the last positional argument, after collaborationMode
+        // and copilotAgentMode.
+        expect(captured![15]).toBe('pty')
         expect(captured![12]).toBeUndefined()
     })
 
@@ -156,7 +157,7 @@ describe('machines routes', () => {
         })
 
         expect(response.status).toBe(200)
-        expect(captured![13]).toBe('pty')
+        expect(captured![15]).toBe('pty')
     })
 
     it('rejects an explicit remote AGY machine spawn', async () => {
