@@ -1020,6 +1020,7 @@ export default {
   'settings.notifications.copy.resetDefault': '恢复默认',
   'settings.notifications.copy.save': '保存文案',
   'settings.notifications.copy.saved': '文案已保存',
+  'settings.notifications.copy.saveError': '保存推送文案失败',
   'settings.notifications.copy.testPushNote': '测试推送按钮始终发送固定文案。',
   'settings.notifications.copy.permissionRequest': '权限请求',
   'settings.notifications.copy.ready': '会话就绪',

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { getSettingsFile, readSettingsOrThrow, writeSettings } from '../../config/settings'
+import { getSettingsFile, readSettingsOrThrow, updateSettings } from '../../config/settings'
 import {
     COPY_KEYS,
     DEFAULT_COPY,
@@ -41,8 +41,6 @@ export function createNotificationCopyRoutes(dataDir: string): Hono<WebAppEnv> {
             return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
         }
 
-        // Read-modify-write: preserve every other settings.json key.
-        const settings = await readSettingsOrThrow(settingsFile)
         const copy: NotificationCopyConfig = {}
         for (const key of COPY_KEYS) {
             const template = parsed.data[key]
@@ -50,8 +48,10 @@ export function createNotificationCopyRoutes(dataDir: string): Hono<WebAppEnv> {
                 copy[key as CopyKey] = template
             }
         }
-        settings.notificationCopy = copy
-        await writeSettings(settingsFile, settings)
+        await updateSettings(settingsFile, (settings) => ({
+            settings: { ...settings, notificationCopy: copy },
+            result: undefined,
+        }))
         return c.json({
             copy,
             defaults: DEFAULT_COPY

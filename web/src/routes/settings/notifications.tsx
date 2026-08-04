@@ -87,6 +87,7 @@ export default function SettingsNotificationsPage() {
     const [testPushLabel, setTestPushLabel] = useState<string | null>(null)
     const [saveError, setSaveError] = useState<string | null>(null)
     const [copySaved, setCopySaved] = useState(false)
+    const [copySaveError, setCopySaveError] = useState<string | null>(null)
     const [openCopyBlock, setOpenCopyBlock] = useState<CopyKey | null>(null)
 
     const isAdmin = Boolean(token) && getNamespace(token) === 'default'
@@ -142,11 +143,19 @@ export default function SettingsNotificationsPage() {
             if (!api) throw new Error('API unavailable')
             return await api.updateNotificationCopy(copy)
         },
+        onMutate: () => {
+            setCopySaveError(null)
+        },
         onSuccess: (data) => {
             queryClient.setQueryData(queryKeys.notificationCopy, data)
             setDraft(resolveEffectiveCopy(data.copy, data.defaults))
+            setCopySaveError(null)
             setCopySaved(true)
             setTimeout(() => setCopySaved(false), 3000)
+        },
+        onError: () => {
+            setCopySaved(false)
+            setCopySaveError(t('settings.notifications.copy.saveError'))
         },
     })
 
@@ -297,7 +306,7 @@ export default function SettingsNotificationsPage() {
                     })}
                     <div className="flex min-h-14 items-center justify-between gap-3 px-3 py-3">
                         <span className="text-xs text-[var(--app-hint)]" aria-live="polite">
-                            {copySaved ? t('settings.notifications.copy.saved') : ''}
+                            {copySaveError ?? (copySaved ? t('settings.notifications.copy.saved') : '')}
                         </span>
                         <button
                             type="button"

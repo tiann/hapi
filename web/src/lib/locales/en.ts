@@ -1021,6 +1021,7 @@ export default {
   'settings.notifications.copy.resetDefault': 'Reset to default',
   'settings.notifications.copy.save': 'Save copy',
   'settings.notifications.copy.saved': 'Copy saved',
+  'settings.notifications.copy.saveError': 'Failed to save notification copy',
   'settings.notifications.copy.testPushNote': 'The test push button always sends fixed copy.',
   'settings.notifications.copy.permissionRequest': 'Permission request',
   'settings.notifications.copy.ready': 'Session ready',

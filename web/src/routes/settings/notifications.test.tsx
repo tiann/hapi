@@ -155,6 +155,16 @@ describe('SettingsNotificationsPage', () => {
         })
     })
 
+    it('reports a rejected notification copy save', async () => {
+        updateNotificationCopy.mockRejectedValueOnce(new Error('write failed'))
+        renderPage()
+        await screen.findByText('Push notification copy')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save copy' }))
+
+        expect(await screen.findByText('Failed to save notification copy')).toBeTruthy()
+    })
+
     it('keeps copy editors collapsed and prefills defaults when opened', async () => {
         renderPage()
         const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
