@@ -57,6 +57,9 @@ export function PiSessionImportDialog(props: {
                     <DialogDescription>{t('piImport.dialog.description')}</DialogDescription>
                 </DialogHeader>
                 <div className="mt-3 space-y-3">
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                        {t('piImport.dialog.concurrentWarning')}
+                    </div>
                     <div className="flex items-center justify-between text-xs text-[var(--app-hint)]">
                         <span>{t('piImport.selectedCount', { n: selectedIds.length })}</span>
                         <div className="flex gap-2">
