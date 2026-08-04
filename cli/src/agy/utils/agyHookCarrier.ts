@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readdirSync,
     readFileSync,
+    readlinkSync,
     renameSync,
     rmSync,
     unlinkSync,
@@ -26,19 +27,31 @@ export type AgyMcpServerEntry = {
     env?: Record<string, string>;
 };
 
-// hostname is the over-delete guard for a shared HAPI_HOME (Fix N6): a
-// devcontainer bind-mounting ~/.hapi, or an NFS-shared home, puts carriers
-// written by different PID namespaces in the same agy-carriers/ directory.
-// A pid recorded by namespace A means nothing in namespace B — probing it
-// there can hit ESRCH for a process that is very much alive in A. hostname
-// does not fully solve cross-host PID collisions (two hosts using the same
-// hostname, or two containers sharing a hostname, remain unresolved — no
-// occurrence of this so far, and not what this fix targets), but it closes
-// the concrete case the reviewer raised. Sweep only ever probes liveness
-// for a carrier this host itself could plausibly own.
+// `scope` is the over-delete guard for a shared HAPI_HOME (Fix N6, hardened
+// further below): a devcontainer bind-mounting ~/.hapi, or an NFS-shared
+// home, puts carriers written by different PID namespaces in the same
+// agy-carriers/ directory. A pid recorded by namespace A means nothing in
+// namespace B — probing it there can hit ESRCH for a process that is very
+// much alive in A.
+//
+// hostname alone (the original Fix N6) does not close this: two containers
+// sharing a HAPI_HOME typically also share a hostname (or both default to
+// the same short container-id-derived one), which is exactly the collision
+// this guard exists to prevent. `scope` instead identifies the boot +
+// PID-namespace pair a carrier's pid was recorded in — see
+// computeLocalCarrierScope() below — which distinguishes exactly the cases
+// hostname could not: two containers on the same host (different PID
+// namespaces, same boot_id) and the same container across a restart
+// (same PID namespace file, but the boot_id — read from the host's
+// /proc — differs only across an actual host reboot, which is the one case
+// where every previously-recorded pid is unconditionally dead; this fix
+// does not attempt to special-case that, see sweepAgyHookCarriers's
+// docstring). Platforms without a working /proc (macOS, ...) fall back to
+// hostname, tagged so a fallback-computed scope can never collide with a
+// real Linux one.
 type AgyHookCarrierOwner = {
     pid: number;
-    hostname: string;
+    scope: string;
 };
 
 const AGY_CARRIERS_DIRNAME = 'agy-carriers';
@@ -50,13 +63,83 @@ const OWNER_FILE_NAME = 'owner.json';
 // delete of whatever else happens to live there (Fix N3).
 const CARRIER_DIR_PREFIX = 'hapi-agy-carrier-';
 
-// Carriers whose owner.json is missing or unreadable (pre-Phase-2.8 builds,
-// or a write that got interrupted) are legacy/ambiguous, not confirmed dead.
-// Give them a full day before sweeping them on age alone — long enough that
-// a carrier still mid-creation or briefly unreadable is never caught by it,
-// short enough that real leftovers don't linger for the OS's own 30-day
-// tmpfiles.d window (see the agy-preinvocation-discovery plan §8/§9).
-const STALE_OWNERLESS_CARRIER_AGE_MS = 24 * 60 * 60 * 1000;
+// Tags a hostname-derived scope so it can never equal a Linux
+// boot-id+namespace scope, even by coincidence — see computeLocalCarrierScope.
+const HOSTNAME_FALLBACK_SCOPE_PREFIX = 'hostname-fallback:';
+
+/**
+ * Reads the boot-id + PID-namespace pair that identifies "this exact kernel
+ * boot, this exact PID namespace" on Linux. /proc/sys/kernel/random/boot_id
+ * is a fresh random UUID generated once per boot (host or container, shared
+ * with any container sharing the host's kernel); /proc/self/ns/pid resolves
+ * (via its inode number) to a namespace identifier that differs between
+ * containers even when they share a boot_id. Together they're a strictly
+ * stronger identity than hostname for deciding whether a recorded pid could
+ * plausibly mean anything in the CURRENT process's PID space.
+ *
+ * Returns undefined on any read failure — not just "file missing" (a
+ * non-Linux OS) but also a restricted/virtualized /proc that exists but
+ * denies these specific reads (some sandboxes) — so the caller has one
+ * signal ("could not determine") to fall back on, rather than needing to
+ * distinguish failure modes.
+ */
+function readLinuxBootAndNamespaceScope(probe: Pick<ScopeProbe, 'readBootId' | 'readPidNamespaceId'>): string | undefined {
+    try {
+        const bootId = probe.readBootId();
+        const nsId = probe.readPidNamespaceId();
+        if (!bootId || !nsId) return undefined;
+        return `linux:${bootId}:${nsId}`;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Dependency seams for computeLocalCarrierScope, real implementations by
+ * default. Exists so tests can force each branch (Linux success, Linux
+ * failure -> hostname fallback, total failure) without mocking node:fs/
+ * node:os module-wide — which would also affect every other real-filesystem
+ * test in this file's suite.
+ */
+export type ScopeProbe = {
+    readBootId: () => string;
+    readPidNamespaceId: () => string;
+    hostname: () => string;
+};
+
+const defaultScopeProbe: ScopeProbe = {
+    readBootId: () => readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+    readPidNamespaceId: () => {
+        // Linux exposes the PID namespace as a magic symlink whose target
+        // encodes its inode number, e.g. "pid:[4026531836]" — that number
+        // is the namespace identifier.
+        const link = readlinkSync('/proc/self/ns/pid');
+        const match = /pid:\[(\d+)\]/.exec(link);
+        if (!match) throw new Error(`unexpected /proc/self/ns/pid format: ${link}`);
+        return match[1];
+    },
+    hostname: () => hostname(),
+};
+
+/**
+ * Computes this process's carrier scope: an opaque string identifying
+ * "carriers this process could plausibly own", used to gate sweepAgyHookCarriers.
+ * Prefers the Linux boot-id+PID-namespace pair (readLinuxBootAndNamespaceScope);
+ * falls back to a tagged hostname when that is unavailable (non-Linux, or a
+ * /proc that exists but is restricted). Returns undefined only when BOTH the
+ * Linux probe and the hostname fallback fail — callers must treat that as
+ * "cannot self-identify" and preserve everything rather than guess.
+ */
+export function computeLocalCarrierScope(probe: ScopeProbe = defaultScopeProbe): string | undefined {
+    const linuxScope = readLinuxBootAndNamespaceScope(probe);
+    if (linuxScope) return linuxScope;
+    try {
+        const host = probe.hostname();
+        return host ? `${HOSTNAME_FALLBACK_SCOPE_PREFIX}${host}` : undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 /**
  * Root directory HAPI creates all agy hook carriers under: `<HAPI_HOME>/
@@ -114,15 +197,21 @@ export function prepareAgyHookCarrier(
  * there.
  */
 function writeOwnerMetadata(carrierDir: string): void {
-    const owner: AgyHookCarrierOwner = { pid: process.pid, hostname: hostname() };
+    // A carrier written while the local scope could not be determined
+    // records no scope at all rather than a fabricated one — readOwnerMetadata
+    // requires a non-empty scope, so this carrier falls into the
+    // "unreadable owner" bucket below and is preserved indefinitely rather
+    // than risk being matched against a wrong or guessed scope later.
+    const scope = computeLocalCarrierScope();
+    const owner: AgyHookCarrierOwner = { pid: process.pid, scope: scope ?? '' };
     writeFileSync(join(carrierDir, OWNER_FILE_NAME), JSON.stringify(owner), { mode: 0o600 });
 }
 
 function readOwnerMetadata(carrierDir: string): AgyHookCarrierOwner | undefined {
     try {
         const parsed = JSON.parse(readFileSync(join(carrierDir, OWNER_FILE_NAME), 'utf8')) as Partial<AgyHookCarrierOwner>;
-        if (typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) && parsed.pid > 0 && typeof parsed.hostname === 'string' && parsed.hostname.length > 0) {
-            return { pid: parsed.pid, hostname: parsed.hostname };
+        if (typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) && parsed.pid > 0 && typeof parsed.scope === 'string' && parsed.scope.length > 0) {
+            return { pid: parsed.pid, scope: parsed.scope };
         }
         return undefined;
     } catch {
@@ -158,27 +247,54 @@ function checkProcessLiveness(pid: number): 'alive' | 'dead' | 'unknown' {
 }
 
 /**
- * Removes agy hook carriers under HAPI_HOME whose owning process has
- * confirmed-died (process.kill(pid, 0) raises ESRCH), and carriers old
- * enough with unreadable/missing owner metadata to be considered stale
- * leftovers. Meant to be called once per session start — see runAgy.ts.
+ * Removes agy hook carriers under HAPI_HOME whose owning process has been
+ * ACTIVELY confirmed dead: owner.json is present and parses (pid + a
+ * non-empty scope), that scope exactly matches this process's own
+ * computeLocalCarrierScope(), AND process.kill(pid, 0) raises ESRCH for that
+ * pid. Meant to be called once per session start — see runAgy.ts.
  *
- * Deliberately conservative in every ambiguous direction: a carrier whose
- * owner is alive (including EPERM — alive, just not ours), whose owner is
- * on a different host (Fix N6 — a shared HAPI_HOME, e.g. a devcontainer
- * bind-mounting ~/.hapi or an NFS home, means a pid recorded by another
- * host's PID namespace is meaningless here and must never be probed), or
- * whose liveness can't be determined is preserved, never removed.
- * Over-deleting a carrier still in use silently kills that session's
- * permission bridge and discovery hook; over-preserving a truly dead
- * carrier just leaves inert bytes on disk. The two mistakes are not
- * symmetric, so this only ever errs toward preservation.
+ * Fix 2 (hardened from the original hostname-only Fix N6): two things used
+ * to let this delete a carrier that was still very much in use.
+ *
+ *  (a) A carrier whose owner.json failed to read — for ANY reason, not just
+ *      "genuinely never written" — used to be swept once it turned 24h old.
+ *      But a transient read failure (a concurrent write racing the read, a
+ *      momentarily-unmounted overlay, ...) against a live, multi-day agy
+ *      session looks IDENTICAL to a genuinely ownerless leftover from this
+ *      function's point of view — there is no way to tell them apart from
+ *      here. Sweeping on age alone in that case can delete a carrier a
+ *      running session still depends on for its permission bridge. There is
+ *      no longer an age-based path at all: an unreadable/missing owner.json
+ *      is now preserved unconditionally. The cost is that legacy
+ *      (pre-this-fix) or truly-orphaned ownerless carriers never get swept
+ *      automatically — every carrier created after this fix always has a
+ *      readable owner.json, so this cost is one-time, not ongoing.
+ *
+ *  (b) hostname alone doesn't identify a PID namespace: two containers
+ *      sharing a HAPI_HOME (bind mount, NFS home) commonly also share a
+ *      hostname, so a pid recorded by one could be misread as belonging to
+ *      the other's PID space and probed there. computeLocalCarrierScope's
+ *      boot-id+PID-namespace scope (falling back to a distinctly-tagged
+ *      hostname only where /proc isn't usable) closes this the same way a
+ *      stronger identity always beats a weaker one: an exact match is
+ *      required, not merely a matching hostname.
+ *
+ * Deliberately conservative in every ambiguous direction, in this priority
+ * order: local scope cannot be determined at all -> preserve everything
+ * (never scan for anything to delete); a carrier's owner cannot be read ->
+ * preserve; a carrier's owner scope doesn't exactly match -> preserve; the
+ * owner is alive (including EPERM — alive, just not ours) or liveness can't
+ * be determined -> preserve. Only "read owner, scope matches, pid confirmed
+ * dead" deletes. Over-deleting a carrier still in use silently kills that
+ * session's permission bridge and discovery hook; over-preserving a truly
+ * dead carrier just leaves inert bytes on disk under HAPI_HOME. The two
+ * mistakes are not symmetric, so this only ever errs toward preservation.
  *
  * Best-effort and side-effect-free on failure: an unreadable carriers root,
  * or a single entry this process can't stat/read, is skipped rather than
  * thrown — a broken sweep must never abort session startup.
  */
-export function sweepAgyHookCarriers(): void {
+export function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe): void {
     const carriersRoot = agyCarriersRootDir();
     let entries: string[];
     try {
@@ -189,60 +305,49 @@ export function sweepAgyHookCarriers(): void {
         return;
     }
 
+    const localScope = computeLocalCarrierScope(scopeProbe);
+    if (!localScope) {
+        // Cannot identify which carriers this process could even plausibly
+        // own — comparing anything against an unknown scope is meaningless,
+        // so nothing is examined at all rather than falling back to a
+        // weaker (and potentially wrong) heuristic.
+        logger.debug('[agyHookCarrier] sweep skipped entirely: could not determine local carrier scope');
+        return;
+    }
+
     for (const entry of entries) {
         // Fix N3: only ever consider entries this module itself could have
         // created. A misconfigured/reused HAPI_HOME can put anything under
         // agy-carriers/ (another app's state dir, a stray checkout, ...) —
-        // without this check, the age-based owner-less fallback below would
-        // happily recursive-delete it once it turned 24h old.
+        // without this check, a bad match below could recursive-delete it.
         if (!entry.startsWith(CARRIER_DIR_PREFIX)) continue;
         const carrierDir = join(carriersRoot, entry);
         try {
             // Fix N4: lstat, not stat — judge the directory entry itself,
             // never whatever a symlink might point at. rmSync only ever
             // unlinks a symlink (never recurses through it), so there is no
-            // data-loss path either way, but liveness/age decisions must
+            // data-loss path either way, but liveness/scope decisions must
             // still be about this entry, not its target.
             const stats = lstatSync(carrierDir);
             if (!stats.isDirectory()) continue;
 
             const owner = readOwnerMetadata(carrierDir);
-            if (owner) {
-                if (owner.hostname !== hostname()) {
-                    // Fix N6: a pid recorded on another host means nothing
-                    // in this PID namespace — never probe it, never delete.
-                    //
-                    // Known trade-off (R5-3, won't-fix): if the hostname
-                    // itself changes underneath a carrier (DHCP-assigned
-                    // name, container restart, VPN interface renaming...),
-                    // this guard permanently mismatches and the carrier is
-                    // never swept — owner.json is present and readable, so
-                    // the age-based owner-less fallback below never triggers
-                    // either. This is deliberately left as-is: erring toward
-                    // over-retention is the safe direction (the alternative
-                    // is deleting a live carrier out from under a process
-                    // that renamed its host), the affected population is
-                    // narrow (only sessions that crashed — a clean exit is
-                    // swept by cleanupAgyHookCarrier regardless of hostname
-                    // — *and* whose host was then renamed before the process
-                    // died of natural causes), and what's left behind is a
-                    // few inert bytes under HAPI_HOME, not a leak with
-                    // externally visible effects. Do not add a time-based
-                    // fallback for this case without revisiting why the
-                    // pid-liveness check above was deemed unsafe to trust
-                    // across a hostname change in the first place.
-                    continue;
-                }
-                if (checkProcessLiveness(owner.pid) === 'dead') {
-                    rmSync(carrierDir, { recursive: true, force: true });
-                    logger.debug(`[agyHookCarrier] swept orphaned carrier ${carrierDir} (owner pid ${owner.pid} is dead)`);
-                }
+            if (!owner) {
+                // Fix 2a: no age-based fallback anymore — see the docstring
+                // above for why an unreadable owner is no longer evidence of
+                // staleness.
                 continue;
             }
-
-            if (Date.now() - stats.mtimeMs > STALE_OWNERLESS_CARRIER_AGE_MS) {
+            if (owner.scope !== localScope) {
+                // Fix 2b: a pid recorded under a different boot/PID-namespace
+                // (or, on a hostname-fallback platform, a different host)
+                // means nothing in this process's PID space — never probe
+                // it, never delete it.
+                continue;
+            }
+            if (checkProcessLiveness(owner.pid) === 'dead') {
                 rmSync(carrierDir, { recursive: true, force: true });
-                logger.debug(`[agyHookCarrier] swept carrier with unreadable/missing owner metadata ${carrierDir} (older than ${STALE_OWNERLESS_CARRIER_AGE_MS}ms)`);
+                logger.debug(`[agyHookCarrier] swept orphaned carrier ${carrierDir} (owner pid ${owner.pid}, scope matched, confirmed dead)`);
             }
         } catch (error) {
             logger.debug(`[agyHookCarrier] sweep skipped ${carrierDir}`, error);

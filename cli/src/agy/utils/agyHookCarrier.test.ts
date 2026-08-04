@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import {
     agyHookCarrierIsIntact,
     cleanupAgyHookCarrier,
+    computeLocalCarrierScope,
     prepareAgyHookCarrier,
     sweepAgyHookCarriers,
-    writeAgyHooksJsonAtomic
+    writeAgyHooksJsonAtomic,
+    type ScopeProbe
 } from './agyHookCarrier';
 
 /**
@@ -175,7 +177,7 @@ describe('agy hook carrier location (Phase 2.8)', () => {
         }
     });
 
-    it('writes owner metadata (pid, hostname) at the carrier root, outside .agents/', () => {
+    it('writes owner metadata (pid, scope) at the carrier root, outside .agents/', () => {
         const result = prepareAgyHookCarrier('{}');
         expect(result).toBeDefined();
         if (!result) return;
@@ -185,11 +187,13 @@ describe('agy hook carrier location (Phase 2.8)', () => {
             expect(existsSync(ownerPath)).toBe(true);
             const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
             expect(owner.pid).toBe(process.pid);
-            // Fix N6: hostname is the over-delete guard for a shared
-            // HAPI_HOME (devcontainer bind-mount, NFS home) — a pid
-            // recorded by a different host's PID namespace must never be
-            // probed by this host's sweep.
-            expect(owner.hostname).toBe(hostname());
+            // Fix 2: `scope` (boot-id + PID-namespace on Linux, a tagged
+            // hostname fallback elsewhere) is the over-delete guard for a
+            // shared HAPI_HOME (devcontainer bind-mount, NFS home) — a pid
+            // recorded under a different scope must never be probed by this
+            // host's sweep. See computeLocalCarrierScope's docstring for why
+            // hostname alone (the original Fix N6) wasn't enough.
+            expect(owner.scope).toBe(computeLocalCarrierScope());
             // Must not land inside .agents/ — that's the directory agy itself
             // reads (hooks.json, plugins/), and owner metadata is HAPI-only
             // bookkeeping that must not pollute it.
@@ -197,6 +201,36 @@ describe('agy hook carrier location (Phase 2.8)', () => {
         } finally {
             cleanupAgyHookCarrier(result.carrierDir);
         }
+    });
+});
+
+describe('computeLocalCarrierScope', () => {
+    it('computes a linux:<bootId>:<nsId> scope from real /proc reads on this (Linux) test host', () => {
+        // Non-vacuous: this sandbox's /proc is genuinely readable (verified
+        // manually before writing this test), so this pins the real Linux
+        // success path, not just the fallback.
+        const scope = computeLocalCarrierScope();
+        expect(scope).toMatch(/^linux:[0-9a-f-]{36}:\d+$/);
+    });
+
+    it('falls back to a distinctly-tagged hostname when the Linux probe fails', () => {
+        const probe: ScopeProbe = {
+            readBootId: () => { throw new Error('ENOENT: no /proc on this platform'); },
+            readPidNamespaceId: () => { throw new Error('should not be reached'); },
+            hostname: () => 'macbook.local',
+        };
+        // Fails (mutation check: drop the hostname-fallback prefix) if this
+        // ever collides with a real linux:... scope string.
+        expect(computeLocalCarrierScope(probe)).toBe('hostname-fallback:macbook.local');
+    });
+
+    it('returns undefined when both the Linux probe and the hostname fallback fail', () => {
+        const probe: ScopeProbe = {
+            readBootId: () => { throw new Error('no /proc'); },
+            readPidNamespaceId: () => { throw new Error('no /proc'); },
+            hostname: () => { throw new Error('gethostname() failed'); },
+        };
+        expect(computeLocalCarrierScope(probe)).toBeUndefined();
     });
 });
 
@@ -236,16 +270,19 @@ describe('sweepAgyHookCarriers', () => {
         return carrierDir;
     }
 
-    it('sweeps a carrier whose owner process has died', async () => {
+    it('③ sweeps a carrier whose owner scope matches AND whose process has died', async () => {
         const deadPid = await spawnAndReapDeadPid();
-        const carrierDir = makeCarrierDir('dead-owner');
+        const carrierDir = makeCarrierDir('dead-owner-matching-scope');
         writeFileSync(
             join(carrierDir, 'owner.json'),
-            JSON.stringify({ pid: deadPid, hostname: hostname() })
+            JSON.stringify({ pid: deadPid, scope: computeLocalCarrierScope() })
         );
 
         sweepAgyHookCarriers();
 
+        // Fails if the scope-match requirement (Fix 2b) or the liveness
+        // check regresses to always-preserve — this is the one combination
+        // that must actually delete.
         expect(existsSync(carrierDir)).toBe(false);
     });
 
@@ -255,7 +292,7 @@ describe('sweepAgyHookCarriers', () => {
         // of the test.
         writeFileSync(
             join(carrierDir, 'owner.json'),
-            JSON.stringify({ pid: process.pid, hostname: hostname() })
+            JSON.stringify({ pid: process.pid, scope: computeLocalCarrierScope() })
         );
 
         sweepAgyHookCarriers();
@@ -267,7 +304,7 @@ describe('sweepAgyHookCarriers', () => {
         const carrierDir = makeCarrierDir('eperm-owner');
         writeFileSync(
             join(carrierDir, 'owner.json'),
-            JSON.stringify({ pid: 1, hostname: hostname() })
+            JSON.stringify({ pid: 1, scope: computeLocalCarrierScope() })
         );
         vi.spyOn(process, 'kill').mockImplementation(((pid: number) => {
             if (pid === 1) {
@@ -283,32 +320,32 @@ describe('sweepAgyHookCarriers', () => {
         expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('preserves a carrier with unreadable/missing owner metadata unless it is old enough to be a stale leftover', () => {
-        const carrierDir = makeCarrierDir('no-owner-metadata');
-
+    it('① preserves a carrier with unreadable/missing owner metadata no matter how old (Fix 2a)', () => {
         // Fresh, no owner.json at all — simulates a carrier from before this
-        // feature shipped, or a partial write. Must be preserved: deleting
-        // it on sight would be exactly the mtime/name-based guessing this
-        // Phase was written to avoid.
+        // feature shipped, a partial write, or a read that raced a
+        // concurrent write against a still-live, multi-day session.
+        const carrierDir = makeCarrierDir('no-owner-metadata');
         sweepAgyHookCarriers();
         expect(existsSync(carrierDir)).toBe(true);
 
-        // Age it well past the staleness threshold and sweep again — now it
-        // is old enough to be treated as a genuine leftover.
+        // Fix 2a: age no longer matters at all — a carrier this old used to
+        // be swept purely on age once the owner-metadata read failed. That
+        // is exactly what would delete a live, multi-day agy session's
+        // carrier if its owner.json read merely raced a write. Aging it
+        // past the OLD 24h threshold must change nothing now.
         const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
         utimesSync(carrierDir, staleTime, staleTime);
         sweepAgyHookCarriers();
-        expect(existsSync(carrierDir)).toBe(false);
+        // Fails (mutation check: reintroduce the mtime-based ownerless
+        // fallback branch) if this carrier gets swept purely for being old.
+        expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('treats a legacy owner.json (pid only, no hostname field) as unreadable metadata, not as a same-host dead pid, and sweeps it on the age-based ownerless path instead', async () => {
-        // Sanity companion to the Fix N6 test below: a same-host dead pid
-        // (no hostname field at all, i.e. legacy owner.json) still falls
-        // back to the age-based ownerless path rather than being probed —
-        // readOwnerMetadata requires `hostname` now, so a pre-Fix-N6
-        // owner.json (pid only) is treated as unreadable, not as "same
-        // host, dead pid".
-        const carrierDir = makeCarrierDir('legacy-owner-no-hostname');
+    it('treats a legacy owner.json (pid only, no scope field) as unreadable metadata and preserves it regardless of age', () => {
+        // A pre-this-fix owner.json (hostname field, not scope) or a
+        // pre-Fix-N6 one (pid only) both fail the new schema check the same
+        // way: readOwnerMetadata requires a non-empty `scope` string.
+        const carrierDir = makeCarrierDir('legacy-owner-no-scope');
         writeFileSync(join(carrierDir, 'owner.json'), JSON.stringify({ pid: 999999 }));
 
         sweepAgyHookCarriers();
@@ -317,29 +354,59 @@ describe('sweepAgyHookCarriers', () => {
         const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
         utimesSync(carrierDir, staleTime, staleTime);
         sweepAgyHookCarriers();
-        expect(existsSync(carrierDir)).toBe(false);
+        expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('preserves a carrier owned by a different host even when its recorded pid is dead (Fix N6)', async () => {
+    it('② preserves a carrier owned by a different scope even when its recorded pid is dead (Fix 2b)', async () => {
         const deadPid = await spawnAndReapDeadPid();
-        const carrierDir = makeCarrierDir('other-host-dead-pid');
+        const carrierDir = makeCarrierDir('other-scope-dead-pid');
         writeFileSync(
             join(carrierDir, 'owner.json'),
-            // A pid namespace from a different host — this deadPid is only
-            // meaningfully "dead" in THIS process's PID namespace; recorded
-            // under another host it must never be probed at all.
-            JSON.stringify({ pid: deadPid, hostname: 'some-other-host-4a1c9e' })
+            // A scope that can never equal this process's real
+            // computeLocalCarrierScope() (real scopes are always prefixed
+            // `linux:` or `hostname-fallback:`) — this deadPid is only
+            // meaningfully "dead" in THIS process's own boot/PID-namespace;
+            // recorded under a different scope it must never be probed at
+            // all.
+            JSON.stringify({ pid: deadPid, scope: 'some-other-container-scope-4a1c9e' })
         );
 
         sweepAgyHookCarriers();
 
-        // Fails (mutation check: drop the `owner.hostname !== hostname()`
+        // Fails (mutation check: drop the `owner.scope !== localScope`
         // guard in sweepAgyHookCarriers) if the carrier gets deleted because
-        // its pid happens to be dead in THIS host's namespace too.
+        // its pid happens to be dead in THIS process's namespace too.
         expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('never inspects (or deletes) an entry that does not carry the carrier prefix, no matter how old (Fix N3)', () => {
+    it('④ preserves everything, without even scanning, when the local scope cannot be determined', async () => {
+        const deadPid = await spawnAndReapDeadPid();
+        const carrierDir = makeCarrierDir('would-be-swept-if-scope-resolved');
+        // This owner.json carries the REAL local scope and a genuinely dead
+        // pid — under a working scope probe this is exactly the carrier
+        // that test ③ proves gets swept. The only variable here is that
+        // sweepAgyHookCarriers itself is called with a probe that fails to
+        // resolve ANY scope (Linux probe and hostname fallback both throw).
+        writeFileSync(
+            join(carrierDir, 'owner.json'),
+            JSON.stringify({ pid: deadPid, scope: computeLocalCarrierScope() })
+        );
+
+        const failingProbe: ScopeProbe = {
+            readBootId: () => { throw new Error('no /proc'); },
+            readPidNamespaceId: () => { throw new Error('no /proc'); },
+            hostname: () => { throw new Error('gethostname() failed'); },
+        };
+        sweepAgyHookCarriers(failingProbe);
+
+        // Fails (mutation check: drop the `if (!localScope) return` early
+        // bailout in sweepAgyHookCarriers) if this ever gets deleted despite
+        // the sweep being unable to identify itself.
+        expect(existsSync(carrierDir)).toBe(true);
+    });
+
+    it('never inspects (or deletes) an entry that does not carry the carrier prefix, even when its owner.json would otherwise qualify for deletion (Fix N3)', async () => {
+        const deadPid = await spawnAndReapDeadPid();
         const root = join(customHapiHome, 'agy-carriers');
         mkdirSync(root, { recursive: true });
         // Deliberately NOT prefixed with hapi-agy-carrier- — simulates
@@ -348,18 +415,18 @@ describe('sweepAgyHookCarriers', () => {
         const strangerDir = join(root, 'not-a-hapi-carrier');
         mkdirSync(strangerDir, { recursive: true });
         writeFileSync(join(strangerDir, 'important-unrelated-file.txt'), 'do not delete me');
-
-        // Age it well past the ownerless staleness threshold — the ONLY
-        // other reason sweepAgyHookCarriers would ever delete an
-        // owner-metadata-less entry.
-        const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
-        utimesSync(strangerDir, staleTime, staleTime);
+        // A matching scope + confirmed-dead pid — exactly the combination
+        // test ③ proves gets deleted for a properly-prefixed carrier.
+        writeFileSync(
+            join(strangerDir, 'owner.json'),
+            JSON.stringify({ pid: deadPid, scope: computeLocalCarrierScope() })
+        );
 
         sweepAgyHookCarriers();
 
         // Fails (mutation check: drop the `entry.startsWith(CARRIER_DIR_PREFIX)`
-        // guard) if the stale-ownerless branch deletes this non-carrier
-        // directory purely because it is old.
+        // guard) if the sweep deletes this non-carrier directory despite its
+        // owner.json otherwise qualifying.
         expect(existsSync(strangerDir)).toBe(true);
         expect(existsSync(join(strangerDir, 'important-unrelated-file.txt'))).toBe(true);
     });
