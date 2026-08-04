@@ -274,7 +274,11 @@ export class PiConversationHistory {
         // `since` indexes the immutable append log, not the active branch.
         // A fork can move leafId backwards; advancing the cursor to it would
         // replay entries and break FIFO pairing. Empty increments keep cursor.
-        if (result.entries.length > 0) this.appendCursor = result.entries[result.entries.length - 1]!.id
+        if (result.entries.length > 0) {
+            this.appendCursor = result.entries[result.entries.length - 1]!.id
+            const leafEntryId = this.appendCursor
+            this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: leafEntryId }))
+        }
     }
 
     async probeCapabilities(): Promise<void> {
@@ -726,7 +730,12 @@ export class PiConversationHistory {
         entryIds: Record<string, string>,
         points: Record<string, true>
     ): Metadata {
-        const next: Metadata = { ...metadata, conversationHistoryEntryIds: entryIds, conversationHistoryPoints: points }
+        const next: Metadata = {
+            ...metadata,
+            conversationHistoryEntryIds: entryIds,
+            conversationHistoryPoints: points,
+            ...(this.appendCursor ? { piHistoryLeafEntryId: this.appendCursor } : {})
+        }
         if (Object.keys(entryIds).length === 0) delete next.conversationHistoryEntryIds
         if (Object.keys(points).length === 0) delete next.conversationHistoryPoints
         return next
@@ -765,6 +774,7 @@ export class PiConversationHistory {
         this.entryIdByLocalId.set(localId, entry.id)
         this.session.updateMetadata((metadata) => ({
             ...metadata,
+            piHistoryLeafEntryId: entry.id,
             conversationHistoryPoints: {
                 ...metadata.conversationHistoryPoints,
                 [localId]: true as const,

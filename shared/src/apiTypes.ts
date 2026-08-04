@@ -221,7 +221,8 @@ export const PiLocalSessionSummarySchema = z.object({
 })
 
 export const PiLocalSessionWithMessagesSchema = PiLocalSessionSummarySchema.extend({
-    messages: z.array(PiImportedMessageSchema)
+    messages: z.array(PiImportedMessageSchema),
+    activeEntryIds: z.array(z.string().min(1))
 })
 
 export const ListPiSessionsRpcRequestSchema = z.object({

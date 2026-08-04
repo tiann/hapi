@@ -3508,6 +3508,30 @@ describe('session model', () => {
             expect(cache.getSession(s2.id)).toBeDefined()
         })
 
+        it('does not merge the same Pi session id across different machines', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const s1 = cache.getOrCreateSession(
+                'pi-tag-1',
+                { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'pi', piSessionId: 'native-pi-id' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'pi-tag-2',
+                { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'pi', piSessionId: 'native-pi-id' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+            store.close()
+        })
+
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []

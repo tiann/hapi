@@ -47,6 +47,7 @@ describe('ListPiSessionsRpcResponseSchema', () => {
                 file: '/home/user/.pi/agent/sessions/session.jsonl',
                 modifiedAt: 1_000,
                 messageCount: 1,
+                activeEntryIds: ['entry-1'],
                 messages: [{
                     localId: 'pi:pi-session-id:entry-1:user',
                     entryId: 'entry-1',

@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    addImportedMessage,
     cancelQueuedMessage,
     deleteQueuedMessageById,
     lookupQueuedMessage,
@@ -47,6 +48,10 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    addImportedMessage(sessionId: string, content: unknown, localId: string, createdAt: number): { message: StoredMessage; inserted: boolean } {
+        return addImportedMessage(this.db, sessionId, content, localId, createdAt)
     }
 
     copyMessageToSession(

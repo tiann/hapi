@@ -16,6 +16,7 @@ type JsonRecord = Record<string, unknown>
 type ParsedPiSession = {
     summary: PiLocalSessionSummary
     messages: PiImportedMessage[]
+    activeEntryIds: string[]
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -321,7 +322,8 @@ function parsePiLocalSession(filePath: string): ParsedPiSession | null {
             leafEntryId,
             messageCount: messages.length
         },
-        messages
+        messages,
+        activeEntryIds: orderedNodeIds.filter((id) => activePath.has(id))
     }
 }
 
@@ -350,5 +352,5 @@ export function listLocalPiSessionsWithMessagesByIds(ids: Set<string>): PiLocalS
     if (ids.size === 0) return []
     return listLocalPiSessions(Number.MAX_SAFE_INTEGER)
         .filter((session) => ids.has(session.summary.id))
-        .map((session) => ({ ...session.summary, messages: session.messages }))
+        .map((session) => ({ ...session.summary, messages: session.messages, activeEntryIds: session.activeEntryIds }))
 }
