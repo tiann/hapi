@@ -219,6 +219,47 @@ export type CodexLocalSessionsResponse = {
     machineId?: string
 }
 
+export type PiLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    model?: string | null
+    thinkingLevel?: string | null
+    leafEntryId?: string | null
+    messageCount: number
+    hapiSessionId?: string
+    importState?: 'importing' | 'complete' | 'failed' | 'diverged'
+}
+
+export type PiLocalSessionsResponse = {
+    success: true
+    sessions: PiLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type PiImportResult = {
+    piSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type PiImportSessionsResponse = {
+    success: boolean
+    results: PiImportResult[]
+    machineId?: string
+    error?: string
+}
+
 
 export type CodexArchiveSessionResponse = {
     success: true

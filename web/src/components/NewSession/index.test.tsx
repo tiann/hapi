@@ -132,6 +132,13 @@ vi.mock('../../utils/formatRunnerSpawnError', () => ({
 vi.mock('@/components/CodexSessionSyncDialog', () => ({
     CodexSessionSyncDialog: () => null
 }))
+vi.mock('@/components/PiSessionImportDialog', () => ({
+    PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button type="button" data-testid="select-pi-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm([props.sessions[0]!.id])}>
+            select pi history
+        </button>
+    ) : null
+}))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
 vi.mock('./MachineSelector', () => ({ MachineSelector: () => null }))
 vi.mock('./SessionTypeSelector', () => ({ SessionTypeSelector: () => null }))
@@ -464,6 +471,55 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
         expect(mocks.checkPathsExists).toHaveBeenCalledTimes(1)
         expect(mocks.spawnSession).toHaveBeenCalledTimes(1)
+    })
+
+    it('imports the selected Pi history and resumes the canonical HAPI session', async () => {
+        savePreferredAgent('pi')
+        const piApi = {
+            getPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [{
+                    id: 'pi-native-1',
+                    title: 'Existing Pi session',
+                    cwd: 'C:\\repo',
+                    file: 'C:\\pi-native-1.jsonl',
+                    modifiedAt: 1,
+                    messageCount: 2
+                }]
+            }),
+            importPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                results: [{ piSessionId: 'pi-native-1', hapiSessionId: 'hapi-imported-1', action: 'created', appended: 2 }]
+            }),
+            resumeSession: vi.fn().mockResolvedValue('hapi-imported-1')
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={piApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-pi-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-pi-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-imported-1'))
+        expect(piApi.importPiSessions).toHaveBeenCalledWith({
+            sessionIds: ['pi-native-1'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1'
+        })
+        expect(piApi.resumeSession).toHaveBeenCalledWith('hapi-imported-1')
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 
     it('does not save changed launch settings when creation fails', async () => {
