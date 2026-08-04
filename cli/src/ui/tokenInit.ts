@@ -10,6 +10,7 @@
 import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import chalk from 'chalk'
+import { exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
 import { configuration } from '@/configuration'
 import { readSettings, updateSettings } from '@/persistence'
 import { initializeApiUrl } from '@/ui/apiUrlInit'
@@ -26,6 +27,7 @@ export async function initializeToken(): Promise<void> {
 
     // 1. Environment variable has highest priority (allows temporary override)
     if (configuration.cliApiToken) {
+        exportHapiHubAuthEnv()
         return
     }
 
@@ -33,6 +35,7 @@ export async function initializeToken(): Promise<void> {
     const settings = await readSettings()
     if (settings.cliApiToken) {
         configuration._setCliApiToken(settings.cliApiToken)
+        exportHapiHubAuthEnv()
         return
     }
 
@@ -50,6 +53,7 @@ export async function initializeToken(): Promise<void> {
         cliApiToken: token
     }))
     configuration._setCliApiToken(token)
+    exportHapiHubAuthEnv()
 }
 
 async function promptForToken(): Promise<string> {

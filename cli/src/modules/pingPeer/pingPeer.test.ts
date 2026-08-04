@@ -397,3 +397,90 @@ describe('pingPeer', () => {
         expect(exitCodeForPingPeerError(new PingPeerError('send_failed', 'x'))).toBe(4)
     })
 })
+
+describe('formatPeerSessionsList', () => {
+    it('formats newest-first peer rows with id prefix and metadata', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 100,
+                metadata: { name: 'Old', flavor: 'claude' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 200,
+                metadata: { name: 'Fresh', flavor: 'cursor' }
+            }
+        ])
+        const lines = text.split('\n')
+        expect(lines[0]).toContain('bbbbbbbb')
+        expect(lines[0]).toContain('active=true')
+        expect(lines[0]).toContain('flavor=cursor')
+        expect(lines[0]).toContain('Fresh')
+        expect(lines[1]).toContain('aaaaaaaa')
+    })
+
+    it('respects maxRows and empty list', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        expect(formatPeerSessionsList([])).toContain('No peer sessions')
+        const many = Array.from({ length: 5 }, (_, i) => ({
+            id: `${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`,
+            active: true,
+            updatedAt: i,
+            metadata: { name: `S${i}`, flavor: 'pi' as string | null }
+        }))
+        const text = formatPeerSessionsList(many, { maxRows: 2 })
+        expect(text.split('\n').filter((l) => l.includes('active='))).toHaveLength(2)
+    })
+})
+
+describe('listPeerSessions auth failures', () => {
+    it('hints at auth login and hub URL when JWT exchange fails', async () => {
+        const { listPeerSessions, PingPeerError } = await import('./pingPeer')
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 401, data: { error: 'invalid token' } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            }
+        })
+
+        await expect(listPeerSessions({
+            accessToken: 'bad',
+            apiUrl: 'http://remote-hub:3006',
+            http: http as never
+        })).rejects.toSatisfy((error: unknown) => {
+            expect(error).toBeInstanceOf(PingPeerError)
+            const message = (error as InstanceType<typeof PingPeerError>).message
+            expect(message).toMatch(/auth login|CLI_API_TOKEN/i)
+            expect(message).toContain('http://remote-hub:3006')
+            expect(message).toMatch(/list_peers|MCP/i)
+            return true
+        })
+    })
+
+    it('hints when CLI_API_TOKEN is missing', async () => {
+        const { listPeerSessions, PingPeerError } = await import('./pingPeer')
+        const { configuration } = await import('@/configuration')
+        const previous = configuration.cliApiToken
+        configuration._setCliApiToken('')
+        try {
+            await expect(listPeerSessions({
+                apiUrl: 'http://hub.test',
+                accessToken: '   '
+            })).rejects.toSatisfy((error: unknown) => {
+                expect(error).toBeInstanceOf(PingPeerError)
+                const message = (error as InstanceType<typeof PingPeerError>).message
+                expect(message).toMatch(/auth login/i)
+                expect(message).toMatch(/HAPI_API_URL|runner/i)
+                return true
+            })
+        } finally {
+            configuration._setCliApiToken(previous)
+        }
+    })
+})

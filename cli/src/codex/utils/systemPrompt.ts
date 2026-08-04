@@ -23,6 +23,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
     ${buildSessionCitationSteerInstruction({
         inspectTool: 'functions.hapi__inspect_peer',
         pingTool: 'functions.hapi__ping_peer',
+        listPeersTool: 'functions.hapi__list_peers',
     })}
 `);
 

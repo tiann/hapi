@@ -81,10 +81,18 @@ function defaultSleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+const AUTH_RECOVERY_HINT =
+    'On a remote runner, set HAPI_API_URL and CLI_API_TOKEN to the same hub as the runner ' +
+    '(or run `hapi auth login`). Inside a HAPI session prefer MCP `list_peers` / `ping_peer` / ' +
+    '`inspect_peer`, which use the session CLI credentials.'
+
 function resolveApiUrl(apiUrl?: string): string {
     const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
     if (!raw) {
-        throw new PingPeerError('bad_args', 'HAPI API URL is empty')
+        throw new PingPeerError(
+            'bad_args',
+            `HAPI API URL is empty. ${AUTH_RECOVERY_HINT}`
+        )
     }
     // Peer messaging only targets the configured hub - never accept host overrides
     // from MCP tool args (security: same hub/token/namespace only).
@@ -92,11 +100,23 @@ function resolveApiUrl(apiUrl?: string): string {
 }
 
 function resolveAccessToken(accessToken?: string): string {
-    const token = (accessToken ?? getAuthToken()).trim()
+    let token = ''
+    try {
+        token = (accessToken ?? getAuthToken()).trim()
+    } catch {
+        token = (accessToken ?? '').trim()
+    }
     if (!token) {
-        throw new PingPeerError('bad_args', 'CLI_API_TOKEN is required (run `hapi auth login`)')
+        throw new PingPeerError(
+            'bad_args',
+            `CLI_API_TOKEN is required (run \`hapi auth login\`). ${AUTH_RECOVERY_HINT}`
+        )
     }
     return token
+}
+
+function authFailedMessage(apiUrl: string, detail: string): string {
+    return `failed to exchange access token for JWT (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
 }
 
 async function exchangeJwt(
@@ -119,7 +139,7 @@ async function exchangeJwt(
             const detail = typeof response.data?.error === 'string'
                 ? response.data.error
                 : `HTTP ${response.status}`
-            throw new PingPeerError('auth_failed', `failed to exchange access token for JWT (${detail})`)
+            throw new PingPeerError('auth_failed', authFailedMessage(apiUrl, detail))
         }
         return token
     } catch (error) {
@@ -128,7 +148,7 @@ async function exchangeJwt(
         }
         throw new PingPeerError(
             'auth_failed',
-            `failed to exchange access token for JWT (${error instanceof Error ? error.message : String(error)})`
+            authFailedMessage(apiUrl, error instanceof Error ? error.message : String(error))
         )
     }
 }
@@ -187,7 +207,10 @@ async function listSessions(
         const detail = typeof response.data?.error === 'string'
             ? response.data.error
             : `HTTP ${response.status}`
-        throw new PingPeerError('auth_failed', `failed to list sessions (${detail})`)
+        throw new PingPeerError(
+            'auth_failed',
+            `failed to list sessions (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
+        )
     }
     const body = response.data
     const sessions = Array.isArray(body?.sessions)
@@ -341,6 +364,36 @@ export async function listPeerSessions(
     const http = options.http ?? axios
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     return listSessions(apiUrl, jwt, http, options.limit ?? 200)
+}
+
+export type FormatPeerSessionsListOptions = {
+    /** Max rows to print (default 30). */
+    maxRows?: number
+}
+
+/**
+ * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
+ * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
+ */
+export function formatPeerSessionsList(
+    sessions: PingPeerSessionSummary[],
+    options: FormatPeerSessionsListOptions = {}
+): string {
+    const maxRows = options.maxRows ?? 30
+    if (sessions.length === 0) {
+        return 'No peer sessions found on this hub/namespace.'
+    }
+    const sorted = [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
+        const flavor = session.metadata?.flavor ?? '?'
+        const name = session.metadata?.name ?? '(unnamed)'
+        return `  ${session.id.slice(0, 8)}  active=${session.active}  flavor=${flavor}  ${name}`
+    })
+    const omitted = sorted.length - rows.length
+    if (omitted > 0) {
+        rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
+    }
+    return rows.join('\n')
 }
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {

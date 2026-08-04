@@ -19,7 +19,7 @@ import {
     PING_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation'
-import { PingPeerError, formatInspectPeerReport, inspectPeer, pingPeer } from "@/modules/pingPeer/pingPeer";
+import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, pingPeer } from "@/modules/pingPeer/pingPeer";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -37,6 +37,7 @@ const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set(['ping_peer', 'inspect_peer'])
  * Map HAPI MCP tool names to Claude `--allowedTools` entries.
  * Keeps `ping_peer` / `inspect_peer` off the auto-allow list so cross-session
  * write (resume+inject) and read (peer histories) still prompt.
+ * `list_peers` stays allowed (discovery shortlist only).
  */
 export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
     return toolNames
@@ -90,6 +91,12 @@ function createHapiMcpServer(
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         messageLimit: z.number().int().min(1).max(100).optional().describe(
             'Recent message page size (default 30, max 100). Text snippets only.'
+        ),
+    });
+
+    const listPeersInputSchema: z.ZodTypeAny = z.object({
+        limit: z.number().int().min(1).max(100).optional().describe(
+            'Max sessions to return (default 30, max 100). Newest updatedAt first.'
         ),
     });
 
@@ -272,6 +279,43 @@ function createHapiMcpServer(
         }
     });
 
+    mcp.registerTool<any, any>('list_peers', {
+        description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id.',
+        title: 'List Peer Sessions',
+        inputSchema: listPeersInputSchema,
+    }, async (args: { limit?: number }) => {
+        logger.debug('[hapiMCP] list_peers');
+        try {
+            const limit = args.limit ?? 30;
+            const sessions = await listPeerSessions({ limit });
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: formatPeerSessionsList(sessions, { maxRows: limit }),
+                    },
+                ],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof PingPeerError
+                ? error.message
+                : error instanceof Error
+                    ? error.message
+                    : String(error);
+            logger.debug('[hapiMCP] list_peers failed:', message);
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Failed to list peers: ${message}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+    });
+
     if (skillLookup) {
         mcp.registerTool<any, any>('skill_lookup', {
             description: 'Load a HAPI skill by exact name. When a user message starts with $name, call this tool with that name before acting.',
@@ -392,8 +436,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'list_peers', 'ping_peer', 'inspect_peer']
+        : ['display_image', 'list_peers', 'ping_peer', 'inspect_peer'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }
