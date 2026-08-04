@@ -127,6 +127,69 @@ export function isRenderIrrelevantSessionPatch(session: Session, patch: SessionP
     return true
 }
 
+/**
+ * Apply a validated SessionPatch onto a detail Session. Returns null when
+ * nothing render-relevant changed (keep prior object identity). Field-by-field
+ * only — never wholesale-spread versioned `{ version, value }` wrappers.
+ * Exported for unit tests (Copilot mode keep-alive must not be dropped).
+ */
+export function applySessionDetailPatch(session: Session, patch: SessionPatch): Session | null {
+    if (isRenderIrrelevantSessionPatch(session, patch)) {
+        return null
+    }
+    let changed = false
+    const nextSession: Session = { ...session }
+    const assign = <K extends keyof Session>(key: K, value: Session[K]) => {
+        if (nextSession[key] !== value) {
+            nextSession[key] = value
+            changed = true
+        }
+    }
+    if (patch.active !== undefined) assign('active', patch.active)
+    if (patch.thinking !== undefined) assign('thinking', patch.thinking)
+    if (patch.activeAt !== undefined) assign('activeAt', patch.activeAt)
+    // Monotonic with hub applySessionPatch: a rejected stale
+    // metadata/agentState replay must not rewind updatedAt.
+    if (patch.updatedAt !== undefined) {
+        const nextUpdatedAt = Math.max(nextSession.updatedAt, patch.updatedAt)
+        assign('updatedAt', nextUpdatedAt)
+    }
+    if (patch.model !== undefined) assign('model', patch.model)
+    if (patch.modelReasoningEffort !== undefined) assign('modelReasoningEffort', patch.modelReasoningEffort)
+    if (patch.effort !== undefined) assign('effort', patch.effort)
+    if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
+        assign('serviceTier', patch.serviceTier ?? null)
+    }
+    if (patch.permissionMode !== undefined) assign('permissionMode', patch.permissionMode)
+    if (patch.collaborationMode !== undefined) assign('collaborationMode', patch.collaborationMode)
+    if (patch.copilotAgentMode !== undefined) assign('copilotAgentMode', patch.copilotAgentMode)
+    if (patch.backgroundTaskCount !== undefined) assign('backgroundTaskCount', patch.backgroundTaskCount)
+    // Version gates: dual SSE can deliver duplicates out of order.
+    // Only mark changed when a strictly newer version lands —
+    // otherwise keep previous object identity (no redundant render).
+    if (patch.todos !== undefined && isNewerVersionedPatch(patch.todos.version, nextSession.todosUpdatedAt ?? 0)) {
+        nextSession.todos = patch.todos.value
+        nextSession.todosUpdatedAt = patch.todos.version
+        changed = true
+    }
+    if (patch.teamState !== undefined && isNewerVersionedPatch(patch.teamState.version, nextSession.teamStateUpdatedAt ?? 0)) {
+        nextSession.teamState = patch.teamState.value ?? undefined
+        nextSession.teamStateUpdatedAt = patch.teamState.version
+        changed = true
+    }
+    if (patch.metadata !== undefined && isNewerVersionedPatch(patch.metadata.version, nextSession.metadataVersion)) {
+        nextSession.metadata = patch.metadata.value
+        nextSession.metadataVersion = patch.metadata.version
+        changed = true
+    }
+    if (patch.agentState !== undefined && isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)) {
+        nextSession.agentState = patch.agentState.value
+        nextSession.agentStateVersion = patch.agentState.version
+        changed = true
+    }
+    return changed ? nextSession : null
+}
+
 function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
 }
@@ -549,63 +612,8 @@ export function useSSE(options: {
                     return previous
                 }
                 patched = true
-                // Keep-alive patches repeat every field every ~10s; if nothing
-                // render-relevant moved (ignore activeAt), keep the existing
-                // object identity. Still field-by-field below for structured
-                // patches — never wholesale-spread { version, value } wrappers.
-                if (isRenderIrrelevantSessionPatch(previous.session, patch)) {
-                    return previous
-                }
-                let changed = false
-                const nextSession: Session = { ...previous.session }
-                const assign = <K extends keyof Session>(key: K, value: Session[K]) => {
-                    if (nextSession[key] !== value) {
-                        nextSession[key] = value
-                        changed = true
-                    }
-                }
-                if (patch.active !== undefined) assign('active', patch.active)
-                if (patch.thinking !== undefined) assign('thinking', patch.thinking)
-                if (patch.activeAt !== undefined) assign('activeAt', patch.activeAt)
-                // Monotonic with hub applySessionPatch: a rejected stale
-                // metadata/agentState replay must not rewind updatedAt.
-                if (patch.updatedAt !== undefined) {
-                    const nextUpdatedAt = Math.max(nextSession.updatedAt, patch.updatedAt)
-                    assign('updatedAt', nextUpdatedAt)
-                }
-                if (patch.model !== undefined) assign('model', patch.model)
-                if (patch.modelReasoningEffort !== undefined) assign('modelReasoningEffort', patch.modelReasoningEffort)
-                if (patch.effort !== undefined) assign('effort', patch.effort)
-                if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
-                    assign('serviceTier', patch.serviceTier ?? null)
-                }
-                if (patch.permissionMode !== undefined) assign('permissionMode', patch.permissionMode)
-                if (patch.collaborationMode !== undefined) assign('collaborationMode', patch.collaborationMode)
-                if (patch.backgroundTaskCount !== undefined) assign('backgroundTaskCount', patch.backgroundTaskCount)
-                // Version gates: dual SSE can deliver duplicates out of order.
-                // Only mark changed when a strictly newer version lands —
-                // otherwise keep previous object identity (no redundant render).
-                if (patch.todos !== undefined && isNewerVersionedPatch(patch.todos.version, nextSession.todosUpdatedAt ?? 0)) {
-                    nextSession.todos = patch.todos.value
-                    nextSession.todosUpdatedAt = patch.todos.version
-                    changed = true
-                }
-                if (patch.teamState !== undefined && isNewerVersionedPatch(patch.teamState.version, nextSession.teamStateUpdatedAt ?? 0)) {
-                    nextSession.teamState = patch.teamState.value ?? undefined
-                    nextSession.teamStateUpdatedAt = patch.teamState.version
-                    changed = true
-                }
-                if (patch.metadata !== undefined && isNewerVersionedPatch(patch.metadata.version, nextSession.metadataVersion)) {
-                    nextSession.metadata = patch.metadata.value
-                    nextSession.metadataVersion = patch.metadata.version
-                    changed = true
-                }
-                if (patch.agentState !== undefined && isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)) {
-                    nextSession.agentState = patch.agentState.value
-                    nextSession.agentStateVersion = patch.agentState.version
-                    changed = true
-                }
-                if (!changed) {
+                const nextSession = applySessionDetailPatch(previous.session, patch)
+                if (!nextSession) {
                     return previous
                 }
                 return {
