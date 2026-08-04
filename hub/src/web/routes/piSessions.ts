@@ -73,7 +73,7 @@ function buildPiMetadata(
         path: transcript.cwd ?? (typeof existing.path === 'string' ? existing.path : dirname(transcript.file)),
         host: typeof existing.host === 'string' ? existing.host : (machine.metadata?.host ?? machine.id),
         os: typeof existing.os === 'string' ? existing.os : (machine.metadata?.platform ?? process.platform),
-        name: transcript.title,
+        name: typeof existing.name === 'string' ? existing.name : transcript.title,
         summary: summaryText ? { text: summaryText, updatedAt: Date.now() } : undefined,
         machineId: machine.id,
         flavor: 'pi',

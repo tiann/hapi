@@ -138,6 +138,28 @@ describe('Pi session import', () => {
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(2)
     })
 
+    it('preserves a custom HAPI session name during later Pi reconciliation', () => {
+        const { store, engine } = setup()
+        const source = transcript('native-renamed', [userMessage('native-renamed', 'entry-1', null, 'one', 1_000)])
+        const first = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        const stored = store.sessions.getSession(first.hapiSessionId!)!
+        store.sessions.updateSessionMetadata(
+            stored.id,
+            { ...(stored.metadata as Record<string, unknown>), name: 'My custom HAPI title' },
+            stored.metadataVersion,
+            'default'
+        )
+
+        const extended = transcript('native-renamed', [
+            userMessage('native-renamed', 'entry-1', null, 'one', 1_000),
+            userMessage('native-renamed', 'entry-2', 'entry-1', 'two', 2_000)
+        ])
+        const result = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: extended })
+
+        expect(result.error).toBeUndefined()
+        expect((store.sessions.getSession(stored.id)?.metadata as { name?: string }).name).toBe('My custom HAPI title')
+    })
+
     it('keeps a mid-transcript incremental import idempotent and rebuilds missing user locators', () => {
         const { store, engine } = setup()
         const source = transcript('native-mid', [
