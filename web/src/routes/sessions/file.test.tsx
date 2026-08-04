@@ -6,6 +6,7 @@ import { encodeBase64 } from '@/lib/utils'
 import FilePage from './file'
 
 const goBackMock = vi.fn()
+const copyMock = vi.hoisted(() => vi.fn())
 
 const sampleMarkdown = '# Heading\n\n| Col A | Col B |\n| --- | --- |\n| one | two |'
 const filePath = 'docs/README.md'
@@ -39,7 +40,7 @@ vi.mock('@/hooks/useAppGoBack', () => ({
 vi.mock('@/hooks/useCopyToClipboard', () => ({
     useCopyToClipboard: () => ({
         copied: false,
-        copy: vi.fn(),
+        copy: copyMock,
     }),
 }))
 
@@ -81,6 +82,11 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Heading')
         })
+        const previewCopyButton = screen.getByRole('button', { name: 'Copy file content' })
+        expect(previewCopyButton.closest('[data-hapi-file-content-header="true"]')).not.toBeNull()
+        expect(previewCopyButton).not.toHaveClass('absolute')
+        fireEvent.click(previewCopyButton)
+        expect(copyMock).toHaveBeenCalledWith(sampleMarkdown)
         expect(screen.getByRole('button', { name: 'Preview' })).toHaveClass('opacity-80')
 
         fireEvent.click(screen.getByRole('button', { name: 'Source' }))
@@ -88,6 +94,12 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByRole('code')).toHaveTextContent('# Heading')
         })
+        const sourcePreview = screen.getByRole('code').closest('[data-hapi-file-source-preview="true"]')
+        const sourceCopyButton = screen.getByRole('button', { name: 'Copy file content' })
+        expect(sourcePreview).not.toBeNull()
+        expect(sourcePreview).toContainElement(sourceCopyButton)
+        expect(sourceCopyButton.closest('[data-hapi-file-content-header="true"]')).not.toBeNull()
+        expect(sourceCopyButton).not.toHaveClass('absolute')
         expect(screen.queryByTestId('markdown-preview')).not.toBeInTheDocument()
 
         fireEvent.click(screen.getByRole('button', { name: 'Preview' }))

@@ -134,6 +134,33 @@ function FileContentSkeleton(props: { label: string }) {
     )
 }
 
+function FileContentHeader(props: {
+    label: string
+    copied: boolean
+    copyLabel: string
+    onCopy: () => void
+}) {
+    return (
+        <div
+            data-hapi-file-content-header="true"
+            className="flex items-center justify-between gap-3 bg-[var(--app-code-header-bg)] px-3 py-2"
+        >
+            <div className="min-w-0 flex-1 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
+                {props.label}
+            </div>
+            <button
+                type="button"
+                onClick={props.onCopy}
+                className="shrink-0 rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
+                title={props.copyLabel}
+                aria-label={props.copyLabel}
+            >
+                {props.copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+            </button>
+        </div>
+    )
+}
+
 function resolveLanguage(path: string): string | undefined {
     const parts = path.split('.')
     if (parts.length <= 1) return undefined
@@ -390,32 +417,33 @@ export default function FilePage() {
                         ) : (
                             decodedContent ? (
                                 markdownFile && !showMarkdownSource ? (
-                                    <div className="markdown-content relative">
+                                    <div className="markdown-content">
                                         {canCopyContent ? (
-                                            <button
-                                                type="button"
-                                                onClick={() => copyContent(decodedContent)}
-                                                className="absolute right-2 top-2 z-10 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
-                                                title={t('file.page.copyContent')}
-                                            >
-                                                {contentCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-                                            </button>
+                                            <div className="mb-3 overflow-hidden rounded-md">
+                                                <FileContentHeader
+                                                    label={t('file.page.tab.preview')}
+                                                    copied={contentCopied}
+                                                    copyLabel={t('file.page.copyContent')}
+                                                    onCopy={() => copyContent(decodedContent)}
+                                                />
+                                            </div>
                                         ) : null}
                                         <MarkdownRenderer content={decodedContent} standalone />
                                     </div>
                                 ) : (
-                                    <div className="relative">
+                                    <div
+                                        data-hapi-file-source-preview="true"
+                                        className="min-w-0 max-w-full overflow-hidden rounded-md bg-[var(--app-code-bg)]"
+                                    >
                                         {canCopyContent ? (
-                                            <button
-                                                type="button"
-                                                onClick={() => copyContent(decodedContent)}
-                                                className="absolute right-2 top-2 z-10 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
-                                                title={t('file.page.copyContent')}
-                                            >
-                                                {contentCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-                                            </button>
+                                            <FileContentHeader
+                                                label={language ?? 'text'}
+                                                copied={contentCopied}
+                                                copyLabel={t('file.page.copyContent')}
+                                                onCopy={() => copyContent(decodedContent)}
+                                            />
                                         ) : null}
-                                        <pre className="shiki overflow-auto rounded-md bg-[var(--app-code-bg)] p-3 pr-8 text-xs font-mono">
+                                        <pre className="shiki m-0 overflow-auto bg-[var(--app-code-bg)] p-3 text-xs font-mono">
                                             <code>{highlighted ?? decodedContent}</code>
                                         </pre>
                                     </div>

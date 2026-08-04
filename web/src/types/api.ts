@@ -1,5 +1,6 @@
 import type {
     CodexCollaborationMode,
+    CopilotAgentMode,
     DecryptedMessage as ProtocolDecryptedMessage,
     Machine,
     RunnerState,
@@ -24,6 +25,8 @@ export type {
     GitCommandResponse,
     GrokModelsResponse,
     GrokModelSummary,
+    CopilotModelsResponse,
+    CopilotModelSummary,
     GrokReasoningEffortResponse,
     GrokReasoningEffortOption,
     ListDirectoryResponse,
@@ -51,6 +54,7 @@ export type {
     AgentState,
     AttachmentMetadata,
     CodexCollaborationMode,
+    CopilotAgentMode,
     Metadata,
     PermissionMode,
     Machine,

@@ -8,7 +8,9 @@ describe('listSlashCommands', () => {
     const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
     const originalCodexHome = process.env.CODEX_HOME
     const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
+    const originalHome = process.env.HOME
     let sandboxDir: string
+    let homeDir: string
     let claudeConfigDir: string
     let codexHome: string
     let xdgConfigHome: string
@@ -17,16 +19,19 @@ describe('listSlashCommands', () => {
 
     beforeEach(async () => {
         sandboxDir = await mkdtemp(join(tmpdir(), 'hapi-slash-commands-'))
+        homeDir = join(sandboxDir, 'home')
         claudeConfigDir = join(sandboxDir, 'global-claude')
         codexHome = join(sandboxDir, 'global-codex')
         xdgConfigHome = join(sandboxDir, 'xdg-config')
         opencodeUserDir = join(xdgConfigHome, 'opencode', 'command')
         projectDir = join(sandboxDir, 'project')
 
+        process.env.HOME = homeDir
         process.env.CLAUDE_CONFIG_DIR = claudeConfigDir
         process.env.CODEX_HOME = codexHome
         process.env.XDG_CONFIG_HOME = xdgConfigHome
 
+        await mkdir(homeDir, { recursive: true })
         await mkdir(join(claudeConfigDir, 'commands'), { recursive: true })
         await mkdir(join(codexHome, 'prompts'), { recursive: true })
         await mkdir(opencodeUserDir, { recursive: true })
@@ -36,6 +41,11 @@ describe('listSlashCommands', () => {
     })
 
     afterEach(async () => {
+        if (originalHome === undefined) {
+            delete process.env.HOME
+        } else {
+            process.env.HOME = originalHome
+        }
         if (originalClaudeConfigDir === undefined) {
             delete process.env.CLAUDE_CONFIG_DIR
         } else {
@@ -279,5 +289,22 @@ describe('listSlashCommands', () => {
             description: 'Local prompt',
             content: 'Local body',
         })
+    })
+
+    it('exposes Copilot agent builtins (skills stay on $ autocomplete)', async () => {
+        const commands = await listSlashCommands('copilot', projectDir)
+        const names = commands.map((command) => command.name)
+
+        expect(names).toEqual(expect.arrayContaining([
+            'rubber-duck',
+            'security-review',
+            'research',
+            'review',
+            'skills',
+            'fleet',
+        ]))
+        expect(names).not.toContain('fix-issue')
+        expect(commands.find((command) => command.name === 'rubber-duck')?.source).toBe('builtin')
+        expect(commands.find((command) => command.name === 'plan')?.source).toBe('builtin')
     })
 })

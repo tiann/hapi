@@ -2,6 +2,7 @@ import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CopilotAgentMode } from '@hapi/protocol'
 import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -24,6 +25,7 @@ type SessionAlivePayload = {
     effort?: string | null
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
+    copilotAgentMode?: CopilotAgentMode
 }
 
 type SessionEndPayload = {

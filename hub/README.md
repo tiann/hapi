@@ -43,7 +43,7 @@ See `src/configuration.ts` for all options.
 - `DB_PATH` - SQLite database path (default: HAPI_HOME/hapi.db).
 - `TELEGRAM_NOTIFICATION` - Enable/disable Telegram notifications (default: true).
 - `HAPI_RELAY_API` - Relay API domain (default: relay.hapi.run).
-- `HAPI_RELAY_AUTH` - Relay auth key (default: hapi).
+- `HAPI_RELAY_AUTH` - Explicit relay auth key. By default the hub obtains and persists an individually revocable key from the relay. A persisted key rejected with HTTP 403 is discarded and reissued once; an explicitly configured environment key must be updated manually.
 - `HAPI_RELAY_FORCE_TCP` - Force TCP relay mode (true/1).
 - `VAPID_SUBJECT` - Contact email/URL for Web Push.
 

@@ -58,8 +58,9 @@ export interface TunnelConfig {
     localPort: number
     enabled: boolean
     apiDomain?: string | null  // TUNWG_API - default: relay.hapi.run (official relay)
-    authKey?: string | null    // TUNWG_AUTH - default: hapi
+    authKey: string            // TUNWG_AUTH - per-hub key issued by the relay
     useRelay?: boolean         // TUNWG_RELAY
+    refreshAuthKey?: (rejectedKey: string) => Promise<string>
 }
 
 interface TunnelState {
@@ -77,6 +78,7 @@ export class TunnelManager {
     private readonly retryDelayMs = 3000
     private retryTimeout: ReturnType<typeof setTimeout> | null = null
     private stopped = false
+    private authRecoveryAttempted = false
 
     constructor(config: TunnelConfig) {
         this.config = config
@@ -116,7 +118,7 @@ export class TunnelManager {
         if (this.config.apiDomain) {
             env.TUNWG_API = this.config.apiDomain
         }
-        env.TUNWG_AUTH = this.config.authKey ?? 'hapi'
+        env.TUNWG_AUTH = this.config.authKey
         if (this.config.useRelay) {
             env.TUNWG_RELAY = 'true'
         }
@@ -124,8 +126,11 @@ export class TunnelManager {
         return new Promise((resolve, reject) => {
             console.log(`[Tunnel] Starting tunnel to ${forwardUrl}...`)
 
+            // --json switches tunwg's slog output (stderr) to JSON; the tunnel URL
+            // arrives as a {"msg":"listener started","url":...} log record.
+            // --log_level=0 (info) suppresses per-request debug/access logs.
             const proc = spawn({
-                cmd: [tunwgPath, '--json', `--forward=${forwardUrl}`],
+                cmd: [tunwgPath, '--json', '--log_level=0', `--forward=${forwardUrl}`],
                 env,
                 stdout: 'pipe',
                 stderr: 'pipe'
@@ -137,6 +142,39 @@ export class TunnelManager {
             let stdoutBuffer = ''
 
             let resolved = false
+            let authRecoveryStarted = false
+
+            const recoverRejectedAuth = async (): Promise<void> => {
+                if (authRecoveryStarted || this.authRecoveryAttempted || !this.config.refreshAuthKey) {
+                    return
+                }
+                authRecoveryStarted = true
+                this.authRecoveryAttempted = true
+                try {
+                    const replacement = await this.config.refreshAuthKey(this.config.authKey)
+                    this.config.authKey = replacement
+                    proc.kill()
+                    await proc.exited
+                    if (this.stopped) {
+                        throw new Error('Tunnel stopped')
+                    }
+                    const url = await this.spawnTunwg()
+                    if (!resolved) {
+                        resolved = true
+                        resolve(url)
+                    }
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    this.state.lastError = message
+                    proc.kill()
+                    if (!resolved) {
+                        resolved = true
+                        reject(error)
+                    } else {
+                        console.error('[Tunnel] Relay auth recovery failed:', message)
+                    }
+                }
+            }
 
             const readStdout = async (): Promise<void> => {
                 const reader = proc.stdout.getReader()
@@ -153,23 +191,9 @@ export class TunnelManager {
 
                         for (const line of lines) {
                             const trimmed = line.trim()
-                            if (!trimmed) {
-                                continue
+                            if (trimmed) {
+                                console.log(`[Tunnel] ${trimmed}`)
                             }
-
-                            const parsed = this.parseTunwgEvent(trimmed)
-                            if (parsed && parsed.event === 'ready' && typeof parsed.url === 'string') {
-                                if (!resolved) {
-                                    this.state.tunnelUrl = parsed.url
-                                    this.state.isConnected = true
-                                    this.state.retryCount = 0
-                                    resolved = true
-                                    resolve(parsed.url)
-                                }
-                                continue
-                            }
-
-                            console.log(`[Tunnel] ${trimmed}`)
                         }
                     }
                 } catch (err) {
@@ -179,7 +203,8 @@ export class TunnelManager {
 
             readStdout()
 
-            // Handle stderr (logs and warnings)
+            // slog JSON records arrive on stderr; the tunnel URL comes from
+            // the "listener started" record.
             const readStderr = async (): Promise<void> => {
                 const reader = proc.stderr.getReader()
                 let stderrBuffer = ''
@@ -195,9 +220,28 @@ export class TunnelManager {
 
                         for (const line of lines) {
                             const trimmed = line.trim()
-                            if (trimmed) {
-                                console.log(`[Tunnel] ${trimmed}`)
+                            if (!trimmed) {
+                                continue
                             }
+
+                            const parsed = this.parseTunwgLog(trimmed)
+                            if (parsed && parsed.msg === 'listener started' && typeof parsed.url === 'string') {
+                                if (!resolved) {
+                                    this.state.tunnelUrl = parsed.url
+                                    this.state.isConnected = true
+                                    this.state.retryCount = 0
+                                    this.authRecoveryAttempted = false
+                                    resolved = true
+                                    resolve(parsed.url)
+                                }
+                                continue
+                            }
+
+                            if (parsed?.event === 'peer_registration_rejected' && parsed.status === 403) {
+                                void recoverRejectedAuth()
+                            }
+
+                            console.log(`[Tunnel] ${trimmed}`)
                         }
                     }
                 } catch {
@@ -211,6 +255,10 @@ export class TunnelManager {
             proc.exited.then(exitCode => {
                 this.state.isConnected = false
                 this.state.process = null
+
+                if (authRecoveryStarted) {
+                    return
+                }
 
                 if (this.stopped) {
                     // Stopped intentionally - reject if still pending
@@ -254,7 +302,7 @@ export class TunnelManager {
 
             // Timeout for initial URL capture
             setTimeout(() => {
-                if (!resolved) {
+                if (!resolved && !authRecoveryStarted) {
                     resolved = true
                     reject(new Error('Timeout waiting for tunnel URL'))
                 }
@@ -262,9 +310,9 @@ export class TunnelManager {
         })
     }
 
-    private parseTunwgEvent(line: string): { event?: string; url?: string } | null {
+    private parseTunwgLog(line: string): { msg?: string; url?: string; event?: string; status?: number } | null {
         try {
-            return JSON.parse(line) as { event?: string; url?: string }
+            return JSON.parse(line) as { msg?: string; url?: string; event?: string; status?: number }
         } catch {
             return null
         }

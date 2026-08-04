@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CodexCollaborationModeSchema, PermissionModeSchema } from './schemas'
+import { CodexCollaborationModeSchema, CopilotAgentModeSchema, PermissionModeSchema } from './schemas'
 import { AgentFlavorSchema } from './modes'
 
 export const LocalResumeTargetSchema = z.object({
@@ -17,7 +17,8 @@ export const LocalResumeTargetSchema = z.object({
     modelReasoningEffort: z.string().nullable().optional(),
     serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
-    collaborationMode: CodexCollaborationModeSchema.optional()
+    collaborationMode: CodexCollaborationModeSchema.optional(),
+    copilotAgentMode: CopilotAgentModeSchema.optional()
 })
 
 export type LocalResumeTarget = z.infer<typeof LocalResumeTargetSchema>

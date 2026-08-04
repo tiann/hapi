@@ -142,6 +142,8 @@ The terminal displays a URL and QR code. Scan to access from anywhere.
 
 > **Tip:** The relay uses UDP by default. If you experience connectivity issues, set `HAPI_RELAY_FORCE_TCP=true` to force TCP mode.
 
+The hub automatically stores an individually revocable relay key in `settings.json`. If that persisted key is revoked or the relay rotates its signing secret, HAPI discards it after HTTP 403, requests one replacement, and restarts the tunnel. Relay issuance is limited per public IP; HTTP 429 is reported explicitly, which can affect users sharing a CGNAT or corporate egress address. Set `HAPI_RELAY_AUTH` only when an operator has provided a key manually; rejected environment keys are never overwritten automatically.
+
 ### Local Only
 
 ```bash

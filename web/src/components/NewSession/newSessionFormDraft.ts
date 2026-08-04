@@ -1,8 +1,12 @@
 import {
     CREATABLE_AGENT_FLAVORS,
     GROK_PERMISSION_MODES,
+    getPermissionModesForFlavor,
+    normalizeCopilotAgentMode,
     type CodexCollaborationMode,
-    type GrokPermissionMode
+    type CopilotAgentMode,
+    type GrokPermissionMode,
+    type PermissionMode
 } from '@hapi/protocol'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
 
@@ -17,7 +21,9 @@ export type NewSessionFormDraft = {
     modelReasoningEffort: CodexReasoningEffort
     serviceTier: NewSessionServiceTier
     collaborationMode: CodexCollaborationMode
+    copilotAgentMode: CopilotAgentMode
     yoloMode: boolean
+    codexFamilyPermissionMode: PermissionMode
     grokPermissionMode: GrokPermissionMode
     sessionType: SessionType
     worktreeName: string
@@ -62,7 +68,21 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 : 'default',
             serviceTier: agentPreserved && parsed.serviceTier === 'fast' ? 'fast' : 'standard',
             collaborationMode: agentPreserved && parsed.collaborationMode === 'plan' ? 'plan' : 'default',
+            copilotAgentMode: agentPreserved
+                ? normalizeCopilotAgentMode(parsed.copilotAgentMode)
+                : 'interactive',
             yoloMode: Boolean(parsed.yoloMode),
+            codexFamilyPermissionMode: (() => {
+                const modes = getPermissionModesForFlavor(restoredAgent)
+                const parsedMode = parsed.codexFamilyPermissionMode as PermissionMode | undefined
+                if (agentPreserved && parsedMode && modes.includes(parsedMode)) {
+                    return parsedMode
+                }
+                if (agentPreserved && parsed.yoloMode && modes.includes('yolo')) {
+                    return 'yolo'
+                }
+                return 'default'
+            })(),
             grokPermissionMode: agentPreserved
                 && GROK_PERMISSION_MODES.includes(parsed.grokPermissionMode as GrokPermissionMode)
                 ? parsed.grokPermissionMode as GrokPermissionMode

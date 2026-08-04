@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'hapi.sessionLastSeen.v1'
+const BASELINE_KEY = 'hapi.sessionLastSeenBaseline.v1'
 
 type LastSeenStore = Record<string, number>
 
@@ -48,6 +49,28 @@ function writeStore(store: LastSeenStore): void {
 
 export function getSessionLastSeenAt(sessionId: string): number {
     return readStore()[sessionId] ?? 0
+}
+
+export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id: string; updatedAt: number }>): void {
+    const storage = getLocalStorage()
+    if (!storage) {
+        return
+    }
+
+    try {
+        const baselineKey = `${BASELINE_KEY}:${scope}`
+        if (storage.getItem(baselineKey) === '1') {
+            return
+        }
+        const store = readStore()
+        for (const session of sessions) {
+            store[session.id] ??= session.updatedAt
+        }
+        storage.setItem(STORAGE_KEY, JSON.stringify(store))
+        storage.setItem(baselineKey, '1')
+    } catch {
+        // Ignore storage errors
+    }
 }
 
 export function markSessionSeen(sessionId: string, seenAt: number): void {

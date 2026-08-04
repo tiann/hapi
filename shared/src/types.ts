@@ -40,6 +40,7 @@ export type {
     GeminiPermissionMode,
     GrokPermissionMode,
     KimiPermissionMode,
+    CopilotPermissionMode,
     OpencodePermissionMode,
     PermissionMode,
     PermissionModeOption,
@@ -47,3 +48,4 @@ export type {
 } from './modes'
 
 export type { ClaudeModelPreset, GeminiModelPreset } from './models'
+export type { CopilotAgentMode } from './copilotModes'

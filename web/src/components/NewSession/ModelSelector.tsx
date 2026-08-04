@@ -22,10 +22,7 @@ export function ModelSelector(props: {
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                {props.label ?? t('newSession.model')}{' '}
-                {!props.label ? (
-                    <span className="font-normal">({t('newSession.model.optional')})</span>
-                ) : null}
+                {props.label ?? t('newSession.model')}
             </label>
             <SelectControl
                 value={props.model}

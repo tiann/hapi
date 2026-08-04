@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
+    CopilotAgentModeSchema,
     DecryptedMessageSchema,
     MachineSchema,
     PermissionModeSchema,
@@ -201,6 +202,12 @@ export const SessionCollaborationModeRequestSchema = z.object({
 })
 
 export type SessionCollaborationModeRequest = z.infer<typeof SessionCollaborationModeRequestSchema>
+
+export const SessionCopilotAgentModeRequestSchema = z.object({
+    mode: CopilotAgentModeSchema
+})
+
+export type SessionCopilotAgentModeRequest = z.infer<typeof SessionCopilotAgentModeRequestSchema>
 
 export const SessionModelRequestSchema = z.object({
     model: z.union([
@@ -503,6 +510,7 @@ export const SpawnSessionRequestSchema = z.object({
     worktreeName: z.string().optional(),
     serviceTier: z.enum(['fast', 'standard']).optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
+    copilotAgentMode: CopilotAgentModeSchema.optional(),
     startingMode: z.enum(['remote', 'pty']).optional()
 })
 
@@ -661,6 +669,20 @@ export type GrokModelsResponse = {
     error?: string
 }
 export type ListGrokModelsResponse = GrokModelsResponse
+
+export type CopilotModelSummary = {
+    modelId: string
+    name?: string
+}
+
+export type CopilotModelsResponse = {
+    success: boolean
+    availableModels?: CopilotModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListCopilotModelsResponse = CopilotModelsResponse
 
 export type GrokReasoningEffortResponse = {
     success: boolean

@@ -39,6 +39,13 @@ describe('AgentFlavorIcon', () => {
         expect(svg?.getAttribute('viewBox')).toBe('0 0 800 800')
     })
 
+    it('renders the GitHub mark SVG for the copilot flavor', () => {
+        const { container } = render(<AgentFlavorIcon flavor="copilot" />)
+        const svg = container.querySelector('svg')
+        expect(svg).not.toBeNull()
+        expect(getWrapper(container).className).not.toContain('rounded-sm')
+    })
+
     it.each([null, undefined, '', '   ', 'mystery-cli'])(
         'renders the "Un" fallback badge for flavor %j',
         (flavor) => {

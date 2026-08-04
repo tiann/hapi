@@ -20,6 +20,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    /** Per-hub relay auth key issued by the relay server (/issue) */
+    relayAuthKey?: string
 }
 
 export function getSettingsFile(dataDir: string): string {

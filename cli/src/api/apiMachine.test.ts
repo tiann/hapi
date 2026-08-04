@@ -6,6 +6,7 @@ import { join } from 'node:path'
 const ioMock = vi.hoisted(() => vi.fn())
 const listOpencodeModelsForCwdMock = vi.hoisted(() => vi.fn())
 const listGrokModelsForCwdMock = vi.hoisted(() => vi.fn())
+const listCopilotModelsForCwdMock = vi.hoisted(() => vi.fn())
 const inspectCursorChatStoreMock = vi.hoisted(() => vi.fn())
 
 vi.mock('socket.io-client', () => ({
@@ -22,6 +23,10 @@ vi.mock('../modules/common/opencodeModels', () => ({
 
 vi.mock('../modules/common/grokModels', () => ({
     listGrokModelsForCwd: listGrokModelsForCwdMock
+}))
+
+vi.mock('../modules/common/copilotModels', () => ({
+    listCopilotModelsForCwd: listCopilotModelsForCwdMock
 }))
 
 vi.mock('@/cursor/cursorChatStoreStatus', () => ({
@@ -74,6 +79,15 @@ async function callListGrokModels(client: ApiMachineClient, machineId: string, c
     const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
     const raw = await manager.handleRequest({
         method: `${machineId}:listGrokModelsForCwd`,
+        params: JSON.stringify({ cwd })
+    })
+    return JSON.parse(raw) as unknown
+}
+
+async function callListCopilotModels(client: ApiMachineClient, machineId: string, cwd: string): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:listCopilotModelsForCwd`,
         params: JSON.stringify({ cwd })
     })
     return JSON.parse(raw) as unknown
@@ -272,6 +286,58 @@ describe('ApiMachineClient listOpencodeModelsForCwd handler', () => {
             expect(listOpencodeModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(secondWorkspaceRoot))
         } finally {
             rmSync(secondWorkspaceRoot, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+})
+
+describe('ApiMachineClient listCopilotModelsForCwd handler', () => {
+    let workspaceRoot: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        listCopilotModelsForCwdMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-copilot-machine-ws-'))
+    })
+
+    afterEach(() => {
+        rmSync(workspaceRoot, { recursive: true, force: true })
+    })
+
+    it('rejects cwd outside workspace roots before running the Copilot model probe', async () => {
+        const machine = makeMachine('copilot-machine-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const outsideCwd = mkdtempSync(join(tmpdir(), 'hapi-copilot-outside-'))
+
+        try {
+            expect(await callListCopilotModels(client, machine.id, outsideCwd)).toEqual({
+                success: false,
+                error: 'Path is outside workspace roots'
+            })
+            expect(listCopilotModelsForCwdMock).not.toHaveBeenCalled()
+        } finally {
+            rmSync(outsideCwd, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+
+    it('forwards a resolved workspace cwd to the Copilot model probe', async () => {
+        const machine = makeMachine('copilot-machine-2')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        listCopilotModelsForCwdMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [{ modelId: 'gpt-5.6' }],
+            currentModelId: 'gpt-5.6'
+        })
+
+        try {
+            expect(await callListCopilotModels(client, machine.id, workspaceRoot)).toEqual({
+                success: true,
+                availableModels: [{ modelId: 'gpt-5.6' }],
+                currentModelId: 'gpt-5.6'
+            })
+            expect(listCopilotModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
+        } finally {
             client.shutdown()
         }
     })

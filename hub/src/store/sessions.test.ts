@@ -175,6 +175,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         ['grokSessionId', 'grok-thread-x'],
         ['cursorSessionId', 'cursor-thread-x'],
         ['kimiSessionId', 'kimi-thread-x'],
+        ['copilotSessionId', 'copilot-thread-x'],
         ['piSessionId', 'pi-thread-x']
     ])('preserves %s across an archive metadata replacement', (field, value) => {
         const store = makeStore()

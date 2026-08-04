@@ -73,6 +73,9 @@ function getUserSkillsRoots(flavor?: string): string[] {
         case 'grok':
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
+        case 'copilot':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
     }
     return roots;
 }
@@ -92,6 +95,10 @@ function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
             break;
         case 'grok':
             roots.push(join(directory, '.grok', 'skills'));
+            break;
+        case 'copilot':
+            roots.push(join(directory, '.copilot', 'skills'));
+            roots.push(join(directory, '.github', 'skills'));
             break;
     }
     return roots;

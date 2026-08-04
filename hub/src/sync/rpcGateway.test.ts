@@ -75,6 +75,15 @@ describe('RpcGateway RPC timeouts', () => {
         expect(timeouts).toEqual([120_000])
     })
 
+    it('uses an extended RPC timeout when listing Copilot models', async () => {
+        const { gateway, timeouts } = createGateway()
+
+        await gateway.listCopilotModelsForCwd('machine-1', '/workspace')
+        await gateway.listCopilotModelsForSession('session-1')
+
+        expect(timeouts).toEqual([120_000, 120_000])
+    })
+
     it('forwards the recorded session owner home to the Cursor store probe', async () => {
         const { gateway, calls } = createGateway()
 
