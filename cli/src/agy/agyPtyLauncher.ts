@@ -23,6 +23,20 @@ const QUOTA_DETECTOR_RAW_TAIL_SIZE = 8 * 1024
 const QUOTA_ANCHOR = 'Individual quota reached. Please upgrade your subscription to increase your limits.'
 const QUOTA_SCREEN_CONTEXT = "How's the CLI experience so far? Help us improve:"
 
+// Brain-UUID discovery (see runAgy.ts's PreToolUse/PreInvocation hooks) is
+// the only way this launcher learns the agy conversation ID; there is no
+// content-matching fallback anymore. If a model call has actually started
+// (see the onThinkingChange wiring below — NOT just "the PTY is ready",
+// which fires the moment the prompt is usable and says nothing about a
+// model having been invoked yet) and neither hook has fired within this
+// window (bridge misconfigured, hooks.json didn't load, future agy version
+// drops the field, ...), the web chat would otherwise sit silently empty
+// forever with no explanation other than the terminal mirror. 60s
+// comfortably covers the latency to a model's first response (and thus the
+// first PreInvocation/PreToolUse hook firing) without leaving the user in
+// the dark for an excessive stretch if discovery is genuinely broken.
+const DISCOVERY_TIMEOUT_MS = 60_000
+
 function stripTerminalControlSequences(raw: string): string {
     let clean = ''
     for (let index = 0; index < raw.length; index += 1) {
@@ -109,7 +123,6 @@ export function userRequestMatches(message: string, content: string): boolean {
 class AgyPtyLauncher extends RemoteLauncherBase {
     private readonly session: AgySession
     private scanner: any = null
-    private firstMessageSent = false
     // The agy brain UUID for the current conversation. Set from the pre-known
     // resume ID (if this is a resume) or adopted via handleSessionFound, which
     // is fed by agy's PreToolUse/PreInvocation hook (see
@@ -138,6 +151,36 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private pendingWebDelivery: PendingWebDelivery | null = null
     private pendingWebDeliveryResolved: (() => void) | null = null
     private activeWebPrompt: string | null = null
+    // One-shot "discovery never happened" warning. Armed on the first real
+    // evidence a model call is in flight (onThinkingChange(true) — NOT PTY
+    // ready, which only means the prompt can accept keystrokes and can sit
+    // idle for as long as the user likes with no discovery failure at all)
+    // and disarmed the moment a brain UUID is adopted or the session tears
+    // down — never rearmed, so a respawn cannot re-trigger it and a stale
+    // timer cannot fire (or leak) after the launcher is done.
+    private discoveryTimeoutTimer: ReturnType<typeof setTimeout> | null = null
+    private discoveryTimeoutFired = false
+
+    private armDiscoveryTimeoutWarning(): void {
+        if (this.agySessionId || this.discoveryTimeoutFired || this.discoveryTimeoutTimer) return
+        this.discoveryTimeoutTimer = setTimeout(() => {
+            this.discoveryTimeoutTimer = null
+            if (this.agySessionId || this.discoveryTimeoutFired) return
+            this.discoveryTimeoutFired = true
+            logger.warn(`[agy-pty]: brain UUID not discovered within ${DISCOVERY_TIMEOUT_MS}ms of the first model call; notifying the web chat`)
+            this.session.client.sendSessionEvent({
+                type: 'error',
+                message: 'Antigravity conversation could not be identified — continue in the terminal.',
+            })
+        }, DISCOVERY_TIMEOUT_MS)
+    }
+
+    private clearDiscoveryTimeoutWarning(): void {
+        if (this.discoveryTimeoutTimer) {
+            clearTimeout(this.discoveryTimeoutTimer)
+            this.discoveryTimeoutTimer = null
+        }
+    }
 
     private waitForPendingWebDelivery(signal: AbortSignal): Promise<void> {
         if (!this.pendingWebDelivery) return Promise.resolve()
@@ -493,17 +536,23 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     }
                     this.session.client.emitAgentTerminalOutput(data)
                     this.detectQuotaOutput(data)
-                    if (!this.agySessionId) {
-                        const discovered = this.scanner.getBrainUuid()
-                        if (discovered) {
-                            logger.debug(`[agy-pty]: brain UUID discovered: ${discovered}`)
-                            this.agySessionId = discovered
-                            this.session.onSessionFound(discovered)
-                        }
-                    }
                 },
                 onThinkingChange: (thinking: boolean) => {
                     this.session.onThinkingChange(thinking)
+                    // Fix 9 (hostile-review round 2): onReady only means the TUI
+                    // prompt is usable, not that a model call happened — a user
+                    // who spawns agy and reads the prompt for a minute before
+                    // typing anything is completely normal, not a discovery
+                    // failure. thinking=true is driven by agy's busy marker
+                    // ("Generating") in the raw PTY output (see AGY_BUSY_MARKERS,
+                    // agyPty.ts) as well as HAPI's own optimistic post-submit
+                    // signal, so it fires for BOTH a web-queued message and text
+                    // typed directly into the terminal — the first real evidence
+                    // a model call is actually in flight, which is what
+                    // PreInvocation/PreToolUse hooks fire alongside.
+                    if (thinking) {
+                        this.armDiscoveryTimeoutWarning()
+                    }
                 },
                 onMessageSubmitted: () => {
                     this.markWebDeliverySubmitted()
@@ -526,12 +575,6 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 },
                 onBeforeMessageSubmit: (message) => {
                     this.activeWebPrompt = message
-                    if (!this.firstMessageSent) {
-                        this.firstMessageSent = true
-                        if (!this.agySessionId) {
-                            this.scanner.setSessionMessageText(message)
-                        }
-                    }
                     // The driver's text echo has completed but its CR has not
                     // yet been written, so user-input echo cannot trigger this
                     // output-only detector.
@@ -595,19 +638,6 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         const resumeBrainUuid = this.agySessionId ?? undefined
         this.scanner = await createAgySessionScanner({
             resumeBrainUuid,
-            onDiscoveryAmbiguous: (count) => {
-                session.client.sendSessionEvent({
-                    type: 'error',
-                    message: `Antigravity session could not be identified because ${count} conversations matched the first message. Continue in the terminal or start a new session with a more specific prompt.`,
-                })
-            },
-            onBrainFound: (uuid) => {
-                if (!this.agySessionId) {
-                    logger.debug(`[agy-pty]: brain UUID discovered via onBrainFound: ${uuid}`)
-                    this.agySessionId = uuid
-                    session.onSessionFound(uuid)
-                }
-            },
             onEntry: (entry) => {
                 if (entry.type === 'USER_INPUT') {
                     if (!this.observeUserInput(entry.content ?? '')) {
@@ -660,31 +690,26 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             }
         })
 
-        // Bridge the OTHER brain-UUID discovery path (the PreToolUse hook, via
-        // runAgy.ts:onPreToolUse -> wrapper.onSessionFound) into the scanner.
-        // Previously that path only updated session metadata (see the comment
-        // there) and never notified the scanner, so a session whose scanner
-        // content-match failed (e.g. a first message with attachments — see
-        // agySessionScanner.test.ts) never started tailing even though the hook
-        // had already discovered the UUID: the chat stayed empty. Both discovery
-        // paths funnel through AgentSessionBase.onSessionFound, so registering
-        // here covers hook discovery AND is idempotent with the onBrainFound
-        // self-loop above (scanner.onNewSession no-ops on an unchanged UUID).
-        // Also persist agySessionId here (mirroring the shared launcher contract
-        // handleSessionFound) so a crash/respawn in the narrow window between
-        // the hook firing and the next PTY output chunk (which is the only other
-        // writer, via onMessage's getBrainUuid() fallback) still resumes the same
-        // brain conversation via --conversation instead of silently starting a
-        // fresh one.
+        // Bridge brain-UUID discovery (the agy PreToolUse/PreInvocation hooks,
+        // via runAgy.ts:onPreToolUse/onAgyPreInvocation -> wrapper.onSessionFound)
+        // into the scanner — this is the scanner's ONLY discovery signal (see
+        // agySessionScanner.ts: it no longer discovers brains by transcript
+        // content-matching). handleSessionFound is the ONLY writer of
+        // this.agySessionId (besides the constructor's resume seed) — there
+        // is no onMessage-side fallback anymore. Setting it synchronously
+        // here (not just forwarding to the scanner) matters for a
+        // crash/respawn: launchOnce reads this.agySessionId to pass
+        // --conversation to the next spawn, so it must already be current by
+        // the time a respawn happens, however soon after this hook fired.
         const handleSessionFound = (uuid: string) => {
             this.agySessionId = uuid
             this.scanner?.onNewSession(uuid)
+            this.clearDiscoveryTimeoutWarning()
         }
         session.addSessionFoundCallback(handleSessionFound)
         session.setLiveModelHandler((model) => this.applyLiveModel(model))
 
         try {
-            this.firstMessageSent = false
             await this.runRespawnLoop({
                 maxAuthRetries: 8,
                 authRetryDelayMs: 1500,
@@ -709,6 +734,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 }
             })
         } finally {
+            this.clearDiscoveryTimeoutWarning()
             session.setLiveModelHandler(null)
             if (this.outputWaiter) {
                 clearTimeout(this.outputWaiter.timer)
