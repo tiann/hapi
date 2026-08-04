@@ -28,7 +28,9 @@ describe('local Pi sessions', () => {
                 { type: 'toolCall', id: 'tool-1', name: 'read', arguments: { path: 'a.ts' } }
             ], usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 18 } } },
             { type: 'message', id: 'tool-result-1', parentId: 'assistant-1', timestamp: '2026-08-04T01:00:04Z', message: { role: 'toolResult', toolCallId: 'tool-1', content: 'ok', isError: false } },
-            { type: 'session_info', id: 'info-1', parentId: 'tool-result-1', timestamp: '2026-08-04T01:00:05Z', name: 'Imported Pi session' }
+            { type: 'custom_message', id: 'custom-1', parentId: 'tool-result-1', timestamp: '2026-08-04T01:00:05Z', display: true, content: 'visible extension result' },
+            { type: 'compaction', id: 'compact-1', parentId: 'custom-1', timestamp: '2026-08-04T01:00:06Z', summary: 'condensed context' },
+            { type: 'session_info', id: 'info-1', parentId: 'compact-1', timestamp: '2026-08-04T01:00:07Z', name: 'Imported Pi session' }
         ].map((line) => JSON.stringify(line)).join('\n'))
 
         const summaries = listLocalPiSessionSummaries()
@@ -38,7 +40,7 @@ describe('local Pi sessions', () => {
             cwd: '/tmp/project',
             model: 'gpt-5.6',
             leafEntryId: 'info-1',
-            messageCount: 6
+            messageCount: 8
         })])
 
         const sessions = listLocalPiSessionsWithMessagesByIds(new Set(['pi-session-1']))
@@ -50,7 +52,9 @@ describe('local Pi sessions', () => {
             'pi:pi-session-1:assistant-1:1',
             'pi:pi-session-1:assistant-1:2',
             'pi:pi-session-1:assistant-1:usage',
-            'pi:pi-session-1:tool-result-1:tool-result'
+            'pi:pi-session-1:tool-result-1:tool-result',
+            'pi:pi-session-1:custom-1:custom_message',
+            'pi:pi-session-1:compact-1:compaction'
         ])
         expect(sessions[0]?.messages[0]).toMatchObject({
             entryId: 'user-1',

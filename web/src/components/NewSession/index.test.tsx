@@ -19,14 +19,17 @@ const mocks = vi.hoisted(() => ({
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     directoryExists: undefined as boolean | undefined,
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
-    copilotModelsLoading: false
+    copilotModelsLoading: false,
+    piDialogSelection: ['pi-native-1'] as string[],
+    refetchSessions: vi.fn(),
+    addToast: vi.fn()
 }))
 
 vi.mock('@/lib/use-translation', () => ({
     useTranslation: () => ({ t: (key: string) => key })
 }))
 vi.mock('@/lib/toast-context', () => ({
-    useToast: () => ({ addToast: vi.fn() })
+    useToast: () => ({ addToast: mocks.addToast })
 }))
 vi.mock('@/hooks/usePlatform', () => ({
     usePlatform: () => ({ haptic: { notification: mocks.notification } })
@@ -39,7 +42,7 @@ vi.mock('@/hooks/mutations/useSpawnSession', () => ({
     })
 }))
 vi.mock('@/hooks/queries/useSessions', () => ({
-    useSessions: () => ({ sessions: [] })
+    useSessions: () => ({ sessions: [], refetch: mocks.refetchSessions })
 }))
 vi.mock('@/hooks/useRecentPaths', () => ({
     useRecentPaths: () => ({
@@ -134,7 +137,7 @@ vi.mock('@/components/CodexSessionSyncDialog', () => ({
 }))
 vi.mock('@/components/PiSessionImportDialog', () => ({
     PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
-        <button type="button" data-testid="select-pi-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm([props.sessions[0]!.id])}>
+        <button type="button" data-testid="select-pi-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.piDialogSelection)}>
             select pi history
         </button>
     ) : null
@@ -209,6 +212,10 @@ describe('NewSession launch preferences', () => {
         mocks.directoryExists = true
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
+        mocks.piDialogSelection = ['pi-native-1']
+        mocks.refetchSessions.mockReset()
+        mocks.refetchSessions.mockResolvedValue(undefined)
+        mocks.addToast.mockReset()
         savePreferredAgent('codex')
     })
 
@@ -493,7 +500,7 @@ describe('NewSession launch preferences', () => {
                 machineId: 'machine-1',
                 results: [{ piSessionId: 'pi-native-1', hapiSessionId: 'hapi-imported-1', action: 'created', appended: 2 }]
             }),
-            resumeSession: vi.fn().mockResolvedValue('hapi-imported-1')
+            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-imported-1', resumed: true })
         } as unknown as ApiClient
 
         render(
@@ -518,8 +525,55 @@ describe('NewSession launch preferences', () => {
             cwd: 'C:\\repo',
             machineId: 'machine-1'
         })
-        expect(piApi.resumeSession).toHaveBeenCalledWith('hapi-imported-1')
+        expect(piApi.reopenSession).toHaveBeenCalledWith('hapi-imported-1')
         expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('refreshes successful Pi imports even when another batch item fails', async () => {
+        savePreferredAgent('pi')
+        mocks.piDialogSelection = ['pi-native-1', 'pi-native-2']
+        const piApi = {
+            getPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [1, 2].map((index) => ({
+                    id: `pi-native-${index}`,
+                    title: `Pi ${index}`,
+                    cwd: 'C:\\repo',
+                    file: `C:\\pi-${index}.jsonl`,
+                    modifiedAt: index,
+                    messageCount: 1
+                }))
+            }),
+            importPiSessions: vi.fn().mockResolvedValue({
+                success: false,
+                machineId: 'machine-1',
+                results: [
+                    { piSessionId: 'pi-native-1', hapiSessionId: 'hapi-1', action: 'created', appended: 1 },
+                    { piSessionId: 'pi-native-2', error: { code: 'session_active', message: 'active' } }
+                ]
+            })
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={piApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-pi-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-pi-history'))
+
+        await waitFor(() => expect(mocks.refetchSessions).toHaveBeenCalled())
+        expect(piApi.getPiSessions).toHaveBeenCalledTimes(2)
+        expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.success.title' }))
+        expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.failed.title' }))
     })
 
     it('does not save changed launch settings when creation fails', async () => {

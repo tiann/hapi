@@ -41,7 +41,8 @@ export function addImportedMessage(
     ).get(sessionId, localId) as DbMessageRow | undefined
     if (existing) {
         const message = toStoredMessage(existing)
-        if (!isDeepStrictEqual(message.content, content)) throw new ImportedMessageConflictError(localId)
+        const canonicalContent = truncateOversizedMessageContent(content)
+        if (!isDeepStrictEqual(message.content, canonicalContent)) throw new ImportedMessageConflictError(localId)
         return { message, inserted: false }
     }
 

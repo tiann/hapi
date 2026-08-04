@@ -227,6 +227,33 @@ function convertBashRecord(
     return result
 }
 
+function convertVisibleMetadataRecord(
+    record: JsonRecord,
+    sessionId: string,
+    entryId: string,
+    parentEntryId: string | null,
+    createdAt: number
+): PiImportedMessage[] {
+    let text: string | null = null
+    if (record.type === 'custom_message' && record.display === true) {
+        text = extractText(record.content).trim() || null
+    } else if (record.type === 'compaction') {
+        const summary = asString(record.summary)
+        if (summary) text = `[Compaction summary]\n\n${summary}`
+    } else if (record.type === 'branch_summary') {
+        const summary = asString(record.summary)
+        if (summary) text = `[Branch summary]\n\n${summary}`
+    }
+    if (!text) return []
+    const result: PiImportedMessage[] = []
+    pushImportedMessage(result, sessionId, entryId, parentEntryId, createdAt, String(record.type), importedAgent({
+        type: 'message',
+        message: text,
+        id: messageLocalId(sessionId, entryId, String(record.type))
+    }))
+    return result
+}
+
 function parsePiLocalSession(filePath: string): ParsedPiSession | null {
     let content: string
     let modifiedAt: number
@@ -291,7 +318,7 @@ function parsePiLocalSession(filePath: string): ParsedPiSession | null {
             ? convertMessageRecord(record, sessionId, id, parentEntryId, createdAt)
             : record.type === 'bashExecution'
                 ? convertBashRecord(record, sessionId, id, parentEntryId, createdAt)
-                : []
+                : convertVisibleMetadataRecord(record, sessionId, id, parentEntryId, createdAt)
         for (const message of converted) {
             if (message.content.role === 'user') {
                 const text = message.content.content.text

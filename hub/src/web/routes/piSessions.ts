@@ -5,6 +5,7 @@ import type { PiLocalSessionSummary, PiLocalSessionWithMessages } from '@hapi/pr
 import type { Metadata } from '@hapi/protocol/types'
 import type { Store, StoredMessage, StoredSession } from '../../store'
 import { ImportedMessageConflictError } from '../../store/messages'
+import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 
@@ -137,20 +138,27 @@ function classifyImportDelta(
     observedLeafId: string | null
 ): { messages: PiLocalSessionWithMessages['messages']; error?: string } {
     const sourceLocalIds = transcript.messages.map((message) => message.localId)
-    const storedLocalIds = existing
+    const sourceIndexByLocalId = new Map(sourceLocalIds.map((localId, index) => [localId, index]))
+    const storedImported = existing
         .filter((message) => message.localId?.startsWith(importedPrefix(transcript.id)))
-        .map((message) => message.localId!)
-    if (storedLocalIds.some((localId, index) => sourceLocalIds[index] !== localId)) {
-        return { messages: [], error: 'Local Pi transcript no longer extends the previously imported history' }
+    let priorSourceIndex = -1
+    for (const message of storedImported) {
+        const sourceIndex = sourceIndexByLocalId.get(message.localId!)
+        if (sourceIndex === undefined || sourceIndex <= priorSourceIndex) {
+            return { messages: [], error: 'Local Pi transcript no longer extends the previously imported history' }
+        }
+        priorSourceIndex = sourceIndex
     }
-    const sourceByLocalId = new Map(transcript.messages.map((message) => [message.localId, message.content]))
-    const changed = existing.find((message) => message.localId?.startsWith(importedPrefix(transcript.id))
-        && !isDeepStrictEqual(sourceByLocalId.get(message.localId), message.content))
+    const sourceByLocalId = new Map(transcript.messages.map((message) => [
+        message.localId,
+        truncateOversizedMessageContent(message.content)
+    ]))
+    const changed = storedImported.find((message) => !isDeepStrictEqual(sourceByLocalId.get(message.localId!), message.content))
     if (changed?.localId) {
         return { messages: [], error: `Local Pi transcript changed imported entry ${changed.localId}` }
     }
     if (!observedLeafId) {
-        const imported = new Set(storedLocalIds)
+        const imported = new Set(storedImported.map((message) => message.localId!))
         return { messages: transcript.messages.filter((message) => !imported.has(message.localId)) }
     }
     const leafIndex = transcript.activeEntryIds.indexOf(observedLeafId)
@@ -249,16 +257,10 @@ export function importPiSession(options: {
     }
 
     const appended: StoredMessage[] = []
-    const entryIds = { ...(asRecord(currentMetadata.conversationHistoryEntryIds) ?? {}) } as Record<string, string>
-    const points = { ...(asRecord(currentMetadata.conversationHistoryPoints) ?? {}) } as Record<string, true>
     try {
         for (const source of delta.messages) {
             const result = store.messages.addImportedMessage(stored.id, source.content, source.localId, source.createdAt)
             if (result.inserted) appended.push(result.message)
-            if (source.content.role === 'user') {
-                entryIds[source.localId] = source.entryId
-                points[source.localId] = true
-            }
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to persist imported Pi history'
@@ -271,20 +273,38 @@ export function importPiSession(options: {
         }
     }
 
-    updateMetadataWithRetry(store, stored.id, namespace, (metadata) => ({
-        ...buildPiMetadata(transcript, machine, metadata, {
-            state: 'complete',
-            machineId: machine.id,
-            piSessionId: transcript.id,
-            sourceFile: transcript.file,
-            startedAt,
-            updatedAt: Date.now(),
-            leafEntryId: transcript.leafEntryId ?? null
-        }),
-        conversationHistoryEntryIds: entryIds,
-        conversationHistoryPoints: points,
-        ...(transcript.leafEntryId ? { piHistoryLeafEntryId: transcript.leafEntryId } : {})
-    }))
+    const persistedLocalIds = new Set(store.messages.getAllMessages(stored.id)
+        .map((message) => message.localId)
+        .filter((localId): localId is string => Boolean(localId)))
+    try {
+        updateMetadataWithRetry(store, stored.id, namespace, (metadata) => {
+            const entryIds = { ...(asRecord(metadata.conversationHistoryEntryIds) ?? {}) } as Record<string, string>
+            const points = { ...(asRecord(metadata.conversationHistoryPoints) ?? {}) } as Record<string, true>
+            for (const source of transcript.messages) {
+                if (source.content.role !== 'user' || !persistedLocalIds.has(source.localId)) continue
+                entryIds[source.localId] = source.entryId
+                points[source.localId] = true
+            }
+            return {
+                ...buildPiMetadata(transcript, machine, metadata, {
+                    state: 'complete',
+                    machineId: machine.id,
+                    piSessionId: transcript.id,
+                    sourceFile: transcript.file,
+                    startedAt,
+                    updatedAt: Date.now(),
+                    leafEntryId: transcript.leafEntryId ?? null
+                }),
+                conversationHistoryEntryIds: entryIds,
+                conversationHistoryPoints: points,
+                ...(transcript.leafEntryId ? { piHistoryLeafEntryId: transcript.leafEntryId } : {})
+            }
+        })
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to finalize imported Pi history'
+        try { markImportState(store, engine, stored.id, namespace, transcript, machine.id, 'failed', message) } catch {}
+        return { piSessionId: transcript.id, hapiSessionId: stored.id, error: { code: 'import_failed', message } }
+    }
     if (transcript.model !== undefined) store.sessions.setSessionModel(stored.id, transcript.model ?? null, namespace, { touchUpdatedAt: false })
     if (transcript.thinkingLevel !== undefined) store.sessions.setSessionEffort(stored.id, transcript.thinkingLevel ?? null, namespace, { touchUpdatedAt: false })
     const activityAt = appended.at(-1)?.createdAt ?? transcript.modifiedAt

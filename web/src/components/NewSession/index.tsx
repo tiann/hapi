@@ -1038,19 +1038,33 @@ export function NewSession(props: {
                 cwd: trimmedDirectory || null,
                 machineId: piImportMachineId ?? machineId
             })
-            const failed = result.results.find((item) => item.error)
-            if (failed?.error) throw new Error(formatPiImportError(failed.error.code, failed.error.message))
             const importedCount = result.results.filter((item) => item.hapiSessionId).length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('piImport.success.title'),
+                    body: t('piImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await loadPiImportSessions()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('piImport.failed.title'),
+                    body: t('piImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatPiImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
             setIsPiImportDialogOpen(false)
             setSelectedPiImportSessionId(null)
-            addToast({
-                title: t('piImport.success.title'),
-                body: t('piImport.success.body', { n: importedCount }),
-                sessionId: '',
-                url: ''
-            })
-            await refetchSessions()
-            await loadPiImportSessions()
         } catch (importError) {
             addToast({
                 title: t('piImport.failed.title'),
@@ -1366,13 +1380,13 @@ export function NewSession(props: {
                     return
                 }
                 if (!imported?.hapiSessionId) throw new Error(result.error || t('piImport.failed.body'))
-                const resumedSessionId = await props.api.resumeSession(imported.hapiSessionId)
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
                 haptic.notification('success')
                 savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
                 addRecentPath(machineId, trimmedDirectory)
-                props.onSuccess(resumedSessionId)
+                props.onSuccess(reopened.sessionId)
                 return
             }
 

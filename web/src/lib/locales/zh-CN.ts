@@ -112,6 +112,7 @@ export default {
   'piImport.success.body': '已导入 {n} 个 Pi sessions。',
   'piImport.failed.title': 'Pi 导入失败',
   'piImport.failed.body': '导入 Pi 历史失败。',
+  'piImport.failed.partial': '{failed} 个 session 导入失败：{reason}',
   'piImport.error.diverged': '本机 Pi 分支在上次导入后发生变化，请先检查会话再继续。',
   'piImport.error.active': '请先停止正在运行的 Hapi Pi session，再导入新增的原生历史。',
   // 中文注释：以下文案支撑导入弹窗的多选列表、加载态，以及右上角重启 Codex 客户端按钮提示。

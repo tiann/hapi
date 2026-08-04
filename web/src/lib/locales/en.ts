@@ -112,6 +112,7 @@ export default {
   'piImport.success.body': 'Imported {n} Pi sessions.',
   'piImport.failed.title': 'Pi import failed',
   'piImport.failed.body': 'Failed to import Pi history.',
+  'piImport.failed.partial': '{failed} sessions failed: {reason}',
   'piImport.error.diverged': 'The local Pi branch changed after the previous import. Review the session before continuing.',
   'piImport.error.active': 'Stop the active Hapi Pi session before importing newer native history.',
   // 中文注释：以下文案支撑导入弹窗的多选列表、加载态，以及右上角重启 Codex 客户端按钮提示。

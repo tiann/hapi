@@ -39,15 +39,33 @@ function userMessage(sessionId: string, entryId: string, parentEntryId: string |
     }
 }
 
+function toolResultMessage(sessionId: string, entryId: string, parentEntryId: string | null, output: string, createdAt: number) {
+    return {
+        localId: `pi:${sessionId}:${entryId}:tool-result`,
+        entryId,
+        parentEntryId,
+        createdAt,
+        content: {
+            role: 'agent' as const,
+            content: {
+                type: 'codex' as const,
+                data: { type: 'tool-call-result', callId: 'tool-1', output, is_error: false }
+            },
+            meta: { sentFrom: 'cli' as const }
+        }
+    }
+}
+
 function transcript(
     sessionId: string,
-    entries: Array<ReturnType<typeof userMessage>>,
+    entries: Array<ReturnType<typeof userMessage> | ReturnType<typeof toolResultMessage>>,
     activeEntryIds = entries.map((entry) => entry.entryId)
 ): PiLocalSessionWithMessages {
+    const lastUser = [...entries].reverse().find((entry) => entry.content.role === 'user')
     return {
         id: sessionId,
         title: `Session ${sessionId}`,
-        lastUserMessage: entries.at(-1)?.content.content.text ?? null,
+        lastUserMessage: lastUser?.content.role === 'user' ? lastUser.content.content.text : null,
         cwd: '/tmp/project',
         file: `/tmp/${sessionId}.jsonl`,
         modifiedAt: entries.at(-1)?.createdAt ?? 1,
@@ -118,6 +136,61 @@ describe('Pi session import', () => {
 
         expect(first.hapiSessionId).not.toBe(second.hapiSessionId)
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(2)
+    })
+
+    it('keeps a mid-transcript incremental import idempotent and rebuilds missing user locators', () => {
+        const { store, engine } = setup()
+        const source = transcript('native-mid', [
+            userMessage('native-mid', 'entry-1', null, 'one', 1_000),
+            userMessage('native-mid', 'entry-2', 'entry-1', 'two', 2_000)
+        ])
+        const existing = store.sessions.getOrCreateSession('existing-mid', {
+            path: '/tmp/project',
+            host: 'machine-1.local',
+            machineId: 'machine-1',
+            flavor: 'pi',
+            piSessionId: 'native-mid',
+            piHistoryLeafEntryId: 'entry-1'
+        }, {}, 'default')
+
+        const first = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        expect(first).toMatchObject({ hapiSessionId: existing.id, action: 'updated', appended: 1 })
+        const second = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        expect(second).toMatchObject({ hapiSessionId: existing.id, action: 'unchanged', appended: 0 })
+        expect(second.error).toBeUndefined()
+        expect((store.sessions.getSession(existing.id)?.metadata as { conversationHistoryEntryIds?: Record<string, string> }).conversationHistoryEntryIds).toMatchObject({
+            'pi:native-mid:entry-2:user': 'entry-2'
+        })
+    })
+
+    it('rebuilds locators for messages persisted before a failed metadata finalize', () => {
+        const { store, engine } = setup()
+        const source = transcript('native-retry', [
+            userMessage('native-retry', 'entry-1', null, 'one', 1_000),
+            userMessage('native-retry', 'entry-2', 'entry-1', 'two', 2_000)
+        ])
+        const existing = store.sessions.getOrCreateSession('existing-retry', {
+            path: '/tmp/project', host: 'machine-1.local', machineId: 'machine-1', flavor: 'pi', piSessionId: 'native-retry'
+        }, {}, 'default')
+        store.messages.addImportedMessage(existing.id, source.messages[0]!.content, source.messages[0]!.localId, 1_000)
+
+        const result = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        expect(result).toMatchObject({ action: 'updated', appended: 1 })
+        expect((store.sessions.getSession(existing.id)?.metadata as { conversationHistoryEntryIds?: Record<string, string> }).conversationHistoryEntryIds).toMatchObject({
+            'pi:native-retry:entry-1:user': 'entry-1',
+            'pi:native-retry:entry-2:user': 'entry-2'
+        })
+    })
+
+    it('compares oversized imported content using the persisted truncation form', () => {
+        const { store, engine } = setup()
+        const source = transcript('native-large', [toolResultMessage('native-large', 'entry-1', null, 'x'.repeat(70_000), 1_000)])
+        const first = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        const second = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+
+        expect(first).toMatchObject({ action: 'created', appended: 1 })
+        expect(second).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(second.error).toBeUndefined()
     })
 
     it('marks the import diverged when the active branch drops or rewrites imported history', () => {
