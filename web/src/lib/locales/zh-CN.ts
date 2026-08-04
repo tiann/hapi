@@ -116,6 +116,10 @@ export default {
   'piImport.failed.partial': '{failed} 个 session 导入失败：{reason}',
   'piImport.error.diverged': '本机 Pi 分支在上次导入后发生变化，请先检查会话再继续。',
   'piImport.error.active': '请先停止正在运行的 Hapi Pi session，再导入新增的原生历史。',
+  'piImport.manual.success.title': 'Pi 历史同步完成',
+  'piImport.manual.success.body': '已同步 {n} 条新的 Pi 历史记录。',
+  'piImport.manual.success.noNewMessages': 'Pi 历史已经是最新状态。',
+  'piImport.manual.failed.title': 'Pi 历史同步失败',
   // 中文注释：以下文案支撑导入弹窗的多选列表、加载态，以及右上角重启 Codex 客户端按钮提示。
   'codexSync.confirm.selectAll': '全选',
   'codexSync.confirm.clearAll': '全取消',
@@ -226,6 +230,7 @@ export default {
   'session.action.rename': '重命名',
   'session.action.export': '导出对话',
   'session.action.syncCodex': '从 Codex 同步',
+  'session.action.syncPi': '同步 Pi 历史',
   'session.action.archive': '归档',
   'session.action.reopen': '重新打开',
   'session.action.reopenCursorChecking': '正在检查记录设备上的 Cursor 聊天数据是否仍然可用。',

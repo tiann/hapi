@@ -116,6 +116,10 @@ export default {
   'piImport.failed.partial': '{failed} sessions failed: {reason}',
   'piImport.error.diverged': 'The local Pi branch changed after the previous import. Review the session before continuing.',
   'piImport.error.active': 'Stop the active Hapi Pi session before importing newer native history.',
+  'piImport.manual.success.title': 'Pi history sync complete',
+  'piImport.manual.success.body': 'Synced {n} new Pi history items.',
+  'piImport.manual.success.noNewMessages': 'Pi history is already up to date.',
+  'piImport.manual.failed.title': 'Pi history sync failed',
   // 中文注释：以下文案支撑导入弹窗的多选列表、加载态，以及右上角重启 Codex 客户端按钮提示。
   'codexSync.confirm.selectAll': 'Select all',
   'codexSync.confirm.clearAll': 'Clear all',
@@ -226,6 +230,7 @@ export default {
   'session.action.rename': 'Rename',
   'session.action.export': 'Export conversation',
   'session.action.syncCodex': 'Sync from Codex',
+  'session.action.syncPi': 'Sync Pi history',
   'session.action.archive': 'Archive',
   'session.action.reopen': 'Reopen',
   'session.action.reopenCursorChecking': 'Checking whether Cursor chat data is still available on the recorded machine.',

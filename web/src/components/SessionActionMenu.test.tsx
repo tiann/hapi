@@ -138,6 +138,24 @@ describe('SessionActionMenu - Codex sync action', () => {
     })
 })
 
+describe('SessionActionMenu - Pi sync action', () => {
+    it('renders, fires, and closes Sync Pi history when a handler is provided', () => {
+        const onSyncPi = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onSyncPi, onClose })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: /Sync Pi history/ }))
+
+        expect(onSyncPi).toHaveBeenCalledOnce()
+        expect(onClose).toHaveBeenCalledOnce()
+    })
+
+    it('hides Sync Pi history when no handler is provided', () => {
+        renderMenu({ onSyncPi: undefined })
+        expect(screen.queryByRole('menuitem', { name: /Sync Pi history/ })).toBeNull()
+    })
+})
+
 describe('SessionActionMenu - Copy reference action', () => {
     it('renders the Copy reference item', () => {
         renderMenu()
