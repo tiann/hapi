@@ -423,6 +423,39 @@ describe('formatPeerSessionsList', () => {
         expect(lines[1]).toContain('aaaaaaaa')
     })
 
+    it('uses summary.text when name is unset and collapses multiline titles', async () => {
+        const { formatPeerSessionsList, resolvePeerSessionLabel } = await import('./pingPeer')
+        const session = {
+            id: 'dddddddd-4444-4444-4444-444444444444',
+            active: true,
+            updatedAt: 50,
+            metadata: {
+                flavor: 'codex',
+                summary: { text: 'Peer\nwith\ttabs' },
+                path: '/home/user/projects/widget'
+            }
+        }
+        expect(resolvePeerSessionLabel(session)).toBe('Peer with tabs')
+        const text = formatPeerSessionsList([session])
+        expect(text).toContain('Peer with tabs')
+        expect(text.split('\n')).toHaveLength(1)
+        expect(text).not.toContain('(unnamed)')
+    })
+
+    it('falls back to path basename then id prefix', async () => {
+        const { resolvePeerSessionLabel } = await import('./pingPeer')
+        expect(resolvePeerSessionLabel({
+            id: 'eeeeeeee-5555-5555-5555-555555555555',
+            active: true,
+            metadata: { path: '/tmp/my-worktree' }
+        })).toBe('my-worktree')
+        expect(resolvePeerSessionLabel({
+            id: 'ffffffff-6666-6666-6666-666666666666',
+            active: true,
+            metadata: null
+        })).toBe('ffffffff')
+    })
+
     it('respects maxRows and empty list', async () => {
         const { formatPeerSessionsList } = await import('./pingPeer')
         expect(formatPeerSessionsList([])).toContain('No peer sessions')

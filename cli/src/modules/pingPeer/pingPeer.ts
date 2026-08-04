@@ -45,6 +45,7 @@ export type PingPeerSessionSummary = {
         path?: string | null
         lifecycleState?: string | null
         piSessionId?: string
+        summary?: { text?: string } | null
     } | null
 }
 
@@ -373,6 +374,27 @@ export type FormatPeerSessionsListOptions = {
     excludeSessionId?: string
 }
 
+const MAX_PEER_LABEL_CHARS = 255
+
+/**
+ * Web-parity title for peer shortlists: name → summary.text → basename(path) → id prefix.
+ * Collapses whitespace so agent-readable rows stay one line each.
+ */
+export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string {
+    const meta = session.metadata
+    const raw = meta?.name?.trim()
+        || meta?.summary?.text?.trim()
+        || meta?.path?.split('/').filter(Boolean).pop()?.trim()
+        || session.id.slice(0, 8)
+    const collapsed = raw.replace(/\s+/g, ' ').trim()
+    if (!collapsed) {
+        return session.id.slice(0, 8)
+    }
+    return collapsed.length > MAX_PEER_LABEL_CHARS
+        ? collapsed.slice(0, MAX_PEER_LABEL_CHARS)
+        : collapsed
+}
+
 /**
  * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
  * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
@@ -392,7 +414,7 @@ export function formatPeerSessionsList(
     const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
         const flavor = session.metadata?.flavor ?? '?'
-        const name = session.metadata?.name ?? '(unnamed)'
+        const name = resolvePeerSessionLabel(session)
         return `  ${session.id.slice(0, 8)}  active=${session.active}  flavor=${flavor}  ${name}`
     })
     const omitted = sorted.length - rows.length
@@ -427,7 +449,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sessions = await listSessions(apiUrl, jwt, http)
     const matched = resolveSessionByPrefix(sessions, prefix)
-    const name = matched.metadata?.name ?? '(unnamed)'
+    const name = resolvePeerSessionLabel(matched)
     onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
 
     let resumed = false
@@ -628,7 +650,7 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
 
     return {
         sessionId: matched.id,
-        name: meta?.name ?? '(unnamed)',
+        name: resolvePeerSessionLabel({ ...matched, metadata: meta ?? matched.metadata ?? null }),
         active: live.active,
         thinking: Boolean(live.thinking),
         flavor: typeof meta?.flavor === 'string' ? meta.flavor : null,
