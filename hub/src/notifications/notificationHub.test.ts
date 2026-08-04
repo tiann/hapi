@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
+import type { Store } from '../store'
 import type { NotificationChannel, TaskNotification } from './notificationTypes'
 import { NotificationHub } from './notificationHub'
 
@@ -242,6 +243,159 @@ describe('NotificationHub', () => {
 
         expect(channel.sessionCompletions).toHaveLength(1)
         expect(channel.sessionCompletions[0]?.id).toBe(completedSession.id)
+
+        hub.stop()
+    })
+
+    it('suppresses all notification types when preferences are disabled', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const store = {
+            notificationPrefs: {
+                getPreferenceFlags: () => ({
+                    permissionRequests: 0,
+                    sessionReady: 0,
+                    taskNotifications: 0,
+                    sessionCompletion: 0
+                })
+            }
+        } as unknown as Store
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 5,
+            readyCooldownMs: 5
+        }, store)
+
+        const session = createSession({
+            agentState: {
+                requests: {
+                    req1: { tool: 'Edit', arguments: {}, createdAt: 1 }
+                }
+            }
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(25)
+
+        expect(channel.permissionSessions).toHaveLength(0)
+
+        const readyEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'message-1',
+                seq: 1,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        id: 'event-1',
+                        type: 'event',
+                        data: { type: 'ready' }
+                    }
+                }
+            }
+        }
+        engine.emit(readyEvent)
+        await sleep(5)
+        expect(channel.readySessions).toHaveLength(0)
+
+        const taskEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'message-task',
+                seq: 2,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'system',
+                            subtype: 'task_notification',
+                            status: 'completed',
+                            summary: 'Commit T4 finished'
+                        }
+                    }
+                }
+            }
+        }
+        engine.emit(taskEvent)
+        await sleep(5)
+        expect(channel.taskNotifications).toHaveLength(0)
+
+        engine.emit({
+            type: 'session-ended',
+            sessionId: session.id,
+            reason: 'completed' satisfies SessionEndReason
+        })
+        await sleep(5)
+        expect(channel.sessionCompletions).toHaveLength(0)
+
+        hub.stop()
+    })
+
+    it('filters per event type by namespace preferences', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const store = {
+            notificationPrefs: {
+                getPreferenceFlags: () => ({
+                    permissionRequests: 0,
+                    sessionReady: 1,
+                    taskNotifications: 1,
+                    sessionCompletion: 0
+                })
+            }
+        } as unknown as Store
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 5,
+            readyCooldownMs: 5
+        }, store)
+
+        const session = createSession({
+            agentState: {
+                requests: {
+                    req1: { tool: 'Edit', arguments: {}, createdAt: 1 }
+                }
+            }
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(25)
+        expect(channel.permissionSessions).toHaveLength(0)
+
+        const readyEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'message-1',
+                seq: 1,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        id: 'event-1',
+                        type: 'event',
+                        data: { type: 'ready' }
+                    }
+                }
+            }
+        }
+        engine.emit(readyEvent)
+        await sleep(5)
+        expect(channel.readySessions).toHaveLength(1)
+
+        engine.emit({
+            type: 'session-ended',
+            sessionId: session.id,
+            reason: 'completed' satisfies SessionEndReason
+        })
+        await sleep(5)
+        expect(channel.sessionCompletions).toHaveLength(0)
 
         hub.stop()
     })

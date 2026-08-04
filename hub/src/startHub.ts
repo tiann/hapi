@@ -246,7 +246,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         }
     }
 
-    notificationHub = new NotificationHub(syncEngine, notificationChannels)
+    notificationHub = new NotificationHub(syncEngine, notificationChannels, undefined, store)
 
     // Start HTTP service first (before tunnel, so tunnel has something to forward to)
     webServer = await startWebServer({
@@ -256,6 +256,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         jwtSecret,
         store,
         vapidPublicKey: vapidKeys.publicKey,
+        pushService,
         socketEngine: socketServer.engine,
         corsOrigins,
         relayMode: relayFlag.enabled,

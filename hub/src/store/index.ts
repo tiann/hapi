@@ -8,6 +8,7 @@ import { addMessage } from './messages'
 import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
+import { NotificationPreferenceStore } from './notificationPreferenceStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
@@ -28,6 +29,7 @@ export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
 export { FcmStore } from './fcmStore'
+export { NotificationPreferenceStore } from './notificationPreferenceStore'
 export { ScratchlistStore } from './scratchlistStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
@@ -44,7 +46,8 @@ const REQUIRED_TABLES = [
     'fcm_devices',
     'session_scratchlist',
     'usage_events',
-    'usage_scan_state'
+    'usage_scan_state',
+    'notification_preferences'
 ] as const
 
 export class Store {
@@ -60,6 +63,7 @@ export class Store {
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
     readonly usage: UsageStore
+    readonly notificationPrefs: NotificationPreferenceStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -113,6 +117,7 @@ export class Store {
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
         this.usage = new UsageStore(this.db)
+        this.notificationPrefs = new NotificationPreferenceStore(this.db)
     }
 
     /**
@@ -479,6 +484,15 @@ export class Store {
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                namespace TEXT PRIMARY KEY,
+                permission_requests INTEGER NOT NULL DEFAULT 1,
+                session_ready INTEGER NOT NULL DEFAULT 1,
+                task_notifications INTEGER NOT NULL DEFAULT 1,
+                session_completion INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
             );
         `)
     }

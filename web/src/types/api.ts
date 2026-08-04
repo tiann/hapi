@@ -176,6 +176,23 @@ export type PushVapidPublicKeyResponse = {
     publicKey: string
 }
 
+export type NotificationPreferences = {
+    namespace: string
+    permissionRequests: number
+    sessionReady: number
+    taskNotifications: number
+    sessionCompletion: number
+    updatedAt: number
+}
+
+export type NotificationPreferencesUpdate = Partial<
+    Pick<NotificationPreferences, 'permissionRequests' | 'sessionReady' | 'taskNotifications' | 'sessionCompletion'>
+>
+
+export type TestPushResponse =
+    | { ok: true }
+    | { error: string }
+
 export type CodexDesktopScriptResponse = {
     success: boolean
     message?: string
