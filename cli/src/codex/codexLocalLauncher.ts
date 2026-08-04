@@ -245,7 +245,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         const scopeRole = message.scopeRole ?? message.scope_role;
                         const messageThreadId = message.threadId ?? message.thread_id;
                         // Parent budget / composer gauge only; child samples keep native thread ids for hub deltas.
-                        if (scopeRole !== 'child') {
+                        // scopeRole is optional - a foreign thread_id alone still means child usage.
+                        const isChildUsage = scopeRole === 'child'
+                            || Boolean(messageThreadId && primarySessionId && messageThreadId !== primarySessionId);
+                        if (!isChildUsage) {
                             if (replayingUsage) {
                                 noteReplayUsageSample(replayUsage, message);
                             } else {
