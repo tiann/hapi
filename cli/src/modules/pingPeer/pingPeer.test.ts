@@ -435,6 +435,29 @@ describe('formatPeerSessionsList', () => {
         const text = formatPeerSessionsList(many, { maxRows: 2 })
         expect(text.split('\n').filter((l) => l.includes('active='))).toHaveLength(2)
     })
+
+    it('omits the calling session even when it is newest', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const selfId = 'cccccccc-3333-3333-3333-333333333333'
+        const text = formatPeerSessionsList([
+            {
+                id: selfId,
+                active: true,
+                updatedAt: 300,
+                metadata: { name: 'Self', flavor: 'cursor' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 200,
+                metadata: { name: 'Peer', flavor: 'claude' }
+            }
+        ], { excludeSessionId: selfId })
+        expect(text).not.toContain('cccccccc')
+        expect(text).not.toContain('Self')
+        expect(text).toContain('bbbbbbbb')
+        expect(text).toContain('Peer')
+    })
 })
 
 describe('listPeerSessions auth failures', () => {

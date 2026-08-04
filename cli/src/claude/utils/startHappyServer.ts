@@ -287,12 +287,15 @@ function createHapiMcpServer(
         logger.debug('[hapiMCP] list_peers');
         try {
             const limit = args.limit ?? 30;
-            const sessions = await listPeerSessions({ limit });
+            const sessions = await listPeerSessions({ limit: Math.min(100, limit + 1) });
             return {
                 content: [
                     {
                         type: 'text' as const,
-                        text: formatPeerSessionsList(sessions, { maxRows: limit }),
+                        text: formatPeerSessionsList(sessions, {
+                            maxRows: limit,
+                            excludeSessionId: client.sessionId,
+                        }),
                     },
                 ],
                 isError: false,

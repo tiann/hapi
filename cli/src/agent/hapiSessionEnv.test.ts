@@ -44,7 +44,7 @@ describe('exportHapiHubAuthEnv', () => {
         configuration._setCliApiToken(previousConfigToken)
     })
 
-    it('mirrors configured hub URL and token into process.env for child shells', () => {
+    it('mirrors configured hub URL into process.env for child shells', () => {
         delete process.env.HAPI_API_URL
         delete process.env.CLI_API_TOKEN
         configuration._setApiUrl('http://remote-hub:3006')
@@ -53,14 +53,14 @@ describe('exportHapiHubAuthEnv', () => {
         exportHapiHubAuthEnv({ exportApiUrl: true })
 
         expect(process.env.HAPI_API_URL).toBe('http://remote-hub:3006')
-        expect(process.env.CLI_API_TOKEN).toBe('runner-token')
+        expect(process.env.CLI_API_TOKEN).toBeUndefined()
     })
 
-    it('does not clear existing env when config token is empty', () => {
+    it('does not clear an existing CLI_API_TOKEN when exporting URL only', () => {
         process.env.HAPI_API_URL = 'http://already-set:3006'
         process.env.CLI_API_TOKEN = 'already-set-token'
         configuration._setApiUrl('http://config-hub:3006')
-        configuration._setCliApiToken('')
+        configuration._setCliApiToken('settings-token')
 
         exportHapiHubAuthEnv({ exportApiUrl: true })
 
@@ -68,7 +68,7 @@ describe('exportHapiHubAuthEnv', () => {
         expect(process.env.CLI_API_TOKEN).toBe('already-set-token')
     })
 
-    it('exports token only when api URL is the implicit default (preserve auto-start)', () => {
+    it('does not export URL or token when api URL is the implicit default', () => {
         delete process.env.HAPI_API_URL
         delete process.env.CLI_API_TOKEN
         configuration._setApiUrl('http://localhost:3006')
@@ -77,6 +77,17 @@ describe('exportHapiHubAuthEnv', () => {
         exportHapiHubAuthEnv({ exportApiUrl: false })
 
         expect(process.env.HAPI_API_URL).toBeUndefined()
-        expect(process.env.CLI_API_TOKEN).toBe('local-token')
+        expect(process.env.CLI_API_TOKEN).toBeUndefined()
+    })
+
+    it('never mirrors settings/prompt tokens into process.env', () => {
+        delete process.env.HAPI_API_URL
+        delete process.env.CLI_API_TOKEN
+        configuration._setApiUrl('http://remote-hub:3006')
+        configuration._setCliApiToken('settings-secret')
+
+        exportHapiHubAuthEnv({ exportApiUrl: true })
+
+        expect(process.env.CLI_API_TOKEN).toBeUndefined()
     })
 })

@@ -309,7 +309,7 @@ export CLI_API_TOKEN="your-token-here"
 hapi runner start
 ```
 
-Inside a HAPI session prefer MCP `list_peers` / `inspect_peer` / `ping_peer` (session CLI credentials). For shell `hapi ping-peer --list` on the runner host, set `HAPI_API_URL` to the hub and provide `CLI_API_TOKEN` or run `hapi auth login`. Web terminal PTYs still strip those secrets.
+Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or settings) into child env so shell helpers hit the same remote hub. It does **not** mirror `CLI_API_TOKEN` into wrapped agents (settings/prompt-backed secrets stay out of agent env; a fresh `hapi` re-reads `~/.hapi/settings.json`, and systemd/env tokens already inherit). Prefer MCP `list_peers` inside a session. Web terminal PTYs still strip hub secrets. If `--list` fails with an auth/URL error, the message points at `hapi auth login` and the configured hub URL.
 
 Additional runner commands:
 

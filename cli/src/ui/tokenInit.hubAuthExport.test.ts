@@ -49,7 +49,7 @@ describe('initializeToken hub auth export', () => {
         configuration._setExtraHeaders({})
     })
 
-    it('exports token but not default localhost URL so hub auto-start still works', async () => {
+    it('exports neither default localhost URL nor settings token (keep auto-start + secret out of agent env)', async () => {
         configuration._setCliApiToken('')
         readSettingsMock.mockResolvedValue({
             cliApiToken: 'token-from-settings'
@@ -57,11 +57,12 @@ describe('initializeToken hub auth export', () => {
 
         await initializeToken()
 
-        expect(process.env.CLI_API_TOKEN).toBe('token-from-settings')
+        expect(configuration.cliApiToken).toBe('token-from-settings')
+        expect(process.env.CLI_API_TOKEN).toBeUndefined()
         expect(process.env.HAPI_API_URL).toBeUndefined()
     })
 
-    it('exports settings hub URL when initializeApiUrl resolved from settings', async () => {
+    it('exports settings hub URL without mirroring the token', async () => {
         initializeApiUrlMock.mockResolvedValue('settings')
         configuration._setApiUrl('http://remote-hub:3006')
         configuration._setCliApiToken('token-from-env')
@@ -70,6 +71,6 @@ describe('initializeToken hub auth export', () => {
         await initializeToken()
 
         expect(process.env.HAPI_API_URL).toBe('http://remote-hub:3006')
-        expect(process.env.CLI_API_TOKEN).toBe('token-from-env')
+        expect(process.env.CLI_API_TOKEN).toBeUndefined()
     })
 })

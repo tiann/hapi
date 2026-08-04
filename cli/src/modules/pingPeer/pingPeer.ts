@@ -369,6 +369,8 @@ export async function listPeerSessions(
 export type FormatPeerSessionsListOptions = {
     /** Max rows to print (default 30). */
     maxRows?: number
+    /** Omit this session id (the caller) from the shortlist. */
+    excludeSessionId?: string
 }
 
 /**
@@ -380,10 +382,14 @@ export function formatPeerSessionsList(
     options: FormatPeerSessionsListOptions = {}
 ): string {
     const maxRows = options.maxRows ?? 30
-    if (sessions.length === 0) {
+    const excludeId = options.excludeSessionId?.trim() ?? ''
+    const filtered = excludeId
+        ? sessions.filter((session) => session.id !== excludeId)
+        : sessions
+    if (filtered.length === 0) {
         return 'No peer sessions found on this hub/namespace.'
     }
-    const sorted = [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
         const flavor = session.metadata?.flavor ?? '?'
         const name = session.metadata?.name ?? '(unnamed)'
