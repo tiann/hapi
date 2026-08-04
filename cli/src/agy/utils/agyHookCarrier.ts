@@ -46,9 +46,9 @@ export type AgyMcpServerEntry = {
 // /proc — differs only across an actual host reboot, which is the one case
 // where every previously-recorded pid is unconditionally dead; this fix
 // does not attempt to special-case that, see sweepAgyHookCarriers's
-// docstring). Platforms without a working /proc (macOS, ...) fall back to
-// hostname, tagged so a fallback-computed scope can never collide with a
-// real Linux one.
+// docstring). Platforms without a working /proc (macOS, ...) get no scope at
+// all and are therefore never swept — hostname is not an identity, so there
+// is deliberately no fallback (see computeLocalCarrierScope).
 type AgyHookCarrierOwner = {
     pid: number;
     scope: string;
@@ -62,10 +62,6 @@ const OWNER_FILE_NAME = 'owner.json';
 // at a directory with other content) must never turn into a recursive
 // delete of whatever else happens to live there (Fix N3).
 const CARRIER_DIR_PREFIX = 'hapi-agy-carrier-';
-
-// Tags a hostname-derived scope so it can never equal a Linux
-// boot-id+namespace scope, even by coincidence — see computeLocalCarrierScope.
-const HOSTNAME_FALLBACK_SCOPE_PREFIX = 'hostname-fallback:';
 
 /**
  * Reads the boot-id + PID-namespace pair that identifies "this exact kernel
@@ -124,21 +120,24 @@ const defaultScopeProbe: ScopeProbe = {
 /**
  * Computes this process's carrier scope: an opaque string identifying
  * "carriers this process could plausibly own", used to gate sweepAgyHookCarriers.
- * Prefers the Linux boot-id+PID-namespace pair (readLinuxBootAndNamespaceScope);
- * falls back to a tagged hostname when that is unavailable (non-Linux, or a
- * /proc that exists but is restricted). Returns undefined only when BOTH the
- * Linux probe and the hostname fallback fail — callers must treat that as
- * "cannot self-identify" and preserve everything rather than guess.
+ *
+ * Only the Linux boot-id+PID-namespace pair qualifies. There is deliberately
+ * no hostname fallback: hostname is not an identity. Two machines or
+ * containers that share a HAPI_HOME and happen to share a hostname would
+ * compute the same scope, and a pid that is live on the owning system reads
+ * as ESRCH here — deleting a carrier out from under a running agy, which is
+ * spawned with --dangerously-skip-permissions and depends on that carrier's
+ * hooks.json for its PreToolUse approval bridge.
+ *
+ * Returning undefined makes sweepAgyHookCarriers preserve everything. That
+ * costs orphaned carriers on platforms without a strong identity (macOS, a
+ * restricted /proc), which is the cheaper failure: normal teardown still
+ * removes carriers via cleanupAgyHookCarrier, so only crash leftovers
+ * accumulate. Add a platform-specific boot/namespace identity here before
+ * re-enabling sweeping there.
  */
 export function computeLocalCarrierScope(probe: ScopeProbe = defaultScopeProbe): string | undefined {
-    const linuxScope = readLinuxBootAndNamespaceScope(probe);
-    if (linuxScope) return linuxScope;
-    try {
-        const host = probe.hostname();
-        return host ? `${HOSTNAME_FALLBACK_SCOPE_PREFIX}${host}` : undefined;
-    } catch {
-        return undefined;
-    }
+    return readLinuxBootAndNamespaceScope(probe);
 }
 
 /**
@@ -340,7 +339,6 @@ export function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe)
             }
             if (owner.scope !== localScope) {
                 // Fix 2b: a pid recorded under a different boot/PID-namespace
-                // (or, on a hostname-fallback platform, a different host)
                 // means nothing in this process's PID space — never probe
                 // it, never delete it.
                 continue;

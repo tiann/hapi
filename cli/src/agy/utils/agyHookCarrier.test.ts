@@ -213,25 +213,19 @@ describe('computeLocalCarrierScope', () => {
         expect(scope).toMatch(/^linux:[0-9a-f-]{36}:\d+$/);
     });
 
-    it('falls back to a distinctly-tagged hostname when the Linux probe fails', () => {
+    it('refuses to fall back to hostname when the Linux probe fails — hostname is not an identity', () => {
         const probe: ScopeProbe = {
             readBootId: () => { throw new Error('ENOENT: no /proc on this platform'); },
             readPidNamespaceId: () => { throw new Error('should not be reached'); },
             hostname: () => 'macbook.local',
         };
-        // Fails (mutation check: drop the hostname-fallback prefix) if this
-        // ever collides with a real linux:... scope string.
-        expect(computeLocalCarrierScope(probe)).toBe('hostname-fallback:macbook.local');
-    });
-
-    it('returns undefined when both the Linux probe and the hostname fallback fail', () => {
-        const probe: ScopeProbe = {
-            readBootId: () => { throw new Error('no /proc'); },
-            readPidNamespaceId: () => { throw new Error('no /proc'); },
-            hostname: () => { throw new Error('gethostname() failed'); },
-        };
+        // Two machines sharing a HAPI_HOME can share a hostname while their
+        // pids live in unrelated spaces, so a hostname-derived scope would let
+        // one sweep the other's live carrier. Undefined makes the sweep
+        // preserve everything instead. Fails if a fallback is reintroduced.
         expect(computeLocalCarrierScope(probe)).toBeUndefined();
     });
+
 });
 
 describe('sweepAgyHookCarriers', () => {
@@ -364,7 +358,7 @@ describe('sweepAgyHookCarriers', () => {
             join(carrierDir, 'owner.json'),
             // A scope that can never equal this process's real
             // computeLocalCarrierScope() (real scopes are always prefixed
-            // `linux:` or `hostname-fallback:`) — this deadPid is only
+            // `linux:`) — this deadPid is only
             // meaningfully "dead" in THIS process's own boot/PID-namespace;
             // recorded under a different scope it must never be probed at
             // all.
