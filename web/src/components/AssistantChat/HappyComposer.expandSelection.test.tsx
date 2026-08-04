@@ -76,6 +76,13 @@ function TestRuntime(props: { withSettings?: boolean }) {
                 agentFlavor={props.withSettings ? 'claude' : undefined}
                 onPermissionModeChange={props.withSettings ? () => {} : undefined}
             />
+            {props.withSettings ? (
+                <button
+                    type="button"
+                    aria-label="Outside action"
+                    onPointerDown={(event) => event.stopPropagation()}
+                />
+            ) : null}
         </AssistantRuntimeProvider>
     )
 }
@@ -143,6 +150,12 @@ describe('HappyComposer plain-text expansion', () => {
         expect(screen.getByText('misc.permissionMode')).toBeInTheDocument()
 
         fireEvent.pointerDown(screen.getByRole('textbox'))
+        expect(screen.queryByText('misc.permissionMode')).not.toBeInTheDocument()
+
+        fireEvent.click(settingsButton)
+        expect(screen.getByText('misc.permissionMode')).toBeInTheDocument()
+
+        fireEvent.pointerDown(screen.getByRole('button', { name: 'Outside action' }))
         expect(screen.queryByText('misc.permissionMode')).not.toBeInTheDocument()
     })
 })
