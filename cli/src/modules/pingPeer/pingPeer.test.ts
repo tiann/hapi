@@ -416,11 +416,32 @@ describe('formatPeerSessionsList', () => {
             }
         ])
         const lines = text.split('\n')
-        expect(lines[0]).toContain('bbbbbbbb')
+        expect(lines[0]).toContain('bbbbbbbb-2222-2222-2222-222222222222')
         expect(lines[0]).toContain('active=true')
         expect(lines[0]).toContain('flavor=cursor')
         expect(lines[0]).toContain('Fresh')
-        expect(lines[1]).toContain('aaaaaaaa')
+        expect(lines[1]).toContain('aaaaaaaa-1111-1111-1111-111111111111')
+    })
+
+    it('emits full session ids so colliding 8-char prefixes stay resolvable', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 2,
+                metadata: { name: 'A', flavor: 'claude' }
+            },
+            {
+                id: 'aaaaaaaa-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 1,
+                metadata: { name: 'B', flavor: 'cursor' }
+            }
+        ])
+        expect(text).toContain('aaaaaaaa-1111-1111-1111-111111111111')
+        expect(text).toContain('aaaaaaaa-2222-2222-2222-222222222222')
+        expect(text.split('\n')).toHaveLength(2)
     })
 
     it('uses summary.text when name is unset and collapses multiline titles', async () => {
@@ -486,9 +507,9 @@ describe('formatPeerSessionsList', () => {
                 metadata: { name: 'Peer', flavor: 'claude' }
             }
         ], { excludeSessionId: selfId })
-        expect(text).not.toContain('cccccccc')
+        expect(text).not.toContain('cccccccc-3333-3333-3333-333333333333')
         expect(text).not.toContain('Self')
-        expect(text).toContain('bbbbbbbb')
+        expect(text).toContain('bbbbbbbb-2222-2222-2222-222222222222')
         expect(text).toContain('Peer')
     })
 })
@@ -505,18 +526,21 @@ describe('listPeerSessions auth failures', () => {
             }
         })
 
-        await expect(listPeerSessions({
-            accessToken: 'bad',
-            apiUrl: 'http://remote-hub:3006',
-            http: http as never
-        })).rejects.toSatisfy((error: unknown) => {
-            expect(error).toBeInstanceOf(PingPeerError)
-            const message = (error as InstanceType<typeof PingPeerError>).message
-            expect(message).toMatch(/auth login|CLI_API_TOKEN/i)
-            expect(message).toContain('http://remote-hub:3006')
-            expect(message).toMatch(/list_peers|MCP/i)
-            return true
-        })
+        let caught: unknown
+        try {
+            await listPeerSessions({
+                accessToken: 'bad',
+                apiUrl: 'http://remote-hub:3006',
+                http: http as never
+            })
+        } catch (error) {
+            caught = error
+        }
+        expect(caught).toBeInstanceOf(PingPeerError)
+        const message = (caught as InstanceType<typeof PingPeerError>).message
+        expect(message).toMatch(/auth login|CLI_API_TOKEN/i)
+        expect(message).toContain('http://remote-hub:3006')
+        expect(message).toMatch(/list_peers|MCP/i)
     })
 
     it('hints when CLI_API_TOKEN is missing', async () => {
@@ -524,19 +548,20 @@ describe('listPeerSessions auth failures', () => {
         const { configuration } = await import('@/configuration')
         const previous = configuration.cliApiToken
         configuration._setCliApiToken('')
+        let caught: unknown
         try {
-            await expect(listPeerSessions({
+            await listPeerSessions({
                 apiUrl: 'http://hub.test',
                 accessToken: '   '
-            })).rejects.toSatisfy((error: unknown) => {
-                expect(error).toBeInstanceOf(PingPeerError)
-                const message = (error as InstanceType<typeof PingPeerError>).message
-                expect(message).toMatch(/auth login/i)
-                expect(message).toMatch(/HAPI_API_URL|runner/i)
-                return true
             })
+        } catch (error) {
+            caught = error
         } finally {
             configuration._setCliApiToken(previous)
         }
+        expect(caught).toBeInstanceOf(PingPeerError)
+        const message = (caught as InstanceType<typeof PingPeerError>).message
+        expect(message).toMatch(/auth login/i)
+        expect(message).toMatch(/HAPI_API_URL|runner/i)
     })
 })

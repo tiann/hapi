@@ -415,7 +415,7 @@ export function formatPeerSessionsList(
     const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
         const flavor = session.metadata?.flavor ?? '?'
         const name = resolvePeerSessionLabel(session)
-        return `  ${session.id.slice(0, 8)}  active=${session.active}  flavor=${flavor}  ${name}`
+        return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
     })
     const omitted = sorted.length - rows.length
     if (omitted > 0) {
