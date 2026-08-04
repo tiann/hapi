@@ -107,7 +107,10 @@ export function prependMissingUserSnapshot(
 }
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
-const AUTO_SCROLL_RESUME_THRESHOLD_PX = 120
+// Resume tail-following only once the user has actually reached the bottom.
+// A wider proximity threshold makes a downward-reading user enter tail mode
+// early; the next content/layout update then snaps the viewport to the end.
+const AUTO_SCROLL_RESUME_THRESHOLD_PX = 1
 const MANUAL_SCROLL_EPSILON_PX = 1
 const INITIAL_SCROLL_SETTLE_MS = 1800
 const INITIAL_SCROLL_SETTLE_DELAYS_MS = [0, 16, 50, 120, 250, 500, 900, 1400, 1800] as const
@@ -161,7 +164,7 @@ export function getScrollIntent(params: {
     const distanceFromBottom = params.scrollHeight - params.scrollTop - params.clientHeight
     return {
         distanceFromBottom,
-        isNearBottom: distanceFromBottom < thresholdPx,
+        isNearBottom: distanceFromBottom <= thresholdPx,
         isScrollingUp: params.scrollTop < params.previousScrollTop - MANUAL_SCROLL_EPSILON_PX
     }
 }

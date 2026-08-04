@@ -170,8 +170,21 @@ describe('scroll anchor helpers', () => {
             clientHeight: 530
         })).toMatchObject({
             distanceFromBottom: 12,
-            isNearBottom: true,
+            isNearBottom: false,
             isScrollingUp: true
+        })
+    })
+
+    it('does not resume tail-following merely because downward reading is close to the bottom', () => {
+        expect(getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 590,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })).toMatchObject({
+            distanceFromBottom: 92,
+            isNearBottom: false,
+            isScrollingUp: false
         })
     })
 
