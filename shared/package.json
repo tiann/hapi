@@ -15,6 +15,7 @@
         "./modes": "./src/modes.ts",
         "./rpcMethods": "./src/rpcMethods.ts",
         "./schemas": "./src/schemas.ts",
+        "./sessionCitation": "./src/sessionCitation.ts",
         "./sessionExport": "./src/sessionExport.ts",
         "./types": "./src/types.ts",
         "./voice": "./src/voice.ts",

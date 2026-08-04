@@ -228,6 +228,62 @@ describe('inspectPeer', () => {
             http: http as never
         })
     })
+
+    it('accepts a pasted Copy-reference citation as sessionIdPrefix', async () => {
+        const sessionId = '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+        const http = createHttpMock({
+            post: async () => ({ status: 200, data: { token: 'jwt' } }),
+            get: async (url) => {
+                if (url.endsWith('/api/sessions')) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [
+                                {
+                                    id: sessionId,
+                                    active: true,
+                                    thinking: false,
+                                    updatedAt: 1,
+                                    metadata: { name: 'Coding', flavor: 'codex' }
+                                }
+                            ]
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: sessionId,
+                                active: true,
+                                thinking: false,
+                                updatedAt: 1,
+                                metadata: { name: 'Coding', flavor: 'codex' }
+                            }
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    return {
+                        status: 200,
+                        data: { messages: [], page: { hasMore: false } }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await inspectPeer({
+            sessionIdPrefix: `See session "Coding" (/sessions/${sessionId}) for context`,
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })
+
+        expect(result.sessionId).toBe(sessionId)
+        expect(result.name).toBe('Coding')
+    })
 })
 
 describe('formatInspectPeerReport', () => {

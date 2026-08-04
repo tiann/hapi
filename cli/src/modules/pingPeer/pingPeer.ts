@@ -10,6 +10,7 @@
 
 import axios, { type AxiosInstance } from 'axios'
 import { extractAssistantPlainText, isObject } from '@hapi/protocol'
+import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
@@ -343,7 +344,7 @@ export async function listPeerSessions(
 }
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
-    const prefix = options.sessionIdPrefix?.trim() ?? ''
+    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
     const message = options.message ?? ''
     if (!prefix) {
         throw new PingPeerError('bad_args', 'session id prefix is required')
@@ -549,7 +550,7 @@ async function fetchSessionMessages(
  * Read-only: never resumes inactive sessions (unlike `pingPeer`).
  */
 export async function inspectPeer(options: InspectPeerOptions): Promise<InspectPeerResult> {
-    const prefix = options.sessionIdPrefix?.trim() ?? ''
+    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
     if (!prefix) {
         throw new PingPeerError('bad_args', 'session id prefix is required')
     }

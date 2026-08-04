@@ -1,0 +1,116 @@
+/**
+ * Session citation helpers shared by web Copy-reference, MCP tool descriptions,
+ * and flavor system prompts (tiann/hapi#1370).
+ *
+ * Two paste forms agents must recognize:
+ * 1. Copy reference prose: `See session "…" (/sessions/<id>) for context`
+ * 2. Markdown composer chips: `[title](/sessions/<id>)`
+ *
+ * `/sessions/<id>` is a HAPI hub path - not a local filesystem path.
+ */
+
+/** Appended to Copy-reference clipboard text so cold pastes steer agents. */
+export const SESSION_REFERENCE_STEER_SUFFIX =
+    ' HAPI hub peer - call inspect_peer with that session id; do not Grep/Glob/Read /sessions/ as a local file.'
+
+/**
+ * MCP `inspect_peer` tool description. Written for the model (firing predicate +
+ * negative constraint), not for humans.
+ */
+export const INSPECT_PEER_TOOL_DESCRIPTION =
+    'Read another HAPI session (metadata + recent message text) on the same hub/namespace. ' +
+    'Fires when the user cites a peer via markdown [title](/sessions/<id>), Copy-reference prose ' +
+    'See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>. ' +
+    'Extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT Grep, Glob, or Read it as a local filesystem path. ' +
+    'Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl.'
+
+/** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
+export const PING_PEER_TOOL_DESCRIPTION =
+    'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs on the same hub/namespace. ' +
+    'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
+    'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
+    'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.'
+
+/** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
+export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
+    'Target HAPI session id or unique id prefix (another session - not this chat). ' +
+    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context.'
+
+/**
+ * Hub session ids have no dots. Reject dotted tails so source paths like
+ * `web/src/routes/sessions/chat.tsx` are not treated as citations.
+ */
+function isPlausibleSessionId(id: string): boolean {
+    return id.length > 0 && !id.includes('.')
+}
+
+/**
+ * Match `/sessions/<id>` (optional BASE_URL prefix segments) inside free text.
+ * Captures the id only; surrounding markdown / prose is ignored.
+ */
+const SESSION_PATH_IN_TEXT_RE =
+    /(?:^|[^A-Za-z0-9_-])(?:\.?\/)?(?:[\w.-]+\/)*sessions\/([^/?#\s)\]"']+)/g
+
+/** Decode a path segment; return null if not a plausible hub session id. */
+function decodeSessionIdSegment(raw: string): string | null {
+    try {
+        const id = decodeURIComponent(raw)
+        return isPlausibleSessionId(id) ? id : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * Extract unique session ids from free text containing markdown and/or
+ * Copy-reference prose citations. Order is first-seen.
+ */
+export function extractSessionCitationIds(text: string): string[] {
+    if (!text) return []
+    const seen = new Set<string>()
+    const ids: string[] = []
+    SESSION_PATH_IN_TEXT_RE.lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = SESSION_PATH_IN_TEXT_RE.exec(text)) !== null) {
+        const id = decodeSessionIdSegment(match[1] ?? '')
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        ids.push(id)
+    }
+    return ids
+}
+
+/**
+ * If `raw` is a pasted citation blob containing `/sessions/<id>`, return that id.
+ * Otherwise return the trimmed input (normal id / prefix).
+ */
+export function normalizeSessionIdPrefix(raw: string): string {
+    const trimmed = raw.trim()
+    if (!trimmed.includes('/sessions/')) {
+        return trimmed
+    }
+    const ids = extractSessionCitationIds(trimmed)
+    return ids[0] ?? trimmed
+}
+
+export type SessionCitationSteerTools = {
+    /** Flavor-specific inspect tool name, e.g. `mcp__hapi__inspect_peer`. */
+    inspectTool: string
+    /** Flavor-specific ping tool name, e.g. `mcp__hapi__ping_peer`. */
+    pingTool: string
+}
+
+/**
+ * Always-on system-prompt line: both citation forms + hub-not-FS + tool names.
+ */
+export function buildSessionCitationSteerInstruction(tools: SessionCitationSteerTools): string {
+    return (
+        `When the user cites another HAPI session as [title](/sessions/<id>), ` +
+        `Copy-reference prose See session "…" (/sessions/<id>) for context, ` +
+        `or a bare /sessions/<id>, extract that <id>. ` +
+        `/sessions/<id> is a HAPI hub path, not a local filesystem path - do not Grep, Glob, or Read it as a file. ` +
+        `Call "${tools.inspectTool}" with sessionIdPrefix=<id> to read metadata and recent messages; ` +
+        `call "${tools.pingTool}" with sessionIdPrefix=<id> and a message to nudge or hand off. ` +
+        `Prefer these over JWT+curl. Shell fallbacks: hapi inspect-peer <id> / hapi ping-peer <id> <message>.`
+    )
+}

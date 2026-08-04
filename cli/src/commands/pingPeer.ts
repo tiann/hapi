@@ -32,6 +32,8 @@ ${chalk.bold('Notes:')}
   Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer.
   Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
   Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
+  When a user cites [title](/sessions/<id>) or Copy-reference
+  See session "…" (/sessions/<id>) for context, pass that <id> here.
 
 ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)

@@ -26,7 +26,9 @@ ${chalk.bold('Notes:')}
   Read-only twin of ping-peer. Prefer this (or MCP inspect_peer) over JWT+curl.
   Resolves by id prefix (8 chars OK; full UUID best). Same hub token/namespace.
   Does NOT resume inactive sessions.
-  When a user cites [title](/sessions/<id>), pass that <id> here.
+  When a user cites [title](/sessions/<id>) or Copy-reference
+  See session "…" (/sessions/<id>) for context, pass that <id> here.
+  /sessions/<id> is a hub path - not a local filesystem path.
 
 ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
