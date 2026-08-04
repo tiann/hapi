@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import type { PushService } from '../../push/pushService'
 import type { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
@@ -15,7 +16,11 @@ const unsubscribeSchema = z.object({
     endpoint: z.string().min(1)
 })
 
-export function createPushRoutes(store: Store, vapidPublicKey: string): Hono<WebAppEnv> {
+export function createPushRoutes(
+    store: Store,
+    vapidPublicKey: string,
+    pushService: PushService
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
     app.get('/push/vapid-public-key', (c) => {
@@ -50,6 +55,27 @@ export function createPushRoutes(store: Store, vapidPublicKey: string): Hono<Web
         const namespace = c.get('namespace')
         store.push.removePushSubscription(namespace, parsed.data.endpoint)
         return c.json({ ok: true })
+    })
+
+    // User-initiated test push: deliberately bypasses notification preferences.
+    app.post('/push/test', async (c) => {
+        const namespace = c.get('namespace')
+        try {
+            await pushService.sendToNamespace(namespace, {
+                title: 'HAPI Test Notification',
+                body: 'Your push notifications are working.',
+                tag: 'test-push',
+                data: {
+                    type: 'test',
+                    sessionId: '',
+                    url: '/settings/notifications'
+                }
+            })
+            return c.json({ ok: true })
+        } catch (error) {
+            console.error('[PushRoutes] Test push failed:', error)
+            return c.json({ error: 'Failed to send test push' }, 500)
+        }
     })
 
     return app

@@ -1,5 +1,6 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
+import type { Store } from '../store'
 import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
 import type { NotificationSendContext } from './notificationSendContext'
 import { extractMessageEventType, extractTaskNotification } from './eventParsing'
@@ -16,7 +17,8 @@ export class NotificationHub {
     constructor(
         private readonly syncEngine: SyncEngine,
         channels: NotificationChannel[],
-        options?: NotificationHubOptions
+        options?: NotificationHubOptions,
+        private readonly store?: Store
     ) {
         this.channels = channels
         this.readyCooldownMs = options?.readyCooldownMs ?? 5000
@@ -182,7 +184,21 @@ export class NotificationHub {
         await this.notifySessionCompletion(session, reason)
     }
 
+    /**
+     * Per-namespace preference gate. Without a store (or a missing row) every
+     * event type is enabled, preserving the pre-preferences behavior.
+     */
+    private isEventEnabled(session: Session, flag: 'permissionRequests' | 'sessionReady' | 'taskNotifications' | 'sessionCompletion'): boolean {
+        if (!this.store) {
+            return true
+        }
+        return Boolean(this.store.notificationPrefs.getPreferenceFlags(session.namespace)[flag])
+    }
+
     private async notifyReady(session: Session): Promise<void> {
+        if (!this.isEventEnabled(session, 'sessionReady')) {
+            return
+        }
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             try {
@@ -194,6 +210,9 @@ export class NotificationHub {
     }
 
     private async notifyPermission(session: Session): Promise<void> {
+        if (!this.isEventEnabled(session, 'permissionRequests')) {
+            return
+        }
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             try {
@@ -205,6 +224,9 @@ export class NotificationHub {
     }
 
     private async notifyTask(session: Session, notification: TaskNotification): Promise<void> {
+        if (!this.isEventEnabled(session, 'taskNotifications')) {
+            return
+        }
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             try {
@@ -216,6 +238,9 @@ export class NotificationHub {
     }
 
     private async notifySessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
+        if (!this.isEventEnabled(session, 'sessionCompletion')) {
+            return
+        }
         for (const channel of this.channels) {
             if (typeof channel.sendSessionCompletion !== 'function') {
                 continue
