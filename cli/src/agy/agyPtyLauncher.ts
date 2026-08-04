@@ -272,11 +272,11 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 logger.debug('[agy-pty]: failed to recreate the hook carrier before respawn; aborting rather than spawning agy without a permission bridge (fail-closed)')
                 this.session.client.sendSessionEvent({
                     type: 'error',
-                    message: 'agy session aborted: could not recreate the permission bridge (hook carrier). Check that the temporary directory is writable and has sufficient space.',
+                    message: 'agy session aborted: could not recreate the permission bridge (hook carrier). Check that HAPI_HOME (default: ~/.hapi) is writable and has sufficient space.',
                 })
                 throw new Error(
                     'agy PTY session aborted: could not recreate the hook carrier needed for the permission bridge. ' +
-                    'Check that the temporary directory is writable and has sufficient space.'
+                    'Check that HAPI_HOME (default: ~/.hapi) is writable and has sufficient space.'
                 )
             }
             this.session.setHookCarrierDir(recreated.carrierDir)

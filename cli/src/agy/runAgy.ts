@@ -226,7 +226,7 @@ export async function runAgy(opts: {
             logger.debug('[agy] Failed to prepare hook carrier; aborting PTY session (fail-closed)');
             throw new Error(
                 'agy PTY session aborted: could not prepare the hook carrier needed for the permission bridge. ' +
-                'Check that the temporary directory is writable and has sufficient space.'
+                'Check that HAPI_HOME (default: ~/.hapi) is writable and has sufficient space.'
             );
         }
         hookCarrierDir = carrierResult.carrierDir;
