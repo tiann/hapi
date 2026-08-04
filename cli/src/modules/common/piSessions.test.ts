@@ -108,4 +108,27 @@ describe('local Pi sessions', () => {
         })
         rmSync(root, { recursive: true, force: true })
     })
+
+    it('limits summary materialization while selected-id lookup can still reach older sessions', () => {
+        const root = mkdtempSync(join(tmpdir(), 'pi-sessions-'))
+        process.env.PI_CODING_AGENT_SESSION_DIR = root
+        mkdirSync(join(root, 'bucket'), { recursive: true })
+        for (let index = 0; index < 205; index += 1) {
+            const file = join(root, 'bucket', `${index}.jsonl`)
+            writeFileSync(file, [
+                JSON.stringify({ type: 'session', id: `session-${index}`, cwd: '/tmp/project' }),
+                JSON.stringify({ type: 'message', id: `user-${index}`, parentId: null, message: { role: 'user', content: `prompt-${index}` } })
+            ].join('\n'))
+            const time = new Date(1_700_000_000_000 + index * 1_000)
+            utimesSync(file, time, time)
+        }
+
+        const summaries = listLocalPiSessionSummaries(2)
+        expect(summaries.map((session) => session.id)).toEqual(['session-204', 'session-203'])
+        expect(listLocalPiSessionsWithMessagesByIds(new Set(['session-0']))[0]).toMatchObject({
+            id: 'session-0',
+            lastUserMessage: 'prompt-0'
+        })
+        rmSync(root, { recursive: true, force: true })
+    })
 })

@@ -270,14 +270,15 @@ export class PiConversationHistory {
         )
         if (generation !== this.syncGeneration) return
         const result = readEntries(data)
-        for (const entry of result.entries) this.observeParsedEntry(entry)
+        for (const entry of result.entries) this.observeParsedEntry(entry, false)
         // `since` indexes the immutable append log, not the active branch.
         // A fork can move leafId backwards; advancing the cursor to it would
         // replay entries and break FIFO pairing. Empty increments keep cursor.
         if (result.entries.length > 0) {
             this.appendCursor = result.entries[result.entries.length - 1]!.id
-            const leafEntryId = this.appendCursor
-            this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: leafEntryId }))
+            const entryIds = this.getEntryIds()
+            const points = this.getHistoryPoints()
+            this.session.updateMetadata((metadata) => this.metadataWithLocators(metadata, entryIds, points))
         }
     }
 
@@ -763,21 +764,26 @@ export class PiConversationHistory {
             : this.rpcWithinDeadline({ type: 'get_state' }, deadlineAt)))
     }
 
-    private observeParsedEntry(entry: PiEntry): void {
+    private observeParsedEntry(entry: PiEntry, persistMetadata: boolean = true): void {
         if (this.observedEntryIds.has(entry.id)) return
         this.observedEntryIds.add(entry.id)
         this.appendCursor = entry.id
         if (!isUserEntry(entry)) {
-            this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: entry.id }))
+            if (persistMetadata) {
+                this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: entry.id }))
+            }
             return
         }
         const pending = this.pendingUserEntries.shift()
         if (!pending || this.entryIdByLocalId.has(pending.localId)) {
-            this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: entry.id }))
+            if (persistMetadata) {
+                this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: entry.id }))
+            }
             return
         }
         const localId = pending.localId
         this.entryIdByLocalId.set(localId, entry.id)
+        if (!persistMetadata) return
         this.session.updateMetadata((metadata) => ({
             ...metadata,
             piHistoryLeafEntryId: entry.id,

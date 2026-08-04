@@ -85,6 +85,29 @@ describe('PiConversationHistory entry mapping', () => {
         await history.syncEntries()
     })
 
+    it('persists one metadata snapshot for a multi-entry get_entries batch', async () => {
+        const { session, metadata, client } = createSession()
+        const rpc = vi.fn(async () => ({
+            entries: [
+                { type: 'message', id: 'user-1', message: { role: 'user' } },
+                { type: 'message', id: 'assistant-1', message: { role: 'assistant' } },
+                { type: 'message', id: 'assistant-2', message: { role: 'assistant' } }
+            ],
+            leafId: 'assistant-2'
+        }))
+        const history = new PiConversationHistory(session, rpc)
+        history.registerUserEntry('local-1')
+
+        await history.syncEntries()
+
+        expect(client.updateMetadata).toHaveBeenCalledOnce()
+        expect(metadata).toMatchObject({
+            piHistoryLeafEntryId: 'assistant-2',
+            conversationHistoryEntryIds: { 'local-1': 'user-1' },
+            conversationHistoryPoints: { 'local-1': true }
+        })
+    })
+
     it('serializes concurrent syncs and ignores a duplicate entry_appended/get_entries user entry', async () => {
         const { session } = createSession()
         let resolveFirstRead!: (value: unknown) => void

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
@@ -17,6 +17,17 @@ type ParsedPiSession = {
     summary: PiLocalSessionSummary
     messages: PiImportedMessage[]
     activeEntryIds: string[]
+}
+
+type PiSessionFileCandidate = {
+    file: string
+    modifiedAt: number
+    discoveryIndex: number
+}
+
+type PiSessionHeader = {
+    id: string
+    cwd: string | null
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -60,6 +71,44 @@ function collectJsonlFiles(root: string, files: string[]): void {
         if (entry.isDirectory()) collectJsonlFiles(fullPath, files)
         else if (entry.isFile() && fullPath.toLowerCase().endsWith('.jsonl')) files.push(fullPath)
     }
+}
+
+function collectSortedPiSessionFiles(): PiSessionFileCandidate[] {
+    const files: string[] = []
+    collectJsonlFiles(getPiSessionsRoot(), files)
+    return files.flatMap((file, discoveryIndex) => {
+        try {
+            return [{ file, modifiedAt: statSync(file).mtimeMs, discoveryIndex }]
+        } catch {
+            return []
+        }
+    }).sort((a, b) => b.modifiedAt - a.modifiedAt || a.discoveryIndex - b.discoveryIndex)
+}
+
+function readPiSessionHeader(filePath: string): PiSessionHeader | null {
+    const buffer = Buffer.alloc(64 * 1024)
+    let fd: number | null = null
+    try {
+        fd = openSync(filePath, 'r')
+        const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+        const prefix = buffer.toString('utf-8', 0, bytesRead)
+        for (const line of prefix.split(/\r?\n/)) {
+            if (!line.trim()) continue
+            try {
+                const record = asRecord(JSON.parse(line))
+                if (record?.type !== 'session') continue
+                const id = asString(record.id)
+                if (id) return { id, cwd: asString(record.cwd) }
+            } catch {
+                continue
+            }
+        }
+    } catch {
+        return null
+    } finally {
+        if (fd !== null) closeSync(fd)
+    }
+    return null
 }
 
 export function getPiSessionsRoot(): string {
@@ -269,12 +318,12 @@ function convertVisibleMetadataRecord(
     return result
 }
 
-function parsePiLocalSession(filePath: string): ParsedPiSession | null {
+function parsePiLocalSession(filePath: string, knownModifiedAt?: number): ParsedPiSession | null {
     let content: string
     let modifiedAt: number
     try {
         content = readFileSync(filePath, 'utf-8')
-        modifiedAt = statSync(filePath).mtimeMs
+        modifiedAt = knownModifiedAt ?? statSync(filePath).mtimeMs
     } catch {
         return null
     }
@@ -369,30 +418,34 @@ function parsePiLocalSession(filePath: string): ParsedPiSession | null {
     }
 }
 
-function listLocalPiSessions(limit = DEFAULT_PI_SESSION_SCAN_LIMIT): ParsedPiSession[] {
-    const files: string[] = []
-    collectJsonlFiles(getPiSessionsRoot(), files)
-    const deduped = new Map<string, ParsedPiSession>()
-    for (const file of files) {
-        const parsed = parsePiLocalSession(file)
-        if (!parsed) continue
-        const previous = deduped.get(parsed.summary.id)
-        if (!previous || previous.summary.modifiedAt < parsed.summary.modifiedAt) {
-            deduped.set(parsed.summary.id, parsed)
-        }
-    }
-    return Array.from(deduped.values())
-        .sort((a, b) => b.summary.modifiedAt - a.summary.modifiedAt)
-        .slice(0, limit)
-}
-
 export function listLocalPiSessionSummaries(limit = DEFAULT_PI_SESSION_SCAN_LIMIT): PiLocalSessionSummary[] {
-    return listLocalPiSessions(limit).map((session) => session.summary)
+    if (limit <= 0) return []
+    const seenIds = new Set<string>()
+    const summaries: PiLocalSessionSummary[] = []
+    for (const candidate of collectSortedPiSessionFiles()) {
+        const header = readPiSessionHeader(candidate.file)
+        if (!header || seenIds.has(header.id)) continue
+        const parsed = parsePiLocalSession(candidate.file, candidate.modifiedAt)
+        if (!parsed) continue
+        seenIds.add(header.id)
+        summaries.push(parsed.summary)
+        if (summaries.length >= limit) break
+    }
+    return summaries
 }
 
 export function listLocalPiSessionsWithMessagesByIds(ids: Set<string>): PiLocalSessionWithMessages[] {
     if (ids.size === 0) return []
-    return listLocalPiSessions(Number.MAX_SAFE_INTEGER)
-        .filter((session) => ids.has(session.summary.id))
-        .map((session) => ({ ...session.summary, messages: session.messages, activeEntryIds: session.activeEntryIds }))
+    const unresolved = new Set(ids)
+    const sessions: PiLocalSessionWithMessages[] = []
+    for (const candidate of collectSortedPiSessionFiles()) {
+        const header = readPiSessionHeader(candidate.file)
+        if (!header || !unresolved.has(header.id)) continue
+        const parsed = parsePiLocalSession(candidate.file, candidate.modifiedAt)
+        if (!parsed) continue
+        unresolved.delete(header.id)
+        sessions.push({ ...parsed.summary, messages: parsed.messages, activeEntryIds: parsed.activeEntryIds })
+        if (unresolved.size === 0) break
+    }
+    return sessions
 }
