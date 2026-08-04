@@ -339,6 +339,11 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             && /\?\s+for shortcuts\b/.test(cleanOutput)
         if (!hasQuotaFrame) return
 
+        // The quota screen renders the same '? for shortcuts' footer the driver
+        // uses as its only idle marker, so readiness must be invalidated here.
+        // Otherwise the next queued prompt is typed into a screen that has no
+        // editor and the delivery stalls with no way out.
+        this.ptyControls?.invalidateInputReady()
         this.quotaReportedForCurrentRun = true
         const reset = quotaResetDuration(cleanOutput)
         this.session.client.sendSessionEvent({

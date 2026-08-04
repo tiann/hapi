@@ -27,6 +27,7 @@ const harness = vi.hoisted(() => ({
     removedCallbacks: [] as Array<(sessionId: string) => void>,
     exitReason: null as string | null,
     sendKeys: vi.fn(),
+    invalidateInputReady: vi.fn(),
     abortHandler: null as (() => void | Promise<void>) | null,
     switchHandler: null as (() => void | Promise<void>) | null,
     liveModelHandler: null as ((model: string | null) => Promise<void>) | null,
@@ -37,7 +38,7 @@ let ptyOptsCaptured: any = null
 vi.mock('./agyPty', () => ({
     agyPty: vi.fn(async (opts: any) => {
         ptyOptsCaptured = opts
-        opts.registerControls?.({ sendKeys: harness.sendKeys, invalidateInputReady: vi.fn() })
+        opts.registerControls?.({ sendKeys: harness.sendKeys, invalidateInputReady: harness.invalidateInputReady })
         opts.onReady?.()
         const next = await opts.nextMessage()
         await harness.afterNextMessage?.(opts, next)
@@ -910,6 +911,21 @@ describe('agyPtyLauncher quota visibility', () => {
             type: 'error',
             message: 'Antigravity quota reached · resets in 7h28m43s',
         })
+
+        await closeQuotaTest(nextMessage, launcher)
+    })
+
+    it('invalidates PTY input readiness so the next prompt is not typed into the quota screen', async () => {
+        // The only idle marker is '? for shortcuts', and the quota frame carries
+        // that same footer — without invalidating readiness the driver would
+        // treat the quota screen as an editor and the delivery would stall.
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+        harness.invalidateInputReady.mockClear()
+
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        ptyOptsCaptured.onMessage(quotaFrame)
+
+        expect(harness.invalidateInputReady).toHaveBeenCalledTimes(1)
 
         await closeQuotaTest(nextMessage, launcher)
     })
