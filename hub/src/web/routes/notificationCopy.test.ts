@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import type { WebAppEnv } from '../middleware/auth'
+import { resolveRelayAuthKey } from '../../tunnel/relayAuth'
 import { createNotificationCopyRoutes } from './notificationCopy'
 
 let dir: string
@@ -103,6 +104,37 @@ describe('PUT /api/notification-copy', () => {
         expect(res.status).toBe(200)
         const settings = await readSettings()
         expect(settings.notificationCopy).toEqual({ ready: { title: '', body: '' } })
+    })
+
+    it('preserves a concurrent relay key update', async () => {
+        let releaseIssue: () => void = () => {}
+        let issueStarted: () => void = () => {}
+        const started = new Promise<void>((resolve) => {
+            issueStarted = resolve
+        })
+        const release = new Promise<void>((resolve) => {
+            releaseIssue = resolve
+        })
+        const relayKey = resolveRelayAuthKey('relay.example.com', join(dir, 'settings.json'), async () => {
+            issueStarted()
+            await release
+            return Response.json({ key: 'relay-key' })
+        })
+        await started
+
+        const app = await createApp('default')
+        const res = await app.request('/api/notification-copy', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ready: { title: 'Hey', body: '{agentName}' } })
+        })
+        expect(res.status).toBe(200)
+        releaseIssue()
+        await relayKey
+
+        const settings = await readSettings()
+        expect(settings.relayAuthKey).toBe('relay-key')
+        expect(settings.notificationCopy).toEqual({ ready: { title: 'Hey', body: '{agentName}' } })
     })
 
     it('rejects title over 500 chars', async () => {
