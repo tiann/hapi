@@ -6,6 +6,7 @@ import {
     exitCodeForPingPeerError,
     formatPeerSessionsList,
     listPeerSessions,
+    peerListFetchLimit,
     pingPeer
 } from '@/modules/pingPeer/pingPeer'
 import type { CommandDefinition } from './types'
@@ -139,8 +140,14 @@ function envWaitActiveSecs(): number | undefined {
 }
 
 async function handleList(): Promise<void> {
-    const sessions = await listPeerSessions()
-    console.log(formatPeerSessionsList(sessions))
+    const maxRows = 30
+    const sessions = await listPeerSessions({
+        limit: peerListFetchLimit(maxRows)
+    })
+    console.log(formatPeerSessionsList(sessions, {
+        maxRows,
+        hasMore: sessions.length > maxRows
+    }))
 }
 
 export async function handlePingPeerCommand(args: string[]): Promise<void> {
