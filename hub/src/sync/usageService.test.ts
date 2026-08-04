@@ -188,14 +188,14 @@ describe('usage service', () => {
         store.close()
     })
 
-    it('accepts Codex events that only contain last_token_usage', () => {
+    it('falls back to the session model for Codex events without a model', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'codex-last-usage-test',
             { path: '/tmp', host: 'test', flavor: 'codex' },
             null,
             'default',
-            'test-model'
+            'deepseek-v4-flash[1m]'
         )
 
         addAgentMessage(store, session.id, {
@@ -214,7 +214,45 @@ describe('usage service', () => {
         expect(result.totals.requests).toBe(1)
         expect(result.totals.totalTokens).toBe(110)
         expect(result.totals.uncachedTokens).toBe(30)
-        expect(result.byModel).toEqual([expect.objectContaining({ key: 'unknown' })])
+        expect(result.byModel).toEqual([
+            expect.objectContaining({ key: 'deepseek-v4-flash[1m]', totalTokens: 110 })
+        ])
+        store.close()
+    })
+
+    it('preserves an indexed fallback model across session model changes', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'codex-model-fallback-rebuild-test',
+            { path: '/tmp', host: 'test', flavor: 'codex' },
+            null,
+            'default',
+            'deepseek-v4-flash'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                info: {
+                    total_token_usage: { input_tokens: 100, output_tokens: 10 },
+                    last_token_usage: { input_tokens: 100, output_tokens: 10 }
+                }
+            }
+        })
+
+        expect(getUsageSummary(store, 'default', 'all').byModel).toEqual([
+            expect.objectContaining({ key: 'deepseek-v4-flash', totalTokens: 110 })
+        ])
+
+        store.sessions.setSessionModel(session.id, 'gpt-5.6-sol', 'default')
+        store.messages.bumpMessageEpoch(session.id)
+
+        expect(getUsageSummary(store, 'default', 'all').byModel).toEqual([
+            expect.objectContaining({ key: 'deepseek-v4-flash', totalTokens: 110 })
+        ])
         store.close()
     })
 

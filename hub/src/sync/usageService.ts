@@ -31,6 +31,10 @@ function sessionAgent(session: StoredSession): string {
     return typeof flavor === 'string' && flavor.trim() ? flavor.trim() : 'unknown'
 }
 
+function sessionModel(session: StoredSession): string | null {
+    return typeof session.model === 'string' && session.model.trim() ? session.model.trim() : null
+}
+
 function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageEvent | null {
     const envelope = asRecord(message.content)
     if (envelope?.role !== 'agent') return null
@@ -169,11 +173,32 @@ function collectUsageEvents(store: Store, sessions: StoredSession[]): void {
         const afterSeq = replaceEvents ? 0 : scanState.lastSeq
         const messages = store.messages.getMessagesAfterSeq(session.id, afterSeq)
         const events = new Map<string, UsageEvent>()
+        let indexedModels: Map<string, string> | null = null
+        const getIndexedModel = (sourceKey: string): string | null => {
+            if (indexedModels === null) {
+                indexedModels = new Map(
+                    store.usage.getEvents([session.id])
+                        .filter((event): event is UsageEvent & { model: string } => event.model !== null)
+                        .map((event) => [event.sourceKey, event.model])
+                )
+            }
+            return indexedModels.get(sourceKey) ?? null
+        }
+        const fallbackModel = sessionModel(session)
         for (const message of messages) {
             const event = parseUsageEvent(session, message)
             if (!event) continue
-            if (event.kind === 'delta' || !events.has(event.sourceKey)) {
+            const existingEvent = events.get(event.sourceKey)
+            const explicitModel = event.model
+            event.model = explicitModel
+                ?? existingEvent?.model
+                ?? getIndexedModel(event.sourceKey)
+                ?? fallbackModel
+            if (event.kind === 'delta' || !existingEvent) {
                 events.set(event.sourceKey, event)
+            } else if (explicitModel !== null) {
+                // A replay may add model metadata missing from the original snapshot.
+                existingEvent.model = explicitModel
             }
         }
         const lastSeq = messages.at(-1)?.seq ?? afterSeq
