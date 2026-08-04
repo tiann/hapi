@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'bun:test'
 import type { PiLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import { Store } from '../../store'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
