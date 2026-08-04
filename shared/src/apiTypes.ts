@@ -431,7 +431,15 @@ export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
     attachments: z.array(AttachmentMetadataSchema).optional(),
-    scheduledAt: z.number().int().positive().nullable().optional()
+    scheduledAt: z.number().int().positive().nullable().optional(),
+    /**
+     * How this message should be delivered if the agent is already mid-turn:
+     * true steers it into the running turn, false queues it until the turn
+     * ends. Omitted leaves the choice to the CLI's own default -- clients that
+     * predate the setting, and non-web senders (Telegram, MCP), send nothing.
+     * Only the Claude flavor acts on it today; other flavors always queue.
+     */
+    steer: z.boolean().optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',
     { message: 'scheduledAt requires localId', path: ['localId'] }

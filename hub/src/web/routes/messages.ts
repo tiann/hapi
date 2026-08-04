@@ -113,7 +113,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             localId: parsed.data.localId,
             attachments: parsed.data.attachments,
             sentFrom: 'webapp',
-            scheduledAt: parsed.data.scheduledAt
+            scheduledAt: parsed.data.scheduledAt,
+            steer: parsed.data.steer
         })
         return c.json({ ok: true })
     })

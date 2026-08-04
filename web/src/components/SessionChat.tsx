@@ -444,7 +444,7 @@ type SessionChatProps = {
     // pre-mutation guards (no-api / no-session / pending) rejected the call OR async
     // inactive-session resume failed. Composer state that should only be cleared on
     // actual send (pendingSchedule) must await this — see handleSend below.
-    onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+    onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null, steer?: boolean) => Promise<boolean>
     onViewModeChange: (mode: 'tail' | 'history') => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
@@ -690,6 +690,7 @@ function SessionChatInner(props: SessionChatProps) {
             text: string,
             attachments?: AttachmentMetadata[],
             scheduledAt?: number | null,
+            steer?: boolean,
         ): Promise<boolean> => {
             if (
                 scratchlistMode
@@ -723,7 +724,7 @@ function SessionChatInner(props: SessionChatProps) {
                     props.session.id,
                     hubItems,
                 )
-                const accepted = await props.onSend(text, [...normalItems, ...staged], scheduledAt)
+                const accepted = await props.onSend(text, [...normalItems, ...staged], scheduledAt, steer)
                 if (accepted) {
                     // Hub blobs were copied into the normal upload dir; drop the
                     // scratchlist copies so they stop counting against the session cap.
@@ -733,7 +734,7 @@ function SessionChatInner(props: SessionChatProps) {
                 }
                 return accepted
             }
-            return props.onSend(text, attachments, scheduledAt)
+            return props.onSend(text, attachments, scheduledAt, steer)
         },
         [props.onSend, props.api, props.session.id, scratchlist, scratchlistMode],
     )
@@ -1420,6 +1421,12 @@ function SessionChatInner(props: SessionChatProps) {
     // Keep render ref in sync so onNew can snapshot at send time
     pendingScheduleRef.current = pendingSchedule
 
+    // Staged by the composer immediately before composer().send(), consumed by
+    // the runtime's onNew. Not derived from render state (unlike
+    // pendingScheduleRef): it is a one-shot for a single send, so onNew clears
+    // it rather than this line resetting it every render.
+    const steerIntentRef = useRef<boolean | undefined>(undefined)
+
     // Auto-clear absolute-type pendingSchedule when the chosen time expires so
     // the composer clock button doesn't stay active past the scheduled instant.
     // Preset-type schedules are relative so they don't expire until send — the
@@ -1438,7 +1445,7 @@ function SessionChatInner(props: SessionChatProps) {
         return () => clearTimeout(timer)
     }, [pendingSchedule, updatePendingSchedule])
 
-    const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => {
+    const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null, steer?: boolean) => {
         // Route through the scratchlist-aware wrapper. When scratchlistMode
         // is on AND the payload is pure text, this turns into
         // addScratchlistEntry; otherwise it goes to props.onSend (the chat
@@ -1451,7 +1458,7 @@ function SessionChatInner(props: SessionChatProps) {
         // upstream review on PR #798: [Major] "Clear accepted scheduled
         // chat sends after scratchlist fallback".)
         const routedToScratchlist = shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)
-        const accepted = await onSendForComposer(text, attachments, scheduledAt)
+        const accepted = await onSendForComposer(text, attachments, scheduledAt, steer)
         if (!accepted) return
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
@@ -1491,7 +1498,8 @@ function SessionChatInner(props: SessionChatProps) {
         onAbort: handleAbort,
         attachmentAdapter,
         allowSendWhenInactive: true,
-        pendingScheduleRef
+        pendingScheduleRef,
+        steerIntentRef
     })
 
     return (
@@ -1631,6 +1639,7 @@ function SessionChatInner(props: SessionChatProps) {
                         sessionId={props.session.id}
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                         disabled={props.isSending}
+                        onStageSteerIntent={(steer) => { steerIntentRef.current = steer }}
                         pendingSchedule={pendingSchedule}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}

@@ -611,11 +611,18 @@ export function useHappyRuntime(props: {
     historyVersion: number
     isSending: boolean
     isRunning?: boolean
-    onSendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => void
+    onSendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null, steer?: boolean) => void
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
     pendingScheduleRef?: React.RefObject<PendingSchedule | null>
+    /**
+     * Delivery intent for the send in progress, staged by the composer just
+     * before it calls composer().send(). Read like pendingScheduleRef: at send
+     * time inside onNew, never at render time. assistant-ui's send() takes no
+     * arguments, so a ref is the only way to attach per-send intent to it.
+     */
+    steerIntentRef?: React.RefObject<boolean | undefined>
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
 
@@ -681,6 +688,16 @@ export function useHappyRuntime(props: {
     })
 
     const onNew = useCallback(async (message: AppendMessage) => {
+        // Consumed before the empty-payload bail-out below, not after: the
+        // intent belongs to the send the composer staged it for, and the
+        // composer stages it before calling send(). Draining it only on the
+        // paths that actually send would leave a stale intent behind after an
+        // empty send, to be picked up by the next send that never went through
+        // the composer's key handling at all (scratchlist, voice).
+        const steer = props.steerIntentRef?.current
+        if (props.steerIntentRef) {
+            props.steerIntentRef.current = undefined
+        }
         const { text, attachments } = extractMessageContent(message)
         if (!text && attachments.length === 0) return
         // Resolve pendingSchedule at send time (Date.now()) so preset-type schedules
@@ -688,8 +705,8 @@ export function useHappyRuntime(props: {
         // moment the user clicked the preset button.
         const sendNow = Date.now()
         const scheduledAt = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt)
-    }, [props.onSendMessage, props.pendingScheduleRef])
+        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt, steer)
+    }, [props.onSendMessage, props.pendingScheduleRef, props.steerIntentRef])
 
     const onCancel = useCallback(async () => {
         await props.onAbort()

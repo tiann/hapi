@@ -75,7 +75,13 @@ export const MessageMetaSchema = z.object({
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),
     allowedTools: z.array(z.string()).nullable().optional(),
-    disallowedTools: z.array(z.string()).nullable().optional()
+    disallowedTools: z.array(z.string()).nullable().optional(),
+    /**
+     * Per-message delivery intent when the agent is already mid-turn: true
+     * steers into the running turn, false queues until it ends. Absent means
+     * the sender had no opinion and the flavor's own default applies.
+     */
+    steer: z.boolean().optional()
 })
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>

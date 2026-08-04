@@ -13,6 +13,16 @@ import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
 
+/**
+ * Injects a user message into the turn that is already running, instead of
+ * waiting for it to finish. Claude reads stdin continuously (see
+ * streamToStdin) and folds such a message in at the next step boundary of its
+ * tool loop -- that is what makes this steering rather than queuing. A message
+ * that arrives while Claude is inside a single model call still only takes
+ * effect once that call returns; there is no step boundary before then.
+ */
+export type ClaudeSteer = (text: string, mode: EnhancedMode) => void;
+
 export async function claudeRemote(opts: {
 
     // Fixed parameters
@@ -32,6 +42,14 @@ export async function claudeRemote(opts: {
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
     onReady: () => void,
     isAborted: (toolCallId: string) => boolean,
+    /**
+     * Handed the steering channel once the Claude process exists, and handed
+     * null again once this call is done with it. Deliberately a channel of its
+     * own rather than a second nextMessage() consumer: in the pull path a null
+     * return means "input ended" and calls messages.end(), which mid-turn
+     * would tear the turn down instead of adding to it.
+     */
+    onSteerReady?: (steer: ClaudeSteer | null) => void,
 
     // Callbacks
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
@@ -276,6 +294,23 @@ export async function claudeRemote(opts: {
         })();
     };
 
+    // Publish the steering channel now that `messages` is wired to a live
+    // process. Whether steering a given message is actually safe (a turn is in
+    // flight, the mode is compatible, it is not an isolated command) is decided
+    // by the caller -- see the steer hook in claudeRemoteLauncher.
+    opts.onSteerReady?.((text: string, nextMode: EnhancedMode) => {
+        if (inputEnded) {
+            logger.debug(`${debugPrefix} steer dropped: input already ended`);
+            return;
+        }
+        // Keep canCallTool's view of the mode current. The hash gate upstream
+        // means model/flag-bearing fields cannot change here, but the emulated
+        // permission modes (acceptEdits/bypassPermissions) can.
+        mode = nextMode;
+        messages.push({ type: 'user', message: { role: 'user', content: text } });
+        logger.debug(`${debugPrefix} steer injected into live turn messageLength=${text.length}`);
+    });
+
     updateThinking(true);
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
@@ -400,6 +435,9 @@ export async function claudeRemote(opts: {
             `${debugPrefix} finally ` +
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
+        // Revoke before anything can observe the process as gone: a steer that
+        // lands after this point would push into a stream nobody drains.
+        opts.onSteerReady?.(null);
         updateThinking(false);
     }
 }

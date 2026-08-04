@@ -574,6 +574,7 @@ export class MessageService {
             attachments?: AttachmentMetadata[]
             sentFrom?: 'telegram-bot' | 'webapp'
             scheduledAt?: number | null
+            steer?: boolean
         }
     ): Promise<string> {
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
@@ -598,7 +599,11 @@ export class MessageService {
                 attachments: payload.attachments
             },
             meta: {
-                sentFrom
+                sentFrom,
+                // Left off entirely when the sender did not express a
+                // preference, so the CLI can tell "queue this one" apart from
+                // "no opinion, use your default".
+                ...(payload.steer === undefined ? {} : { steer: payload.steer })
             }
         }
 

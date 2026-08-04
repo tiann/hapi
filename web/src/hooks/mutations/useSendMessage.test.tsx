@@ -712,13 +712,18 @@ describe('useSendMessage', () => {
             expect(sendMock).toHaveBeenCalled()
         })
 
-        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt)
+        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt, steer)
+        // steer is undefined on retry: the intent was staged by the composer for
+        // the original send and is not stored on the message row, and by retry
+        // time the agent may no longer be in the turn it was aimed at. Leaving
+        // it out lets the CLI apply its own default rather than guessing.
         expect(sendMock).toHaveBeenCalledWith(
             'session-A',
             'hi later',
             'local-retry-1',
             undefined,
             scheduledAt,
+            undefined,
         )
     })
 })

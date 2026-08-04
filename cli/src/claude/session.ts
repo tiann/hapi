@@ -12,6 +12,28 @@ type LocalLaunchFailure = {
     exitReason: LocalLaunchExitReason;
 };
 
+/**
+ * Decides what happens to a user message that arrives while a turn is already
+ * running. Returns true if the message was steered into the live turn -- the
+ * caller must then NOT also push it to the queue, or Claude would see it
+ * twice. Returns false to mean "not steerable right now", i.e. the caller
+ * should fall back to the normal queue path.
+ *
+ * `intent` is the sender's per-message preference (see MessageMetaSchema.steer):
+ * true asks to steer, false asks to queue, undefined means "no opinion" and
+ * lets the CLI-side default decide.
+ *
+ * Installed by claudeRemoteLauncher for the lifetime of one claudeRemote()
+ * attempt; absent (and therefore always false) in local mode, before the first
+ * spawn, and after the process is gone.
+ */
+export type SteerHook = (
+    text: string,
+    mode: EnhancedMode,
+    localId?: string,
+    intent?: boolean
+) => boolean;
+
 export class Session extends AgentSessionBase<EnhancedMode> {
     readonly claudeEnvVars?: Record<string, string>;
     claudeArgs?: string[];
@@ -24,6 +46,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
     private nativeSkillNames = new Set<string>();
+    private steerHook: SteerHook | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -107,6 +130,25 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         if (!match || !this.nativeSkillNames.has(match[1])) return message;
         const expanded = `/${match[1]}${message.slice(match[0].length)}`;
         return trailingContext ? `${expanded}\n\n${trailingContext}` : expanded;
+    };
+
+    setSteerHook = (hook: SteerHook | null): void => {
+        this.steerHook = hook;
+    };
+
+    /**
+     * Offer a message to the live turn. Falls back to `false` -- never throws
+     * -- so a bug in the steering path can only cost the steering, never the
+     * message: the caller queues it as it always did.
+     */
+    trySteer = (text: string, mode: EnhancedMode, localId?: string, intent?: boolean): boolean => {
+        if (!this.steerHook) return false;
+        try {
+            return this.steerHook(text, mode, localId, intent);
+        } catch (error) {
+            logger.debug('[Session] Steer hook threw, falling back to queue', error);
+            return false;
+        }
     };
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
