@@ -193,6 +193,24 @@ export type TestPushResponse =
     | { ok: true }
     | { error: string }
 
+export type CopyTemplate = {
+    title: string
+    body: string
+}
+
+export type NotificationCopyConfig = Partial<{
+    permissionRequest: CopyTemplate
+    ready: CopyTemplate
+    taskCompleted: CopyTemplate
+    taskFailed: CopyTemplate
+    sessionCompletion: CopyTemplate
+}>
+
+export type NotificationCopyResponse = {
+    copy: NotificationCopyConfig
+    defaults: Record<string, CopyTemplate>
+}
+
 export type CodexDesktopScriptResponse = {
     success: boolean
     message?: string

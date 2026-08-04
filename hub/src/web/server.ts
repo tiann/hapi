@@ -32,6 +32,7 @@ import { createNotificationPreferencesRoutes } from './routes/notificationPrefer
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
 import { createHubSettingsRoutes } from './routes/hubSettings'
+import { createNotificationCopyRoutes } from './routes/notificationCopy'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { Server as BunServer, ServerWebSocket } from 'bun'
@@ -297,6 +298,7 @@ function createWebApp(options: {
     }))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey, options.pushService))
     app.route('/api', createNotificationPreferencesRoutes(options.store))
+    app.route('/api', createNotificationCopyRoutes(configuration.dataDir))
     app.route('/api', createDevicesRoutes(options.store))
     app.route('/api', createVoiceRoutes({ dataDir: configuration.dataDir }))
 

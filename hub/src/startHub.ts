@@ -11,6 +11,7 @@ import { SSEManager } from './sse/sseManager'
 import { getOrCreateVapidKeys } from './config/vapidKeys'
 import { PushService } from './push/pushService'
 import { PushNotificationChannel } from './push/pushNotificationChannel'
+import { loadNotificationCopy } from './push/notificationCopy'
 import { FcmService } from './fcm/fcmService'
 import { FcmNotificationChannel } from './fcm/fcmNotificationChannel'
 import { resolveFcmConfig } from './fcm/fcmConfig'
@@ -224,7 +225,8 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             pushService,
             sseManager,
             visibilityTracker,
-            config.publicUrl
+            config.publicUrl,
+            () => loadNotificationCopy(config.dataDir)
         )
     )
 

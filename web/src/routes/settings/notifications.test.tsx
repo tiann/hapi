@@ -13,21 +13,44 @@ const defaultPrefs = {
     updatedAt: Date.now(),
 }
 
+const defaultCopyResponse = {
+    copy: {},
+    defaults: {
+        permissionRequest: { title: 'Permission Request', body: '{sessionName}{tool}' },
+        ready: { title: 'Ready for input', body: '{agentName} is waiting in {sessionName}' },
+        taskCompleted: { title: 'Task completed', body: '{agentName} · {sessionName} · {summary}' },
+        taskFailed: { title: 'Task failed', body: '{agentName} · {sessionName} · {summary}' },
+        sessionCompletion: { title: 'Session completed', body: '{agentName} · {sessionName}' },
+    },
+}
+
 const getNotificationPreferences = vi.fn()
 const updateNotificationPreferences = vi.fn()
 const sendTestPush = vi.fn()
+const getNotificationCopy = vi.fn()
+const updateNotificationCopy = vi.fn()
+
+function makeToken(ns: string): string {
+    return `header.${btoa(JSON.stringify({ ns }))}.sig`
+}
+
+let mockToken = makeToken('default')
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
-        api: { getNotificationPreferences, updateNotificationPreferences, sendTestPush },
+        api: { getNotificationPreferences, updateNotificationPreferences, sendTestPush, getNotificationCopy, updateNotificationCopy },
+        token: mockToken,
     }),
 }))
 
 describe('SettingsNotificationsPage', () => {
     beforeEach(() => {
+        mockToken = makeToken('default')
         getNotificationPreferences.mockResolvedValue(defaultPrefs)
         updateNotificationPreferences.mockResolvedValue(defaultPrefs)
         sendTestPush.mockResolvedValue({ ok: true })
+        getNotificationCopy.mockResolvedValue(defaultCopyResponse)
+        updateNotificationCopy.mockResolvedValue(defaultCopyResponse)
     })
 
     afterEach(() => {
@@ -88,5 +111,45 @@ describe('SettingsNotificationsPage', () => {
         fireEvent.click(button)
         expect(sendTestPush).toHaveBeenCalled()
         expect(await screen.findByText('Test notification sent!')).toBeTruthy()
+    })
+
+    it('hides the copy section for non-admin namespaces', async () => {
+        mockToken = makeToken('user-1')
+        renderPage()
+        expect(screen.queryByText('Push notification copy')).toBeNull()
+    })
+
+    it('renders the copy section for the admin namespace', async () => {
+        renderPage()
+        expect(await screen.findByText('Push notification copy')).toBeTruthy()
+        expect(await screen.findByText('Session completed')).toBeTruthy()
+    })
+
+    it('saves edited copy through the API', async () => {
+        renderPage()
+        const titleInputs = await screen.findAllByLabelText('Title')
+        // Index 1 = "ready" block (after permissionRequest).
+        fireEvent.change(titleInputs[1], { target: { value: 'Custom {agentName}' } })
+        const saveButton = screen.getByRole('button', { name: 'Save copy' })
+        fireEvent.click(saveButton)
+        await waitFor(() => {
+            expect(updateNotificationCopy).toHaveBeenCalledWith({
+                ready: { title: 'Custom {agentName}', body: '' },
+            })
+        })
+    })
+
+    it('inserts a variable chip into the focused body field', async () => {
+        renderPage()
+        await screen.findByText('Push notification copy')
+        const chip = screen.getAllByText('{agentName}')[0]
+        fireEvent.click(chip)
+        const bodyInputs = screen.getAllByLabelText('Body') as HTMLTextAreaElement[]
+        expect(bodyInputs[0].value).toBe('{agentName}')
+    })
+
+    it('shows a live preview with sample values', async () => {
+        renderPage()
+        expect(await screen.findByText(/Claude is waiting in My Project/)).toBeTruthy()
     })
 })
