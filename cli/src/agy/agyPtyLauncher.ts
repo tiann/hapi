@@ -7,6 +7,7 @@ import type { AgyToolCall } from "./utils/agyTranscriptTypes"
 import { isAgyAskQuestionToolCall, buildCanonicalAskUserQuestionInput, type AgyAskQuestionQuestion } from "./utils/agyAskQuestion"
 import { buildAgyQuestionKeys } from "./utils/agyQuestionKeys"
 import { buildAgyModelNavigationKeys, buildAgyModelPickerTarget, findAgyCurrentModelRow } from './utils/agyModelKeys'
+import { agyHookCarrierIsIntact, prepareAgyHookCarrier, writeAgyHooksJsonAtomic } from './utils/agyHookCarrier'
 import { logger } from "@/ui/logger"
 import {
     RemoteLauncherBase,
@@ -179,6 +180,81 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         if (this.discoveryTimeoutTimer) {
             clearTimeout(this.discoveryTimeoutTimer)
             this.discoveryTimeoutTimer = null
+        }
+    }
+
+    // PreInvocation fires on EVERY model call (measured ~424ms round trip,
+    // see the agy-preinvocation-discovery plan §6.5 Gate 3) but is only
+    // useful until the brain UUID is confirmed — after that every firing is
+    // pure waste. agy re-reads hooks.json before every model call (§6.6), so
+    // dropping the PreInvocation block from the SAME running carrier makes
+    // that waste disappear immediately, without restarting agy. PreToolUse
+    // is left untouched — the permission bridge is needed for the rest of
+    // the session. Fail-open: if the write fails, PreInvocation just keeps
+    // firing (harmless overhead), which is why this is a best-effort
+    // try/catch rather than something that can abort the session.
+    private detachPreInvocationHook(): void {
+        const carrierDir = this.session.hookCarrierDir
+        const withoutDiscovery = this.session.hooksJsonWithoutPreInvocation
+        if (!carrierDir || !withoutDiscovery) return
+        try {
+            writeAgyHooksJsonAtomic(carrierDir, withoutDiscovery)
+            logger.debug('[agy-pty]: brain UUID confirmed; dropped the now-redundant PreInvocation discovery hook')
+        } catch (error) {
+            logger.debug('[agy-pty]: failed to drop the PreInvocation hook after discovery (harmless — it will keep firing)', error)
+        }
+    }
+
+    // Restores (or keeps dropped) the PreInvocation block right before every
+    // launch — called from onLaunchStart, which — per
+    // RemoteLauncherBase.runRespawnLoop — runs synchronously before each
+    // launchOnce, including the very first one.
+    //
+    // Fix N1: which variant gets written depends on whether the brain UUID
+    // is ALREADY known (this.agySessionId set — either seeded by a resume,
+    // per the constructor, or adopted earlier via handleSessionFound). If it
+    // is, PreInvocation is redundant and WITHOUT is written (or kept) —
+    // there is no discovery left to do, so there is nothing to arm. This is
+    // what makes a resumed session detach on its very first launch (previously
+    // it never detached at all: handleSessionFound only runs off
+    // addSessionFoundCallback, which is registered by run() AFTER
+    // loop.ts's session.onSessionFound(resumeSessionId) has already fired
+    // and already set this.agySessionId, so the callback that would have
+    // triggered detachPreInvocationHook never sees that resume) and what
+    // keeps a respawn from re-arming PreInvocation once discovery already
+    // succeeded (previously onLaunchStart wrote WITH unconditionally on
+    // every round, undoing detachPreInvocationHook's work the moment a
+    // respawn happened — see agyPtyLauncher.test.ts's Phase 2.7 suite).
+    //
+    // If the UUID is NOT yet known, WITH is written (or kept) so discovery
+    // can still happen on this launch. Resume-failure detection (a resume
+    // silently starting a brand-new, unknown-UUID conversation) is out of
+    // scope here — see Fix N2's docstring on why.
+    //
+    // If the carrier itself is gone (e.g. /tmp's 30-day tmpfiles.d sweep on
+    // a long-lived session, §9), it is rebuilt from scratch via
+    // prepareAgyHookCarrier and hookCarrierDir is repointed so the next agy
+    // spawn's --add-dir uses it.
+    private syncPreInvocationHookForLaunch(): void {
+        const withDiscovery = this.session.hooksJsonWithPreInvocation
+        const withoutDiscovery = this.session.hooksJsonWithoutPreInvocation
+        if (!withDiscovery || !withoutDiscovery) return
+        const desired = this.agySessionId ? withoutDiscovery : withDiscovery
+        const carrierDir = this.session.hookCarrierDir
+        if (!carrierDir || !agyHookCarrierIsIntact(carrierDir)) {
+            const recreated = prepareAgyHookCarrier(desired, this.session.hookMcpServer)
+            if (!recreated) {
+                logger.debug('[agy-pty]: failed to recreate the hook carrier before respawn; the next agy spawn will run without it')
+                return
+            }
+            this.session.setHookCarrierDir(recreated.carrierDir)
+            logger.debug(`[agy-pty]: hook carrier was missing before a respawn; recreated at ${recreated.carrierDir}`)
+            return
+        }
+        try {
+            writeAgyHooksJsonAtomic(carrierDir, desired)
+        } catch (error) {
+            logger.debug('[agy-pty]: failed to sync the PreInvocation hook state before respawn', error)
         }
     }
 
@@ -705,6 +781,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             this.agySessionId = uuid
             this.scanner?.onNewSession(uuid)
             this.clearDiscoveryTimeoutWarning()
+            this.detachPreInvocationHook()
         }
         session.addSessionFoundCallback(handleSessionFound)
         session.setLiveModelHandler((model) => this.applyLiveModel(model))
@@ -714,6 +791,10 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 maxAuthRetries: 8,
                 authRetryDelayMs: 1500,
                 onLaunchStart: (isNewSession) => {
+                    // Runs synchronously before every launchOnce, including
+                    // the first — restores PreInvocation if a prior round
+                    // detached it (see syncPreInvocationHookForLaunch's docstring).
+                    this.syncPreInvocationHookForLaunch()
                     messageBuffer.addMessage('═'.repeat(40), 'status')
                     if (this.agySessionId) {
                         messageBuffer.addMessage('Resuming agy PTY session...', 'status')

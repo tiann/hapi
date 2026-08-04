@@ -25,9 +25,13 @@ const h = vi.hoisted(() => ({
         setEffort: () => void
         pushKeepAlive: () => void
     },
-    // Captures the options buildAgyHooksJson was called with, so tests can
-    // assert the PreToolUse/PreInvocation commands were not swapped.
-    buildAgyHooksJsonOptions: null as null | { preToolUseCommand: string; preInvocationCommand: string; hookName?: string },
+    // Captures every call buildAgyHooksJson receives, so tests can assert the
+    // PreToolUse/PreInvocation commands were not swapped. runAgy.ts now calls
+    // it twice per PTY session (Phase 2.7): once with preInvocationCommand
+    // (the carrier's initial/reattached state) and once without (the
+    // self-detached state) — see hooksJsonWithPreInvocation/
+    // hooksJsonWithoutPreInvocation in runAgy.ts.
+    buildAgyHooksJsonCalls: [] as Array<{ preToolUseCommand: string; preInvocationCommand?: string; hookName?: string }>,
 }))
 
 vi.mock('@/agent/sessionFactory', () => ({
@@ -100,8 +104,8 @@ vi.mock('./loop', () => ({
 vi.mock('@/utils/spawnHappyCLI', () => ({ getHappyCliCommand: vi.fn((args: string[]) => ({ command: 'hapi', args })) }))
 vi.mock('@/modules/common/shellQuote', () => ({ shellJoin: vi.fn((parts: string[]) => parts.join(' ')) }))
 vi.mock('@/modules/common/hooks/generateHookSettings', () => ({
-    buildAgyHooksJson: vi.fn((opts: { preToolUseCommand: string; preInvocationCommand: string; hookName?: string }) => {
-        h.buildAgyHooksJsonOptions = opts
+    buildAgyHooksJson: vi.fn((opts: { preToolUseCommand: string; preInvocationCommand?: string; hookName?: string }) => {
+        h.buildAgyHooksJsonCalls.push(opts)
         return '{}'
     }),
 }))
@@ -116,7 +120,7 @@ describe('runAgy post-bootstrap setup lifecycle', () => {
         h.lifecycle = null
         h.hookServerOpts = null
         h.sessionReadyWrapper = null
-        h.buildAgyHooksJsonOptions = null
+        h.buildAgyHooksJsonCalls = []
         vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
         vi.spyOn(process, 'on').mockImplementation((() => process) as never)
     })
@@ -150,13 +154,24 @@ describe('runAgy post-bootstrap setup lifecycle', () => {
     it('never swaps the fail-closed PreToolUse command with the fail-open PreInvocation command', async () => {
         await runAgy({ startingMode: 'pty', workingDirectory: '/tmp/project' })
 
-        const opts = h.buildAgyHooksJsonOptions
-        expect(opts).not.toBeNull()
-        // Only the PreInvocation command is built with --event pre-invocation;
-        // a positional-arg swap would put this string in preToolUseCommand
-        // instead, silently turning the permission bridge fail-open.
-        expect(opts!.preInvocationCommand).toContain('--event pre-invocation')
-        expect(opts!.preToolUseCommand).not.toContain('--event')
+        // Two calls: the with-PreInvocation carrier state (used to build the
+        // initial/reattached hooks.json) and the without-PreInvocation state
+        // (used after self-detach). Every call's preToolUseCommand must stay
+        // the fail-closed command, and any call carrying a preInvocationCommand
+        // must carry the fail-open one — a positional-arg swap would put the
+        // --event pre-invocation string in preToolUseCommand instead, silently
+        // turning the permission bridge fail-open.
+        expect(h.buildAgyHooksJsonCalls.length).toBeGreaterThanOrEqual(2)
+        for (const call of h.buildAgyHooksJsonCalls) {
+            expect(call.preToolUseCommand).not.toContain('--event')
+        }
+        const withInvocation = h.buildAgyHooksJsonCalls.filter((call) => call.preInvocationCommand !== undefined)
+        expect(withInvocation.length).toBeGreaterThanOrEqual(1)
+        for (const call of withInvocation) {
+            expect(call.preInvocationCommand).toContain('--event pre-invocation')
+        }
+        const withoutInvocation = h.buildAgyHooksJsonCalls.filter((call) => call.preInvocationCommand === undefined)
+        expect(withoutInvocation.length).toBeGreaterThanOrEqual(1)
     })
 })
 
@@ -178,7 +193,7 @@ describe('runAgy brain UUID adoption via agy hooks', () => {
         h.lifecycle = null
         h.hookServerOpts = null
         h.sessionReadyWrapper = null
-        h.buildAgyHooksJsonOptions = null
+        h.buildAgyHooksJsonCalls = []
         vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
         vi.spyOn(process, 'on').mockImplementation((() => process) as never)
     })

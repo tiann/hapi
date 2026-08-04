@@ -182,15 +182,21 @@ type AgyFlatHookEntry = {
 type AgyHooksJson = {
     [hookName: string]: {
         PreToolUse: AgyHookEntry[];
-        PreInvocation: AgyFlatHookEntry[];
+        PreInvocation?: AgyFlatHookEntry[];
     };
 };
 
 export type BuildAgyHooksJsonOptions = {
     /** Command for the fail-closed permission bridge (PreToolUse). */
     preToolUseCommand: string;
-    /** Command for the fail-open discovery hook (PreInvocation). */
-    preInvocationCommand: string;
+    /**
+     * Command for the fail-open discovery hook (PreInvocation). Omit to
+     * build a hooks.json with PreToolUse only — used by agyPtyLauncher's
+     * self-detach/respawn-reattach cycle (see agyHookCarrier.ts's
+     * writeAgyHooksJsonAtomic) to drop the now-redundant discovery hook once
+     * the brain UUID is confirmed, and restore it before every respawn.
+     */
+    preInvocationCommand?: string;
     hookName?: string;
 };
 
@@ -224,9 +230,13 @@ export function buildAgyHooksJson({
                     hooks: [{ command: preToolUseCommand, timeout: PRE_TOOL_USE_TIMEOUT_SECONDS }]
                 }
             ],
-            PreInvocation: [
-                { type: 'command', command: preInvocationCommand, timeout: PRE_INVOCATION_TIMEOUT_SECONDS }
-            ]
+            ...(preInvocationCommand
+                ? {
+                    PreInvocation: [
+                        { type: 'command' as const, command: preInvocationCommand, timeout: PRE_INVOCATION_TIMEOUT_SECONDS }
+                    ]
+                }
+                : {})
         }
     };
     return JSON.stringify(content, null, 4);

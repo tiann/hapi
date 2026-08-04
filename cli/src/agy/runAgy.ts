@@ -17,6 +17,7 @@ import { startHookServer } from '@/claude/utils/startHookServer';
 import { AgyPermissionHandler } from './utils/agyPermissionHandler';
 import { buildAgyHooksJson } from '@/modules/common/hooks/generateHookSettings';
 import { prepareAgyHookCarrier, cleanupAgyHookCarrier } from './utils/agyHookCarrier';
+import type { AgyMcpServerEntry } from './utils/agyHookCarrier';
 import { shellJoin } from '@/modules/common/shellQuote';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { extractToolName, extractToolInput, extractToolUseId } from '@/claude/utils/startHookServer';
@@ -87,6 +88,16 @@ export async function runAgy(opts: {
     let hookServer: Awaited<ReturnType<typeof startHookServer>> | null = null;
     let hapiMcpBridge: Awaited<ReturnType<typeof buildHapiMcpBridge>> | null = null;
     let hookCarrierDir: string | undefined;
+    // hooks.json contents for the carrier's two PreInvocation states, and the
+    // MCP server entry needed to rebuild the carrier from scratch — handed to
+    // the session so agyPtyLauncher can self-detach the PreInvocation hook
+    // once the brain UUID is confirmed (it fires on every model call and is
+    // redundant after that) and reattach it before every respawn (see
+    // AgySession's docstring and Phase 2.7 of the agy-preinvocation-discovery
+    // plan). Undefined outside PTY mode, where no carrier is built.
+    let hooksJsonWithPreInvocation: string | undefined;
+    let hooksJsonWithoutPreInvocation: string | undefined;
+    let hookMcpServer: AgyMcpServerEntry | undefined;
 
     // Adopts a brain UUID discovered via an agy hook into session metadata,
     // first-wins: never overwrites an already-set sessionId (set by a resume
@@ -111,7 +122,13 @@ export async function runAgy(opts: {
             agyPermissionHandler?.cancelAll('Session ended');
             hookServer?.stop();
             hapiMcpBridge?.server.stop();
-            cleanupAgyHookCarrier(hookCarrierDir);
+            // Prefer the session's live hookCarrierDir: agyPtyLauncher's
+            // respawn-reattach cycle can rebuild the carrier at a NEW path
+            // (prepareAgyHookCarrier always mkdtemps a fresh directory) if
+            // the original one vanished mid-session. Falling back to the
+            // local variable covers every path where the session wrapper
+            // never got assigned (e.g. setup failed before onSessionReady).
+            cleanupAgyHookCarrier(sessionWrapperRef.current?.hookCarrierDir ?? hookCarrierDir);
         }
     });
 
@@ -175,9 +192,17 @@ export async function runAgy(opts: {
         const hookCommand = buildForwarderCommand([], 'PreToolUse');
         const preInvocationHookCommand = buildForwarderCommand(['--event', 'pre-invocation'], 'PreInvocation');
 
-        const hooksJson = buildAgyHooksJson({
+        // Two variants: the carrier is always built with PreInvocation (a
+        // resume-failure right after a respawn needs it to discover the
+        // replacement conversation's UUID), but agyPtyLauncher swaps to the
+        // PreToolUse-only variant once discovery is confirmed, and back
+        // before every respawn. See AgySession's docstring.
+        hooksJsonWithPreInvocation = buildAgyHooksJson({
             preToolUseCommand: hookCommand,
             preInvocationCommand: preInvocationHookCommand
+        });
+        hooksJsonWithoutPreInvocation = buildAgyHooksJson({
+            preToolUseCommand: hookCommand
         });
         let carrierResult: ReturnType<typeof prepareAgyHookCarrier>;
         try {
@@ -185,7 +210,8 @@ export async function runAgy(opts: {
                 skillLookup: { workingDirectory, flavor: 'agy' }
             });
             const { command: mcpCommand, args: mcpArgs } = hapiMcpBridge.mcpServers.hapi;
-            carrierResult = prepareAgyHookCarrier(hooksJson, { command: mcpCommand, args: mcpArgs });
+            hookMcpServer = { command: mcpCommand, args: mcpArgs };
+            carrierResult = prepareAgyHookCarrier(hooksJsonWithPreInvocation, hookMcpServer);
         } catch (error) {
             throw new Error('agy PTY session aborted: could not prepare the session-local HAPI MCP bridge.', { cause: error });
         }
@@ -271,6 +297,9 @@ export async function runAgy(opts: {
             hookCarrierDir,
             hookPort: hookServer?.port,
             hookToken: hookServer?.token,
+            hooksJsonWithPreInvocation,
+            hooksJsonWithoutPreInvocation,
+            hookMcpServer,
             agyPermissionHandler,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {

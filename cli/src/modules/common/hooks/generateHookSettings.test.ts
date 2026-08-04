@@ -81,4 +81,13 @@ describe('buildAgyHooksJson', () => {
         expect(preInvocationTimeout).toBeLessThanOrEqual(10)
         expect(preInvocationTimeout).toBeLessThan(preToolUseTimeout)
     })
+
+    it('omits the PreInvocation block entirely when preInvocationCommand is not given (self-detach state)', () => {
+        const parsed = JSON.parse(buildAgyHooksJson({
+            preToolUseCommand: 'cmd-pre-tool-use'
+        })) as Record<string, { PreToolUse: unknown; PreInvocation?: unknown }>
+        const group = Object.values(parsed)[0]
+        expect(group.PreToolUse).toBeDefined()
+        expect('PreInvocation' in group).toBe(false)
+    })
 })
