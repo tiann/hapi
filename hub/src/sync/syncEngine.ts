@@ -3027,10 +3027,14 @@ async uploadScratchlistAttachment(
             }
 
             let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' } = {}
-            // Pi reuses the original HAPI row. Keep its archive snapshot persisted
-            // until the CLI successfully bootstraps that row as running; this avoids
-            // an inactive, non-archived gap if the Hub restarts before spawn.
-            if (metadata.flavor !== 'pi') {
+            // Pi and PTY resumes both reuse the original HAPI row. Keep the archive
+            // snapshot persisted until the CLI successfully bootstraps that row as
+            // running; this avoids an inactive, non-archived gap if the Hub restarts
+            // before spawn — the in-memory snapshot below cannot survive that, and
+            // ptyResumeAttempt carries no copy of it. The CLI's sessionFactory
+            // re-stamps lifecycleState='running' on boot and does not carry over
+            // archivedBy/archiveReason, so the row still leaves the archived state.
+            if (metadata.flavor !== 'pi' && !isPtyResume) {
                 try {
                     applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
                 } catch (error) {

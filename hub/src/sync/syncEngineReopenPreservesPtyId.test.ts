@@ -130,6 +130,28 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
 
 
+    it('keeps the archive snapshot persisted across a PTY reopen so a hub restart can still recover it', async () => {
+        // The snapshot used for rollback lives only in memory, so clearing the
+        // archive metadata before the resume is durably recorded leaves an
+        // inactive, non-archived ghost row if the hub restarts in between. The
+        // CLI's sessionFactory re-stamps lifecycleState='running' on boot (and
+        // drops archivedBy/archiveReason, which it never preserves), so keeping
+        // the snapshot until then is safe — this is the same reason Pi defers it.
+        const sessionId = insertSession(
+            'pty-session-archive-durable',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toEqual({ type: 'success', sessionId, resumed: true })
+        const metadata = store.sessions.getSession(sessionId)?.metadata as Record<string, unknown> | undefined
+        expect(metadata?.lifecycleState).toBe('archived')
+        expect(metadata?.archivedBy).toBe('hub')
+        expect(metadata?.archiveReason).toBe('inactivity')
+    })
+
     it('stops a same-id PTY child when the active-state barrier times out', async () => {
         const sessionId = insertSession(
             'pty-session-active-timeout',
