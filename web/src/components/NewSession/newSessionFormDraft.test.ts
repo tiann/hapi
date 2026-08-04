@@ -22,7 +22,9 @@ describe('newSessionFormDraft', () => {
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
             collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
             yoloMode: false,
+            codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -37,7 +39,9 @@ describe('newSessionFormDraft', () => {
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
             collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
             yoloMode: false,
+            codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -65,7 +69,9 @@ describe('newSessionFormDraft', () => {
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
             collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
             yoloMode: false,
+            codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -84,7 +90,9 @@ describe('newSessionFormDraft', () => {
             modelReasoningEffort: 'default',
             serviceTier: 'fast',
             collaborationMode: 'plan',
+            copilotAgentMode: 'interactive',
             yoloMode: false,
+            codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -105,7 +113,9 @@ describe('newSessionFormDraft', () => {
             modelReasoningEffort: 'high',
             serviceTier: 'fast',
             collaborationMode: 'plan',
+            copilotAgentMode: 'interactive',
             yoloMode: true,
+            codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -123,5 +133,26 @@ describe('newSessionFormDraft', () => {
         // agent-independent fields preserved
         expect(loaded.yoloMode).toBe(true)
         expect(loaded.machineId).toBe('machine-1')
+    })
+
+    it('maps legacy yoloMode to codex-family permission mode when restoring copilot drafts', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
+            agent: 'copilot',
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: true,
+            sessionType: 'simple',
+            worktreeName: ''
+        }))
+
+        const loaded = loadNewSessionFormDraft()!
+        expect(loaded.agent).toBe('copilot')
+        expect(loaded.codexFamilyPermissionMode).toBe('yolo')
     })
 })

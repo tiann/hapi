@@ -1693,6 +1693,108 @@ describe('session model', () => {
         }
     })
 
+    it('passes stored Copilot agent mode when respawning a resumed Copilot session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-copilot-agent-mode-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'copilot',
+                    copilotSessionId: 'copilot-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5'
+            )
+            await engine.applySessionConfig(session.id, { copilotAgentMode: 'plan' })
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedCopilotAgentMode: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                _existingSessionId?: string,
+                _collaborationMode?: string,
+                copilotAgentMode?: string
+            ) => {
+                capturedCopilotAgentMode = copilotAgentMode
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedCopilotAgentMode).toBe('plan')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('restores the Copilot agent mode from metadata after a hub restart', async () => {
+        const store = new Store(':memory:')
+        const firstEngine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const session = firstEngine.getOrCreateSession(
+            'session-copilot-agent-mode-restart',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'copilot',
+                copilotSessionId: 'copilot-thread-1'
+            },
+            null,
+            'default'
+        )
+        await firstEngine.applySessionConfig(session.id, { copilotAgentMode: 'autopilot' })
+        firstEngine.stop()
+
+        const restartedEngine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        try {
+            expect(restartedEngine.getSession(session.id)?.copilotAgentMode).toBe('autopilot')
+            expect(store.sessions.getSession(session.id)?.metadata).toEqual(expect.objectContaining({
+                preferredCopilotAgentMode: 'autopilot'
+            }))
+        } finally {
+            restartedEngine.stop()
+        }
+    })
+
     it('passes the cached permissionMode when respawning a resumed session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -3328,6 +3430,30 @@ describe('session model', () => {
 
             const messages = store.messages.getMessages(s2.id, 100)
             expect(messages.length).toBeGreaterThanOrEqual(1)
+        })
+
+        it('merges duplicate when copilotSessionId collides', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'copilot-tag-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'copilot', copilotSessionId: 'copilot-thread-X' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'copilot-tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'copilot', copilotSessionId: 'copilot-thread-X' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeUndefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
         })
 
         it('preserves sessions with different agent session IDs', async () => {

@@ -15,7 +15,9 @@ const mocks = vi.hoisted(() => ({
     notification: vi.fn(),
     checkPathsExists: vi.fn(),
     codexModelsLoading: false,
-    directoryExists: undefined as boolean | undefined
+    directoryExists: undefined as boolean | undefined,
+    copilotModels: [] as Array<{ modelId: string; name?: string }>,
+    copilotModelsLoading: false
 }))
 
 vi.mock('@/lib/use-translation', () => ({
@@ -105,6 +107,14 @@ vi.mock('@/hooks/queries/useGrokModelsForCwd', () => ({
         error: null
     })
 }))
+vi.mock('@/hooks/queries/useCopilotModelsForCwd', () => ({
+    useCopilotModelsForCwd: () => ({
+        availableModels: mocks.copilotModels,
+        currentModelId: null,
+        isLoading: mocks.copilotModelsLoading,
+        error: null
+    })
+}))
 vi.mock('../../utils/formatRunnerSpawnError', () => ({
     formatRunnerSpawnError: () => null
 }))
@@ -115,6 +125,8 @@ vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
 vi.mock('./MachineSelector', () => ({ MachineSelector: () => null }))
 vi.mock('./SessionTypeSelector', () => ({ SessionTypeSelector: () => null }))
 vi.mock('./GrokPermissionModeSelector', () => ({ GrokPermissionModeSelector: () => null }))
+vi.mock('./CodexFamilyPermissionModeSelector', () => ({ CodexFamilyPermissionModeSelector: () => null }))
+vi.mock('./CopilotAgentModeSelector', () => ({ CopilotAgentModeSelector: () => null }))
 vi.mock('./YoloToggle', () => ({ YoloToggle: () => null }))
 vi.mock('./OpencodeModelSelector', () => ({ OpencodeModelSelector: () => null }))
 vi.mock('./LaunchEffortSelector', () => ({
@@ -123,10 +135,17 @@ vi.mock('./LaunchEffortSelector', () => ({
     )
 }))
 vi.mock('./ModelSelector', () => ({
-    ModelSelector: (props: { model: string; onModelChange: (model: string) => void }) => (
-        <button type="button" data-testid="model" onClick={() => props.onModelChange('gpt-5.6-terra')}>
-            {props.model}
-        </button>
+    ModelSelector: (props: {
+        model: string
+        options?: Array<{ value: string; label: string }>
+        onModelChange: (model: string) => void
+    }) => (
+        <>
+            <button type="button" data-testid="model" onClick={() => props.onModelChange('gpt-5.6-terra')}>
+                {props.model}
+            </button>
+            <div data-testid="model-options">{props.options?.map((option) => option.label).join(',')}</div>
+        </>
     )
 }))
 vi.mock('./ReasoningEffortSelector', () => ({
@@ -160,6 +179,8 @@ describe('NewSession launch preferences', () => {
         mocks.checkPathsExists.mockImplementation(async () => ({ 'C:\\repo': mocks.directoryExists }))
         mocks.codexModelsLoading = false
         mocks.directoryExists = true
+        mocks.copilotModels = []
+        mocks.copilotModelsLoading = false
         savePreferredAgent('codex')
     })
 
@@ -186,6 +207,54 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-sol')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
         })
+    })
+
+    it('shows discovered Copilot models for the selected directory', async () => {
+        mocks.copilotModels = [
+            { modelId: 'gpt-5.6', name: 'GPT-5.6' },
+            { modelId: 'auto', name: 'Auto' }
+        ]
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByLabelText('Copilot'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model-options')).toHaveTextContent('Auto,GPT-5.6')
+        })
+    })
+
+    it('disables creation while a remembered Copilot model is being validated', async () => {
+        mocks.copilotModelsLoading = true
+        savePreferredAgent('copilot')
+        savePreferredLaunchSettings('machine-1', 'copilot', {
+            model: 'gpt-5.6',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
     it.each([
@@ -350,7 +419,9 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'max',
             serviceTier: 'standard',
             collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
             yoloMode: false,
+            codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''

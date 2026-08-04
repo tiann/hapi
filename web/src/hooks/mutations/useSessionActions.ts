@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import type { CodexCollaborationMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
+import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
 import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
@@ -19,6 +19,7 @@ export function useSessionActions(
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
+    setCopilotAgentMode: (mode: CopilotAgentMode) => Promise<void>
     setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
@@ -145,6 +146,19 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const copilotAgentModeMutation = useMutation({
+        mutationFn: async (mode: CopilotAgentMode) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            if (agentFlavor !== 'copilot') {
+                throw new Error('Agent mode is only supported for Copilot sessions')
+            }
+            await api.setCopilotAgentMode(sessionId, mode)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const modelMutation = useMutation({
         mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
             if (!api || !sessionId) {
@@ -234,6 +248,7 @@ export function useSessionActions(
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
+        setCopilotAgentMode: copilotAgentModeMutation.mutateAsync,
         setModel: modelMutation.mutateAsync,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
@@ -246,6 +261,7 @@ export function useSessionActions(
             || switchMutation.isPending
             || permissionMutation.isPending
             || collaborationMutation.isPending
+            || copilotAgentModeMutation.isPending
             || modelMutation.isPending
             || modelReasoningEffortMutation.isPending
             || effortMutation.isPending

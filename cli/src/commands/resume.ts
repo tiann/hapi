@@ -9,6 +9,7 @@ import type {
     CursorPermissionMode,
     GrokPermissionMode,
     KimiPermissionMode,
+    CopilotPermissionMode,
     OpencodePermissionMode
 } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
@@ -146,6 +147,21 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             permissionMode: base.permissionMode as KimiPermissionMode | undefined,
             startingMode: 'local',
             model: target.model ?? undefined
+        })
+        return
+    }
+
+    if (target.flavor === 'copilot') {
+        const { runCopilot } = await import('@/copilot/runCopilot')
+        await runCopilot({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as CopilotPermissionMode | undefined,
+            startingMode: 'local',
+            model: target.model ?? undefined,
+            copilotAgentMode: target.copilotAgentMode
         })
         return
     }

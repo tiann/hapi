@@ -629,6 +629,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 'yolo',
                 undefined,
                 replacementSessionId,
+                undefined,
                 undefined
             )
             expect(engine.getSessionByNamespace(replacementSessionId, 'default')?.metadata).toMatchObject({

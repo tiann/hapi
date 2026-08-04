@@ -48,6 +48,11 @@ describe('hasCapability', () => {
         expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
     })
 
+    test('copilot supports model-change but not effort', () => {
+        expect(hasCapability('copilot', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('copilot', Capabilities.Effort)).toBe(false)
+    })
+
     test('grok supports runtime model and effort switching through ACP', () => {
         expect(hasCapability('grok', Capabilities.ModelChange)).toBe(true)
         expect(hasCapability('grok', Capabilities.Effort)).toBe(true)
@@ -72,6 +77,7 @@ describe('getFlavorLabel', () => {
         expect(getFlavorLabel('opencode')).toBe('OpenCode')
         expect(getFlavorLabel('pi')).toBe('Pi')
         expect(getFlavorLabel('kimi')).toBe('Kimi')
+        expect(getFlavorLabel('copilot')).toBe('Copilot')
         expect(getFlavorLabel('grok')).toBe('Grok Build')
     })
 
@@ -94,6 +100,7 @@ describe('isKnownFlavor', () => {
         expect(isKnownFlavor('opencode')).toBe(true)
         expect(isKnownFlavor('pi')).toBe(true)
         expect(isKnownFlavor('kimi')).toBe(true)
+        expect(isKnownFlavor('copilot')).toBe(true)
         expect(isKnownFlavor('grok')).toBe(true)
     })
 

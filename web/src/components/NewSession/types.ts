@@ -36,6 +36,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     kimi: [
         { value: 'auto', label: 'Default' },
     ],
+    copilot: [
+        { value: 'auto', label: 'Auto' },
+    ],
     gemini: [
         { value: 'auto', label: 'Default' },
         ...modelPresetOptions(GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS),

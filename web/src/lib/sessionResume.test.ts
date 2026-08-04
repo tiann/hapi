@@ -286,6 +286,12 @@ describe('sessionResume — regression for all other flavor ids', () => {
             path: '/p', host: 'h', flavor: 'kimi', kimiSessionId: 'ki-1',
         })).toBe('ki-1')
     })
+
+    it('copilot', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p', host: 'h', flavor: 'copilot', copilotSessionId: 'cp-1',
+        })).toBe('cp-1')
+    })
     it('claude (default branch)', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p', host: 'h', flavor: 'claude', claudeSessionId: 'cl-1',

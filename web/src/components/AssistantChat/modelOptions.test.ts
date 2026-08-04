@@ -164,6 +164,19 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'grok-4.5', label: 'grok-4.5' }
         ])
     })
+
+    it('uses null for Copilot Auto with dynamic model options', () => {
+        const options = getModelOptionsForFlavor('copilot', null, [
+            { value: null, label: 'Auto' },
+            { value: 'gpt-5.6', label: 'GPT-5.6' }
+        ])
+
+        expect(options).toEqual([
+            { value: null, label: 'Auto' },
+            { value: 'gpt-5.6', label: 'GPT-5.6' }
+        ])
+        expect(options.find((option) => option.value === null)?.label).toBe('Auto')
+    })
 })
 
 describe('getNextModelForFlavor', () => {
@@ -231,6 +244,13 @@ describe('getNextModelForFlavor', () => {
 
     it('keeps the current grok model on cycle (no Claude fallback)', () => {
         expect(getNextModelForFlavor('grok', 'grok-4.5')).toBe('grok-4.5')
+    })
+
+    it('resets a Copilot model to null when cycling to Auto', () => {
+        expect(getNextModelForFlavor('copilot', 'gpt-5.6', [
+            { value: null, label: 'Auto' },
+            { value: 'gpt-5.6', label: 'GPT-5.6' }
+        ])).toBeNull()
     })
 
     it('returns null for pi without a current model (no Claude fallback)', () => {

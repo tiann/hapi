@@ -9,6 +9,7 @@ import GrokMono from '@lobehub/icons/es/Grok/components/Mono'
 import KimiMono from '@lobehub/icons/es/Kimi/components/Mono'
 import OpenCodeMono from '@lobehub/icons/es/OpenCode/components/Mono'
 import type { IconType } from '@lobehub/icons/es/types'
+import { CopilotIcon } from '@/components/icons/CopilotIcon'
 
 // Brand logos per agent flavor. Color variant where it stays visible on both
 // light and dark surfaces (claude/codex/gemini); Mono (currentColor) where the
@@ -41,6 +42,17 @@ const UNKNOWN_FLAVOR_BADGE = {
 export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null; className?: string }) {
     const normalized = (flavor ?? '').trim().toLowerCase()
     const sizeClass = className ?? 'h-4 w-4'
+    if (normalized === 'copilot') {
+        return (
+            <span
+                aria-hidden="true"
+                className={`inline-flex items-center justify-center leading-none text-[#24292f] dark:text-[#e6edf3] ${sizeClass}`}
+            >
+                <CopilotIcon size="100%" />
+            </span>
+        )
+    }
+
     const Logo = FLAVOR_LOGOS[normalized]
 
     if (Logo) {

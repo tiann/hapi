@@ -10,7 +10,7 @@ export const HAPI_SESSION_ID_ENV = 'HAPI_SESSION_ID';
  * inherits it. HAPI runs one hub session per CLI process (the runner forks a
  * fresh `hapi` child per session, and local invocations are 1:1), and every
  * flavor's agent spawn derives its child env from `process.env` — so setting it
- * here covers claude / codex / cursor / gemini / opencode / kimi / grok / pi at
+ * here covers claude / codex / copilot / cursor / gemini / opencode / kimi / grok / pi at
  * once, including future flavors, without touching each launcher.
  *
  * Prefer the MCP `display_image` tool for inline media when it is available;

@@ -1,8 +1,14 @@
 import { z } from 'zod'
+import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+/** Accept legacy `fleet` (was briefly a peer mode) and coerce to interactive. */
+export const CopilotAgentModeSchema = z.union([
+    z.enum(COPILOT_AGENT_MODES),
+    z.literal('fleet').transform((): CopilotAgentMode => 'interactive'),
+])
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff', 'cleared'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
@@ -74,6 +80,7 @@ export const MetadataSchema = z.object({
     // tiann/hapi#873.
     cursorMigrationState: z.enum(['in_progress', 'ambiguous']).optional(),
     kimiSessionId: z.string().optional(),
+    copilotSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),
@@ -107,6 +114,7 @@ export const MetadataSchema = z.object({
     // Durable in-progress state for runner-backed OpenCode /clear.
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
+    preferredCopilotAgentMode: CopilotAgentModeSchema.optional(),
     flavor: z.string().nullish(),
     capabilities: SessionCapabilitiesSchema.optional(),
     conversationHistoryPoints: z.record(z.string(), z.literal(true)).optional(),
@@ -282,7 +290,8 @@ export const SessionSchema = z.object({
     effort: z.string().nullable().optional().default(null),
     serviceTier: z.string().nullable().optional().default(null),
     permissionMode: PermissionModeSchema.optional(),
-    collaborationMode: CodexCollaborationModeSchema.optional()
+    collaborationMode: CodexCollaborationModeSchema.optional(),
+    copilotAgentMode: CopilotAgentModeSchema.optional()
 })
 
 export type Session = z.infer<typeof SessionSchema>
@@ -298,6 +307,7 @@ export const SessionPatchSchema = z.object({
     serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
+    copilotAgentMode: CopilotAgentModeSchema.optional(),
     backgroundTaskCount: z.number().optional(),
     // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
     // session_scratchlist table mutates. Web client uses the change as a

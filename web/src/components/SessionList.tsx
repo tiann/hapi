@@ -14,6 +14,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
+import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
@@ -1008,6 +1009,7 @@ export function SessionList(props: {
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
+    const { pinInProgressSessions } = usePinInProgressSessions()
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
@@ -1102,6 +1104,9 @@ export function SessionList(props: {
             pending: [],
             idle: []
         }
+        if (!pinInProgressSessions) {
+            return buckets
+        }
         for (const session of machineFilteredSessions) {
             if (!session.active) {
                 continue
@@ -1119,13 +1124,17 @@ export function SessionList(props: {
             buckets[key].sort(byRecent)
         }
         return buckets
-    }, [machineFilteredSessions])
+    }, [machineFilteredSessions, pinInProgressSessions])
     const runningSessionTotal = runningSessions.working.length
         + runningSessions.pending.length
         + runningSessions.idle.length
     const groups = useMemo(
-        () => groupSessionsByDirectory(machineFilteredSessions.filter((session) => !session.active)),
-        [machineFilteredSessions]
+        () => groupSessionsByDirectory(
+            pinInProgressSessions
+                ? machineFilteredSessions.filter((session) => !session.active)
+                : machineFilteredSessions
+        ),
+        [machineFilteredSessions, pinInProgressSessions]
     )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()

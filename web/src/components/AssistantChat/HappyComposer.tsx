@@ -1,4 +1,9 @@
-import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
+import {
+    getCodexCollaborationModeOptions,
+    getCopilotAgentModeOptions,
+    getPermissionModeOptionsForFlavor,
+    type CopilotAgentMode
+} from '@hapi/protocol'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { flushTapSync } from '@assistant-ui/tap'
 import {
@@ -218,6 +223,7 @@ export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
+    copilotAgentMode?: CopilotAgentMode
     model?: string | null
     modelReasoningEffort?: string | null
     effort?: string | null
@@ -248,6 +254,7 @@ export function HappyComposer(props: {
     /** Cursor: effort/variant wire ids for the selected base model. */
     modelEffortOptions?: Array<{ value: string; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
+    onCopilotAgentModeChange?: (mode: CopilotAgentMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
     /** Cursor: effort/variant wire id (separate from base model change). */
@@ -310,6 +317,7 @@ export function HappyComposer(props: {
         disabled = false,
         permissionMode: rawPermissionMode,
         collaborationMode: rawCollaborationMode,
+        copilotAgentMode: rawCopilotAgentMode,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
@@ -333,6 +341,7 @@ export function HappyComposer(props: {
         selectedModelVariant,
         modelEffortOptions,
         onCollaborationModeChange,
+        onCopilotAgentModeChange,
         onPermissionModeChange,
         onModelChange,
         onModelEffortChange,
@@ -362,6 +371,7 @@ export function HappyComposer(props: {
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
     const permissionMode = rawPermissionMode ?? 'default'
     const collaborationMode = rawCollaborationMode ?? 'default'
+    const copilotAgentMode = rawCopilotAgentMode ?? 'interactive'
     const model = rawModel ?? null
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
@@ -803,6 +813,10 @@ export function HappyComposer(props: {
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
         [agentFlavor]
     )
+    const copilotAgentModeOptions = useMemo(
+        () => agentFlavor === 'copilot' ? getCopilotAgentModeOptions() : [],
+        [agentFlavor]
+    )
     const modelOptions = useMemo(
         () => getModelOptionsForFlavor(agentFlavor, model, availableModelOptions),
         [agentFlavor, model, availableModelOptions]
@@ -1214,6 +1228,13 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onCollaborationModeChange, controlsDisabled, haptic])
 
+    const handleCopilotAgentModeChange = useCallback((mode: CopilotAgentMode) => {
+        if (!onCopilotAgentModeChange || controlsDisabled) return
+        onCopilotAgentModeChange(mode)
+        setShowSettings(false)
+        haptic('light')
+    }, [onCopilotAgentModeChange, controlsDisabled, haptic])
+
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || controlsDisabled) return
         onModelChange(nextModel)
@@ -1258,6 +1279,7 @@ export function HappyComposer(props: {
     ], [t])
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
+    const showCopilotAgentModeSettings = Boolean(onCopilotAgentModeChange && copilotAgentModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
     const showModelEffortSettings = Boolean(
@@ -1272,6 +1294,7 @@ export function HappyComposer(props: {
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
         showCollaborationSettings
+        || showCopilotAgentModeSettings
         || showPermissionSettings
         || showModelSettings
         || showModelEffortSettings
@@ -1369,7 +1392,7 @@ export function HappyComposer(props: {
         }
 
         // Non-Pi flavors: original unified gear menu
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
+        if (showSettings && (showCollaborationSettings || showCopilotAgentModeSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
             return (
                 <div className={`${overlayPositionClass} w-full`}>
                     <FloatingOverlay maxHeight={320}>
@@ -1410,7 +1433,44 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {showCopilotAgentModeSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.copilotAgentMode')}
+                                </div>
+                                {copilotAgentModeOptions.map((option) => (
+                                    <button
+                                        key={option.mode}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleCopilotAgentModeChange(option.mode)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                copilotAgentMode === option.mode
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {copilotAgentMode === option.mode && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={copilotAgentMode === option.mode ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {(showCollaborationSettings || showCopilotAgentModeSettings) && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -1451,7 +1511,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {(showCollaborationSettings || showCopilotAgentModeSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -1705,6 +1765,7 @@ export function HappyComposer(props: {
         selectedPiModel,
         closeAllPanels,
         showCollaborationSettings,
+        showCopilotAgentModeSettings,
         showPermissionSettings,
         showModelSettings,
         showModelEffortSettings,
@@ -1728,8 +1789,11 @@ export function HappyComposer(props: {
         effort,
         displayedServiceTier,
         collaborationModeOptions,
+        copilotAgentModeOptions,
         permissionModeOptions,
         handleCollaborationChange,
+        handleCopilotAgentModeChange,
+        copilotAgentMode,
         handlePermissionChange,
         handleModelChange,
         handleModelReasoningEffortChange,
@@ -1775,6 +1839,7 @@ export function HappyComposer(props: {
                         serviceTier={serviceTier}
                         permissionMode={permissionMode}
                         collaborationMode={collaborationMode}
+                        copilotAgentMode={copilotAgentMode}
                         agentFlavor={agentFlavor}
                         voiceStatus={effectiveVoiceStatus}
                     />

@@ -28,6 +28,7 @@ function isCodexSession(metadata: SessionMetadataSummary | null, toolName: strin
         || toolName.startsWith('Codex')
         || toolName.startsWith('Gemini')
         || toolName.startsWith('OpenCode')
+        || toolName.startsWith('Copilot')
         || toolName.startsWith('Cursor')
 }
 

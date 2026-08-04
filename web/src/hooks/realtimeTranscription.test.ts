@@ -1,5 +1,191 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { startDeepgramRealtimeTranscription, startOpenAIRealtimeTranscription } from './realtimeTranscription'
+import {
+    BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS,
+    getBrowserLocalAvailabilityProbeSubscriberCountForTesting,
+    startBrowserLocalTranscription,
+    startDeepgramRealtimeTranscription,
+    startOpenAIRealtimeTranscription
+} from './realtimeTranscription'
+
+function browserLocalCallbacks() {
+    return {
+        onConnected: vi.fn(),
+        onPartial: vi.fn(),
+        onFinal: vi.fn(),
+        onError: vi.fn()
+    }
+}
+
+function installBrowserLocalSpeechRecognition(available: () => Promise<string> | string, onConstruct = vi.fn()) {
+    class MockSpeechRecognition extends EventTarget {
+        static available = available
+        continuous = false
+        interimResults = false
+        lang = ''
+        processLocally = false
+        onresult: ((event: Event) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+        onend: (() => void) | null = null
+        start = vi.fn()
+        stop = vi.fn()
+        abort = vi.fn()
+        constructor() {
+            super()
+            onConstruct()
+        }
+    }
+    Object.defineProperty(MockSpeechRecognition.prototype, 'processLocally', { value: false, writable: true })
+    vi.stubGlobal('SpeechRecognition', MockSpeechRecognition)
+    vi.stubGlobal('navigator', {
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+        userAgentData: { platform: 'macOS', mobile: false },
+        language: 'en-US'
+    })
+    return { available, onConstruct, constructor: MockSpeechRecognition }
+}
+
+describe('browser-local realtime transcription', () => {
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+    })
+
+    it('calls available only after an explicit browser-local dictation start', async () => {
+        const available = vi.fn(() => Promise.resolve('available'))
+        installBrowserLocalSpeechRecognition(available)
+        const callbacks = browserLocalCallbacks()
+
+        const session = await startBrowserLocalTranscription({ language: 'en-US', callbacks })
+
+        expect(available).toHaveBeenCalledOnce()
+        expect(available).toHaveBeenCalledWith({ langs: ['en-US'], processLocally: true })
+        expect(callbacks.onConnected).toHaveBeenCalledOnce()
+        session.cancel()
+    })
+
+    it('shares one successful native probe across concurrent browser-local starts', async () => {
+        let resolveAvailable!: (status: string) => void
+        const available = vi.fn(() => new Promise<string>((resolve) => { resolveAvailable = resolve }))
+        const onConstruct = vi.fn()
+        installBrowserLocalSpeechRecognition(available, onConstruct)
+        const firstCallbacks = browserLocalCallbacks()
+        const secondCallbacks = browserLocalCallbacks()
+
+        const first = startBrowserLocalTranscription({ language: 'en-US', callbacks: firstCallbacks })
+        const second = startBrowserLocalTranscription({ language: 'en-US', callbacks: secondCallbacks })
+        await vi.waitFor(() => expect(available).toHaveBeenCalledOnce())
+
+        resolveAvailable('available')
+        const sessions = await Promise.all([first, second])
+
+        expect(onConstruct).toHaveBeenCalledTimes(2)
+        expect(firstCallbacks.onConnected).toHaveBeenCalledOnce()
+        expect(secondCallbacks.onConnected).toHaveBeenCalledOnce()
+        sessions.forEach((session) => session.cancel())
+    })
+
+    it('surfaces a synchronous available failure', async () => {
+        const available = vi.fn(() => { throw new Error('native failure') })
+        installBrowserLocalSpeechRecognition(available)
+
+        await expect(startBrowserLocalTranscription({ language: 'en-US', callbacks: browserLocalCallbacks() }))
+            .rejects.toThrow('native failure')
+        expect(available).toHaveBeenCalledOnce()
+    })
+
+    it('surfaces a rejected available probe', async () => {
+        const available = vi.fn(() => Promise.reject(new Error('probe rejected')))
+        installBrowserLocalSpeechRecognition(available)
+
+        await expect(startBrowserLocalTranscription({ language: 'en-US', callbacks: browserLocalCallbacks() }))
+            .rejects.toThrow('probe rejected')
+        expect(available).toHaveBeenCalledOnce()
+    })
+
+    it('times out a stalled available probe', async () => {
+        vi.useFakeTimers()
+        const available = vi.fn(() => new Promise<string>(() => {}))
+        installBrowserLocalSpeechRecognition(available)
+        const starting = startBrowserLocalTranscription({ language: 'en-US', callbacks: browserLocalCallbacks() })
+        const expectation = expect(starting).rejects.toThrow('availability check timed out')
+
+        await vi.advanceTimersByTimeAsync(BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS)
+
+        await expectation
+        expect(available).toHaveBeenCalledOnce()
+    })
+
+    it('does not invoke available when its start signal aborts before the native microtask', async () => {
+        const available = vi.fn(() => Promise.resolve('available'))
+        installBrowserLocalSpeechRecognition(available)
+        const controller = new AbortController()
+        const starting = startBrowserLocalTranscription({
+            language: 'en-US',
+            signal: controller.signal,
+            callbacks: browserLocalCallbacks()
+        })
+        const expectation = expect(starting).rejects.toBeDefined()
+
+        controller.abort()
+        await expectation
+        await Promise.resolve()
+
+        expect(available).not.toHaveBeenCalled()
+    })
+
+    it('shares a stalled native probe across timeout retries and ignores its late result', async () => {
+        vi.useFakeTimers()
+        let resolveAvailable!: (status: string) => void
+        const available = vi.fn(() => new Promise<string>((resolve) => { resolveAvailable = resolve }))
+        const onConstruct = vi.fn()
+        const speechRecognition = installBrowserLocalSpeechRecognition(available, onConstruct)
+        const firstCallbacks = browserLocalCallbacks()
+        const first = startBrowserLocalTranscription({ language: 'en-US', callbacks: firstCallbacks })
+        const firstExpectation = expect(first).rejects.toThrow('availability check timed out')
+
+        await vi.advanceTimersByTimeAsync(BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS)
+        await firstExpectation
+        expect(getBrowserLocalAvailabilityProbeSubscriberCountForTesting(speechRecognition.constructor, 'en-US')).toBe(0)
+
+        const second = startBrowserLocalTranscription({ language: 'en-US', callbacks: browserLocalCallbacks() })
+        const secondExpectation = expect(second).rejects.toThrow('availability check timed out')
+        await vi.advanceTimersByTimeAsync(BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS)
+        await secondExpectation
+        expect(getBrowserLocalAvailabilityProbeSubscriberCountForTesting(speechRecognition.constructor, 'en-US')).toBe(0)
+
+        const controller = new AbortController()
+        const aborted = startBrowserLocalTranscription({
+            language: 'en-US',
+            signal: controller.signal,
+            callbacks: browserLocalCallbacks()
+        })
+        const abortedExpectation = expect(aborted).rejects.toBeDefined()
+        controller.abort()
+        await abortedExpectation
+        expect(getBrowserLocalAvailabilityProbeSubscriberCountForTesting(speechRecognition.constructor, 'en-US')).toBe(0)
+
+        expect(available).toHaveBeenCalledOnce()
+        resolveAvailable('available')
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(onConstruct).not.toHaveBeenCalled()
+        expect(firstCallbacks.onConnected).not.toHaveBeenCalled()
+    })
+
+    it('rejects Android browser-local startup without calling a partial native available API', async () => {
+        const available = vi.fn(() => Promise.resolve('available'))
+        installBrowserLocalSpeechRecognition(available)
+        vi.stubGlobal('navigator', {
+            userAgent: 'Mozilla/5.0 (Linux; Android 15; WebView)',
+            userAgentData: { platform: 'Android', mobile: true },
+            language: 'en-US'
+        })
+
+        await expect(startBrowserLocalTranscription({ language: 'en-US', callbacks: browserLocalCallbacks() }))
+            .rejects.toThrow('not supported by this browser')
+        expect(available).not.toHaveBeenCalled()
+    })
+})
 
 describe('OpenAI realtime transcription', () => {
     afterEach(() => vi.unstubAllGlobals())

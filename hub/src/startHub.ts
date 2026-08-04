@@ -16,6 +16,7 @@ import { FcmNotificationChannel } from './fcm/fcmNotificationChannel'
 import { resolveFcmConfig } from './fcm/fcmConfig'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
+import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
 import QRCode from 'qrcode'
@@ -273,15 +274,19 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     // Initialize tunnel AFTER web service is ready
     let tunnelUrl: string | null = null
     if (relayFlag.enabled) {
-        tunnelManager = new TunnelManager({
-            localPort: config.listenPort,
-            enabled: true,
-            apiDomain: relayApiDomain,
-            authKey: process.env.HAPI_RELAY_AUTH || null,
-            useRelay: process.env.HAPI_RELAY_FORCE_TCP === 'true' || process.env.HAPI_RELAY_FORCE_TCP === '1'
-        })
-
         try {
+            tunnelManager = new TunnelManager({
+                localPort: config.listenPort,
+                enabled: true,
+                apiDomain: relayApiDomain,
+                authKey: await resolveRelayAuthKey(relayApiDomain, config.settingsFile),
+                refreshAuthKey: rejectedKey => refreshRejectedRelayAuthKey(
+                    relayApiDomain,
+                    config.settingsFile,
+                    rejectedKey
+                ),
+                useRelay: process.env.HAPI_RELAY_FORCE_TCP === 'true' || process.env.HAPI_RELAY_FORCE_TCP === '1'
+            })
             tunnelUrl = await tunnelManager.start()
         } catch (error) {
             console.error('[Tunnel] Failed to start:', error instanceof Error ? error.message : error)

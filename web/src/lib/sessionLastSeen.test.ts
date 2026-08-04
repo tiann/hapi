@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { getSessionLastSeenAt, markSessionSeen } from './sessionLastSeen'
+import { getSessionLastSeenAt, initializeSessionLastSeen, markSessionSeen } from './sessionLastSeen'
 
 describe('sessionLastSeen', () => {
     beforeEach(() => {
@@ -16,6 +16,38 @@ describe('sessionLastSeen', () => {
         markSessionSeen('session-a', 5000)
         markSessionSeen('session-a', 2000)
         expect(getSessionLastSeenAt('session-a')).toBe(5000)
+    })
+
+    it('uses the first session list as the unread baseline', () => {
+        initializeSessionLastSeen('hub-a', [
+            { id: 'session-a', updatedAt: 1000 },
+            { id: 'session-b', updatedAt: 2500 },
+        ])
+
+        expect(getSessionLastSeenAt('session-a')).toBe(1000)
+        expect(getSessionLastSeenAt('session-b')).toBe(2500)
+    })
+
+    it('preserves existing watermarks while completing a legacy partial baseline', () => {
+        markSessionSeen('session-a', 1000)
+
+        initializeSessionLastSeen('hub-a', [
+            { id: 'session-a', updatedAt: 2500 },
+            { id: 'session-b', updatedAt: 2500 },
+        ])
+
+        expect(getSessionLastSeenAt('session-a')).toBe(1000)
+        expect(getSessionLastSeenAt('session-b')).toBe(2500)
+
+        initializeSessionLastSeen('hub-a', [{ id: 'session-c', updatedAt: 3000 }])
+        expect(getSessionLastSeenAt('session-c')).toBe(0)
+    })
+
+    it('initializes each hub independently', () => {
+        initializeSessionLastSeen('hub-a', [{ id: 'session-a', updatedAt: 1000 }])
+        initializeSessionLastSeen('hub-b', [{ id: 'session-b', updatedAt: 2000 }])
+
+        expect(getSessionLastSeenAt('session-b')).toBe(2000)
     })
 
     it('ignores localStorage write failures', () => {

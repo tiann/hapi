@@ -20,7 +20,7 @@ export TRANSCRIPTION_API_KEY="..."    # optional
 ```
 
 Restart the hub after changing credentials. API keys are not entered or stored in the web app.
-Realtime OpenAI, ElevenLabs, and Deepgram sessions receive only short-lived credentials minted by the hub. Browsers with an installed on-device `SpeechRecognition` language pack also expose **Browser on-device** as a realtime-only provider; HAPI never falls back from that option to browser-hosted recognition.
+Realtime OpenAI, ElevenLabs, and Deepgram sessions receive only short-lived credentials minted by the hub. Eligible desktop browsers with the on-device `SpeechRecognition` API expose **Browser on-device** as a realtime-only provider. HAPI checks the selected language pack when dictation starts and never falls back from that option to browser-hosted recognition. Mobile and unknown browser environments fail closed because this API is experimental and some Android WebViews expose unsafe partial implementations.
 
 ## Overview
 

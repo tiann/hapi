@@ -170,7 +170,7 @@ describe('Codex activity headings', () => {
 })
 
 describe('buildVisibleChatBlocks', () => {
-    it('renders one or more structured Codex exploration commands as an open exploration group', () => {
+    it('renders one or more structured Codex exploration commands as a collapsed exploration group', () => {
         const read = makeToolBlock('codex-read', 'CodexBash', {
             command: 'cat package.json',
             command_source: 'agent',
@@ -198,8 +198,23 @@ describe('buildVisibleChatBlocks', () => {
         expect(isToolGroupBlock(visible[0])).toBe(true)
         if (!isToolGroupBlock(visible[0])) throw new Error('expected exploration group')
         expect(visible[0].presentationMode).toBe('codex-exploration')
-        expect(visible[0].defaultOpen).toBe(true)
+        expect(visible[0].defaultOpen).toBe(false)
         expect(visible[0].tools.map((tool) => tool.id)).toEqual(['codex-read', 'codex-search'])
+    })
+
+    it('opens exploration groups when the collapse preference is disabled', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('codex-read', 'CodexBash', {
+                command: 'cat package.json',
+                command_actions: [{ type: 'read', command: 'cat package.json', name: 'package.json', path: '/repo/package.json' }]
+            }),
+            makeToolBlock('codex-search', 'CodexBash', {
+                command: 'rg nativeTitle web/src',
+                command_actions: [{ type: 'search', command: 'rg nativeTitle web/src', query: 'nativeTitle' }]
+            })
+        ], { hasMoreMessages: false, codexExplorationCollapsed: false })
+
+        expect(isToolGroupBlock(visible[0]) && visible[0].defaultOpen).toBe(true)
     })
 
     it('keeps structured general Codex commands separate from exploration groups', () => {

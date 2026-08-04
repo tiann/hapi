@@ -859,6 +859,7 @@ export class ApiSessionClient extends EventEmitter {
             effort?: string | null
             serviceTier?: string | null
             collaborationMode?: SessionCollaborationMode
+            copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
         }
     ): void {
         if (this.state !== 'active') {

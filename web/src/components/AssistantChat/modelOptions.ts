@@ -127,6 +127,12 @@ export function getModelOptionsForFlavor(
     if (flavor === 'kimi') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
+    if (flavor === 'copilot') {
+        if (customOptions && customOptions.length > 0) {
+            return withCurrentModelOption(customOptions, currentModel)
+        }
+        return withCurrentModelOption([{ value: null, label: 'Auto' }], currentModel)
+    }
     if (flavor === 'grok') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
@@ -177,6 +183,9 @@ export function getNextModelForFlavor(
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'kimi') {
+        return normalizeCurrentModel(currentModel)
+    }
+    if (flavor === 'copilot') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'grok') {

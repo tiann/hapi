@@ -62,6 +62,11 @@ describe('useDictation', () => {
     })
 
     it('shows on-device partial text and inserts only the final transcript', async () => {
+        vi.stubGlobal('navigator', {
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+            userAgentData: { platform: 'macOS', mobile: false },
+            language: 'en-US'
+        })
         let recognition: MockSpeechRecognition | null = null
         class MockSpeechRecognition {
             static async available() { return 'available' }

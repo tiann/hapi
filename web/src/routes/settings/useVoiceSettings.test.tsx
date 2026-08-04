@@ -32,6 +32,11 @@ describe('useVoiceSettings', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
+        vi.stubGlobal('navigator', {
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+            userAgentData: { platform: 'macOS', mobile: false },
+            language: 'en-US'
+        })
         fetchVoiceBackend.mockResolvedValue({ backend: 'elevenlabs', backends: ['elevenlabs'] })
         fetchVoices.mockResolvedValue([])
         class MockAudio {
@@ -85,8 +90,9 @@ describe('useVoiceSettings', () => {
     })
 
     it('uses realtime for the realtime-only browser provider', async () => {
+        const available = vi.fn(() => Promise.resolve('available'))
         class MockSpeechRecognition {
-            static available() { return Promise.resolve('available') }
+            static available = available
             processLocally = false
         }
         Object.defineProperty(MockSpeechRecognition.prototype, 'processLocally', { value: false })
@@ -97,46 +103,28 @@ describe('useVoiceSettings', () => {
 
         await waitFor(() => expect(result.current.provider).toBe('browser-local'))
         expect(result.current.transcriptionMode).toBe('realtime')
+        expect(available).not.toHaveBeenCalled()
     })
 
-    it('does not expose browser dictation without the selected language pack', async () => {
+    it('does not probe browser-local speech availability when the language changes', async () => {
         fetchTranscriptionProviders.mockResolvedValueOnce({
             providers: [{ id: 'openai', label: 'OpenAI', modes: ['standard', 'realtime'] }]
         })
+        const available = vi.fn(() => Promise.resolve('available'))
         class MockSpeechRecognition {
-            static available() { return Promise.resolve('unavailable') }
+            static available = available
             processLocally = false
         }
         Object.defineProperty(MockSpeechRecognition.prototype, 'processLocally', { value: false })
         vi.stubGlobal('SpeechRecognition', MockSpeechRecognition)
-
-        const { result } = renderHook(() => useVoiceSettings(), { wrapper: Wrapper })
-
-        await waitFor(() => expect(result.current.provider).toBe('openai'))
-        expect(result.current.providers).toHaveLength(1)
-    })
-
-    it('rechecks the on-device language pack when the language changes', async () => {
-        fetchTranscriptionProviders.mockResolvedValue({
-            providers: [{ id: 'openai', label: 'OpenAI', modes: ['standard', 'realtime'] }]
-        })
-        class MockSpeechRecognition {
-            static available({ langs }: { langs: string[] }) {
-                return Promise.resolve(langs[0] === 'en-US' ? 'available' : 'unavailable')
-            }
-            processLocally = false
-        }
-        Object.defineProperty(MockSpeechRecognition.prototype, 'processLocally', { value: false })
-        vi.stubGlobal('SpeechRecognition', MockSpeechRecognition)
-        localStorage.setItem('hapi-voice-lang', 'en-US')
         localStorage.setItem('hapi-transcription-provider', 'browser-local')
+
         const { result } = renderHook(() => useVoiceSettings(), { wrapper: Wrapper })
+
         await waitFor(() => expect(result.current.provider).toBe('browser-local'))
 
         act(() => result.current.setVoiceLanguage({ code: 'zh-CN', name: 'Chinese', nativeName: '中文' }))
-        await waitFor(() => expect(result.current.provider).toBe('openai'))
-
-        act(() => result.current.setVoiceLanguage({ code: 'en-US', name: 'English', nativeName: 'English' }))
-        await waitFor(() => expect(result.current.provider).toBe('browser-local'))
+        expect(result.current.provider).toBe('browser-local')
+        expect(available).not.toHaveBeenCalled()
     })
 })
