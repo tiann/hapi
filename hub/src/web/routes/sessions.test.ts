@@ -1356,9 +1356,9 @@ describe('sessions routes', () => {
                 scheduledIds.push(ids)
                 return new Map(ids.map((id) => [id, 0]))
             },
-            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
-        } as Partial<SyncEngine>
+        } as unknown as Partial<SyncEngine>
 
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {
