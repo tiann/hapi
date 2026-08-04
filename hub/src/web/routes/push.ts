@@ -61,7 +61,7 @@ export function createPushRoutes(
     app.post('/push/test', async (c) => {
         const namespace = c.get('namespace')
         try {
-            await pushService.sendToNamespace(namespace, {
+            const delivered = await pushService.sendToNamespace(namespace, {
                 title: 'HAPI Test Notification',
                 body: 'Your push notifications are working.',
                 tag: 'test-push',
@@ -71,6 +71,9 @@ export function createPushRoutes(
                     url: '/settings/notifications'
                 }
             })
+            if (delivered === 0) {
+                return c.json({ error: 'No push notification was delivered' }, 503)
+            }
             return c.json({ ok: true })
         } catch (error) {
             console.error('[PushRoutes] Test push failed:', error)

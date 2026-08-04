@@ -177,12 +177,9 @@ export default function SettingsNotificationsPage() {
         const d = draft[block]
         const defaults = copyQuery.data?.defaults
         const def = defaults ? defaults[block] as CopyTemplate | undefined : undefined
-        if (d && d.title.trim() && d.body.trim()) {
-            return { title: renderTemplate(d.title, PREVIEW_VARS), body: renderTemplate(d.body, PREVIEW_VARS) }
-        }
         return {
-            title: renderTemplate(def?.title ?? '', PREVIEW_VARS),
-            body: renderTemplate(def?.body ?? '', PREVIEW_VARS)
+            title: renderTemplate(d?.title.trim() ? d.title : (def?.title ?? ''), PREVIEW_VARS),
+            body: renderTemplate(d?.body.trim() ? d.body : (def?.body ?? ''), PREVIEW_VARS)
         }
     }
 

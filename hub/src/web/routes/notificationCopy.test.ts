@@ -57,6 +57,16 @@ describe('GET /api/notification-copy', () => {
         const body = await res.json() as { copy: Record<string, unknown> }
         expect(body.copy).toEqual({})
     })
+
+    it('returns empty copy when persisted notification copy is malformed', async () => {
+        await writeFile(join(dir, 'settings.json'), JSON.stringify({
+            notificationCopy: { ready: { title: 42, body: 'hello' } }
+        }))
+        const app = await createApp('default')
+        const res = await app.request('/api/notification-copy')
+        const body = await res.json() as { copy: Record<string, unknown> }
+        expect(body.copy).toEqual({})
+    })
 })
 
 describe('PUT /api/notification-copy', () => {

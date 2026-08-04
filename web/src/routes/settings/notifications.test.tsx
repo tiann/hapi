@@ -152,4 +152,12 @@ describe('SettingsNotificationsPage', () => {
         renderPage()
         expect(await screen.findByText(/Claude is waiting in My Project/)).toBeTruthy()
     })
+
+    it('previews a title-only override with the default body', async () => {
+        renderPage()
+        const titleInputs = await screen.findAllByLabelText('Title')
+        fireEvent.change(titleInputs[1], { target: { value: 'Custom {agentName}' } })
+
+        expect(await screen.findByText(/Custom Claude.*Claude is waiting in My Project/)).toBeTruthy()
+    })
 })
