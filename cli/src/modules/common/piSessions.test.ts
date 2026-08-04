@@ -86,4 +86,26 @@ describe('local Pi sessions', () => {
         ])
         rmSync(root, { recursive: true, force: true })
     })
+
+    it('keeps image-only user entries as explicit history placeholders', () => {
+        const root = mkdtempSync(join(tmpdir(), 'pi-sessions-'))
+        process.env.PI_CODING_AGENT_SESSION_DIR = root
+        mkdirSync(join(root, 'bucket'), { recursive: true })
+        writeFileSync(join(root, 'bucket', 'image.jsonl'), [
+            JSON.stringify({ type: 'session', id: 'image-session', cwd: '/tmp/project' }),
+            JSON.stringify({
+                type: 'message',
+                id: 'image-user',
+                parentId: null,
+                message: { role: 'user', content: [{ type: 'image', mimeType: 'image/png', data: 'base64' }] }
+            })
+        ].join('\n'))
+
+        const session = listLocalPiSessionsWithMessagesByIds(new Set(['image-session']))[0]
+        expect(session?.messages[0]).toMatchObject({
+            entryId: 'image-user',
+            content: { role: 'user', content: { text: '[Image attachment: image/png]' } }
+        })
+        rmSync(root, { recursive: true, force: true })
+    })
 })

@@ -35,6 +35,16 @@ const source = { sessionId: 'source-id', sessionFile: '/tmp/source.jsonl' }
 const clone = { sessionId: 'clone-id', sessionFile: '/tmp/clone.jsonl' }
 
 describe('PiConversationHistory entry mapping', () => {
+    it('persists the append cursor for assistant entries without waiting for another user message', () => {
+        const { session, metadata, client } = createSession()
+        const history = new PiConversationHistory(session, vi.fn())
+
+        history.observeEntry({ type: 'message', id: 'assistant-leaf', message: { role: 'assistant', content: 'done' } })
+
+        expect(metadata.piHistoryLeafEntryId).toBe('assistant-leaf')
+        expect(client.updateMetadata).toHaveBeenCalledOnce()
+    })
+
     it('pairs duplicate prompts to native user entries strictly FIFO without reading text', () => {
         const { session, metadata } = createSession()
         const history = new PiConversationHistory(session, vi.fn())

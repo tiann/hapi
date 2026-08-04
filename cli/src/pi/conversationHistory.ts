@@ -767,9 +767,15 @@ export class PiConversationHistory {
         if (this.observedEntryIds.has(entry.id)) return
         this.observedEntryIds.add(entry.id)
         this.appendCursor = entry.id
-        if (!isUserEntry(entry)) return
+        if (!isUserEntry(entry)) {
+            this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: entry.id }))
+            return
+        }
         const pending = this.pendingUserEntries.shift()
-        if (!pending || this.entryIdByLocalId.has(pending.localId)) return
+        if (!pending || this.entryIdByLocalId.has(pending.localId)) {
+            this.session.updateMetadata((metadata) => ({ ...metadata, piHistoryLeafEntryId: entry.id }))
+            return
+        }
         const localId = pending.localId
         this.entryIdByLocalId.set(localId, entry.id)
         this.session.updateMetadata((metadata) => ({

@@ -550,7 +550,7 @@ describe('NewSession launch preferences', () => {
                 machineId: 'machine-1',
                 results: [
                     { piSessionId: 'pi-native-1', hapiSessionId: 'hapi-1', action: 'created', appended: 1 },
-                    { piSessionId: 'pi-native-2', error: { code: 'session_active', message: 'active' } }
+                    { piSessionId: 'pi-native-2', hapiSessionId: 'hapi-2', error: { code: 'session_active', message: 'active' } }
                 ]
             })
         } as unknown as ApiClient
@@ -572,7 +572,10 @@ describe('NewSession launch preferences', () => {
 
         await waitFor(() => expect(mocks.refetchSessions).toHaveBeenCalled())
         expect(piApi.getPiSessions).toHaveBeenCalledTimes(2)
-        expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.success.title' }))
+        expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'piImport.success.title',
+            body: 'piImport.success.body'
+        }))
         expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.failed.title' }))
     })
 

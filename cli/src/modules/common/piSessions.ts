@@ -80,6 +80,21 @@ function extractText(value: unknown): string {
     }).filter(Boolean).join('\n')
 }
 
+function extractUserText(value: unknown): string {
+    if (typeof value === 'string') return value
+    if (!Array.isArray(value)) return ''
+    return value.map((item) => {
+        if (typeof item === 'string') return item
+        const block = asRecord(item)
+        if (block?.type === 'text' && typeof block.text === 'string') return block.text
+        if (block?.type === 'image') {
+            const mimeType = asString(block.mimeType) ?? 'image'
+            return `[Image attachment: ${mimeType}]`
+        }
+        return ''
+    }).filter(Boolean).join('\n')
+}
+
 function importedUser(text: string): PiImportedMessageContent {
     return {
         role: 'user',
@@ -131,7 +146,7 @@ function convertMessageRecord(
     const result: PiImportedMessage[] = []
 
     if (role === 'user') {
-        const text = extractText(message.content).trim()
+        const text = extractUserText(message.content).trim()
         if (text) pushImportedMessage(result, sessionId, entryId, parentEntryId, createdAt, 'user', importedUser(text))
         return result
     }

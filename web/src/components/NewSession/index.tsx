@@ -1038,7 +1038,7 @@ export function NewSession(props: {
                 cwd: trimmedDirectory || null,
                 machineId: piImportMachineId ?? machineId
             })
-            const importedCount = result.results.filter((item) => item.hapiSessionId).length
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error).length
             const failed = result.results.filter((item) => item.error)
             if (importedCount > 0) {
                 addToast({
