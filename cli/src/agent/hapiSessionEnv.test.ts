@@ -50,7 +50,7 @@ describe('exportHapiHubAuthEnv', () => {
         configuration._setApiUrl('http://remote-hub:3006')
         configuration._setCliApiToken('runner-token')
 
-        exportHapiHubAuthEnv()
+        exportHapiHubAuthEnv({ exportApiUrl: true })
 
         expect(process.env.HAPI_API_URL).toBe('http://remote-hub:3006')
         expect(process.env.CLI_API_TOKEN).toBe('runner-token')
@@ -62,9 +62,21 @@ describe('exportHapiHubAuthEnv', () => {
         configuration._setApiUrl('http://config-hub:3006')
         configuration._setCliApiToken('')
 
-        exportHapiHubAuthEnv()
+        exportHapiHubAuthEnv({ exportApiUrl: true })
 
         expect(process.env.HAPI_API_URL).toBe('http://config-hub:3006')
         expect(process.env.CLI_API_TOKEN).toBe('already-set-token')
+    })
+
+    it('exports token only when api URL is the implicit default (preserve auto-start)', () => {
+        delete process.env.HAPI_API_URL
+        delete process.env.CLI_API_TOKEN
+        configuration._setApiUrl('http://localhost:3006')
+        configuration._setCliApiToken('local-token')
+
+        exportHapiHubAuthEnv({ exportApiUrl: false })
+
+        expect(process.env.HAPI_API_URL).toBeUndefined()
+        expect(process.env.CLI_API_TOKEN).toBe('local-token')
     })
 })

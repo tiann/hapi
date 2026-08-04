@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { initializeApiUrlMock, readSettingsMock, updateSettingsMock } = vi.hoisted(() => ({
-    initializeApiUrlMock: vi.fn(async () => {}),
+    initializeApiUrlMock: vi.fn(async () => 'default' as const),
     readSettingsMock: vi.fn(),
     updateSettingsMock: vi.fn()
 }))

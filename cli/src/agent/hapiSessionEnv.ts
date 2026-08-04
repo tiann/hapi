@@ -33,19 +33,31 @@ export function exportHapiSessionEnv(sessionId: string): void {
 }
 
 /**
- * Mirror resolved hub URL + CLI token into `process.env` so agent Shell tools
- * that spawn a fresh `hapi` (e.g. `hapi ping-peer --list`) hit the same hub the
+ * Mirror resolved hub credentials into `process.env` so agent Shell tools that
+ * spawn a fresh `hapi` (e.g. `hapi ping-peer --list`) hit the same hub the
  * session CLI already uses. Needed when auth came from `~/.hapi/settings.json`
  * (or runner systemd env only on the parent) rather than the child shell env.
+ *
+ * **Do not** export the implicit default `http://localhost:3006` as
+ * `HAPI_API_URL` — `maybeAutoStartServer()` treats any set env var as an
+ * explicit remote override and would skip starting the bundled hub (#1372).
+ * Pass `exportApiUrl: true` only when the URL came from env or settings.
  *
  * Web terminal PTYs still strip these keys via TerminalManager (sensitive).
  * Prefer MCP `list_peers` when available - it uses in-process credentials.
  * See tiann/hapi#1371.
  */
-export function exportHapiHubAuthEnv(): void {
-    const apiUrl = configuration.apiUrl?.trim();
-    if (apiUrl) {
-        process.env.HAPI_API_URL = apiUrl;
+export type ExportHapiHubAuthEnvOptions = {
+    /** When true, mirror `configuration.apiUrl` into `HAPI_API_URL`. */
+    exportApiUrl?: boolean
+}
+
+export function exportHapiHubAuthEnv(options: ExportHapiHubAuthEnvOptions = {}): void {
+    if (options.exportApiUrl) {
+        const apiUrl = configuration.apiUrl?.trim();
+        if (apiUrl) {
+            process.env.HAPI_API_URL = apiUrl;
+        }
     }
     const token = configuration.cliApiToken?.trim();
     if (token) {

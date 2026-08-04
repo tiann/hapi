@@ -22,12 +22,13 @@ import { initializeExtraHeaders } from '@/ui/extraHeadersInit'
  */
 export async function initializeToken(): Promise<void> {
     // Initialize API URL first (env > settings.json > default)
-    await initializeApiUrl()
+    const apiUrlSource = await initializeApiUrl()
     await initializeExtraHeaders()
+    const exportApiUrl = apiUrlSource !== 'default'
 
     // 1. Environment variable has highest priority (allows temporary override)
     if (configuration.cliApiToken) {
-        exportHapiHubAuthEnv()
+        exportHapiHubAuthEnv({ exportApiUrl })
         return
     }
 
@@ -35,7 +36,7 @@ export async function initializeToken(): Promise<void> {
     const settings = await readSettings()
     if (settings.cliApiToken) {
         configuration._setCliApiToken(settings.cliApiToken)
-        exportHapiHubAuthEnv()
+        exportHapiHubAuthEnv({ exportApiUrl })
         return
     }
 
@@ -53,7 +54,7 @@ export async function initializeToken(): Promise<void> {
         cliApiToken: token
     }))
     configuration._setCliApiToken(token)
-    exportHapiHubAuthEnv()
+    exportHapiHubAuthEnv({ exportApiUrl })
 }
 
 async function promptForToken(): Promise<string> {

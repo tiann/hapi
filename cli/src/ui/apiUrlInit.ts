@@ -10,27 +10,31 @@
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 
+/** Where the active hub URL came from after initializeApiUrl(). */
+export type ApiUrlSource = 'env' | 'settings' | 'default'
+
 /**
  * Initialize API URL
  * Must be called before any API operations
  */
-export async function initializeApiUrl(): Promise<void> {
+export async function initializeApiUrl(): Promise<ApiUrlSource> {
     // 1. Environment variable has highest priority (allows temporary override)
     if (process.env.HAPI_API_URL) {
-        return
+        return 'env'
     }
 
     // 2. Read from settings file (new name first, then legacy)
     const settings = await readSettings()
     if (settings.apiUrl) {
         configuration._setApiUrl(settings.apiUrl)
-        return
+        return 'settings'
     }
     if (settings.serverUrl) {
         // Migrate from legacy field name
         configuration._setApiUrl(settings.serverUrl)
-        return
+        return 'settings'
     }
 
     // 3. Default value already set in configuration constructor
+    return 'default'
 }
