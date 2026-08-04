@@ -843,7 +843,7 @@ async uploadScratchlistAttachment(
         for (const session of sorted) {
             this.triggerDedupIfNeeded(session.id)
         }
-        this.machineCache.expireInactive()
+        this.machineCache.expireInactive?.()
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
         this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)

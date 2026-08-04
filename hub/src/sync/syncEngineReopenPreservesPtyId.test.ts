@@ -53,7 +53,8 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         ;(engine as unknown as { machineCache: unknown }).machineCache = {
             getOnlineMachinesByNamespace: () => [
                 { id: 'machine-x', metadata: { host: 'localhost' } }
-            ]
+            ],
+            expireInactive: () => {}
         }
         ;(engine as unknown as { waitForSessionActive: unknown }).waitForSessionActive = async () => true
         ;(engine as unknown as { waitForSessionReady: unknown }).waitForSessionReady = async () => 'ready'
@@ -236,7 +237,8 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
         const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         ;(restarted as any).machineCache = {
-            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }]
+            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }],
+            expireInactive: () => {}
         }
         ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
 
@@ -261,7 +263,8 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
         const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         ;(restarted as any).machineCache = {
-            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }]
+            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }],
+            expireInactive: () => {}
         }
         ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
         ;(restarted as any).rpcGateway.spawnSession = async () => {
