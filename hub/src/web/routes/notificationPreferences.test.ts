@@ -63,6 +63,16 @@ describe('PUT /api/notification-preferences', () => {
         expect(res.status).toBe(400)
     })
 
+    it('rejects fractional preference values', async () => {
+        const app = createApp()
+        const res = await app.request('/api/notification-preferences', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionRequests: 0.5 })
+        })
+        expect(res.status).toBe(400)
+    })
+
     it('rejects invalid bodies', async () => {
         const app = createApp()
         const res = await app.request('/api/notification-preferences', {

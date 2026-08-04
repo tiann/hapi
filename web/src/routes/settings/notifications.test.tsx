@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
+import { queryKeys } from '@/lib/query-keys'
 import SettingsNotificationsPage from './notifications'
 
 const defaultPrefs = {
@@ -66,6 +67,7 @@ describe('SettingsNotificationsPage', () => {
                 </I18nProvider>
             </QueryClientProvider>,
         )
+        return queryClient
     }
 
     it('renders all four toggles from server preferences', async () => {
@@ -103,6 +105,16 @@ describe('SettingsNotificationsPage', () => {
         await waitFor(() => {
             expect(updateNotificationPreferences).toHaveBeenCalledWith({ permissionRequests: 0 })
         })
+    })
+
+    it('keeps the confirmation open when disabling permission notifications fails', async () => {
+        updateNotificationPreferences.mockRejectedValueOnce(new Error('save failed'))
+        renderPage()
+        fireEvent.click(await screen.findByLabelText('Permission requests'))
+        fireEvent.click(screen.getByText('Turn off anyway'))
+
+        expect(await screen.findByText('save failed')).toBeTruthy()
+        expect(screen.getByText('Turn off permission request notifications?')).toBeTruthy()
     })
 
     it('sends a test push and reports success', async () => {
@@ -163,6 +175,29 @@ describe('SettingsNotificationsPage', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Save copy' }))
 
         expect(await screen.findByText('Failed to save notification copy')).toBeTruthy()
+    })
+
+    it('accepts refreshed copy after a successful save', async () => {
+        updateNotificationCopy.mockResolvedValueOnce({
+            ...defaultCopyResponse,
+            copy: { ready: { title: 'Saved title', body: 'Saved body' } }
+        })
+        const queryClient = renderPage()
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
+        fireEvent.click(readyRow)
+        fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Saved title' } })
+        fireEvent.change(screen.getByLabelText('Body'), { target: { value: 'Saved body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save copy' }))
+        expect(await screen.findByText('Copy saved')).toBeTruthy()
+
+        act(() => {
+            queryClient.setQueryData(queryKeys.notificationCopy, {
+                ...defaultCopyResponse,
+                copy: { ready: { title: 'Remote title', body: 'Remote body' } }
+            })
+        })
+
+        expect(await screen.findByRole('button', { name: /Session ready.*Remote title.*Remote body/ })).toBeTruthy()
     })
 
     it('keeps copy editors collapsed and prefills defaults when opened', async () => {
