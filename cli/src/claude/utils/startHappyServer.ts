@@ -19,7 +19,7 @@ import {
     PING_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation'
-import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, pingPeer } from "@/modules/pingPeer/pingPeer";
+import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -287,14 +287,18 @@ function createHapiMcpServer(
         logger.debug('[hapiMCP] list_peers');
         try {
             const limit = args.limit ?? 30;
-            const sessions = await listPeerSessions({ limit: Math.min(100, limit + 1) });
+            const sessions = await listPeerSessions({
+                limit: peerListFetchLimit(limit, { excludeCaller: true }),
+            });
+            const peers = sessions.filter((session) => session.id !== client.sessionId);
+            const hasMore = peers.length > limit;
             return {
                 content: [
                     {
                         type: 'text' as const,
-                        text: formatPeerSessionsList(sessions, {
+                        text: formatPeerSessionsList(peers, {
                             maxRows: limit,
-                            excludeSessionId: client.sessionId,
+                            hasMore,
                         }),
                     },
                 ],

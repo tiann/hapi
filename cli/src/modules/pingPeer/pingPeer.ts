@@ -85,9 +85,9 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 const AUTH_RECOVERY_HINT =
-    'On a remote runner, set HAPI_API_URL and CLI_API_TOKEN to the same hub as the runner ' +
-    '(or run `hapi auth login`). Inside a HAPI session prefer MCP `list_peers` / `ping_peer` / ' +
-    '`inspect_peer`, which use the session CLI credentials.'
+    'On a remote runner, set HAPI_API_URL to the runner hub, and set CLI_API_TOKEN ' +
+    'or run `hapi auth login` to save the token. Inside a HAPI session prefer MCP ' +
+    '`list_peers` / `ping_peer` / `inspect_peer`, which use the session CLI credentials.'
 
 function resolveApiUrl(apiUrl?: string): string {
     const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
@@ -385,9 +385,24 @@ export type FormatPeerSessionsListOptions = {
     maxRows?: number
     /** Omit this session id (the caller) from the shortlist. */
     excludeSessionId?: string
+    /**
+     * When the fetch was intentionally bounded, signal overflow without claiming
+     * an exact omitted count from the sample.
+     */
+    hasMore?: boolean
 }
 
 const MAX_PEER_LABEL_CHARS = 255
+
+/**
+ * Hub fetch size for peer discovery: enough rows for the requested page, plus
+ * padding for caller exclusion and an overflow probe. Caps at hub max (500).
+ */
+export function peerListFetchLimit(requestedLimit: number, options?: { excludeCaller?: boolean }): number {
+    const limit = Math.max(1, Math.floor(requestedLimit))
+    const pad = options?.excludeCaller ? 2 : 1
+    return Math.min(500, limit + pad)
+}
 
 /**
  * Web-parity title for peer shortlists: name → summary.text → basename(path) → id prefix.
@@ -432,7 +447,9 @@ export function formatPeerSessionsList(
         return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
     })
     const omitted = sorted.length - rows.length
-    if (omitted > 0) {
+    if (options.hasMore) {
+        rows.push('  … more sessions available (narrow with inspect_peer / ping_peer by id)')
+    } else if (omitted > 0) {
         rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
     }
     return rows.join('\n')

@@ -35,7 +35,7 @@ ${chalk.bold('Notes:')}
   Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
   When a user cites [title](/sessions/<id>) or Copy-reference
   See session "…" (/sessions/<id>) for context, pass that <id> here.
-  On a remote runner, --list needs HAPI_API_URL set to the hub, plus
+  On a remote runner, --list needs HAPI_API_URL set to the runner hub, plus
   CLI_API_TOKEN or \`hapi auth login\` for the token. Inside a session prefer MCP list_peers.
 
 ${chalk.bold('Env:')}

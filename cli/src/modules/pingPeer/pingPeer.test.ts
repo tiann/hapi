@@ -517,6 +517,27 @@ describe('formatPeerSessionsList', () => {
         expect(text).toContain('bbbbbbbb-2222-2222-2222-222222222222')
         expect(text).toContain('Peer')
     })
+
+    it('hasMore marks overflow without requiring an exact omitted count', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 1,
+                metadata: { name: 'Only', flavor: 'claude' }
+            }
+        ], { maxRows: 1, hasMore: true })
+        expect(text).toContain('Only')
+        expect(text).toMatch(/more sessions available/)
+    })
+
+    it('peerListFetchLimit pads for caller exclusion and overflow probe', async () => {
+        const { peerListFetchLimit } = await import('./pingPeer')
+        expect(peerListFetchLimit(100, { excludeCaller: true })).toBe(102)
+        expect(peerListFetchLimit(100)).toBe(101)
+        expect(peerListFetchLimit(499, { excludeCaller: true })).toBe(500)
+    })
 })
 
 describe('listPeerSessions auth failures', () => {
@@ -567,7 +588,8 @@ describe('listPeerSessions auth failures', () => {
         expect(caught).toBeInstanceOf(PingPeerError)
         const message = (caught as InstanceType<typeof PingPeerError>).message
         expect(message).toMatch(/auth login/i)
-        expect(message).toMatch(/HAPI_API_URL|runner/i)
+        expect(message).toMatch(/HAPI_API_URL/)
+        expect(message).toMatch(/CLI_API_TOKEN|auth login/i)
     })
 })
 
