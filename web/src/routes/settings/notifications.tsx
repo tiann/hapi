@@ -147,6 +147,7 @@ export default function SettingsNotificationsPage() {
             setCopySaveError(null)
         },
         onSuccess: (data) => {
+            userEditedRef.current = false
             queryClient.setQueryData(queryKeys.notificationCopy, data)
             setDraft(resolveEffectiveCopy(data.copy, data.defaults))
             setCopySaveError(null)
@@ -336,7 +337,7 @@ export default function SettingsNotificationsPage() {
                 confirmLabel={t('settings.notifications.disablePermissionConfirm')}
                 confirmingLabel={t('settings.notifications.disablePermissionConfirm')}
                 onConfirm={async () => {
-                    mutation.mutate({ permissionRequests: 0 })
+                    await mutation.mutateAsync({ permissionRequests: 0 })
                 }}
                 isPending={mutation.isPending}
                 destructive

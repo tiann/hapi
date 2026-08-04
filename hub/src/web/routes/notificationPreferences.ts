@@ -4,10 +4,10 @@ import type { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
 const updateSchema = z.object({
-    permissionRequests: z.number().min(0).max(1).optional(),
-    sessionReady: z.number().min(0).max(1).optional(),
-    taskNotifications: z.number().min(0).max(1).optional(),
-    sessionCompletion: z.number().min(0).max(1).optional()
+    permissionRequests: z.number().int().min(0).max(1).optional(),
+    sessionReady: z.number().int().min(0).max(1).optional(),
+    taskNotifications: z.number().int().min(0).max(1).optional(),
+    sessionCompletion: z.number().int().min(0).max(1).optional()
 })
 
 export function createNotificationPreferencesRoutes(store: Store): Hono<WebAppEnv> {
