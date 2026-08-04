@@ -72,6 +72,8 @@ export type ListPeerSessionsOptions = {
     accessToken?: string
     http?: AxiosInstance
     limit?: number
+    /** Hub sort before limit truncation. Peer discovery defaults to newest updatedAt. */
+    order?: 'updatedAt'
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -193,13 +195,21 @@ async function listSessions(
     apiUrl: string,
     jwt: string,
     http: AxiosInstance,
-    limit = 500
+    options: { limit?: number; order?: 'updatedAt' } = {}
 ): Promise<PingPeerSessionSummary[]> {
+    const params: Record<string, string | number> = {}
+    if (options.limit !== undefined) {
+        params.limit = options.limit
+    }
+    if (options.order !== undefined) {
+        params.order = options.order
+    }
     const response = await http.get(
         `${apiUrl}/api/sessions`,
         {
             headers: authHeaders(jwt),
-            params: { limit },
+            // Omit params when unbounded so ping/inspect keep full-namespace resolution.
+            ...(Object.keys(params).length > 0 ? { params } : {}),
             timeout: 15_000,
             validateStatus: () => true
         }
@@ -364,7 +374,10 @@ export async function listPeerSessions(
     const accessToken = resolveAccessToken(options.accessToken)
     const http = options.http ?? axios
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    return listSessions(apiUrl, jwt, http, options.limit ?? 200)
+    return listSessions(apiUrl, jwt, http, {
+        limit: options.limit ?? 200,
+        order: options.order ?? 'updatedAt'
+    })
 }
 
 export type FormatPeerSessionsListOptions = {
@@ -382,9 +395,10 @@ const MAX_PEER_LABEL_CHARS = 255
  */
 export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string {
     const meta = session.metadata
+    const pathLabel = meta?.path?.split(/[\\/]/).filter(Boolean).pop()?.trim()
     const raw = meta?.name?.trim()
         || meta?.summary?.text?.trim()
-        || meta?.path?.split('/').filter(Boolean).pop()?.trim()
+        || pathLabel
         || session.id.slice(0, 8)
     const collapsed = raw.replace(/\s+/g, ' ').trim()
     if (!collapsed) {

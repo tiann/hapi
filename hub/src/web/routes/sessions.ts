@@ -81,10 +81,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const limit = parsedLimit !== null && Number.isFinite(parsedLimit)
             ? Math.min(500, Math.max(1, Math.floor(parsedLimit)))
             : null
+        const order = c.req.query('order')
 
         let sessionRecords = engine.getSessionsByNamespace(namespace)
             .sort((a, b) => {
-                // Active sessions first
+                // Peer discovery wants newest activity first before limit truncation.
+                if (order === 'updatedAt') {
+                    return b.updatedAt - a.updatedAt
+                }
+                // Active sessions first (web session list)
                 if (a.active !== b.active) {
                     return a.active ? -1 : 1
                 }
