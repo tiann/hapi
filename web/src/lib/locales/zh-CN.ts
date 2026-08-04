@@ -1067,7 +1067,7 @@ export default {
   'settings.notifications.testPushError': '发送测试通知失败',
   'settings.notifications.saveError': '保存偏好设置失败',
   'settings.notifications.copy.title': '推送文案',
-  'settings.notifications.copy.description': '自定义推送通知的标题和正文。{variable} 占位符会在发送时替换。留空则使用默认文案。',
+  'settings.notifications.copy.description': '通知标题与正文。',
   'settings.notifications.copy.titleLabel': '标题',
   'settings.notifications.copy.bodyLabel': '正文',
   'settings.notifications.copy.preview': '预览',
