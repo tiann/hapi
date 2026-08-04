@@ -35,7 +35,9 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'list_peers',
     'hapi_list_peers',
     'happy__list_peers',
-    'mcp__hapi__list_peers'
+    'mcp__hapi__list_peers',
+    // ACP permission requests often surface MCP tool title, not the snake_case name.
+    'list peer sessions'
 ]);
 // ping_peer / inspect_peer intentionally omitted from always-approve: they can
 // resume+inject into another session or read peer histories, so permission
