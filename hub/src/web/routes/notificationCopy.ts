@@ -1,21 +1,13 @@
 import { Hono } from 'hono'
-import { z } from 'zod'
 import { getSettingsFile, readSettingsOrThrow, writeSettings } from '../../config/settings'
-import { COPY_KEYS, DEFAULT_COPY, type CopyKey, type NotificationCopyConfig } from '../../push/notificationCopy'
+import {
+    COPY_KEYS,
+    DEFAULT_COPY,
+    notificationCopySchema,
+    type CopyKey,
+    type NotificationCopyConfig
+} from '../../push/notificationCopy'
 import type { WebAppEnv } from '../middleware/auth'
-
-const copyTemplateSchema = z.object({
-    title: z.string().max(500),
-    body: z.string().max(500)
-})
-
-const updateSchema = z.object({
-    permissionRequest: copyTemplateSchema.optional(),
-    ready: copyTemplateSchema.optional(),
-    taskCompleted: copyTemplateSchema.optional(),
-    taskFailed: copyTemplateSchema.optional(),
-    sessionCompletion: copyTemplateSchema.optional()
-})
 
 function isAdmin(namespace: string): boolean {
     return namespace === 'default'
@@ -31,8 +23,9 @@ export function createNotificationCopyRoutes(dataDir: string): Hono<WebAppEnv> {
             return c.json({ error: 'Forbidden: admin only' }, 403)
         }
         const settings = await readSettingsOrThrow(settingsFile)
+        const parsed = notificationCopySchema.safeParse(settings.notificationCopy ?? {})
         return c.json({
-            copy: settings.notificationCopy ?? {},
+            copy: parsed.success ? parsed.data : {},
             defaults: DEFAULT_COPY
         })
     })
@@ -43,7 +36,7 @@ export function createNotificationCopyRoutes(dataDir: string): Hono<WebAppEnv> {
             return c.json({ error: 'Forbidden: admin only' }, 403)
         }
         const json = await c.req.json().catch(() => null)
-        const parsed = updateSchema.safeParse(json)
+        const parsed = notificationCopySchema.safeParse(json)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
         }

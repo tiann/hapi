@@ -1,4 +1,5 @@
 import type { SessionEndReason } from '@hapi/protocol'
+import { z } from 'zod'
 import { getSettingsFile, readSettings } from '../config/settings'
 import type { TaskNotification } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
@@ -6,12 +7,21 @@ import type { Session } from '../sync/syncEngine'
 
 export type CopyKey = 'permissionRequest' | 'ready' | 'taskCompleted' | 'taskFailed' | 'sessionCompletion'
 
-export type CopyTemplate = {
-    title: string
-    body: string
-}
+const copyTemplateSchema = z.object({
+    title: z.string().max(500),
+    body: z.string().max(500)
+})
 
-export type NotificationCopyConfig = Partial<Record<CopyKey, CopyTemplate>>
+export const notificationCopySchema = z.object({
+    permissionRequest: copyTemplateSchema.optional(),
+    ready: copyTemplateSchema.optional(),
+    taskCompleted: copyTemplateSchema.optional(),
+    taskFailed: copyTemplateSchema.optional(),
+    sessionCompletion: copyTemplateSchema.optional()
+})
+
+export type CopyTemplate = z.infer<typeof copyTemplateSchema>
+export type NotificationCopyConfig = z.infer<typeof notificationCopySchema>
 
 export const COPY_KEYS: readonly CopyKey[] = [
     'permissionRequest',
@@ -36,22 +46,24 @@ export const DEFAULT_COPY: Record<CopyKey, CopyTemplate> = {
 export async function loadNotificationCopy(dataDir: string): Promise<NotificationCopyConfig> {
     try {
         const settings = await readSettings(getSettingsFile(dataDir))
-        return settings?.notificationCopy ?? {}
+        const parsed = notificationCopySchema.safeParse(settings?.notificationCopy ?? {})
+        return parsed.success ? parsed.data : {}
     } catch {
         return {}
     }
 }
 
 /**
- * A stored template only takes effect when BOTH title and body are non-empty;
- * an empty field falls back to the default template.
+ * Empty fields fall back independently so a title-only or body-only override
+ * still takes effect.
  */
 export function resolveCopy(key: CopyKey, stored: NotificationCopyConfig): CopyTemplate {
     const template = stored[key]
-    if (template && template.title.trim() && template.body.trim()) {
-        return { title: template.title, body: template.body }
+    const defaults = DEFAULT_COPY[key]
+    return {
+        title: template?.title.trim() ? template.title : defaults.title,
+        body: template?.body.trim() ? template.body : defaults.body
     }
-    return DEFAULT_COPY[key]
 }
 
 /**

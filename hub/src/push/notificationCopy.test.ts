@@ -64,6 +64,18 @@ describe('loadNotificationCopy', () => {
             await rm(dir, { recursive: true, force: true })
         }
     })
+
+    it('returns empty config when persisted copy is malformed', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-copy-test-'))
+        try {
+            await writeFile(join(dir, 'settings.json'), JSON.stringify({
+                notificationCopy: { ready: { title: 42, body: 'hello' } }
+            }))
+            expect(await loadNotificationCopy(dir)).toEqual({})
+        } finally {
+            await rm(dir, { recursive: true, force: true })
+        }
+    })
 })
 
 describe('resolveCopy', () => {
@@ -71,12 +83,18 @@ describe('resolveCopy', () => {
         expect(resolveCopy('ready', {})).toEqual(DEFAULT_COPY.ready)
     })
 
-    it('returns the default when title is empty', () => {
-        expect(resolveCopy('ready', { ready: { title: '  ', body: 'custom' } })).toEqual(DEFAULT_COPY.ready)
+    it('falls back only the title when title is empty', () => {
+        expect(resolveCopy('ready', { ready: { title: '  ', body: 'custom' } })).toEqual({
+            title: DEFAULT_COPY.ready.title,
+            body: 'custom'
+        })
     })
 
-    it('returns the default when body is empty', () => {
-        expect(resolveCopy('ready', { ready: { title: 'custom', body: '' } })).toEqual(DEFAULT_COPY.ready)
+    it('falls back only the body when body is empty', () => {
+        expect(resolveCopy('ready', { ready: { title: 'custom', body: '' } })).toEqual({
+            title: 'custom',
+            body: DEFAULT_COPY.ready.body
+        })
     })
 
     it('returns the stored template when both fields are non-empty', () => {
