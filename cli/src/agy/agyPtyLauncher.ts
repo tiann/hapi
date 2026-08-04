@@ -235,6 +235,16 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     // a long-lived session, §9), it is rebuilt from scratch via
     // prepareAgyHookCarrier and hookCarrierDir is repointed so the next agy
     // spawn's --add-dir uses it.
+    // Fail-closed contract note: launchOnce always spawns agy with
+    // --dangerously-skip-permissions (see its agyArgs above) — the carrier's
+    // PreToolUse hook is the ONLY thing standing between that and agy
+    // auto-approving every tool call with no user in the loop. runAgy.ts's
+    // initial prepareAgyHookCarrier() failure already honors this by
+    // aborting the session outright ("agy PTY session aborted: could not
+    // prepare the hook carrier...") rather than starting unprotected. This
+    // function is the respawn-time counterpart of that same carrier, so a
+    // recreation failure here must carry the identical consequence: abort,
+    // never spawn.
     private syncPreInvocationHookForLaunch(): void {
         const withDiscovery = this.session.hooksJsonWithPreInvocation
         const withoutDiscovery = this.session.hooksJsonWithoutPreInvocation
@@ -244,8 +254,30 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         if (!carrierDir || !agyHookCarrierIsIntact(carrierDir)) {
             const recreated = prepareAgyHookCarrier(desired, this.session.hookMcpServer)
             if (!recreated) {
-                logger.debug('[agy-pty]: failed to recreate the hook carrier before respawn; the next agy spawn will run without it')
-                return
+                // Fix 1 (fail-closed): previously this just logged and
+                // returned, letting onLaunchStart finish normally and
+                // launchOnce spawn agy anyway — with no carrier at all, i.e.
+                // no PreToolUse hook, i.e. every tool call auto-approved
+                // with --dangerously-skip-permissions and nobody in the
+                // loop. Throwing here instead propagates out of
+                // onLaunchStart (called synchronously, before launchOnce,
+                // by RemoteLauncherBase.runRespawnLoop — see its call site)
+                // and aborts the respawn loop before agy is ever spawned.
+                // sendSessionEvent first: the throw alone would otherwise
+                // surface to the user only as an abrupt, unexplained session
+                // end (runAgy.ts's catch -> markCrash logs to the debug log,
+                // not the web chat) — mirrors the discovery-timeout warning
+                // above (armDiscoveryTimeoutWarning), the existing mechanism
+                // for "something silent broke, tell the web chat why."
+                logger.debug('[agy-pty]: failed to recreate the hook carrier before respawn; aborting rather than spawning agy without a permission bridge (fail-closed)')
+                this.session.client.sendSessionEvent({
+                    type: 'error',
+                    message: 'agy session aborted: could not recreate the permission bridge (hook carrier). Check that the temporary directory is writable and has sufficient space.',
+                })
+                throw new Error(
+                    'agy PTY session aborted: could not recreate the hook carrier needed for the permission bridge. ' +
+                    'Check that the temporary directory is writable and has sufficient space.'
+                )
             }
             this.session.setHookCarrierDir(recreated.carrierDir)
             logger.debug(`[agy-pty]: hook carrier was missing before a respawn; recreated at ${recreated.carrierDir}`)
@@ -254,6 +286,18 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         try {
             writeAgyHooksJsonAtomic(carrierDir, desired)
         } catch (error) {
+            // Unlike the recreation branch above, this stays fail-open
+            // (log-and-continue) on purpose: agyHookCarrierIsIntact() just
+            // confirmed carrierDir/.agents/hooks.json exists on disk with
+            // SOME prior content (either prepareAgyHookCarrier's original
+            // write or an earlier successful call to this same function) —
+            // the permission bridge (PreToolUse) that content registers is
+            // still in force either way. A failed overwrite here (ENOSPC, a
+            // permission change mid-session, ...) only risks the
+            // PreInvocation discovery block being stale (armed when it
+            // should have been dropped, or vice versa) — a discovery
+            // latency/overhead problem, never an unprotected-tool-call one.
+            // That is not worth aborting a session over.
             logger.debug('[agy-pty]: failed to sync the PreInvocation hook state before respawn', error)
         }
     }

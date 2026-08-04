@@ -1150,6 +1150,40 @@ describe('agyPtyLauncher PreInvocation self-detach/respawn-reattach (Phase 2.7)'
         await launcherPromise
     })
 
+    it('6) aborts before agy ever spawns when the carrier cannot be recreated (Fix 1: fail-closed)', async () => {
+        harness.carrierIntact = false
+        // harness.carrierRecreateResult stays undefined (afterEach's reset
+        // default) — simulates prepareAgyHookCarrier() failing (ENOSPC, an
+        // unwritable HAPI_HOME, ...).
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-fail',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+
+        const launcherPromise = agyPtyLauncher(session as never)
+
+        // Fails (mutation check: revert syncPreInvocationHookForLaunch's
+        // `if (!recreated)` branch back to log-and-return) if the launcher
+        // resolves/exits cleanly instead of propagating the fail-closed abort.
+        await expect(launcherPromise).rejects.toThrow(/hook carrier/i)
+
+        // The explicit ask this test guards: agyPty (and therefore
+        // --dangerously-skip-permissions) must never be spawned when the
+        // permission bridge cannot be rebuilt. ptyOptsCaptured is only ever
+        // set from inside the mocked agyPty() body (see the top-of-file
+        // vi.mock('./agyPty', ...)), so it staying null proves agyPty was
+        // never invoked for this launch.
+        expect(ptyOptsCaptured).toBeNull()
+
+        // The web chat must show WHY the session ended, not just that it
+        // did — mirrors the discovery-timeout warning's
+        // sendSessionEvent({type:'error'}) (Fix 6, above).
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error' })
+        )
+    })
+
     it('5) detach/reattach do not disturb the existing discovery or resume wiring', async () => {
         harness.respawnRounds = 2
         const { session } = createSessionStub({
