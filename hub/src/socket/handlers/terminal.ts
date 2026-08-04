@@ -216,12 +216,14 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         emitCloseToCli(entry)
     })
 
-    const emitToCliForSession = (sessionId: string, event: 'agent-terminal:resize' | 'agent-terminal:refresh' | 'agent-terminal:idle' | 'agent-terminal:input', payload: Record<string, unknown>): void => {
+    /** Returns false when no CLI socket owns this session in the caller's namespace. */
+    const emitToCliForSession = (sessionId: string, event: 'agent-terminal:resize' | 'agent-terminal:refresh' | 'agent-terminal:idle' | 'agent-terminal:input', payload: Record<string, unknown>): boolean => {
         const cliSocketId = pickCliSocketId(sessionId)
-        if (!cliSocketId) return
+        if (!cliSocketId) return false
         const cliSocket = cliNamespace.sockets.get(cliSocketId)
-        if (!cliSocket || cliSocket.data.namespace !== namespace) return
+        if (!cliSocket || cliSocket.data.namespace !== namespace) return false
         cliSocket.emit(event, payload as never)
+        return true
     }
 
     // Sessions this socket is viewing the agent terminal for. When the last
@@ -263,19 +265,22 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         }
         socket.join(agentTerminalRoom(sessionId))
         subscribedAgentSessions.add(sessionId)
-        // Replay recent output so the terminal renders the current screen
-        // immediately instead of staying black until the next keystroke.
-        // terminalId must match the web client's filter ('agent'), not a
-        // synthetic id, otherwise the replayed data is silently dropped.
-        const buffered = getAgentTerminalReplay(sessionId)
-        if (buffered) {
-            socket.emit('agent-terminal:output', { sessionId, terminalId: 'agent', data: buffered })
-        }
         // Full-screen TUIs (agy's bubbletea alt-screen, claude's ink) can't always
         // be reconstructed from a byte-ring replay (truncated alt-screen enter,
         // stale alt-screen-exit from a prior spawn). Ask the CLI to repaint the
         // current screen so a freshly (re)subscribed viewer never sees black.
-        emitToCliForSession(sessionId, 'agent-terminal:refresh', { sessionId })
+        const askedCliToRepaint = emitToCliForSession(sessionId, 'agent-terminal:refresh', { sessionId })
+        // That repaint is rebroadcast through this same room, so emitting the
+        // buffered copy as well would push the whole screen into the ring twice
+        // on every toggle. Fall back to the buffer only when no CLI can repaint.
+        // terminalId must match the web client's filter ('agent'), not a
+        // synthetic id, otherwise the replayed data is silently dropped.
+        if (!askedCliToRepaint) {
+            const buffered = getAgentTerminalReplay(sessionId)
+            if (buffered) {
+                socket.emit('agent-terminal:output', { sessionId, terminalId: 'agent', data: buffered })
+            }
+        }
     })
 
     socket.on('agent-terminal:unsubscribe', (data: unknown) => {

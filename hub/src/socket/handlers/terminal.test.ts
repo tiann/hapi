@@ -319,6 +319,23 @@ describe('terminal socket handlers', () => {
             })
         })
 
+        it('leaves the replay to the CLI when one is connected, instead of sending the buffer twice', () => {
+            // The refresh makes the CLI replay its own full screen, which the hub
+            // appends and rebroadcasts. Emitting the buffered copy first as well
+            // duplicates the whole screen into the 256 KB ring on every toggle.
+            const { terminalSocket, cliNamespace } = createHarness()
+            const cliSocket = new FakeSocket('cli-socket')
+            cliSocket.data.namespace = 'default'
+            connectCliSocket(cliNamespace, cliSocket, 'session-1')
+            appendAgentTerminalOutput('session-1', 'buffered screen\r\n')
+
+            terminalSocket.trigger('agent-terminal:subscribe', { sessionId: 'session-1' })
+
+            expect(terminalSocket.rooms.has('agent-session:session-1')).toBe(true)
+            expect(lastEmit(terminalSocket, 'agent-terminal:output')).toBeUndefined()
+            expect(lastEmit(cliSocket, 'agent-terminal:refresh')).toBeDefined()
+        })
+
         it('rejects subscribe to a session in another namespace (no join, no replay)', () => {
             // A valid token for the 'default' namespace must not be able to
             // subscribe to a session that belongs to a different namespace.
