@@ -111,8 +111,9 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private scanner: any = null
     private firstMessageSent = false
     // The agy brain UUID for the current conversation. Set from the pre-known
-    // resume ID (if this is a resume) or discovered via the scanner's content-
-    // match once the first user message appears in the brain transcript.
+    // resume ID (if this is a resume) or adopted via handleSessionFound, which
+    // is fed by agy's PreToolUse/PreInvocation hook (see
+    // runAgy.ts:onPreToolUse/onAgyPreInvocation -> wrapper.onSessionFound).
     // Persisted here so re-spawns (crash recovery) resume the same conversation.
     private agySessionId: string | null = null
     // Live PTY controls (raw keystroke injection) for turn-interrupt

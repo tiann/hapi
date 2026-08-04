@@ -70,6 +70,23 @@ export interface PreToolUseDecision {
     updatedInput?: Record<string, unknown>;
 }
 
+/**
+ * Data received from agy's PreInvocation hook — fires before every model
+ * call, regardless of tool use (unlike PreToolUse, which only fires when a
+ * tool actually runs). HAPI uses this ONLY for brain UUID discovery; there is
+ * no `toolCall` field on this event at all.
+ */
+export interface AgyPreInvocationHookData {
+    conversationId?: string;
+    invocationNum?: number;
+    initialNumSteps?: number;
+    modelName?: string;
+    transcriptPath?: string;
+    artifactDirectoryPath?: string;
+    workspacePaths?: string[];
+    [key: string]: unknown;
+}
+
 export interface HookServerOptions {
     /** Called when a session hook is received with a valid session ID. */
     onSessionHook: (sessionId: string, data: SessionHookData) => void;
@@ -79,6 +96,13 @@ export interface HookServerOptions {
      * omitted, tool calls are allowed (no-op), matching --yolo behavior.
      */
     onPreToolUse?: (data: PreToolUseHookData) => Promise<PreToolUseDecision>;
+    /**
+     * Called for each agy PreInvocation hook (discovery-only, fail-open). No
+     * decision is awaited — the route always responds 200 immediately,
+     * mirroring the forwarder's fail-open contract for this event. When
+     * omitted, the route still responds 200 (discovery is best-effort).
+     */
+    onAgyPreInvocation?: (data: AgyPreInvocationHookData) => void;
     /** Optional token to require for hook requests. */
     token?: string;
 }
@@ -243,6 +267,54 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                         res.writeHead(200, { 'Content-Type': 'application/json' }).end(
                             JSON.stringify({ permissionDecision: 'deny', reason: 'Permission bridge error.' })
                         );
+                    }
+                }
+                return;
+            }
+
+            if (req.method === 'POST' && requestPath === '/hook/agy-pre-invocation') {
+                const providedToken = readHookToken(req);
+                if (providedToken !== hookToken) {
+                    logger.debug('[hookServer] Unauthorized agy-pre-invocation request');
+                    res.writeHead(401, { 'Content-Type': 'text/plain' }).end('unauthorized');
+                    req.resume();
+                    return;
+                }
+
+                // Fail-open route: this event carries discovery only, never a
+                // decision the CLI blocks on. Every branch below responds 200
+                // immediately (auth failure is the only exception — that is a
+                // security boundary, not a discovery failure).
+                try {
+                    const chunks: Buffer[] = [];
+                    for await (const chunk of req) {
+                        chunks.push(chunk as Buffer);
+                    }
+                    const body = Buffer.concat(chunks).toString('utf-8');
+
+                    let data: AgyPreInvocationHookData = {};
+                    try {
+                        const parsed = JSON.parse(body);
+                        if (parsed && typeof parsed === 'object') {
+                            data = parsed as AgyPreInvocationHookData;
+                        }
+                    } catch (parseError) {
+                        logger.debug('[hookServer] Failed to parse agy-pre-invocation data (proceeding with empty data):', parseError);
+                    }
+
+                    try {
+                        options.onAgyPreInvocation?.(data);
+                    } catch (error) {
+                        logger.debug('[hookServer] Error dispatching agy-pre-invocation hook:', error);
+                    }
+
+                    if (!res.headersSent && !res.writableEnded) {
+                        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+                    }
+                } catch (error) {
+                    logger.debug('[hookServer] Error handling agy-pre-invocation hook:', error);
+                    if (!res.headersSent && !res.writableEnded) {
+                        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
                     }
                 }
                 return;

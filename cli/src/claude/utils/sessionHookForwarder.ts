@@ -135,10 +135,24 @@ function parsePort(value: string | undefined): number | null {
     return port;
 }
 
-function parseArgs(args: string[]): { port: number | null; token: string | null; flavor: 'claude' | 'agy' } {
+function parseArgs(args: string[]): {
+    port: number | null;
+    token: string | null;
+    flavor: 'claude' | 'agy';
+    event: 'pre-tool-use' | 'pre-invocation';
+    /**
+     * The raw --event value as given, or undefined if the flag was omitted
+     * entirely. Lets the caller distinguish "omitted" (defaults to
+     * pre-tool-use) from "provided but unrecognized" (must be rejected, not
+     * silently defaulted to pre-tool-use — that would route a discovery
+     * payload through the permission-gate path).
+     */
+    eventRaw: string | undefined;
+} {
     let port: number | null = null;
     let token: string | null = null;
     let flavor: 'claude' | 'agy' = 'claude';
+    let eventRaw: string | undefined;
     let fromEnv = false;
 
     for (let i = 0; i < args.length; i += 1) {
@@ -187,6 +201,24 @@ function parseArgs(args: string[]): { port: number | null; token: string | null;
             continue;
         }
 
+        if (arg === '--event') {
+            // `?? ''` matters: a trailing `--event` with no following value
+            // must NOT collapse to the same `undefined` that means "the flag
+            // was never given at all" (which legitimately defaults to
+            // pre-tool-use below) — that would silently re-open the exact
+            // fail-open degrade Fix 2/6 closed for every OTHER malformed
+            // --event value. An empty string is neither known event name, so
+            // it falls through to the explicit rejection.
+            eventRaw = args[i + 1] ?? '';
+            i += 1;
+            continue;
+        }
+
+        if (arg.startsWith('--event=')) {
+            eventRaw = arg.slice('--event='.length);
+            continue;
+        }
+
         if (!port) {
             port = parsePort(arg);
             continue;
@@ -202,11 +234,13 @@ function parseArgs(args: string[]): { port: number | null; token: string | null;
         token = process.env.HAPI_AGY_HOOK_TOKEN?.trim() || null;
     }
 
-    return { port, token, flavor };
+    const event: 'pre-tool-use' | 'pre-invocation' = eventRaw === 'pre-invocation' ? 'pre-invocation' : 'pre-tool-use';
+
+    return { port, token, flavor, event, eventRaw };
 }
 
 export async function runSessionHookForwarder(args: string[]): Promise<void> {
-    const { port, token, flavor } = parseArgs(args);
+    const { port, token, flavor, event, eventRaw } = parseArgs(args);
     if (!port) {
         logError('Invalid or missing port argument');
         process.exitCode = 1;
@@ -215,6 +249,17 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
 
     if (!token) {
         logError('Missing hook token');
+        process.exitCode = 1;
+        return;
+    }
+
+    // An --event value was given but is neither known event name. Silently
+    // falling back to pre-tool-use here would route a discovery payload
+    // (no toolCall field) down the permission-gate path — a phantom
+    // approval card for an empty tool name — and would also violate the
+    // pre-invocation stdout contract (always {}). Reject explicitly instead.
+    if (eventRaw !== undefined && eventRaw !== 'pre-tool-use' && eventRaw !== 'pre-invocation') {
+        logError(`Unknown --event value: ${eventRaw}`);
         process.exitCode = 1;
         return;
     }
@@ -231,6 +276,22 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
         }
 
         const body = Buffer.concat(chunks);
+
+        // agy PreInvocation: discovery-ONLY bridge, fail-OPEN. Unlike
+        // PreToolUse (a permission gate that must fail-closed), a dead or
+        // slow bridge here must never block or degrade the model call — the
+        // only thing riding on this hook is brain-UUID discovery, which has
+        // a fallback (the PreToolUse hook, or the next PreInvocation call).
+        // agy's own hook-side timeout (5s, see generateHookSettings.ts)
+        // bounds the worst case if the POST hangs; we also apply our own
+        // shorter request timeout so a hung connection can't eat that whole
+        // budget. Always emit stdout `{}` (no injectSteps) regardless of the
+        // POST outcome — this is a discovery signal, not a decision.
+        if (flavor === 'agy' && event === 'pre-invocation') {
+            await postHook(port, token, '/hook/agy-pre-invocation', body, SESSION_HOOK_FORWARD_TIMEOUT_MS);
+            process.stdout.write('{}');
+            return;
+        }
 
         // agy flavor: every hook invocation is a PreToolUse (agy has no
         // SessionStart hook). The stdin format is agy's camelCase schema

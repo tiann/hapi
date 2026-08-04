@@ -143,23 +143,42 @@ export async function runAgy(opts: {
                 const toolInput = extractToolInput(data);
                 const toolUseId = extractToolUseId(data) ?? `${toolName}-${Date.now()}`;
                 return agyPermissionHandler.requestDecision(toolUseId, toolName, toolInput);
+            },
+            onAgyPreInvocation: (data) => {
+                // PreInvocation fires before every model call, tool use or
+                // not — unlike PreToolUse, which only fires once a tool
+                // actually runs. Registering both means a brain UUID is
+                // discovered even on tool-free turns (e.g. a plain "hi").
+                // Same first-wins guard, same fail-open discovery contract —
+                // this hook carries no permission decision to adjudicate.
+                adoptBrainUuidIfUnset(data.conversationId, 'PreInvocation');
             }
         });
         logger.debug(`[agy] Hook server started on port ${hookServer.port}`);
 
         // Keep endpoint secrets out of the carrier; the hook reads them from
-        // the AGY child environment via --from-env.
-        const { command, args } = getHappyCliCommand([
-            'hook-forwarder', '--flavor', 'agy', '--from-env'
-        ]);
-        let hookCommand: string;
-        try {
-            hookCommand = shellJoin([command, ...args]);
-        } catch (error) {
-            throw new Error('agy PTY session aborted: could not safely encode the hook command.', { cause: error });
-        }
+        // the AGY child environment via --from-env. Two distinct forwarder
+        // commands are needed: PreToolUse and PreInvocation have different
+        // stdin/stdout contracts (see sessionHookForwarder.ts), and agy has
+        // no way to tell them apart from the payload shape alone — only the
+        // explicit --event flag distinguishes them.
+        const buildForwarderCommand = (extraArgs: string[], label: string): string => {
+            const { command, args } = getHappyCliCommand([
+                'hook-forwarder', '--flavor', 'agy', '--from-env', ...extraArgs
+            ]);
+            try {
+                return shellJoin([command, ...args]);
+            } catch (error) {
+                throw new Error(`agy PTY session aborted: could not safely encode the ${label} hook command.`, { cause: error });
+            }
+        };
+        const hookCommand = buildForwarderCommand([], 'PreToolUse');
+        const preInvocationHookCommand = buildForwarderCommand(['--event', 'pre-invocation'], 'PreInvocation');
 
-        const hooksJson = buildAgyHooksJson(hookCommand);
+        const hooksJson = buildAgyHooksJson({
+            preToolUseCommand: hookCommand,
+            preInvocationCommand: preInvocationHookCommand
+        });
         let carrierResult: ReturnType<typeof prepareAgyHookCarrier>;
         try {
             hapiMcpBridge = await buildHapiMcpBridge(session, {
