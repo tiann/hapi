@@ -83,6 +83,7 @@ export function getOrCreateMachine(
             throw new Error('Machine namespace mismatch')
         }
         const merged = mergeMachineMetadata(stored.metadata, metadata)
+        let current = stored
         if (merged !== undefined) {
             db.prepare(`
                 UPDATE machines
@@ -100,9 +101,9 @@ export function getOrCreateMachine(
             if (!row) {
                 throw new Error('Failed to refresh machine metadata')
             }
-            return row
+            current = row
         }
-        const mergedRunnerState = mergeRunnerCapabilities(stored.runnerState, runnerState)
+        const mergedRunnerState = mergeRunnerCapabilities(current.runnerState, runnerState)
         if (mergedRunnerState !== undefined) {
             db.prepare(`
                 UPDATE machines
@@ -120,9 +121,9 @@ export function getOrCreateMachine(
             if (!row) {
                 throw new Error('Failed to refresh machine runner state')
             }
-            return row
+            current = row
         }
-        return stored
+        return current
     }
 
     const now = Date.now()

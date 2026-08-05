@@ -110,4 +110,25 @@ describe('runner capabilities backfill', () => {
         const noCaps = store.machines.getOrCreateMachine('machine-1', null, { status: 'offline' }, 'ns')
         expect(noCaps.runnerStateVersion).toBe(created.runnerStateVersion)
     })
+
+    it('merges capabilities even when metadata also changes in the same call', () => {
+        const store = new Store(':memory:')
+        const created = store.machines.getOrCreateMachine('machine-1', { host: 'old-host' }, { status: 'offline', pid: 1 }, 'ns')
+
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'new-host', happyCliVersion: '0.28.0' },
+            { status: 'offline', pid: 2, capabilities: { piExistingSessionResume: true } },
+            'ns'
+        )
+
+        expect(refreshed.metadata).toEqual({ host: 'new-host', happyCliVersion: '0.28.0' })
+        expect(refreshed.metadataVersion).toBe(created.metadataVersion + 1)
+        expect(refreshed.runnerState).toEqual({
+            status: 'offline',
+            pid: 1,
+            capabilities: { piExistingSessionResume: true }
+        })
+        expect(refreshed.runnerStateVersion).toBe(created.runnerStateVersion + 1)
+    })
 })
