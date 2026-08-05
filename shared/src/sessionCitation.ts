@@ -87,9 +87,24 @@ export function extractSessionCitationIds(text: string): string[] {
  * return that id. Bare prefixes/ids (no `/sessions/`) pass through trimmed.
  * Ambiguous or empty citation blobs fail closed as `""` so callers refuse
  * rather than silently picking the first peer (inspect + ping share this path).
+ *
+ * Copy-reference prose prefers the parenthesized path so a session title that
+ * itself contains `/sessions/<other>` cannot shadow the real target.
  */
 export function normalizeSessionIdPrefix(raw: string): string {
     const trimmed = raw.trim()
+
+    const titledCopy = /^See session "(?:\\.|[^"\\])*" \(([^)]+)\) for context/.exec(trimmed)
+    if (titledCopy?.[1]) {
+        const ids = extractSessionCitationIds(titledCopy[1])
+        return ids.length === 1 ? ids[0]! : ''
+    }
+    const untitledCopy = /^See HAPI session (\S+) for context/.exec(trimmed)
+    if (untitledCopy?.[1]) {
+        const ids = extractSessionCitationIds(untitledCopy[1])
+        return ids.length === 1 ? ids[0]! : ''
+    }
+
     if (!trimmed.includes('/sessions/')) {
         return trimmed
     }

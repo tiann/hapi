@@ -67,6 +67,13 @@ describe('normalizeSessionIdPrefix', () => {
         ).toBe(UUID)
     })
 
+    it('prefers the parenthesized Copy-reference path over /sessions/ inside the title', () => {
+        const other = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        const text =
+            `See session ${JSON.stringify(`Review /sessions/${other}`)} (/sessions/${UUID}) for context.${SESSION_REFERENCE_STEER_SUFFIX}`
+        expect(normalizeSessionIdPrefix(text)).toBe(UUID)
+    })
+
     it('pulls the id out of a markdown citation', () => {
         expect(normalizeSessionIdPrefix(`[Coding](/sessions/${UUID})`)).toBe(UUID)
     })
