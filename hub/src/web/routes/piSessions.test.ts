@@ -138,6 +138,54 @@ describe('Pi session import', () => {
         expect(getSessionsSpy).toHaveBeenCalledTimes(1)
     })
 
+    it('loads imported sessions once for a deduplicated batch import', async () => {
+        const { store } = setup()
+        const selectedMachine = machine('machine-1')
+        const transcripts = [
+            transcript('native-batch-1', [userMessage('native-batch-1', 'entry-1', null, 'one', 1_000)]),
+            transcript('native-batch-2', [userMessage('native-batch-2', 'entry-1', null, 'two', 2_000)])
+        ]
+        let requestedIds: string[] | undefined
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listPiSessionsForMachine: async (_machineId: string, _cwd: string | null, sessionIds?: string[]) => {
+                requestedIds = sessionIds
+                return { success: true, sessions: transcripts }
+            },
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const getSessionsSpy = spyOn(store.sessions, 'getSessionsByNamespace')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createPiSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request('/api/pi/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                machineId: selectedMachine.id,
+                sessionIds: ['native-batch-1', 'native-batch-2', 'native-batch-1']
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(requestedIds).toEqual(['native-batch-1', 'native-batch-2'])
+        expect(await response.json()).toMatchObject({
+            success: true,
+            results: [
+                { piSessionId: 'native-batch-1', action: 'created' },
+                { piSessionId: 'native-batch-2', action: 'created' }
+            ]
+        })
+        expect(getSessionsSpy).toHaveBeenCalledTimes(1)
+    })
+
     it('imports idempotently and appends only entries after the persisted native leaf', () => {
         const { store, engine } = setup()
         const first = transcript('native-1', [

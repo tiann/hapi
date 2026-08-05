@@ -219,10 +219,13 @@ export function importPiSession(options: {
     namespace: string
     machine: Machine
     transcript: PiLocalSessionWithMessages
+    existingSession?: StoredSession | null
 }): PiImportResult {
-    const { store, engine, namespace, machine, transcript } = options
+    const { store, engine, namespace, machine, transcript, existingSession } = options
     const startedAt = Date.now()
-    let stored = findImportedPiSession(store, namespace, machine.id, transcript.id)
+    let stored = existingSession === undefined
+        ? findImportedPiSession(store, namespace, machine.id, transcript.id)
+        : existingSession
     const created = !stored
     if (!stored) {
         const metadata = buildPiMetadata(transcript, machine, {}, {
@@ -378,6 +381,7 @@ export function createPiSessionRoutes(options: {
             ? body.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim())
             : []
         if (sessionIds.length === 0) return c.json({ success: false, error: 'No Pi sessions selected', results: [] }, 400)
+        const uniqueSessionIds = [...new Set(sessionIds)]
         const namespace = c.get('namespace')
         const engine = options.getSyncEngine()
         const machine = resolvePiMachine(engine, namespace, typeof body?.machineId === 'string' ? body.machineId.trim() : null)
@@ -385,14 +389,15 @@ export function createPiSessionRoutes(options: {
         const remote = await engine.listPiSessionsForMachine(
             machine.id,
             typeof body?.cwd === 'string' ? body.cwd.trim() : null,
-            sessionIds
+            uniqueSessionIds
         )
         if (!remote.success) return c.json({ success: false, error: remote.error, results: [], machineId: machine.id }, 503)
         const byId = new Map(remote.sessions
             .filter((session): session is PiLocalSessionWithMessages => 'messages' in session)
             .map((session) => [session.id, session]))
+        const importedByPiId = importedPiSessionsById(options.store, namespace, machine.id)
         const results: PiImportResult[] = []
-        for (const sessionId of sessionIds) {
+        for (const sessionId of uniqueSessionIds) {
             const transcript = byId.get(sessionId)
             if (!transcript) {
                 results.push({ piSessionId: sessionId, error: { code: 'not_found', message: 'Pi session transcript not found' } })
@@ -403,7 +408,8 @@ export function createPiSessionRoutes(options: {
                 engine,
                 namespace,
                 machine,
-                transcript
+                transcript,
+                existingSession: importedByPiId.get(sessionId) ?? null
             })))
         }
         return c.json({ success: results.every((result) => !result.error), results, machineId: machine.id })
