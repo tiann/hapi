@@ -1020,6 +1020,10 @@ describe('Pi lifecycle timeline', () => {
 
         emit({ type: 'turn_start' });
         expect(stateSession.piIsStreaming).toBe(true);
+
+        emit({ type: 'agent_end', willRetry: false });
+        emit({ type: 'response', command: 'get_state', success: true, data: { isStreaming: false } });
+        expect(stateSession.piIsStreaming).toBe(true);
     });
 
     it('still applies get_state false when no prompt lifecycle is active', () => {
