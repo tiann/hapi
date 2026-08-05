@@ -1,7 +1,7 @@
 import {
     getSettingsFile,
     readSettingsOrThrow,
-    writeSettings,
+    updateSettings,
     type Settings
 } from './settings'
 
@@ -23,12 +23,9 @@ export async function writeSessionSummaryContractEnabled(
     dataDir: string,
     enabled: boolean
 ): Promise<boolean> {
-    const settingsFile = getSettingsFile(dataDir)
-    const settings = await readSettingsOrThrow(settingsFile)
-    const next: Settings = {
-        ...settings,
+    const next = await updateSettings(getSettingsFile(dataDir), (current) => ({
+        ...current,
         sessionSummaryContract: enabled
-    }
-    await writeSettings(settingsFile, next)
-    return enabled
+    }))
+    return next.sessionSummaryContract === true
 }
