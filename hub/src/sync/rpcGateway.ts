@@ -6,6 +6,7 @@ import {
     ListCodexSessionsRpcResponseSchema,
     ListClaudeSessionsRpcResponseSchema,
     ListCursorImportableSessionsRpcResponseSchema,
+    ListPiSessionsRpcResponseSchema,
     PrepareCursorImportRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
 import type {
@@ -27,6 +28,7 @@ import type {
     ListCodexSessionsRpcResponse,
     ListClaudeSessionsRpcResponse,
     ListCursorImportableSessionsRpcResponse,
+    ListPiSessionsRpcResponse,
     PrepareCursorImportRpcResponse,
     ArchiveCodexSessionRpcResponse,
     OpencodeModelsResponse,
@@ -350,6 +352,11 @@ export class RpcGateway {
     async listClaudeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<ListClaudeSessionsRpcResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.ListClaudeSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS)
         return ListClaudeSessionsRpcResponseSchema.parse(result)
+    }
+
+    async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<ListPiSessionsRpcResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ListPiSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS)
+        return ListPiSessionsRpcResponseSchema.parse(result)
     }
 
     async listCursorImportableSessionsForMachine(

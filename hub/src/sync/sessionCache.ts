@@ -1401,16 +1401,22 @@ export class SessionCache {
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string } | null {
-        if (metadata.codexSessionId) return { field: 'codexSessionId', value: metadata.codexSessionId }
-        if (metadata.claudeSessionId) return { field: 'claudeSessionId', value: metadata.claudeSessionId }
-        if (metadata.geminiSessionId) return { field: 'geminiSessionId', value: metadata.geminiSessionId }
-        if (metadata.opencodeSessionId) return { field: 'opencodeSessionId', value: metadata.opencodeSessionId }
-        if (metadata.grokSessionId) return { field: 'grokSessionId', value: metadata.grokSessionId }
-        if (metadata.cursorSessionId) return { field: 'cursorSessionId', value: metadata.cursorSessionId }
-        if (metadata.piSessionId) return { field: 'piSessionId', value: metadata.piSessionId }
-        if (metadata.agySessionId) return { field: 'agySessionId', value: metadata.agySessionId }
-        if (metadata.copilotSessionId) return { field: 'copilotSessionId', value: metadata.copilotSessionId }
+    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
+        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => ({
+            field,
+            value,
+            dedupeKey: field === 'piSessionId' ? `${field}:${metadata.machineId ?? 'unscoped'}:${value}` : `${field}:${value}`,
+            ...(field === 'piSessionId' && metadata.machineId ? { machineId: metadata.machineId } : {})
+        })
+        if (metadata.codexSessionId) return scoped('codexSessionId', metadata.codexSessionId)
+        if (metadata.claudeSessionId) return scoped('claudeSessionId', metadata.claudeSessionId)
+        if (metadata.geminiSessionId) return scoped('geminiSessionId', metadata.geminiSessionId)
+        if (metadata.opencodeSessionId) return scoped('opencodeSessionId', metadata.opencodeSessionId)
+        if (metadata.grokSessionId) return scoped('grokSessionId', metadata.grokSessionId)
+        if (metadata.cursorSessionId) return scoped('cursorSessionId', metadata.cursorSessionId)
+        if (metadata.piSessionId) return scoped('piSessionId', metadata.piSessionId)
+        if (metadata.agySessionId) return scoped('agySessionId', metadata.agySessionId)
+        if (metadata.copilotSessionId) return scoped('copilotSessionId', metadata.copilotSessionId)
         return null
     }
 
@@ -1426,26 +1432,29 @@ export class SessionCache {
         // for active duplicates: a session can become inactive while the first
         // pass is only allowed to move history, and the follow-up pass should
         // then be allowed to delete the inactive duplicate record.
-        if (this.deduplicateInProgress.has(agentId.value)) {
-            this.deduplicatePending.add(agentId.value)
+        if (this.deduplicateInProgress.has(agentId.dedupeKey)) {
+            this.deduplicatePending.add(agentId.dedupeKey)
             return
         }
-        this.deduplicateInProgress.add(agentId.value)
+        this.deduplicateInProgress.add(agentId.dedupeKey)
 
         try {
             do {
-                this.deduplicatePending.delete(agentId.value)
+                this.deduplicatePending.delete(agentId.dedupeKey)
 
                 const currentSession = this.sessions.get(sessionId)
                 const candidates: { id: string; session: Session }[] = []
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
-                    candidates.push({ id: sessionId, session: currentSession })
+                    if (agentId.field !== 'piSessionId' || currentSession.metadata.machineId === agentId.machineId) {
+                        candidates.push({ id: sessionId, session: currentSession })
+                    }
                 }
                 for (const [existingId, existing] of this.sessions) {
                     if (existingId === sessionId) continue
                     if (existing.namespace !== session.namespace) continue
                     if (!existing.metadata) continue
                     if (existing.metadata[agentId.field] !== agentId.value) continue
+                    if (agentId.field === 'piSessionId' && existing.metadata.machineId !== agentId.machineId) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
@@ -1493,10 +1502,10 @@ export class SessionCache {
                         // best-effort: duplicate remains if merge fails
                     }
                 }
-            } while (this.deduplicatePending.has(agentId.value))
+            } while (this.deduplicatePending.has(agentId.dedupeKey))
         } finally {
-            this.deduplicateInProgress.delete(agentId.value)
-            this.deduplicatePending.delete(agentId.value)
+            this.deduplicateInProgress.delete(agentId.dedupeKey)
+            this.deduplicatePending.delete(agentId.dedupeKey)
         }
     }
 }

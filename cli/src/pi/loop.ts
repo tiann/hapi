@@ -122,6 +122,7 @@ function applyGetState(
         isStreaming?: boolean;
     },
     session: PiSession,
+    applyStreamingState = true,
 ): void {
 
     if (data.model) {
@@ -161,7 +162,7 @@ function applyGetState(
         session.currentSteeringMode = data.steeringMode;
     }
 
-    if (data.isStreaming !== undefined) {
+    if (data.isStreaming !== undefined && applyStreamingState) {
         // get_state is Pi's authoritative current-session snapshot. Synchronize
         // only its explicit boolean, never infer state from unknown event types.
         session.updateThinkingState(data.isStreaming);
@@ -177,6 +178,7 @@ function handleResponse(
     onStartupFailure?: (error: Error) => void,
     conversationHistory?: PiConversationHistory,
     onReady?: () => void,
+    shouldApplyGetStateStreaming?: (isStreaming: boolean) => boolean,
 ): { rejectedPromptLocalId?: string } {
     const { command, success } = response;
     const resolver = session.rpcResolver!;
@@ -241,7 +243,12 @@ function handleResponse(
             // but never publish the temporary identity/model to the source row.
             if (!session.isHistoryTransactionActive) {
                 session.markNativeReady();
-                applyGetState(state, session);
+                const applyStreamingState = state.isStreaming === undefined
+                    || shouldApplyGetStateStreaming?.(state.isStreaming) !== false;
+                if (!applyStreamingState) {
+                    logger.debug('[pi] Ignoring get_state isStreaming=false during an active prompt lifecycle');
+                }
+                applyGetState(state, session, applyStreamingState);
                 onReady?.();
             }
             resolvePendingRpc(resolver, response);
@@ -674,6 +681,13 @@ export function wireTransportEvents(
                     options.onStartupFailure,
                     options.conversationHistory,
                     options.onReady,
+                    (isStreaming) => {
+                        if (isStreaming) return true;
+                        const promptLifecycleActive = !deliveredSettlement
+                            && !promptLifecycleAborted
+                            && (activePromptId !== null || agentLifecycleSeen);
+                        return !promptLifecycleActive;
+                    },
                 );
                 if (isCurrentPrompt && !parsed.data.success) {
                     const rejectedLocalId = responseOutcome.rejectedPromptLocalId ?? activePromptLocalId;

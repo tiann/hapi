@@ -128,6 +128,13 @@ export function recordUsageScan(
                     last_cache_creation_tokens = excluded.last_cache_creation_tokens
                 WHERE usage_events.kind = 'delta'
             `)
+            const updateCumulativeModel = db.prepare(`
+                UPDATE usage_events
+                SET model = ?
+                WHERE session_id = ?
+                    AND source_key = ?
+                    AND kind = 'cumulative'
+            `)
 
             for (const event of events) {
                 statement.run({
@@ -147,6 +154,9 @@ export function recordUsageScan(
                     last_cache_read_tokens: event.lastCacheReadTokens,
                     last_cache_creation_tokens: event.lastCacheCreationTokens
                 })
+                if (event.kind === 'cumulative' && event.model !== null) {
+                    updateCumulativeModel.run(event.model, event.sessionId, event.sourceKey)
+                }
             }
         }
 

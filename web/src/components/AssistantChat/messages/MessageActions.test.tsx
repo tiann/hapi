@@ -2,15 +2,25 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentProps, PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
-import { MessageActions } from './MessageActions'
+import {
+    MessageActions,
+    selectHideShareButton,
+    selectThreadIsRunning,
+} from './MessageActions'
 
 const copy = vi.fn()
+const auiState = {
+    message: { id: 'msg-1', createdAt: new Date(2026, 6, 12, 10, 30) },
+    thread: {
+        isRunning: false,
+        extras: {
+            shareHiddenByMessageId: new Set<string>(),
+        },
+    },
+}
 
 vi.mock('@assistant-ui/react', () => ({
-    useAuiState: (selector: (state: { message: { createdAt: Date }; thread: { isRunning: boolean } }) => unknown) => selector({
-        message: { createdAt: new Date(2026, 6, 12, 10, 30) },
-        thread: { isRunning: false }
-    })
+    useAuiState: (selector: (state: typeof auiState) => unknown) => selector(auiState)
 }))
 
 vi.mock('@/components/ui/ConfirmDialog', () => ({
@@ -48,10 +58,54 @@ function renderActions(props: ComponentProps<typeof MessageActions>) {
     )
 }
 
+describe('MessageActions useAuiState selectors (#1380)', () => {
+    const base = {
+        message: { id: 'msg-1' },
+        thread: {
+            isRunning: false,
+            extras: { shareHiddenByMessageId: new Set<string>(['msg-hidden']) },
+        },
+    }
+
+    it('returns Object.is-stable primitives so useSyncExternalStore cannot loop', () => {
+        const hideA = selectHideShareButton(base)
+        const hideB = selectHideShareButton(base)
+        const runningA = selectThreadIsRunning(base)
+        const runningB = selectThreadIsRunning(base)
+
+        expect(Object.is(hideA, hideB)).toBe(true)
+        expect(Object.is(runningA, runningB)).toBe(true)
+        expect(hideA).toBe(false)
+        expect(runningA).toBe(false)
+    })
+
+    it('hides share for ids in shareHiddenByMessageId; falls back to isRunning when extras are absent', () => {
+        expect(selectHideShareButton({
+            message: { id: 'msg-hidden' },
+            thread: base.thread,
+        })).toBe(true)
+        // When extras exist, `.has()` false is kept (?? does not fall through to isRunning).
+        expect(selectHideShareButton({
+            message: { id: 'msg-1' },
+            thread: { ...base.thread, isRunning: true },
+        })).toBe(false)
+        expect(selectHideShareButton({
+            message: { id: 'msg-1' },
+            thread: { isRunning: true },
+        })).toBe(true)
+        expect(selectThreadIsRunning({
+            message: { id: 'msg-1' },
+            thread: { ...base.thread, isRunning: true },
+        })).toBe(true)
+    })
+})
+
 describe('MessageActions', () => {
     beforeEach(() => {
         copy.mockReset()
         localStorage.clear()
+        auiState.thread.isRunning = false
+        auiState.thread.extras.shareHiddenByMessageId = new Set()
     })
 
     it('copies the supplied message text', () => {

@@ -207,9 +207,17 @@ function AppInner() {
         void run()
     }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
 
-    const handleSseConnect = useCallback(() => {
+    const handleSseConnect = useCallback((info: { resumed: boolean }) => {
         // Clear disconnected state on successful connection
         reportSseConnect()
+
+        // The hub replayed every event missed during the gap, so the caches
+        // are already consistent - the full refetch below would only re-download
+        // what the replay just delivered. First connects and long gaps arrive
+        // with resumed=false and take the resync path.
+        if (info.resumed && !isFirstConnectRef.current) {
+            return
+        }
 
         // Increment token to track this specific connection
         const token = ++syncTokenRef.current
@@ -265,8 +273,13 @@ function AppInner() {
         void syncTailMessages(api, event.sessionId)
     }, [api, selectedSessionId])
 
-    const handleSessionSseConnect = useCallback(() => {
+    const handleSessionSseConnect = useCallback((info: { resumed: boolean }) => {
         if (!api || !selectedSessionId) {
+            return
+        }
+        // A resumed connection replayed messages-consumed/message events for
+        // this session, so the queued-state snapshot cannot have drifted.
+        if (info.resumed) {
             return
         }
         void reconcileQueuedStateAfterConnect(api, selectedSessionId).catch((error) => {

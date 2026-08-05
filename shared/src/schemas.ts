@@ -135,6 +135,19 @@ export const MetadataSchema = z.object({
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
+    // Latest Pi append-log entry observed by HAPI. Import uses it as the
+    // incremental cursor so native history already streamed live is not copied twice.
+    piHistoryLeafEntryId: z.string().optional(),
+    piImportState: z.object({
+        state: z.enum(['importing', 'complete', 'failed', 'diverged']),
+        machineId: z.string(),
+        piSessionId: z.string(),
+        sourceFile: z.string(),
+        startedAt: z.number(),
+        updatedAt: z.number(),
+        leafEntryId: z.string().nullable().optional(),
+        error: z.string().optional()
+    }).optional(),
     // Set when native rewind succeeded but HAPI truncate/hydrate failed.
     conversationHistoryDiverged: z.boolean().optional(),
     worktree: WorktreeMetadataSchema.optional(),
@@ -555,7 +568,14 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('connection-changed'),
         data: z.object({
             status: z.string(),
-            subscriptionId: z.string().optional()
+            subscriptionId: z.string().optional(),
+            /**
+             * Reconnect verdict. 'ok' means the hub replayed every event the
+             * client missed (sent right after this one), so the client can skip
+             * its full refetch. 'gap' (or absence, on older hubs) means the
+             * client must resync from REST.
+             */
+            resume: z.enum(['ok', 'gap']).optional()
         }).optional()
     })
 ])

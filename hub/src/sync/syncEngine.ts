@@ -3730,6 +3730,10 @@ async uploadScratchlistAttachment(
         return await this.rpcGateway.listCodexSessionsForMachine(machineId, cwd, sessionIds)
     }
 
+    async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]) {
+        return await this.rpcGateway.listPiSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
     async listClaudeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]) {
         return await this.rpcGateway.listClaudeSessionsForMachine(machineId, cwd, sessionIds)
     }

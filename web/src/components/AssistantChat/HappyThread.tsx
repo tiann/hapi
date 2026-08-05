@@ -807,13 +807,40 @@ export function HappyThread(props: {
             }
         }
 
+        const armPointerIntent = () => {
+            pointerResumeActive = true
+            pointerResumeUntil = 0
+            pointerResumeLatched = false
+        }
+
         const handlePointerDown = (event: PointerEvent) => {
             if (event.button !== 0) {
                 return
             }
-            pointerResumeActive = true
-            pointerResumeUntil = 0
-            pointerResumeLatched = false
+            armPointerIntent()
+        }
+
+        const isInsideViewport = (clientX: number, clientY: number) => {
+            const rect = viewport.getBoundingClientRect()
+            return clientX >= rect.left
+                && clientX <= rect.right
+                && clientY >= rect.top
+                && clientY <= rect.bottom
+        }
+
+        // Native scrollbar interaction may bypass the viewport's own event
+        // listeners. Capture pointer and mouse input at the window boundary,
+        // then scope it back to the chat viewport by coordinates.
+        const handleWindowPointerDown = (event: PointerEvent) => {
+            if (event.button === 0 && isInsideViewport(event.clientX, event.clientY)) {
+                armPointerIntent()
+            }
+        }
+
+        const handleWindowMouseDown = (event: MouseEvent) => {
+            if (event.button === 0 && isInsideViewport(event.clientX, event.clientY)) {
+                armPointerIntent()
+            }
         }
 
         const clearPointerIntent = () => {
@@ -910,7 +937,10 @@ export function HappyThread(props: {
         viewport.addEventListener('touchmove', handleTouchMove, { passive: true })
         viewport.addEventListener('touchend', handleTouchEnd, { passive: true })
         viewport.addEventListener('touchcancel', handleTouchCancel, { passive: true })
+        window.addEventListener('pointerdown', handleWindowPointerDown, { capture: true, passive: true })
+        window.addEventListener('mousedown', handleWindowMouseDown, { capture: true, passive: true })
         window.addEventListener('pointerup', clearPointerIntent, { passive: true })
+        window.addEventListener('mouseup', clearPointerIntent, { passive: true })
         window.addEventListener('pointercancel', handlePointerCancel, { passive: true })
         window.addEventListener('blur', clearPointerIntent)
         return () => {
@@ -922,7 +952,10 @@ export function HappyThread(props: {
             viewport.removeEventListener('touchmove', handleTouchMove)
             viewport.removeEventListener('touchend', handleTouchEnd)
             viewport.removeEventListener('touchcancel', handleTouchCancel)
+            window.removeEventListener('pointerdown', handleWindowPointerDown, true)
+            window.removeEventListener('mousedown', handleWindowMouseDown, true)
             window.removeEventListener('pointerup', clearPointerIntent)
+            window.removeEventListener('mouseup', clearPointerIntent)
             window.removeEventListener('pointercancel', handlePointerCancel)
             window.removeEventListener('blur', clearPointerIntent)
         }

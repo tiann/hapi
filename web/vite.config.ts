@@ -155,7 +155,11 @@ export default defineConfig({
                 }
             },
             injectManifest: {
-                globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}']
+                globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+                // The SPA entry contains the complete multi-agent control surface.
+                // Keep it available offline after adding Pi history import instead
+                // of silently dropping the entry chunk from the PWA precache.
+                maximumFileSizeToCacheInBytes: 3 * 1024 * 1024
             },
             devOptions: {
                 enabled: true,

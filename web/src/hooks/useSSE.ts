@@ -85,6 +85,11 @@ const HEARTBEAT_WATCHDOG_INTERVAL_MS = 10_000
 const RECONNECT_BASE_DELAY_MS = 1_000
 const RECONNECT_MAX_DELAY_MS = 30_000
 const RECONNECT_JITTER_MS = 500
+// A hub that stays unreachable is usually offline for hours, not seconds.
+// Retrying every 30s forever costs a full TLS handshake per attempt through
+// the relay, so widen the ceiling once the fast retries have clearly failed.
+const RECONNECT_SLOW_AFTER_ATTEMPTS = 8
+const RECONNECT_SLOW_MAX_DELAY_MS = 300_000
 const INVALIDATION_BATCH_MS = 16
 
 function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
@@ -288,7 +293,8 @@ function buildEventsUrl(
     baseUrl: string,
     token: string,
     subscription: SSESubscription,
-    visibility: VisibilityState
+    visibility: VisibilityState,
+    lastEventId: string | null
 ): string {
     const params = new URLSearchParams()
     params.set('token', token)
@@ -301,6 +307,9 @@ function buildEventsUrl(
     }
     if (subscription.machineId) {
         params.set('machineId', subscription.machineId)
+    }
+    if (lastEventId) {
+        params.set('lastEventId', lastEventId)
     }
 
     const path = `/api/events?${params.toString()}`
@@ -318,7 +327,12 @@ export function useSSE(options: {
     subscription?: SSESubscription
     scope?: SSEScope
     onEvent: (event: SyncEvent) => void
-    onConnect?: () => void
+    /**
+     * Fires on the server's connection-changed handshake. `resumed` is true
+     * when the hub replayed everything missed since the last connection, so
+     * the caller can skip its full REST resync.
+     */
+    onConnect?: (info: { resumed: boolean }) => void
     onDisconnect?: (reason: string) => void
     onError?: (error: unknown) => void
     onToast?: (event: ToastEvent) => void
@@ -339,6 +353,15 @@ export function useSSE(options: {
     }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set() })
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const reconnectAttemptRef = useRef(0)
+    // Set when a reconnect was due while the tab was hidden. Hidden tabs do
+    // not schedule retries at all - they wait for the tab to come back.
+    const reconnectDeferredRef = useRef(false)
+    // Last SSE event id seen, keyed by the subscription it belongs to. Sent
+    // as ?lastEventId on reconnects of the SAME subscription so the hub can
+    // replay the gap instead of the client refetching everything. A cursor
+    // from a different subscription (e.g. after a session switch) would make
+    // the hub replay against the wrong filter set, hence the key check.
+    const lastEventCursorRef = useRef<{ key: string; id: string } | null>(null)
     const lastActivityAtRef = useRef(0)
     const [reconnectNonce, setReconnectNonce] = useState(0)
     const [subscriptionId, setSubscriptionId] = useState<string | null>(null)
@@ -387,15 +410,19 @@ export function useSSE(options: {
                 reconnectTimerRef.current = null
             }
             reconnectAttemptRef.current = 0
+            reconnectDeferredRef.current = false
             setSubscriptionId(null)
             return
         }
 
         setSubscriptionId(null)
+        const resumeCursor = lastEventCursorRef.current?.key === subscriptionKey
+            ? lastEventCursorRef.current.id
+            : null
         const url = buildEventsUrl(options.baseUrl, options.token, {
             ...subscription,
             sessionId: subscription.sessionId ?? undefined
-        }, getVisibilityState())
+        }, getVisibilityState(), resumeCursor)
         const eventSource = new EventSource(url)
         let disconnectNotified = false
         let reconnectRequested = false
@@ -403,8 +430,23 @@ export function useSSE(options: {
         lastActivityAtRef.current = Date.now()
 
         const scheduleReconnect = () => {
+            // Nobody is looking at a hidden tab, and every retry through the
+            // relay costs a TLS handshake. Defer until the tab is visible
+            // again; onVisibilityChange reconnects immediately at that point.
+            if (getVisibilityState() === 'hidden') {
+                reconnectDeferredRef.current = true
+                if (reconnectTimerRef.current) {
+                    clearTimeout(reconnectTimerRef.current)
+                    reconnectTimerRef.current = null
+                }
+                return
+            }
+
             const attempt = reconnectAttemptRef.current
-            const exponentialDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** attempt))
+            const maxDelay = attempt >= RECONNECT_SLOW_AFTER_ATTEMPTS
+                ? RECONNECT_SLOW_MAX_DELAY_MS
+                : RECONNECT_MAX_DELAY_MS
+            const exponentialDelay = Math.min(maxDelay, RECONNECT_BASE_DELAY_MS * (2 ** attempt))
             const jitter = Math.floor(Math.random() * (RECONNECT_JITTER_MS + 1))
             reconnectAttemptRef.current = attempt + 1
             if (reconnectTimerRef.current) {
@@ -690,6 +732,13 @@ export function useSSE(options: {
                         setSubscriptionId(nextId)
                     }
                 }
+                // The connect callback fires here, not on EventSource open:
+                // only the server handshake knows whether the gap was replayed
+                // (`resume: 'ok'`) or the caller must resync. Older hubs omit
+                // the field, which safely reads as a full resync.
+                const resumed = data && typeof data === 'object'
+                    && (data as { resume?: unknown }).resume === 'ok'
+                onConnectRef.current?.({ resumed: Boolean(resumed) })
             }
 
             if (event.type === 'toast') {
@@ -815,6 +864,15 @@ export function useSSE(options: {
             }
 
             handleSyncEvent(parsed as SyncEvent)
+
+            // Track the hub's replay cursor - after handling, so a throwing
+            // handler leaves the cursor behind the event and the hub replays
+            // it on the next reconnect (at-least-once). EventSource keeps
+            // lastEventId sticky across frames, so heartbeats (no id field)
+            // simply repeat the previous cursor.
+            if (message.lastEventId) {
+                lastEventCursorRef.current = { key: subscriptionKey, id: message.lastEventId }
+            }
         }
 
         eventSource.onmessage = handleMessage
@@ -824,9 +882,11 @@ export function useSSE(options: {
                 reconnectTimerRef.current = null
             }
             reconnectAttemptRef.current = 0
+            reconnectDeferredRef.current = false
             disconnectNotified = false
             lastActivityAtRef.current = Date.now()
-            onConnectRef.current?.()
+            // onConnect intentionally does NOT fire here: it fires on the
+            // connection-changed handshake, which carries the resume verdict.
         }
         eventSource.onerror = (error) => {
             onErrorRef.current?.(error)
@@ -834,7 +894,12 @@ export function useSSE(options: {
                 requestReconnect('closed')
                 return
             }
-            notifyDisconnect('error')
+            // CONNECTING means the browser would keep retrying natively - at
+            // its own few-second interval, with the original (stale) URL, and
+            // regardless of tab visibility. Take the source down and route the
+            // retry through our scheduler so hidden-tab deferral and the slow
+            // backoff actually govern every reconnect path.
+            requestReconnect('transport-error')
         }
 
         const watchdogTimer = setInterval(() => {
@@ -856,6 +921,14 @@ export function useSSE(options: {
         // HEARTBEAT_WATCHDOG_INTERVAL_MS after switching back.
         const onVisibilityChange = () => {
             if (getVisibilityState() !== 'visible') return
+            // A retry fell due while the tab was hidden and was deliberately
+            // not scheduled. Run it now, before the identity guard below:
+            // requestReconnect has already cleared eventSourceRef.
+            if (reconnectDeferredRef.current) {
+                reconnectDeferredRef.current = false
+                setReconnectNonce((value) => value + 1)
+                return
+            }
             if (eventSourceRef.current !== eventSource) return
             if (Date.now() - lastActivityAtRef.current >= HEARTBEAT_STALE_MS) {
                 requestReconnect('visibility-recovery')

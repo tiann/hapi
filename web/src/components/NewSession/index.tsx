@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine } from '@/types/api'
+import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -41,6 +41,7 @@ import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { CollaborationModeSelector } from './CollaborationModeSelector'
 import { CodexImportActions } from './CodexImportActions'
+import { PiImportActions } from './PiImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
 import { AgyModelSelector } from './AgyModelSelector'
 import { DirectorySection } from './DirectorySection'
@@ -68,6 +69,7 @@ import { SessionTypeSelector } from './SessionTypeSelector'
 import { YoloToggle } from './YoloToggle'
 import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
+import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
@@ -121,6 +123,15 @@ export function NewSession(props: {
     const [codexImportError, setCodexImportError] = useState<string | null>(null)
     const [isImportingCodexSession, setIsImportingCodexSession] = useState(false)
     const [isCodexImportDialogOpen, setIsCodexImportDialogOpen] = useState(false)
+    const [piImportSessions, setPiImportSessions] = useState<PiLocalSessionSummary[]>([])
+    const [selectedPiImportSessionId, setSelectedPiImportSessionId] = useState<string | null>(null)
+    const [piImportMachineId, setPiImportMachineId] = useState<string | null>(null)
+    const [isLoadingPiImportSessions, setIsLoadingPiImportSessions] = useState(false)
+    const [piImportError, setPiImportError] = useState<string | null>(null)
+    const [isImportingPiSession, setIsImportingPiSession] = useState(false)
+    const [isBulkImportingPiSessions, setIsBulkImportingPiSessions] = useState(false)
+    const [isPiImportDialogOpen, setIsPiImportDialogOpen] = useState(false)
+    const piLoadGenerationRef = useRef(0)
     const [isCreating, setIsCreating] = useState(false)
     const createInFlightRef = useRef(false)
     const [isBulkImportingCodexSessions, setIsBulkImportingCodexSessions] = useState(false)
@@ -130,7 +141,15 @@ export function NewSession(props: {
     const [duplicateSessionGroups, setDuplicateSessionGroups] = useState<CodexDuplicateSessionGroup[]>([])
     const [isDuplicateMergeConfirmOpen, setIsDuplicateMergeConfirmOpen] = useState(false)
     const [isMergingDuplicateSessions, setIsMergingDuplicateSessions] = useState(false)
-    const isFormDisabled = Boolean(isCreating || isPending || props.isLoading || isImportingCodexSession || isBulkImportingCodexSessions)
+    const isFormDisabled = Boolean(
+        isCreating
+        || isPending
+        || props.isLoading
+        || isImportingCodexSession
+        || isBulkImportingCodexSessions
+        || isImportingPiSession
+        || isBulkImportingPiSessions
+    )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
 
@@ -791,6 +810,44 @@ export function NewSession(props: {
         }
     }, [agent, machineId, props.api, trimmedDirectory, t])
 
+    useEffect(() => {
+        piLoadGenerationRef.current += 1
+        setIsLoadingPiImportSessions(false)
+    }, [agent, machineId, trimmedDirectory])
+
+    useEffect(() => () => {
+        piLoadGenerationRef.current += 1
+    }, [])
+
+    const loadPiImportSessions = useCallback(async () => {
+        if (agent !== 'pi' || !machineId) return
+        const generation = ++piLoadGenerationRef.current
+        setIsLoadingPiImportSessions(true)
+        setPiImportError(null)
+        try {
+            const result = await props.api.getPiSessions(trimmedDirectory || null, machineId)
+            if (generation !== piLoadGenerationRef.current) return
+            if (!result.success) throw new Error(result.error)
+            setPiImportSessions(result.sessions)
+            setPiImportMachineId(result.machineId ?? machineId)
+            setSelectedPiImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
+        } catch (loadError) {
+            if (generation !== piLoadGenerationRef.current) return
+            setPiImportSessions([])
+            setPiImportMachineId(null)
+            setSelectedPiImportSessionId(null)
+            setPiImportError(loadError instanceof Error ? loadError.message : t('piImport.failed.body'))
+        } finally {
+            if (generation === piLoadGenerationRef.current) setIsLoadingPiImportSessions(false)
+        }
+    }, [agent, machineId, props.api, trimmedDirectory, t])
+
+    const formatPiImportError = useCallback((code?: string, message?: string): string => {
+        if (code === 'transcript_diverged') return t('piImport.error.diverged')
+        if (code === 'session_active') return t('piImport.error.active')
+        return message?.trim() || t('piImport.failed.body')
+    }, [t])
+
     const normalizeCodexScriptError = useCallback((message: string | null | undefined, fallback: string): string => {
         const raw = (message ?? '').trim()
         if (!raw) return fallback
@@ -985,9 +1042,73 @@ export function NewSession(props: {
         t
     ])
 
+    const handleBulkImportPiSessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingPiSessions || isLoadingPiImportSessions) return
+        setIsBulkImportingPiSessions(true)
+        try {
+            const result = await props.api.importPiSessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: piImportMachineId ?? machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error).length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('piImport.success.title'),
+                    body: t('piImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await loadPiImportSessions()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('piImport.failed.title'),
+                    body: t('piImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatPiImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsPiImportDialogOpen(false)
+            setSelectedPiImportSessionId(null)
+        } catch (importError) {
+            addToast({
+                title: t('piImport.failed.title'),
+                body: importError instanceof Error ? importError.message : t('piImport.failed.body'),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingPiSessions(false)
+        }
+    }, [
+        addToast,
+        formatPiImportError,
+        isBulkImportingPiSessions,
+        isLoadingPiImportSessions,
+        loadPiImportSessions,
+        machineId,
+        piImportMachineId,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
     const selectedCodexImportSession = useMemo(
         () => codexImportSessions.find((session) => session.id === selectedCodexImportSessionId) ?? null,
         [codexImportSessions, selectedCodexImportSessionId]
+    )
+    const selectedPiImportSession = useMemo(
+        () => piImportSessions.find((session) => session.id === selectedPiImportSessionId) ?? null,
+        [piImportSessions, selectedPiImportSessionId]
     )
 
     const handleAgentChange = useCallback((newAgent: AgentType) => {
@@ -1003,6 +1124,9 @@ export function NewSession(props: {
         setSelectedCodexImportSessionId(null)
         setCodexImportSessions([])
         setCodexImportMachineId(null)
+        setSelectedPiImportSessionId(null)
+        setPiImportSessions([])
+        setPiImportMachineId(null)
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -1092,6 +1216,11 @@ export function NewSession(props: {
         if (session.cwd?.trim()) {
             setDirectory(session.cwd.trim())
         }
+    }, [])
+
+    const handleSelectPiImportSession = useCallback((session: PiLocalSessionSummary) => {
+        setSelectedPiImportSessionId(session.id)
+        if (session.cwd?.trim()) setDirectory(session.cwd.trim())
     }, [])
 
     const handlePathClick = useCallback((path: string) => {
@@ -1249,6 +1378,31 @@ export function NewSession(props: {
                 return
             }
 
+            if (agent === 'pi' && selectedPiImportSession) {
+                setIsImportingPiSession(true)
+                const result = await props.api.importPiSessions({
+                    sessionIds: [selectedPiImportSession.id],
+                    cwd: selectedPiImportSession.cwd ?? trimmedDirectory,
+                    machineId: piImportMachineId ?? machineId
+                })
+                const imported = result.results.find((item) => item.piSessionId === selectedPiImportSession.id)
+                if (imported?.error) {
+                    setIsImportingPiSession(false)
+                    haptic.notification('error')
+                    setError(formatPiImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('piImport.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -1285,6 +1439,7 @@ export function NewSession(props: {
             setError(result.message)
         } catch (e) {
             setIsImportingCodexSession(false)
+            setIsImportingPiSession(false)
             haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Failed to create session')
         } finally {
@@ -1389,6 +1544,19 @@ export function NewSession(props: {
                         void loadCodexImportSessions()
                     }}
                     onClear={() => setSelectedCodexImportSessionId(null)}
+                />
+            ) : null}
+            {agent === 'pi' ? (
+                <PiImportActions
+                    selectedSession={selectedPiImportSession}
+                    isLoading={isLoadingPiImportSessions}
+                    isDisabled={isFormDisabled}
+                    error={piImportError}
+                    onChooseHistory={() => {
+                        setIsPiImportDialogOpen(true)
+                        void loadPiImportSessions()
+                    }}
+                    onClear={() => setSelectedPiImportSessionId(null)}
                 />
             ) : null}
             {agent === 'agy' ? (
@@ -1546,7 +1714,7 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isCreating || isPending || isImportingCodexSession}
+                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}
@@ -1576,6 +1744,26 @@ export function NewSession(props: {
                 isPending={isBulkImportingCodexSessions}
                 isRestartingCodexDesktop={isRestartingCodexDesktop}
                 isLoading={isLoadingCodexImportSessions}
+            />
+            <PiSessionImportDialog
+                isOpen={isPiImportDialogOpen}
+                onClose={() => setIsPiImportDialogOpen(false)}
+                sessions={piImportSessions}
+                currentSessionId={selectedPiImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = piImportSessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            handleSelectPiImportSession(session)
+                            setIsPiImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportPiSessions(sessionIds)
+                }}
+                isPending={isBulkImportingPiSessions}
+                isLoading={isLoadingPiImportSessions}
             />
             <ConfirmDialog
                 isOpen={isDuplicateMergeConfirmOpen && duplicateSessionGroups.length > 0}

@@ -1000,6 +1000,48 @@ describe('Pi lifecycle timeline', () => {
         expect(stateSession.piIsStreaming).toBe(true);
         emit({ type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false });
     });
+
+    it('does not let a delayed get_state false interrupt an active prompt lifecycle', () => {
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const stateSession = createMockSession();
+        const controller = wireTransportEvents(transport, stateSession, []);
+        const emit = (event: Record<string, unknown>) => listener?.(event);
+
+        controller.beginPromptLifecycle('prompt-1');
+        emit({ type: 'agent_start' });
+        expect(stateSession.piIsStreaming).toBe(true);
+
+        emit({ type: 'response', command: 'get_state', success: true, data: { isStreaming: false } });
+        expect(stateSession.piIsStreaming).toBe(true);
+
+        emit({ type: 'turn_start' });
+        expect(stateSession.piIsStreaming).toBe(true);
+
+        emit({ type: 'agent_end', willRetry: false });
+        emit({ type: 'response', command: 'get_state', success: true, data: { isStreaming: false } });
+        expect(stateSession.piIsStreaming).toBe(true);
+    });
+
+    it('still applies get_state false when no prompt lifecycle is active', () => {
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const stateSession = createMockSession();
+        wireTransportEvents(transport, stateSession, []);
+        const emit = (event: Record<string, unknown>) => listener?.(event);
+
+        emit({ type: 'response', command: 'get_state', success: true, data: { isStreaming: true } });
+        expect(stateSession.piIsStreaming).toBe(true);
+
+        emit({ type: 'response', command: 'get_state', success: true, data: { isStreaming: false } });
+        expect(stateSession.piIsStreaming).toBe(false);
+    });
 });
 
 describe('Pi prompt-settlement boundaries', () => {

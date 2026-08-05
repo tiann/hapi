@@ -52,6 +52,12 @@ export function createEventsRoutes(
         const machineId = parseOptionalId(query.machineId)
         const subscriptionId = randomUUID()
         const visibility = parseVisibility(query.visibility)
+        // Native EventSource auto-reconnects keep the original URL and carry
+        // the freshest cursor in the standard Last-Event-ID header; the query
+        // parameter covers manually created reconnects (new EventSource with
+        // a rebuilt URL). Header wins - it is never staler than the URL.
+        const resumeFrom = parseOptionalId(c.req.header('Last-Event-ID'))
+            ?? parseOptionalId(query.lastEventId)
         const namespace = c.get('namespace')
         let resolvedSessionId = sessionId
 
@@ -79,14 +85,18 @@ export function createEventsRoutes(
         }
 
         const response = streamSSE(c, async (stream) => {
-            manager.subscribe({
+            // Reconnects supply the last SSE id they saw; when the manager
+            // still has everything after it, the missed events are replayed
+            // here and the client skips its REST resync (`resume: 'ok'`).
+            const { resume, replay } = manager.subscribe({
                 id: subscriptionId,
                 namespace,
                 all,
                 sessionId: resolvedSessionId,
                 machineId,
                 visibility,
-                send: (event) => stream.writeSSE({ data: JSON.stringify(event) }),
+                resumeFrom,
+                send: (event, eventId) => stream.writeSSE({ data: JSON.stringify(event), id: eventId }),
                 sendHeartbeat: async () => {
                     await stream.writeSSE({
                         data: JSON.stringify({
@@ -100,23 +110,34 @@ export function createEventsRoutes(
                 }
             })
 
-            await stream.writeSSE({
-                data: JSON.stringify({
-                    type: 'connection-changed',
-                    data: {
-                        status: 'connected',
-                        subscriptionId
-                    }
+            try {
+                // Verdict first, replay second, live traffic third: the client
+                // decides whether to resync from the verdict, so it must never
+                // see replayed or live events before it.
+                await stream.writeSSE({
+                    data: JSON.stringify({
+                        type: 'connection-changed',
+                        data: {
+                            status: 'connected',
+                            subscriptionId,
+                            resume
+                        }
+                    })
                 })
-            })
 
-            await new Promise<void>((resolve) => {
-                const done = () => resolve()
-                c.req.raw.signal.addEventListener('abort', done, { once: true })
-                stream.onAbort(done)
-            })
+                for (const item of replay) {
+                    await stream.writeSSE({ data: JSON.stringify(item.event), id: item.eventId })
+                }
+                await manager.drainPending(subscriptionId)
 
-            manager.unsubscribe(subscriptionId)
+                await new Promise<void>((resolve) => {
+                    const done = () => resolve()
+                    c.req.raw.signal.addEventListener('abort', done, { once: true })
+                    stream.onAbort(done)
+                })
+            } finally {
+                manager.unsubscribe(subscriptionId)
+            }
         })
 
         return compressSseResponse(response, c.req.header('Accept-Encoding'))

@@ -14,6 +14,11 @@ import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
 import { resolveSkill } from "@/modules/common/skills";
+import {
+    INSPECT_PEER_TOOL_DESCRIPTION,
+    PING_PEER_TOOL_DESCRIPTION,
+    SESSION_ID_PREFIX_PARAM_DESCRIPTION,
+} from '@hapi/protocol/sessionCitation'
 import { PingPeerError, formatInspectPeerReport, inspectPeer, pingPeer } from "@/modules/pingPeer/pingPeer";
 
 type StartHappyServerOptions = {
@@ -77,16 +82,12 @@ function createHapiMcpServer(
     });
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
-        sessionIdPrefix: z.string().trim().min(1).describe(
-            'Target HAPI session id or unique id prefix (another session - not this chat). Prefer the full UUID from a [title](/sessions/<id>) citation.'
-        ),
+        sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
     });
 
     const inspectPeerInputSchema: z.ZodTypeAny = z.object({
-        sessionIdPrefix: z.string().trim().min(1).describe(
-            'Target HAPI session id or unique id prefix. Prefer the full UUID from a [title](/sessions/<id>) citation.'
-        ),
+        sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         messageLimit: z.number().int().min(1).max(100).optional().describe(
             'Recent message page size (default 30, max 100). Text snippets only.'
         ),
@@ -194,7 +195,7 @@ function createHapiMcpServer(
     });
 
     mcp.registerTool<any, any>('ping_peer', {
-        description: 'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs the message on the same hub/namespace. Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. When the user cites [title](/sessions/<id>), pass that <id> as sessionIdPrefix.',
+        description: PING_PEER_TOOL_DESCRIPTION,
         title: 'Ping Peer Session',
         inputSchema: pingPeerInputSchema,
     }, async (args: { sessionIdPrefix: string; message: string }) => {
@@ -233,7 +234,7 @@ function createHapiMcpServer(
     });
 
     mcp.registerTool<any, any>('inspect_peer', {
-        description: 'Read another HAPI session (metadata + recent message text). Resolves by session id / prefix on the same hub/namespace. Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl. When the user cites [title](/sessions/<id>), pass that <id> as sessionIdPrefix.',
+        description: INSPECT_PEER_TOOL_DESCRIPTION,
         title: 'Inspect Peer Session',
         inputSchema: inspectPeerInputSchema,
     }, async (args: { sessionIdPrefix: string; messageLimit?: number }) => {

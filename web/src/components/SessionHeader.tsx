@@ -179,6 +179,9 @@ export function SessionHeader(props: {
     const codexSessionId = session.metadata?.flavor === 'codex'
         ? session.metadata.codexSessionId?.trim() || null
         : null
+    const piSessionId = session.metadata?.flavor === 'pi'
+        ? session.metadata.piSessionId?.trim() || null
+        : null
     const { machines } = useMachines(api, Boolean(api))
     const machineLabelsById = useMachineLabels(machines)
     const machineLabel = useMemo(
@@ -215,6 +218,7 @@ export function SessionHeader(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [isSyncingCodex, setIsSyncingCodex] = useState(false)
+    const [isSyncingPi, setIsSyncingPi] = useState(false)
 
     const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -283,6 +287,52 @@ export function SessionHeader(props: {
             })
         } finally {
             setIsSyncingCodex(false)
+        }
+    }
+
+    const handleSyncPi = async () => {
+        if (!api || !piSessionId || session.active || isSyncingPi) return
+
+        setIsSyncingPi(true)
+        try {
+            const result = await api.importPiSessions({
+                sessionIds: [piSessionId],
+                cwd: typeof session.metadata?.path === 'string' ? session.metadata.path : undefined,
+                machineId: typeof session.metadata?.machineId === 'string' ? session.metadata.machineId : undefined
+            })
+            const imported = result.results.find((item) => item.piSessionId === piSessionId)
+            if (imported?.error) {
+                const message = imported.error.code === 'transcript_diverged'
+                    ? t('piImport.error.diverged')
+                    : imported.error.code === 'session_active'
+                        ? t('piImport.error.active')
+                        : imported.error.message
+                throw new Error(message)
+            }
+            if (!imported) throw new Error(result.error || t('piImport.failed.body'))
+
+            await Promise.all([
+                queryClient.invalidateQueries({ queryKey: queryKeys.session(session.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.messages(session.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+            ])
+            addToast({
+                title: t('piImport.manual.success.title'),
+                body: (imported.appended ?? 0) === 0
+                    ? t('piImport.manual.success.noNewMessages')
+                    : t('piImport.manual.success.body', { n: imported.appended ?? 0 }),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } catch (error) {
+            addToast({
+                title: t('piImport.manual.failed.title'),
+                body: error instanceof Error ? error.message : t('piImport.failed.body'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } finally {
+            setIsSyncingPi(false)
         }
     }
 
@@ -452,6 +502,7 @@ export function SessionHeader(props: {
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId ? handleSyncCodex : undefined}
+                onSyncPi={api && piSessionId && !session.active ? handleSyncPi : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={props.canReopen === false ? undefined : handleReopen}
                 reopenDisabledReason={props.reopenDisabledReason}

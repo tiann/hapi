@@ -123,6 +123,9 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             transports: ['polling', 'websocket'],
+            // Skip the HTTP long-polling phase on reconnects once a websocket
+            // upgrade has succeeded — see useAgentTerminalSocket.
+            rememberUpgrade: true,
             autoConnect: false
         })
         const socket = manager.socket('/terminal', {

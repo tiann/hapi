@@ -35,7 +35,7 @@ Run Claude Code, Codex, Cursor Agent, Grok Build, or OpenCode sessions from your
   Note: OpenCode supports local and remote modes; local mode streams via OpenCode plugins.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` over reinventing JWT+curl. Also `--message-file` / `--list`.
-- `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)`. Optional `--limit`.
+- `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 
 ### Resume a remote session locally
 
@@ -118,7 +118,7 @@ See `src/configuration.ts` for all options.
 
 ### Set for the wrapped agent
 
-- `HAPI_SESSION_ID` - The hub session id for the current run, exported into the wrapped agent/CLI child environment at spawn for every flavor (claude / codex / copilot / cursor / gemini / opencode / kimi / grok / pi), both runner-spawned and locally started sessions. Agents can read it to self-target "this chat" over the hub REST API or shell helpers without listing `/api/sessions`. Prefer the MCP `display_image` tool for inline media when it is available; use `HAPI_SESSION_ID` for hub REST / shell tooling where MCP is not. To **read** another session, prefer MCP `inspect_peer` or `hapi inspect-peer`. To **message** another session, prefer MCP `ping_peer` or `hapi ping-peer` — do not reinvent JWT+curl. User citations look like `[title](/sessions/<id>)`; pass that `<id>` as `sessionIdPrefix`.
+- `HAPI_SESSION_ID` - The hub session id for the current run, exported into the wrapped agent/CLI child environment at spawn for every flavor (claude / codex / copilot / cursor / gemini / opencode / kimi / grok / pi), both runner-spawned and locally started sessions. Agents can read it to self-target "this chat" over the hub REST API or shell helpers without listing `/api/sessions`. Prefer the MCP `display_image` tool for inline media when it is available; use `HAPI_SESSION_ID` for hub REST / shell tooling where MCP is not. To **read** another session, prefer MCP `inspect_peer` or `hapi inspect-peer`. To **message** another session, prefer MCP `ping_peer` or `hapi ping-peer` — do not reinvent JWT+curl. User citations look like `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`; pass that `<id>` as `sessionIdPrefix`. Do not Grep/Glob `/sessions/<id>` as a local filesystem path.
 
   Lazy Codex (terminal) sessions export the id only after the hub row is materialized, which happens when the MCP bridge starts — before the agent process is spawned — so path-only self-targeting does not race a missing hub row.
 

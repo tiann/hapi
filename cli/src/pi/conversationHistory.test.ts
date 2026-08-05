@@ -35,6 +35,16 @@ const source = { sessionId: 'source-id', sessionFile: '/tmp/source.jsonl' }
 const clone = { sessionId: 'clone-id', sessionFile: '/tmp/clone.jsonl' }
 
 describe('PiConversationHistory entry mapping', () => {
+    it('persists the append cursor for assistant entries without waiting for another user message', () => {
+        const { session, metadata, client } = createSession()
+        const history = new PiConversationHistory(session, vi.fn())
+
+        history.observeEntry({ type: 'message', id: 'assistant-leaf', message: { role: 'assistant', content: 'done' } })
+
+        expect(metadata.piHistoryLeafEntryId).toBe('assistant-leaf')
+        expect(client.updateMetadata).toHaveBeenCalledOnce()
+    })
+
     it('pairs duplicate prompts to native user entries strictly FIFO without reading text', () => {
         const { session, metadata } = createSession()
         const history = new PiConversationHistory(session, vi.fn())
@@ -73,6 +83,29 @@ describe('PiConversationHistory entry mapping', () => {
         await history.syncEntries()
         expect(history.getEntryIds()).toEqual({ 'local-1': 'native-1' })
         await history.syncEntries()
+    })
+
+    it('persists one metadata snapshot for a multi-entry get_entries batch', async () => {
+        const { session, metadata, client } = createSession()
+        const rpc = vi.fn(async () => ({
+            entries: [
+                { type: 'message', id: 'user-1', message: { role: 'user' } },
+                { type: 'message', id: 'assistant-1', message: { role: 'assistant' } },
+                { type: 'message', id: 'assistant-2', message: { role: 'assistant' } }
+            ],
+            leafId: 'assistant-2'
+        }))
+        const history = new PiConversationHistory(session, rpc)
+        history.registerUserEntry('local-1')
+
+        await history.syncEntries()
+
+        expect(client.updateMetadata).toHaveBeenCalledOnce()
+        expect(metadata).toMatchObject({
+            piHistoryLeafEntryId: 'assistant-2',
+            conversationHistoryEntryIds: { 'local-1': 'user-1' },
+            conversationHistoryPoints: { 'local-1': true }
+        })
     })
 
     it('serializes concurrent syncs and ignores a duplicate entry_appended/get_entries user entry', async () => {

@@ -4,27 +4,41 @@ import zlib from 'node:zlib'
  * True when the client is willing to receive gzip.
  *
  * `Accept-Encoding: gzip;q=0` means the opposite of what a substring match
- * would suggest, so parse the q-value rather than looking for the word.
+ * would suggest, so parse the q-value rather than looking for the word. All
+ * entries are read before deciding because an explicit `gzip` entry takes
+ * precedence over `*` regardless of where it appears in the header (RFC 9110
+ * §12.5.3): `*;q=1, gzip;q=0` refuses gzip, `*;q=0, gzip;q=1` accepts it.
+ * Exported because the API compression middleware needs the same q-aware
+ * negotiation (hono's compress() matches by substring and would gzip for
+ * clients that explicitly refuse it).
  */
-function acceptsGzip(acceptEncoding: string | undefined): boolean {
+export function acceptsGzip(acceptEncoding: string | undefined): boolean {
     if (!acceptEncoding) {
         return false
     }
+    let gzipQ: number | null = null
+    let wildcardQ: number | null = null
     for (const part of acceptEncoding.split(',')) {
         const [rawName, ...params] = part.split(';')
         const name = rawName?.trim().toLowerCase()
         if (name !== 'gzip' && name !== '*') {
             continue
         }
-        const q = params
+        const qParam = params
             .map((param) => param.trim().toLowerCase())
             .find((param) => param.startsWith('q='))
-        if (q && Number(q.slice(2)) === 0) {
-            return false
+        // Absent or unparseable q counts as 1 (the header's default weight);
+        // repeated entries let the last one win.
+        const parsed = qParam ? Number(qParam.slice(2)) : 1
+        const q = Number.isFinite(parsed) ? parsed : 1
+        if (name === 'gzip') {
+            gzipQ = q
+        } else {
+            wildcardQ = q
         }
-        return true
     }
-    return false
+    const effective = gzipQ ?? wildcardQ
+    return effective !== null && effective > 0
 }
 
 /**

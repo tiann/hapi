@@ -92,6 +92,12 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             transports: ['polling', 'websocket'],
+            // Once a websocket upgrade has succeeded, reconnects go straight
+            // to websocket instead of repeating the HTTP long-polling
+            // handshake — several fewer round-trips through the relay tunnel
+            // on every reconnect. First-ever connects keep the polling
+            // fallback for networks that block websockets.
+            rememberUpgrade: true,
             autoConnect: false
         })
         const socket = manager.socket('/terminal', {

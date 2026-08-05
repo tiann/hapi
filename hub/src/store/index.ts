@@ -33,7 +33,7 @@ export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { UsageStore } from './usageStore'
 
-const SCHEMA_VERSION: number = 19
+const SCHEMA_VERSION: number = 20
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -287,6 +287,7 @@ export class Store {
             16: () => this.migrateFromV16ToV17(),
             17: () => this.migrateFromV17ToV18(),
             18: () => this.migrateFromV18ToV19(),
+            19: () => this.migrateFromV19ToV20(),
         })
 
         if (currentVersion === 0) {
@@ -805,6 +806,24 @@ export class Store {
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_events;
+            DELETE FROM usage_scan_state;
+        `)
+    }
+
+    private migrateFromV19ToV20(): void {
+        // tiann/hapi#1359 stamps a stable session-model fallback onto usage
+        // events that predate model attribution. That only helps events
+        // indexed after the upgrade, so clear the scan state once to force
+        // usageService's lazy re-index to re-derive every event. The events
+        // table is left alone: the re-index replaces each session's rows and
+        // reuses any previously indexed explicit models.
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS usage_scan_state (
+                session_id TEXT PRIMARY KEY,
+                message_epoch INTEGER NOT NULL DEFAULT 0,
+                last_seq INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
             DELETE FROM usage_scan_state;
         `)
     }

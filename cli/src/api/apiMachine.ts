@@ -14,11 +14,13 @@ import {
     ListCodexSessionsRpcRequestSchema,
     ListClaudeSessionsRpcRequestSchema,
     ListCursorImportableSessionsRpcRequestSchema,
+    ListPiSessionsRpcRequestSchema,
     PrepareCursorImportRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
     type ListCodexSessionsRpcResponse,
     type ListClaudeSessionsRpcResponse,
     type ListCursorImportableSessionsRpcResponse,
+    type ListPiSessionsRpcResponse,
     type PrepareCursorImportRpcResponse,
     type MachineDirectoryEntry,
     type MachineListDirectoryResponse,
@@ -50,6 +52,7 @@ import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/
 import { applyVersionedAck } from './versionedUpdate'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
 import { listLocalClaudeSessionSummaries, listLocalClaudeSessionsWithMessagesByIds } from '../modules/common/claudeSessions'
+import { listLocalPiSessionSummaries, listLocalPiSessionsWithMessagesByIds } from '../modules/common/piSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -348,6 +351,30 @@ export class ApiMachineClient {
                     if (await this.isSessionCwdWithinWorkspaceRoots(session.cwd)) {
                         sessions.push(session)
                     }
+                }
+                return { success: true, sessions }
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<unknown, ListPiSessionsRpcResponse>(
+            RPC_METHODS.ListPiSessions,
+            async (params) => {
+                const parsed = ListPiSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Pi sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
+                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = parsed.data.sessionIds ? new Set(parsed.data.sessionIds) : null
+                const allSessions = requestedIds
+                    ? listLocalPiSessionsWithMessagesByIds(requestedIds)
+                    : listLocalPiSessionSummaries()
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isSessionCwdWithinWorkspaceRoots(session.cwd)) sessions.push(session)
                 }
                 return { success: true, sessions }
             }

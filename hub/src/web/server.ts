@@ -25,6 +25,7 @@ import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createClaudeDesktopRoutes } from './routes/claudeDesktop'
 import { createCursorImportRoutes } from './routes/cursorImport'
+import { createPiSessionRoutes } from './routes/piSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
@@ -267,6 +268,10 @@ function createWebApp(options: {
     }))
     // Cursor flavor of the multi-agent session import surface (ACP verify-probe).
     app.route('/api', createCursorImportRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
+    app.route('/api', createPiSessionRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))

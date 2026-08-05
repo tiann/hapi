@@ -28,6 +28,32 @@ type MessageActionsProps = {
     onRewind?: () => Promise<void>
 }
 
+type MessageActionsAuiState = {
+    message: { id: string }
+    thread?: {
+        isRunning?: boolean
+        extras?: unknown
+    } | null
+}
+
+/**
+ * Primitive selectors for `useAuiState` / `useSyncExternalStore`.
+ * Must return booleans (or other Object.is-stable values) — never a fresh
+ * object — or React hits max update depth (#185). See issue #1380 / #1306.
+ *
+ * @internal Exported for unit testing.
+ */
+export function selectHideShareButton(state: MessageActionsAuiState): boolean {
+    const extras = state.thread?.extras as HappyRuntimeExtras | undefined
+    const isRunning = state.thread?.isRunning ?? false
+    return extras?.shareHiddenByMessageId.has(state.message.id) ?? isRunning
+}
+
+/** @internal Exported for unit testing. */
+export function selectThreadIsRunning(state: MessageActionsAuiState): boolean {
+    return state.thread?.isRunning ?? false
+}
+
 export function MessageActions({
     align,
     copyText,
@@ -41,14 +67,11 @@ export function MessageActions({
 }: MessageActionsProps) {
     const { copied, copy } = useCopyToClipboard()
     const { t } = useTranslation()
-    const { hideShareButton, threadIsRunning } = useAuiState(({ message, thread }) => {
-        const extras = thread?.extras as HappyRuntimeExtras | undefined
-        const isRunning = thread?.isRunning ?? false
-        return {
-            hideShareButton: extras?.shareHiddenByMessageId.has(message.id) ?? isRunning,
-            threadIsRunning: isRunning
-        }
-    })
+    // Split into two primitive selectors. A single object-returning selector
+    // allocates a new snapshot every call and trips React #185 via
+    // useSyncExternalStore (issue #1380, regression from #1306).
+    const hideShareButton = useAuiState((state) => selectHideShareButton(state))
+    const threadIsRunning = useAuiState((state) => selectThreadIsRunning(state))
     const canCopy = Boolean(copyText)
     const hasMetadata = metadata ? buildMessageMetadataLabels(metadata).length > 0 : false
     const [forkOpen, setForkOpen] = useState(false)

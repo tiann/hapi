@@ -3,6 +3,7 @@ import {
     ClearOpencodeSessionCallbackRequestSchema,
     ClearOpencodeSessionResponseSchema,
     ListCodexSessionsRpcResponseSchema,
+    ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
     SendMessageRequestSchema
 } from './apiTypes'
@@ -33,6 +34,36 @@ describe('ListCodexSessionsRpcResponseSchema', () => {
         if (parsed.success) {
             expect(parsed.sessions[0]?.messages).toHaveLength(1)
         }
+    })
+})
+
+describe('ListPiSessionsRpcResponseSchema', () => {
+    it('preserves stable Pi entry and local ids', () => {
+        const parsed = ListPiSessionsRpcResponseSchema.parse({
+            success: true,
+            sessions: [{
+                id: 'pi-session-id',
+                title: 'Pi Session',
+                file: '/home/user/.pi/agent/sessions/session.jsonl',
+                modifiedAt: 1_000,
+                messageCount: 1,
+                activeEntryIds: ['entry-1'],
+                messages: [{
+                    localId: 'pi:pi-session-id:entry-1:user',
+                    entryId: 'entry-1',
+                    parentEntryId: null,
+                    createdAt: 900,
+                    content: {
+                        role: 'user',
+                        content: { type: 'text', text: 'hello' },
+                        meta: { sentFrom: 'cli' }
+                    }
+                }]
+            }]
+        })
+
+        expect(parsed.success).toBe(true)
+        if (parsed.success) expect(parsed.sessions[0]?.messages?.[0]?.entryId).toBe('entry-1')
     })
 })
 

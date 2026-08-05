@@ -44,9 +44,11 @@ export function useSlashCommands(
             return await api.getSlashCommands(sessionId)
         },
         enabled: Boolean(api && sessionId),
-        staleTime: 30_000,
-        refetchInterval: 30_000,
-        refetchOnWindowFocus: 'always',
+        // Same reasoning as useSkills: the command list is near-static, so it
+        // is refetched when the user opens the menu with "/" rather than on a
+        // 30s timer that runs for as long as the session is open.
+        staleTime: 5 * 60_000,
+        refetchOnWindowFocus: true,
         gcTime: 30 * 60 * 1000,
         retry: false, // Don't retry RPC failures
     })
@@ -66,6 +68,15 @@ export function useSlashCommands(
     }, [agentType, query.data])
 
     const getSuggestions = useCallback(async (queryText: string): Promise<Suggestion[]> => {
+        // Opening the menu is the one moment a stale list is visible, so
+        // refresh here instead of polling in the background. Fire-and-forget:
+        // the /slash-commands RPC can stall for its full 30s timeout when the
+        // CLI is wedged, and the menu must show cached + built-in commands
+        // immediately - the refreshed list flows in via query state.
+        if (queryText === '/') {
+            void query.refetch()
+        }
+
         const searchTerm = queryText.startsWith('/')
             ? queryText.slice(1).toLowerCase()
             : queryText.toLowerCase()
@@ -105,7 +116,7 @@ export function useSlashCommands(
                 content: cmd.content,
                 source: cmd.source
             }))
-    }, [commands])
+    }, [commands, query.refetch])
 
     return {
         commands,

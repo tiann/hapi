@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
@@ -19,6 +20,60 @@ type DbMessageRow = {
 export type MessagePosition = {
     at: number
     seq: number
+}
+
+export class ImportedMessageConflictError extends Error {
+    constructor(readonly localId: string) {
+        super(`Imported message content changed for localId: ${localId}`)
+        this.name = 'ImportedMessageConflictError'
+    }
+}
+
+export function addImportedMessage(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    localId: string,
+    createdAt: number
+): { message: StoredMessage; inserted: boolean } {
+    const existing = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+    ).get(sessionId, localId) as DbMessageRow | undefined
+    if (existing) {
+        const message = toStoredMessage(existing)
+        const canonicalContent = truncateOversizedMessageContent(content)
+        if (!isDeepStrictEqual(message.content, canonicalContent)) throw new ImportedMessageConflictError(localId)
+        return { message, inserted: false }
+    }
+
+    const now = Date.now()
+    const stampedAt = Number.isFinite(createdAt) ? Math.min(createdAt, now) : now
+    return db.transaction(() => {
+        const previousHead = getNewestMessagePosition(db, sessionId)
+        const msgSeqRow = db.prepare(
+            'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
+        ).get(sessionId) as { nextSeq: number }
+        const id = randomUUID()
+        db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, NULL
+            )
+        `).run({
+            id,
+            session_id: sessionId,
+            content: encodeMessageContent(truncateOversizedMessageContent(content)),
+            created_at: stampedAt,
+            seq: msgSeqRow.nextSeq,
+            local_id: localId,
+            invoked_at: stampedAt
+        })
+        if (previousHead && stampedAt < previousHead.at) bumpMessageEpoch(db, sessionId)
+        const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
+        if (!row) throw new Error('Failed to create imported message')
+        return { message: toStoredMessage(row), inserted: true }
+    })()
 }
 
 function toStoredMessage(row: DbMessageRow): StoredMessage {

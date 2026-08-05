@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import zlib from 'node:zlib'
-import { compressSseResponse } from './sseCompression'
+import { acceptsGzip, compressSseResponse } from './sseCompression'
 
 function gunzip(data: Uint8Array): string {
     return zlib.gunzipSync(Buffer.from(data)).toString('utf8')
@@ -207,5 +207,36 @@ describe('compressSseResponse backpressure', () => {
         expect(idle).toBeLessThan(200)
         expect(produced).toBeGreaterThanOrEqual(idle)
         await reader.cancel('done')
+    })
+})
+
+describe('acceptsGzip', () => {
+    it('handles plain and missing headers', () => {
+        expect(acceptsGzip(undefined)).toBe(false)
+        expect(acceptsGzip('')).toBe(false)
+        expect(acceptsGzip('gzip')).toBe(true)
+        expect(acceptsGzip('gzip, deflate, br')).toBe(true)
+        expect(acceptsGzip('br, deflate')).toBe(false)
+        expect(acceptsGzip('*')).toBe(true)
+        expect(acceptsGzip('identity;q=1, *;q=0')).toBe(false)
+    })
+
+    it('honors q-values on explicit gzip entries', () => {
+        expect(acceptsGzip('gzip;q=0')).toBe(false)
+        expect(acceptsGzip('gzip;q=0.0')).toBe(false)
+        expect(acceptsGzip('gzip;q=0.5')).toBe(true)
+        expect(acceptsGzip('br, gzip;q=0')).toBe(false)
+    })
+
+    it('lets an explicit gzip entry override the wildcard in either order', () => {
+        expect(acceptsGzip('*;q=1, gzip;q=0')).toBe(false)
+        expect(acceptsGzip('gzip;q=0, *;q=1')).toBe(false)
+        expect(acceptsGzip('*;q=0, gzip;q=1')).toBe(true)
+        expect(acceptsGzip('gzip;q=1, *;q=0')).toBe(true)
+    })
+
+    it('treats an unparseable q as the default weight', () => {
+        expect(acceptsGzip('gzip;q=abc')).toBe(true)
+        expect(acceptsGzip('*;q=abc, gzip;q=0')).toBe(false)
     })
 })
