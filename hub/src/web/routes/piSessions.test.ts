@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from 'bun:test'
-import type { PiLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
+import { afterEach, describe, expect, it, spyOn } from 'bun:test'
+import { Hono } from 'hono'
+import type { PiLocalSessionSummary, PiLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import { Store } from '../../store'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
-import { importPiSession } from './piSessions'
+import type { WebAppEnv } from '../middleware/auth'
+import { createPiSessionRoutes, importPiSession } from './piSessions'
 
 function machine(id: string): Machine {
     return {
@@ -97,6 +99,44 @@ describe('Pi session import', () => {
         } as unknown as SyncEngine
         return { store, engine, events }
     }
+
+    it('loads imported sessions once when listing multiple Pi summaries', async () => {
+        const { store } = setup()
+        const selectedMachine = machine('machine-1')
+        const imported = store.sessions.getOrCreateSession('imported-native-1', {
+            flavor: 'pi',
+            machineId: selectedMachine.id,
+            piSessionId: 'native-1',
+            piImportState: { state: 'complete' }
+        }, {}, 'default')
+        const summaries: PiLocalSessionSummary[] = [
+            transcript('native-1', []),
+            transcript('native-2', [])
+        ]
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listPiSessionsForMachine: async () => ({ success: true, sessions: summaries })
+        } as unknown as SyncEngine
+        const getSessionsSpy = spyOn(store.sessions, 'getSessionsByNamespace')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createPiSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request('/api/pi/sessions?machineId=machine-1')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({
+            success: true,
+            sessions: [
+                { id: 'native-1', hapiSessionId: imported.id, importState: 'complete' },
+                { id: 'native-2' }
+            ]
+        })
+        expect(getSessionsSpy).toHaveBeenCalledTimes(1)
+    })
 
     it('imports idempotently and appends only entries after the persisted native leaf', () => {
         const { store, engine } = setup()

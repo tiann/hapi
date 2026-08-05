@@ -51,12 +51,25 @@ function findImportedPiSession(
     machineId: string,
     piSessionId: string
 ): StoredSession | null {
-    return store.sessions.getSessionsByNamespace(namespace).find((session) => {
+    return importedPiSessionsById(store, namespace, machineId).get(piSessionId) ?? null
+}
+
+function importedPiSessionsById(
+    store: Store,
+    namespace: string,
+    machineId: string
+): Map<string, StoredSession> {
+    const importedByPiId = new Map<string, StoredSession>()
+    for (const session of store.sessions.getSessionsByNamespace(namespace)) {
         const metadata = storedMetadata(session)
-        return metadata.flavor === 'pi'
-            && metadata.machineId === machineId
-            && metadata.piSessionId === piSessionId
-    }) ?? null
+        const piSessionId = metadata.piSessionId
+        if (metadata.flavor !== 'pi'
+            || metadata.machineId !== machineId
+            || typeof piSessionId !== 'string'
+            || importedByPiId.has(piSessionId)) continue
+        importedByPiId.set(piSessionId, session)
+    }
+    return importedByPiId
 }
 
 function buildPiMetadata(
@@ -343,8 +356,9 @@ export function createPiSessionRoutes(options: {
         if (!machine) return c.json({ success: false, error: 'No online machine available for Pi history import', sessions: [] }, 503)
         const result = await options.getSyncEngine()!.listPiSessionsForMachine(machine.id, c.req.query('cwd')?.trim() || null)
         if (!result.success) return c.json({ success: false, error: result.error, sessions: [], machineId: machine.id }, 503)
+        const importedByPiId = importedPiSessionsById(options.store, namespace, machine.id)
         const sessions: PiSessionListItem[] = result.sessions.map((summary) => {
-            const imported = findImportedPiSession(options.store, namespace, machine.id, summary.id)
+            const imported = importedByPiId.get(summary.id)
             const metadata = imported ? storedMetadata(imported) : null
             const importState = asRecord(metadata?.piImportState)?.state
             return {
