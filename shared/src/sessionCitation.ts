@@ -83,24 +83,36 @@ export function extractSessionCitationIds(text: string): string[] {
 }
 
 /**
+ * True when `match` consumed the whole citation paste (optional steer suffix only).
+ * Prevents `See session "A" (/sessions/a) for context and [B](/sessions/b)` from
+ * short-circuiting to `a` and skipping the multi-id fail-closed path.
+ */
+function hasCanonicalCopyTail(match: RegExpExecArray, input: string): boolean {
+    const tail = input.slice(match[0].length)
+    return tail === '' || tail === `.${SESSION_REFERENCE_STEER_SUFFIX}`
+}
+
+/**
  * If `raw` is a pasted citation blob containing exactly one `/sessions/<id>`,
  * return that id. Bare prefixes/ids (no `/sessions/`) pass through trimmed.
  * Ambiguous or empty citation blobs fail closed as `""` so callers refuse
  * rather than silently picking the first peer (inspect + ping share this path).
  *
  * Copy-reference prose prefers the parenthesized path so a session title that
- * itself contains `/sessions/<other>` cannot shadow the real target.
+ * itself contains `/sessions/<other>` cannot shadow the real target - but only
+ * when the paste is a canonical Copy-reference (optional steer suffix), not a
+ * multi-citation blob.
  */
 export function normalizeSessionIdPrefix(raw: string): string {
     const trimmed = raw.trim()
 
     const titledCopy = /^See session "(?:\\.|[^"\\])*" \(([^)]+)\) for context/.exec(trimmed)
-    if (titledCopy?.[1]) {
+    if (titledCopy?.[1] && hasCanonicalCopyTail(titledCopy, trimmed)) {
         const ids = extractSessionCitationIds(titledCopy[1])
         return ids.length === 1 ? ids[0]! : ''
     }
     const untitledCopy = /^See HAPI session (\S+) for context/.exec(trimmed)
-    if (untitledCopy?.[1]) {
+    if (untitledCopy?.[1] && hasCanonicalCopyTail(untitledCopy, trimmed)) {
         const ids = extractSessionCitationIds(untitledCopy[1])
         return ids.length === 1 ? ids[0]! : ''
     }

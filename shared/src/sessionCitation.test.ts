@@ -86,6 +86,15 @@ describe('normalizeSessionIdPrefix', () => {
             )
         ).toBe('')
     })
+
+    it('fails closed when a Copy-reference is followed by a second citation', () => {
+        const other = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        expect(
+            normalizeSessionIdPrefix(
+                `See session "A" (/sessions/${UUID}) for context and [B](/sessions/${other})`
+            )
+        ).toBe('')
+    })
 })
 
 describe('buildSessionCitationSteerInstruction', () => {
