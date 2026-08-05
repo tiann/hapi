@@ -57,15 +57,17 @@ export default function SettingsGeneralPage() {
             </SettingsSection>
             {isOwner ? (
                 <SettingsSection title={t('settings.general.agents.title')} description={t('settings.general.agents.description')}>
-                    <SettingsSwitch
-                        label={t('settings.general.sessionSummaryContract')}
-                        description={t('settings.general.sessionSummaryContract.desc')}
-                        checked={hubSettingsQuery.data?.sessionSummaryContract === true}
-                        onChange={(checked) => {
-                            if (hubSettingsMutation.isPending) return
-                            hubSettingsMutation.mutate(checked)
-                        }}
-                    />
+                    {hubSettingsQuery.data ? (
+                        <SettingsSwitch
+                            label={t('settings.general.sessionSummaryContract')}
+                            description={t('settings.general.sessionSummaryContract.desc')}
+                            checked={hubSettingsQuery.data.sessionSummaryContract}
+                            onChange={(checked) => {
+                                if (hubSettingsMutation.isPending) return
+                                hubSettingsMutation.mutate(checked)
+                            }}
+                        />
+                    ) : null}
                 </SettingsSection>
             ) : null}
             <SettingsSection title={t('settings.companion.title')}>
