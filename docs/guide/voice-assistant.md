@@ -4,7 +4,7 @@ Control your AI coding agent with your voice. The built-in voice assistant suppo
 
 For speech-to-text without a spoken assistant, open **Settings → Voice**, choose **Dictation**, then select a configured provider. Dictation records until you tap the microphone again, inserts the transcript into the composer, and never sends it automatically. Standard mode is the default. Realtime mode shows a live transcript while you speak and inserts the final result when you stop.
 
-Provider credentials can be added in **Settings → Voice → Dictation** (saved on the hub, masked in the UI). Environment variables still win when set at process start, and remain the preferred ops/bootstrap path:
+Dictation and voice-assistant provider credentials can be added in **Settings → Voice** (saved on the hub, masked in the UI). Environment variables still win when set at process start, and remain the preferred ops/bootstrap path:
 
 ```bash
 # Voice assistant backends (any of these enables the assistant)

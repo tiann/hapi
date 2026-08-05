@@ -199,6 +199,11 @@ describe('ApiClient error mapping', () => {
                 modelEditable: true,
                 apiKey: { configured: false, source: 'none', hint: null, editable: true },
             },
+            voiceBackends: {
+                elevenlabs: { configured: false, source: 'none', hint: null, editable: true },
+                geminiLive: { configured: false, source: 'none', hint: null, editable: true },
+                qwenRealtime: { configured: false, source: 'none', hint: null, editable: true },
+            },
         }
         fetchMock
             .mockResolvedValueOnce(new Response(JSON.stringify(status), { status: 200 }))

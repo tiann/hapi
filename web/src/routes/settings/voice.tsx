@@ -20,12 +20,20 @@ export default function SettingsVoicePage() {
     const selectedLanguage = voice.voiceLanguages.find((language) => language.code === voice.voiceLanguage)
     const selectedVoice = voice.voices.find((option) => option.id === voice.voiceId)
     const hubProviders = voice.providers.filter((provider) => provider.id !== 'browser-local')
-    const credentialsOpen = showCredentials || (voice.voiceMode === 'dictation' && hubProviders.length === 0)
+    const needsDictationOnboard = voice.voiceMode === 'dictation' && hubProviders.length === 0
+    const needsAssistantOnboard = voice.voiceMode === 'assistant' && voice.configuredBackends.length === 0
+    const credentialsOpen = showCredentials || needsDictationOnboard || needsAssistantOnboard
 
     const setVoiceOpening = (value: 'greet' | 'brief') => {
         setOpening(value)
         if (value === 'brief') localStorage.setItem('hapi-voice-proactive', 'true')
         else localStorage.removeItem('hapi-voice-proactive')
+    }
+
+    const onCredentialsConfigured = () => {
+        voice.refreshProviders()
+        voice.refreshBackends()
+        setShowCredentials(false)
     }
 
     return (
@@ -39,7 +47,10 @@ export default function SettingsVoicePage() {
                         { value: 'assistant', label: t('settings.voice.inputMode.assistant'), description: t('settings.voice.inputMode.assistant.hint') },
                         { value: 'dictation', label: t('settings.voice.inputMode.dictation'), description: t('settings.voice.inputMode.dictation.hint') }
                     ]}
-                    onChange={voice.setVoiceMode}
+                    onChange={(value) => {
+                        voice.setVoiceMode(value)
+                        setShowCredentials(false)
+                    }}
                 />
             </SettingsSection>
 
@@ -51,6 +62,11 @@ export default function SettingsVoicePage() {
                         options={voice.configuredBackends.map((backend) => ({ value: backend, label: VOICE_BACKEND_LABELS[backend] }))}
                         onChange={voice.setBackend}
                     />
+                ) : null}
+                {voice.voiceMode === 'assistant' && voice.configuredBackends.length === 0 ? (
+                    <div className="px-3 py-3 text-sm text-[var(--app-hint)]">
+                        {t('settings.voice.noVoiceBackend')}
+                    </div>
                 ) : null}
                 {voice.voiceMode === 'dictation' && voice.provider ? (
                     <SettingsChoiceGroup
@@ -77,22 +93,24 @@ export default function SettingsVoicePage() {
                         onChange={voice.setTranscriptionMode}
                     />
                 ) : null}
-                {voice.voiceMode === 'dictation' && api ? (
+                {api ? (
                     <>
-                        {hubProviders.length > 0 && !credentialsOpen ? (
+                        {!credentialsOpen ? (
                             <SettingsLinkRow
                                 label={t('settings.voice.credentials.manage')}
-                                description={t('settings.voice.credentials.manageHint')}
+                                description={
+                                    voice.voiceMode === 'assistant'
+                                        ? t('settings.voice.credentials.manageAssistantHint')
+                                        : t('settings.voice.credentials.manageHint')
+                                }
                                 onClick={() => setShowCredentials(true)}
                             />
                         ) : null}
                         {credentialsOpen ? (
                             <TranscriptionProviderOnboard
                                 api={api}
-                                onConfigured={() => {
-                                    voice.refreshProviders()
-                                    setShowCredentials(false)
-                                }}
+                                mode={voice.voiceMode === 'assistant' ? 'assistant' : 'dictation'}
+                                onConfigured={onCredentialsConfigured}
                             />
                         ) : null}
                     </>

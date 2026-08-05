@@ -18,6 +18,10 @@ const MANAGED_KEYS = [
     'TRANSCRIPTION_BASE_URL',
     'TRANSCRIPTION_MODEL',
     'TRANSCRIPTION_API_KEY',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'DASHSCOPE_API_KEY',
+    'QWEN_API_KEY',
 ] as const
 
 function makeTempDir(): string {
@@ -136,5 +140,40 @@ describe('providerCredentials', () => {
             /environment variable/
         )
         expect(process.env.ELEVENLABS_API_KEY).toBe('env-eleven')
+    })
+
+    it('persists Gemini and Qwen voice backend keys and discovers them live', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+
+        const status = await updateTranscriptionCredentials(dir, {
+            geminiLive: 'gemini-ui-key',
+            qwenRealtime: 'dashscope-ui-key',
+        })
+
+        expect(status.voiceBackends.geminiLive).toEqual({
+            configured: true,
+            source: 'settings',
+            hint: '••••-key',
+            editable: true,
+        })
+        expect(status.voiceBackends.qwenRealtime.configured).toBe(true)
+        expect(process.env.GEMINI_API_KEY).toBe('gemini-ui-key')
+        expect(process.env.DASHSCOPE_API_KEY).toBe('dashscope-ui-key')
+        expect(process.env.GOOGLE_API_KEY).toBeUndefined()
+        expect(process.env.QWEN_API_KEY).toBeUndefined()
+    })
+
+    it('refuses to overwrite GOOGLE_API_KEY-locked Gemini via Settings', async () => {
+        dir = makeTempDir()
+        process.env.GOOGLE_API_KEY = 'env-google'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+
+        await expect(updateTranscriptionCredentials(dir, { geminiLive: 'ui' })).rejects.toThrow(
+            /environment variable/
+        )
+        expect(process.env.GOOGLE_API_KEY).toBe('env-google')
     })
 })

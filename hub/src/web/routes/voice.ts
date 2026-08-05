@@ -464,6 +464,8 @@ const transcriptionCredentialsUpdateSchema = z.object({
         model: z.string().nullable().optional(),
         apiKey: z.string().nullable().optional(),
     }).optional(),
+    geminiLive: z.string().nullable().optional(),
+    qwenRealtime: z.string().nullable().optional(),
 }).strict()
 
 export function createVoiceRoutes(options: { dataDir?: string } = {}): Hono<WebAppEnv> {

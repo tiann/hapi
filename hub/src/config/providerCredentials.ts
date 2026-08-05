@@ -1,15 +1,15 @@
 /**
- * Hub-side provider credentials for dictation / voice backends.
+ * Hub-side provider credentials for dictation + voice-assistant backends.
  *
  * Priority: process env (ops bootstrap) > settings.json providerCredentials.
  * Env-locked keys cannot be overwritten or cleared from the Settings UI.
  * Settings-backed values are applied into process.env so existing discovery
- * helpers (listConfiguredTranscriptionProviders) keep working without restart.
+ * helpers keep working without restart.
  */
 
 import { getSettingsFile, readSettings, writeSettings, type Settings } from './settings'
 
-export const TRANSCRIPTION_CREDENTIAL_ENV_KEYS = [
+export const PROVIDER_CREDENTIAL_ENV_KEYS = [
     'OPENAI_API_KEY',
     'ELEVENLABS_API_KEY',
     'DEEPGRAM_API_KEY',
@@ -17,9 +17,17 @@ export const TRANSCRIPTION_CREDENTIAL_ENV_KEYS = [
     'TRANSCRIPTION_BASE_URL',
     'TRANSCRIPTION_MODEL',
     'TRANSCRIPTION_API_KEY',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'DASHSCOPE_API_KEY',
+    'QWEN_API_KEY',
 ] as const
 
-export type TranscriptionCredentialEnvKey = (typeof TRANSCRIPTION_CREDENTIAL_ENV_KEYS)[number]
+/** @deprecated use PROVIDER_CREDENTIAL_ENV_KEYS */
+export const TRANSCRIPTION_CREDENTIAL_ENV_KEYS = PROVIDER_CREDENTIAL_ENV_KEYS
+
+export type ProviderCredentialEnvKey = (typeof PROVIDER_CREDENTIAL_ENV_KEYS)[number]
+export type TranscriptionCredentialEnvKey = ProviderCredentialEnvKey
 
 export type ProviderCredentialSource = 'env' | 'settings' | 'none'
 
@@ -46,6 +54,11 @@ export interface TranscriptionCredentialStatus {
     deepgram: MaskedCredentialStatus
     groq: MaskedCredentialStatus
     openaiCompatible: OpenAICompatibleCredentialStatus
+    voiceBackends: {
+        elevenlabs: MaskedCredentialStatus
+        geminiLive: MaskedCredentialStatus
+        qwenRealtime: MaskedCredentialStatus
+    }
 }
 
 export interface TranscriptionCredentialsUpdate {
@@ -58,11 +71,13 @@ export interface TranscriptionCredentialsUpdate {
         model?: string | null
         apiKey?: string | null
     }
+    geminiLive?: string | null
+    qwenRealtime?: string | null
 }
 
-export type ProviderCredentialsMap = Partial<Record<TranscriptionCredentialEnvKey, string>>
+export type ProviderCredentialsMap = Partial<Record<ProviderCredentialEnvKey, string>>
 
-let envLockedKeys = new Set<TranscriptionCredentialEnvKey>()
+let envLockedKeys = new Set<ProviderCredentialEnvKey>()
 
 export function resetProviderCredentialEnvLocksForTests(): void {
     envLockedKeys = new Set()
@@ -76,7 +91,7 @@ export function maskSecret(value: string): string {
 
 function snapshotEnvLocks(env: NodeJS.ProcessEnv = process.env): void {
     envLockedKeys = new Set(
-        TRANSCRIPTION_CREDENTIAL_ENV_KEYS.filter((key) => Boolean(env[key]?.trim()))
+        PROVIDER_CREDENTIAL_ENV_KEYS.filter((key) => Boolean(env[key]?.trim()))
     )
 }
 
@@ -84,7 +99,7 @@ function readProviderCredentials(settings: Settings | null): ProviderCredentials
     const raw = settings?.providerCredentials
     if (!raw || typeof raw !== 'object') return {}
     const out: ProviderCredentialsMap = {}
-    for (const key of TRANSCRIPTION_CREDENTIAL_ENV_KEYS) {
+    for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
         const value = raw[key]
         if (typeof value === 'string' && value.trim()) {
             out[key] = value.trim()
@@ -94,7 +109,7 @@ function readProviderCredentials(settings: Settings | null): ProviderCredentials
 }
 
 function statusForKey(
-    key: TranscriptionCredentialEnvKey,
+    key: ProviderCredentialEnvKey,
     stored: ProviderCredentialsMap
 ): MaskedCredentialStatus {
     if (envLockedKeys.has(key)) {
@@ -107,6 +122,41 @@ function statusForKey(
         }
     }
     const value = stored[key] ?? process.env[key]?.trim()
+    if (value) {
+        return {
+            configured: true,
+            source: 'settings',
+            hint: maskSecret(value),
+            editable: true,
+        }
+    }
+    return { configured: false, source: 'none', hint: null, editable: true }
+}
+
+/** Gemini accepts GEMINI_API_KEY or GOOGLE_API_KEY; Qwen accepts DASHSCOPE or QWEN. */
+function statusForAliasPair(
+    primary: ProviderCredentialEnvKey,
+    secondary: ProviderCredentialEnvKey,
+    stored: ProviderCredentialsMap
+): MaskedCredentialStatus {
+    const primaryLocked = envLockedKeys.has(primary)
+    const secondaryLocked = envLockedKeys.has(secondary)
+    if (primaryLocked || secondaryLocked) {
+        const value = (process.env[primary] ?? process.env[secondary] ?? '').trim()
+        return {
+            configured: Boolean(value),
+            source: 'env',
+            hint: value ? maskSecret(value) : null,
+            editable: false,
+        }
+    }
+    const value = (
+        stored[primary]
+        ?? stored[secondary]
+        ?? process.env[primary]
+        ?? process.env[secondary]
+        ?? ''
+    ).trim()
     if (value) {
         return {
             configured: true,
@@ -135,7 +185,7 @@ export async function applyProviderCredentialsFromSettings(dataDir: string): Pro
     const settings = await readSettings(getSettingsFile(dataDir))
     if (settings === null) return
     const stored = readProviderCredentials(settings)
-    for (const key of TRANSCRIPTION_CREDENTIAL_ENV_KEYS) {
+    for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
         if (envLockedKeys.has(key)) continue
         const value = stored[key]
         if (value) process.env[key] = value
@@ -143,11 +193,7 @@ export async function applyProviderCredentialsFromSettings(dataDir: string): Pro
     }
 }
 
-export async function getTranscriptionCredentialStatus(
-    dataDir: string
-): Promise<TranscriptionCredentialStatus> {
-    const settings = await readSettings(getSettingsFile(dataDir))
-    const stored = settings === null ? {} : readProviderCredentials(settings)
+function buildStatus(stored: ProviderCredentialsMap): TranscriptionCredentialStatus {
     const openai = statusForKey('OPENAI_API_KEY', stored)
     const elevenlabs = statusForKey('ELEVENLABS_API_KEY', stored)
     const deepgram = statusForKey('DEEPGRAM_API_KEY', stored)
@@ -157,6 +203,8 @@ export async function getTranscriptionCredentialStatus(
     const apiKey = statusForKey('TRANSCRIPTION_API_KEY', stored)
     const baseUrlValue = process.env.TRANSCRIPTION_BASE_URL?.trim() || null
     const modelValue = process.env.TRANSCRIPTION_MODEL?.trim() || null
+    const geminiLive = statusForAliasPair('GEMINI_API_KEY', 'GOOGLE_API_KEY', stored)
+    const qwenRealtime = statusForAliasPair('DASHSCOPE_API_KEY', 'QWEN_API_KEY', stored)
     return {
         openai,
         elevenlabs,
@@ -171,7 +219,20 @@ export async function getTranscriptionCredentialStatus(
             modelEditable: model.editable,
             apiKey,
         },
+        voiceBackends: {
+            elevenlabs,
+            geminiLive,
+            qwenRealtime,
+        },
     }
+}
+
+export async function getTranscriptionCredentialStatus(
+    dataDir: string
+): Promise<TranscriptionCredentialStatus> {
+    const settings = await readSettings(getSettingsFile(dataDir))
+    const stored = settings === null ? {} : readProviderCredentials(settings)
+    return buildStatus(stored)
 }
 
 function normalizeOptionalSecret(value: string | null | undefined): string | null | undefined {
@@ -183,7 +244,7 @@ function normalizeOptionalSecret(value: string | null | undefined): string | nul
 
 function applyPatchToStored(
     stored: ProviderCredentialsMap,
-    key: TranscriptionCredentialEnvKey,
+    key: ProviderCredentialEnvKey,
     value: string | null | undefined
 ): void {
     if (value === undefined) return
@@ -197,6 +258,32 @@ function applyPatchToStored(
     }
     stored[key] = value
     process.env[key] = value
+}
+
+function applyAliasPairPatch(
+    stored: ProviderCredentialsMap,
+    primary: ProviderCredentialEnvKey,
+    secondary: ProviderCredentialEnvKey,
+    value: string | null | undefined
+): void {
+    if (value === undefined) return
+    if (envLockedKeys.has(primary) || envLockedKeys.has(secondary)) {
+        throw new Error(
+            `${primary} (or ${secondary}) is set by an environment variable and cannot be changed from Settings`
+        )
+    }
+    if (value === null) {
+        delete stored[primary]
+        delete stored[secondary]
+        delete process.env[primary]
+        delete process.env[secondary]
+        return
+    }
+    // Canonical primary; drop secondary settings entry so one source of truth
+    stored[primary] = value
+    delete stored[secondary]
+    process.env[primary] = value
+    delete process.env[secondary]
 }
 
 export async function updateTranscriptionCredentials(
@@ -234,7 +321,20 @@ export async function updateTranscriptionCredentials(
         )
     }
 
+    applyAliasPairPatch(
+        stored,
+        'GEMINI_API_KEY',
+        'GOOGLE_API_KEY',
+        normalizeOptionalSecret(update.geminiLive)
+    )
+    applyAliasPairPatch(
+        stored,
+        'DASHSCOPE_API_KEY',
+        'QWEN_API_KEY',
+        normalizeOptionalSecret(update.qwenRealtime)
+    )
+
     settings.providerCredentials = stored
     await writeSettings(settingsFile, settings)
-    return getTranscriptionCredentialStatus(dataDir)
+    return buildStatus(stored)
 }

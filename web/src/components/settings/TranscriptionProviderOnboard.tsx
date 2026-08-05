@@ -4,14 +4,22 @@ import { useTranslation } from '@/lib/use-translation'
 import { SelectControl } from '@/components/ui/select-control'
 import { Button } from '@/components/ui/button'
 
-type CloudProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'groq' | 'openai-compatible'
+type DictationProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'groq' | 'openai-compatible'
+type AssistantProvider = 'elevenlabs' | 'gemini-live' | 'qwen-realtime'
+type CloudProvider = DictationProvider | AssistantProvider
 
-const CLOUD_PROVIDERS: CloudProvider[] = [
+const DICTATION_PROVIDERS: DictationProvider[] = [
     'openai',
     'elevenlabs',
     'deepgram',
     'groq',
     'openai-compatible',
+]
+
+const ASSISTANT_PROVIDERS: AssistantProvider[] = [
+    'elevenlabs',
+    'gemini-live',
+    'qwen-realtime',
 ]
 
 function providerLabel(provider: CloudProvider, t: (key: string) => string): string {
@@ -26,6 +34,10 @@ function providerLabel(provider: CloudProvider, t: (key: string) => string): str
             return 'Groq'
         case 'openai-compatible':
             return t('settings.voice.credentials.openaiCompatible')
+        case 'gemini-live':
+            return t('settings.voice.credentials.geminiLive')
+        case 'qwen-realtime':
+            return t('settings.voice.credentials.qwenRealtime')
     }
 }
 
@@ -44,6 +56,9 @@ function statusForProvider(
                 && status.openaiCompatible.apiKey.editable,
         }
     }
+    if (provider === 'gemini-live') return status.voiceBackends.geminiLive
+    if (provider === 'qwen-realtime') return status.voiceBackends.qwenRealtime
+    if (provider === 'elevenlabs') return status.elevenlabs
     return status[provider]
 }
 
@@ -61,17 +76,26 @@ function errorMessage(err: unknown, fallback: string): string {
 
 export function TranscriptionProviderOnboard(props: {
     api: ApiClient
+    mode: 'dictation' | 'assistant'
     onConfigured: () => void
 }) {
     const { t } = useTranslation()
+    const providers: CloudProvider[] = props.mode === 'assistant' ? ASSISTANT_PROVIDERS : DICTATION_PROVIDERS
     const [status, setStatus] = useState<TranscriptionCredentialStatus | null>(null)
-    const [provider, setProvider] = useState<CloudProvider>('openai')
+    const [provider, setProvider] = useState<CloudProvider>(providers[0]!)
     const [apiKey, setApiKey] = useState('')
     const [baseUrl, setBaseUrl] = useState('')
     const [model, setModel] = useState('')
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [message, setMessage] = useState<string | null>(null)
+
+    useEffect(() => {
+        setProvider(providers[0]!)
+        setApiKey('')
+        setError(null)
+        setMessage(null)
+    }, [props.mode])
 
     const reload = useCallback(async () => {
         try {
@@ -88,22 +112,33 @@ export function TranscriptionProviderOnboard(props: {
 
     const selected = statusForProvider(status, provider)
 
+    const buildUpdate = (clear: boolean): TranscriptionCredentialsUpdate => {
+        const value = clear ? null : (apiKey.trim() || null)
+        if (provider === 'openai-compatible') {
+            return {
+                openaiCompatible: clear
+                    ? { baseUrl: null, model: null, apiKey: null }
+                    : {
+                        baseUrl: baseUrl.trim() || null,
+                        model: model.trim() || null,
+                        apiKey: value,
+                    },
+            }
+        }
+        if (provider === 'gemini-live') return { geminiLive: value }
+        if (provider === 'qwen-realtime') return { qwenRealtime: value }
+        if (provider === 'elevenlabs') return { elevenlabs: value }
+        if (provider === 'openai') return { openai: value }
+        if (provider === 'deepgram') return { deepgram: value }
+        return { groq: value }
+    }
+
     const save = async () => {
         setBusy(true)
         setError(null)
         setMessage(null)
         try {
-            const update: TranscriptionCredentialsUpdate = {}
-            if (provider === 'openai-compatible') {
-                update.openaiCompatible = {
-                    baseUrl: baseUrl.trim() || null,
-                    model: model.trim() || null,
-                    apiKey: apiKey.trim() || null,
-                }
-            } else {
-                update[provider] = apiKey.trim() || null
-            }
-            const next = await props.api.updateTranscriptionCredentials(update)
+            const next = await props.api.updateTranscriptionCredentials(buildUpdate(false))
             setStatus(next)
             setApiKey('')
             setMessage(t('settings.voice.credentials.saved'))
@@ -121,13 +156,7 @@ export function TranscriptionProviderOnboard(props: {
         setError(null)
         setMessage(null)
         try {
-            const update: TranscriptionCredentialsUpdate = {}
-            if (provider === 'openai-compatible') {
-                update.openaiCompatible = { baseUrl: null, model: null, apiKey: null }
-            } else {
-                update[provider] = null
-            }
-            const next = await props.api.updateTranscriptionCredentials(update)
+            const next = await props.api.updateTranscriptionCredentials(buildUpdate(true))
             setStatus(next)
             setMessage(t('settings.voice.credentials.cleared'))
             props.onConfigured()
@@ -140,7 +169,11 @@ export function TranscriptionProviderOnboard(props: {
 
     return (
         <div className="space-y-3 px-3 py-3">
-            <p className="text-sm text-[var(--app-hint)]">{t('settings.voice.credentials.hint')}</p>
+            <p className="text-sm text-[var(--app-hint)]">
+                {props.mode === 'assistant'
+                    ? t('settings.voice.credentials.assistantHint')
+                    : t('settings.voice.credentials.hint')}
+            </p>
             <label className="block space-y-1">
                 <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.credentials.provider')}</span>
                 <SelectControl
@@ -153,7 +186,7 @@ export function TranscriptionProviderOnboard(props: {
                     }}
                     className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-2 text-sm text-[var(--app-fg)]"
                 >
-                    {CLOUD_PROVIDERS.map((option) => (
+                    {providers.map((option) => (
                         <option key={option} value={option}>{providerLabel(option, t)}</option>
                     ))}
                 </SelectControl>
