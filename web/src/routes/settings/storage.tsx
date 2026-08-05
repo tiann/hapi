@@ -24,11 +24,34 @@ export default function SettingsStoragePage() {
 
     return (
         <SettingsPageContent description={t('settings.storage.description')}>
-            <SettingsSection>
-                {query.isLoading ? <SettingsRow label={t('settings.storage.loading')} /> : null}
-                {query.error ? <SettingsRow label={t('settings.storage.error')} description={query.error instanceof Error ? query.error.message : undefined} /> : null}
-                {query.data ? (
-                    <>
+            {query.isLoading || query.error ? (
+                <SettingsSection>
+                    {query.isLoading ? <SettingsRow label={t('settings.storage.loading')} /> : null}
+                    {query.error ? (
+                        <SettingsRow
+                            label={t('settings.storage.error')}
+                            description={query.error instanceof Error ? query.error.message : undefined}
+                        />
+                    ) : null}
+                </SettingsSection>
+            ) : null}
+            {query.data ? (
+                <>
+                    <StorageUsagePie
+                        usage={{
+                            databaseBytes: query.data.databaseBytes,
+                            walBytes: query.data.walBytes,
+                            shmBytes: query.data.shmBytes,
+                        }}
+                        labels={{
+                            title: t('settings.storage.chartTitle'),
+                            empty: t('settings.storage.chartEmpty'),
+                            database: t('settings.storage.database'),
+                            wal: t('settings.storage.wal'),
+                            shm: t('settings.storage.shm'),
+                        }}
+                    />
+                    <SettingsSection title={t('settings.storage.detailsTitle')}>
                         <SettingsRow label={t('settings.storage.total')} trailing={<span className="font-medium text-[var(--app-fg)]">{formatFileSize(query.data.totalBytes)}</span>} />
                         <SettingsRow label={t('settings.storage.database')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.databaseBytes)}</span>} />
                         <SettingsRow label={t('settings.storage.wal')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.walBytes)}</span>} />
@@ -38,24 +61,8 @@ export default function SettingsStoragePage() {
                                 {query.data.path}
                             </code>
                         } />
-                    </>
-                ) : null}
-            </SettingsSection>
-            {query.data ? (
-                <StorageUsagePie
-                    usage={{
-                        databaseBytes: query.data.databaseBytes,
-                        walBytes: query.data.walBytes,
-                        shmBytes: query.data.shmBytes,
-                    }}
-                    labels={{
-                        title: t('settings.storage.chartTitle'),
-                        empty: t('settings.storage.chartEmpty'),
-                        database: t('settings.storage.database'),
-                        wal: t('settings.storage.wal'),
-                        shm: t('settings.storage.shm'),
-                    }}
-                />
+                    </SettingsSection>
+                </>
             ) : null}
             <button
                 type="button"

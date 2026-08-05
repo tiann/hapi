@@ -35,5 +35,9 @@ describe('SettingsStoragePage', () => {
         await waitFor(() => {
             expect(screen.getByRole('img', { name: /Relative share/i })).toBeInTheDocument()
         })
+
+        const chart = screen.getByRole('img', { name: /Relative share/i })
+        const details = screen.getByRole('heading', { name: /Exact sizes/i })
+        expect(chart.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 })
