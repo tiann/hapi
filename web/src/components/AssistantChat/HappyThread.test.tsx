@@ -200,18 +200,7 @@ describe('scroll anchor helpers', () => {
             distanceFromBottom: 182,
             isScrollingUp: true
         })
-        expect(shouldCancelInitialScrollSettling(intent, true, 520)).toBe(true)
-    })
-
-    it('cancels initial scroll settling for a native scrollbar drag without pointer events', () => {
-        const intent = getScrollIntent({
-            scrollTop: 520,
-            previousScrollTop: 700,
-            scrollHeight: 1232,
-            clientHeight: 530
-        })
-
-        expect(shouldCancelInitialScrollSettling(intent, false, 520)).toBe(true)
+        expect(shouldCancelInitialScrollSettling(intent, true)).toBe(true)
     })
 
     it('keeps initial scroll settling for programmatic upward movement', () => {
@@ -222,7 +211,7 @@ describe('scroll anchor helpers', () => {
             clientHeight: 530
         })
 
-        expect(shouldCancelInitialScrollSettling(intent, false, 0)).toBe(false)
+        expect(shouldCancelInitialScrollSettling(intent, false)).toBe(false)
     })
 
     it('keeps initial scroll settling for negligible movement at the bottom', () => {
@@ -237,7 +226,7 @@ describe('scroll anchor helpers', () => {
             distanceFromBottom: 0,
             isScrollingUp: false
         })
-        expect(shouldCancelInitialScrollSettling(intent, false, 702)).toBe(false)
+        expect(shouldCancelInitialScrollSettling(intent, false)).toBe(false)
     })
 
     it('restores the captured message to the same viewport offset', () => {

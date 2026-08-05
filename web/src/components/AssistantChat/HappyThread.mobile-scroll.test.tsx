@@ -123,7 +123,7 @@ describe('mobile initial scroll settling', () => {
         expect(onViewModeChange).toHaveBeenLastCalledWith('history')
     })
 
-    it('does not snap back after a native scrollbar drag without pointer events', () => {
+    it('keeps settling for non-explicit non-zero layout movement', () => {
         const { viewport, onViewModeChange } = renderThread()
 
         viewport.scrollTop = 520
@@ -132,8 +132,50 @@ describe('mobile initial scroll settling', () => {
             vi.advanceTimersByTime(1_800)
         })
 
+        expect(viewport.scrollTop).toBe(702)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+
+    it('does not snap back after a window-captured native scrollbar drag', () => {
+        const { viewport, onViewModeChange } = renderThread()
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({
+            left: 0,
+            top: 0,
+            right: 320,
+            bottom: 600
+        } as DOMRect)
+
+        fireEvent.mouseDown(window, { button: 0, clientX: 319, clientY: 200 })
+        viewport.scrollTop = 520
+        fireEvent.scroll(viewport)
+        fireEvent.mouseUp(window)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
         expect(viewport.scrollTop).toBe(520)
         expect(onViewModeChange).toHaveBeenLastCalledWith('history')
+    })
+
+    it('ignores captured mouse input outside the chat viewport', () => {
+        const { viewport, onViewModeChange } = renderThread()
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({
+            left: 0,
+            top: 0,
+            right: 320,
+            bottom: 600
+        } as DOMRect)
+
+        fireEvent.mouseDown(window, { button: 0, clientX: 400, clientY: 200 })
+        viewport.scrollTop = 520
+        fireEvent.scroll(viewport)
+        fireEvent.mouseUp(window)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(702)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
     })
 
     it('keeps settling after the runtime resets the viewport to the exact top', () => {
