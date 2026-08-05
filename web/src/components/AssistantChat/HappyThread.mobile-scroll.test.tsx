@@ -123,13 +123,23 @@ describe('mobile initial scroll settling', () => {
         expect(onViewModeChange).toHaveBeenLastCalledWith('history')
     })
 
-    it('ignores pointer cancellation that did not start in the chat viewport', () => {
+    it('does not snap back after a native scrollbar drag without pointer events', () => {
         const { viewport, onViewModeChange } = renderThread()
-        const pointerCancel = new Event('pointercancel', { bubbles: true })
-        Object.defineProperty(pointerCancel, 'pointerType', { value: 'touch' })
-        fireEvent(window, pointerCancel)
 
         viewport.scrollTop = 520
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(520)
+        expect(onViewModeChange).toHaveBeenLastCalledWith('history')
+    })
+
+    it('keeps settling after the runtime resets the viewport to the exact top', () => {
+        const { viewport, onViewModeChange } = renderThread()
+
+        viewport.scrollTop = 0
         fireEvent.scroll(viewport)
         act(() => {
             vi.advanceTimersByTime(1_800)

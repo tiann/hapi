@@ -168,9 +168,14 @@ export function getScrollIntent(params: {
 
 export function shouldCancelInitialScrollSettling(
     intent: ScrollIntent,
-    hasExplicitUpwardIntent: boolean
+    hasExplicitUpwardIntent: boolean,
+    scrollTop: number
 ): boolean {
-    return hasExplicitUpwardIntent
+    // Native scrollbar drags do not consistently emit pointer or wheel events
+    // to the scroll container. A non-zero upward position is still sufficient
+    // evidence of manual navigation. Preserve the exact-top exception because
+    // the runtime may reset the viewport to zero while the initial DOM settles.
+    return (hasExplicitUpwardIntent || scrollTop > MANUAL_SCROLL_EPSILON_PX)
         && intent.isScrollingUp
         && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX
 }
@@ -737,7 +742,7 @@ export function HappyThread(props: {
             const explicitUpwardIntent = needsCoverage && consumeExplicitUpwardIntent(intent)
 
             if (isInitialScrollSettling()) {
-                if (shouldCancelInitialScrollSettling(intent, hadExplicitUpwardIntent)) {
+                if (shouldCancelInitialScrollSettling(intent, hadExplicitUpwardIntent, viewport.scrollTop)) {
                     initialScrollDeadlineRef.current = 0
                     clearInitialScrollTimers()
                     setAutoScrollMode(false)
