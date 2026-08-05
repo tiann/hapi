@@ -2,6 +2,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
+import { useReasoningCollapse } from '@/hooks/useReasoningCollapse'
 import {
     getChatSurfaceColorPickerValue,
     getChatSurfaceColorPresetOptions,
@@ -50,6 +51,7 @@ export default function SettingsChatPage() {
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { codexExplorationCollapsed, setCodexExplorationCollapsed } = useCodexExplorationCollapse()
+    const { reasoningCollapsed, setReasoningCollapsed } = useReasoningCollapse()
     const { toolGroupBackground, userMessageBackground, setToolGroupBackground, setUserMessageBackground } = useChatSurfaceColors()
     return (
         <SettingsPageContent description={t('settings.chat.description')}>
@@ -74,6 +76,12 @@ export default function SettingsChatPage() {
                     description={t('settings.chat.codexExplorationCollapsed.desc')}
                     checked={codexExplorationCollapsed}
                     onChange={setCodexExplorationCollapsed}
+                />
+                <SettingsSwitch
+                    label={t('settings.chat.reasoningCollapsed')}
+                    description={t('settings.chat.reasoningCollapsed.desc')}
+                    checked={reasoningCollapsed}
+                    onChange={setReasoningCollapsed}
                 />
             </SettingsSection>
             <SettingsSection title={t('settings.chat.colors')}>
