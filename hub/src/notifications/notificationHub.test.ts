@@ -15,6 +15,8 @@ class FakeSyncEngine {
     private readonly listeners: Set<SyncEventListener> = new Set()
     private readonly sessions: Map<string, Session> = new Map()
     readonly modelErrorNotifiedMarks: Array<{ sessionId: string; eventId: string }> = []
+    /** When > 0, next N markModelErrorNotified calls throw before succeeding. */
+    markModelErrorNotifiedFailuresRemaining = 0
 
     subscribe(listener: SyncEventListener): () => void {
         this.listeners.add(listener)
@@ -34,6 +36,10 @@ class FakeSyncEngine {
     }
 
     async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
+        if (this.markModelErrorNotifiedFailuresRemaining > 0) {
+            this.markModelErrorNotifiedFailuresRemaining -= 1
+            throw new Error('version conflict')
+        }
         this.modelErrorNotifiedMarks.push({ sessionId, eventId })
         const session = this.sessions.get(sessionId)
         const err = session?.metadata?.lastModelError
@@ -887,6 +893,52 @@ describe('NotificationHub', () => {
         expect(channel.modelErrors).toHaveLength(2)
         expect(channel.modelErrors[1]?.notification.eventId).toBe('evt-clock-low')
         expect(channel.modelErrors[1]?.notification.atTs).toBe(1_000)
+
+        hub.stop()
+    })
+
+    it('retries notifiedAt persistence after contention without resending channels', async () => {
+        const engine = new FakeSyncEngine()
+        engine.markModelErrorNotifiedFailuresRemaining = 1
+        let sends = 0
+        const channel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError() {
+                sends++
+                return 'delivered'
+            }
+        }
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            modelErrorRetryDelaysMs: [20]
+        })
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    eventId: 'evt-wm-1',
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'wm-retry',
+                    atTs: 9000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(sends).toBe(1)
+        expect(engine.modelErrorNotifiedMarks).toHaveLength(0)
+
+        await sleep(40)
+        expect(sends).toBe(1)
+        expect(engine.modelErrorNotifiedMarks).toEqual([
+            { sessionId: session.id, eventId: 'evt-wm-1' }
+        ])
+        expect(engine.getSession(session.id)?.metadata?.lastModelError?.notifiedAt).toEqual(
+            expect.any(Number)
+        )
 
         hub.stop()
     })

@@ -337,15 +337,24 @@ export function classifyAcpRpcRejection(error: unknown): CursorAgentStreamFailur
     return { kind: 'prompt_failed', transient: false, raw, source: 'rpc' }
 }
 
-const PRIOR_DONE_PREFIXES = ['done', 'all done', 'committed', 'successfully', 'fixed', 'complete']
+const PRIOR_DONE_PATTERNS = [
+    /^done(?:[.!:]|\s|$)/,
+    /^all done(?:[.!:]|\s|$)/,
+    /^committed(?:[.!:]|\s|$)/,
+    /^fixed(?:[.!:]|\s|$)/,
+    /^complete(?:d)?(?:[.!:]|\s|$)/,
+    /^successfully\s+(?:completed|fixed|committed)\b/
+]
 
 /**
  * Returns true when the text looks like the agent claimed task completion
- * (e.g. "Done.", "All done.", "Successfully committed.").
+ * (e.g. "Done.", "All done.", "Successfully completed.").
+ * Word-boundary patterns — not startsWith — so "Completely unable…" and
+ * "Successfully reproduced…" do not falsely set priorAssistantClaimsDone.
  */
 export function isCompletionClaim(text: string): boolean {
     const lower = text.trim().toLowerCase()
-    return PRIOR_DONE_PREFIXES.some((prefix) => lower.startsWith(prefix))
+    return PRIOR_DONE_PATTERNS.some((pattern) => pattern.test(lower))
 }
 
 const TEXT_ERROR_MARKER = /^[ \t]*(?:Error: (?:T|RetriableError):|Gemini prompt failed:)/im

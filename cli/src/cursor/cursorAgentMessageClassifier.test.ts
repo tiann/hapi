@@ -465,9 +465,11 @@ describe('isCompletionClaim', () => {
     it('matches Done', () => expect(isCompletionClaim('Done.')).toBe(true))
     it('matches All done', () => expect(isCompletionClaim('All done. The PR is filed.')).toBe(true))
     it('matches Committed', () => expect(isCompletionClaim('Committed all changes.')).toBe(true))
-    it('matches Successfully', () => expect(isCompletionClaim('Successfully updated the file.')).toBe(true))
+    it('matches Successfully completed', () => expect(isCompletionClaim('Successfully completed the migration.')).toBe(true))
+    it('matches Successfully fixed', () => expect(isCompletionClaim('Successfully fixed the bug.')).toBe(true))
     it('matches Fixed', () => expect(isCompletionClaim('Fixed the bug.')).toBe(true))
     it('matches Complete', () => expect(isCompletionClaim('Complete.')).toBe(true))
+    it('matches Completed', () => expect(isCompletionClaim('Completed.')).toBe(true))
     it('is case-insensitive', () => {
         expect(isCompletionClaim('DONE everything')).toBe(true)
         expect(isCompletionClaim('all done')).toBe(true)
@@ -481,6 +483,12 @@ describe('isCompletionClaim', () => {
     it('does not match non-completion phrases', () => {
         expect(isCompletionClaim("Here's the plan")).toBe(false)
         expect(isCompletionClaim("I'm working on it")).toBe(false)
+    })
+    it('does not match Completely… as a completion claim', () => {
+        expect(isCompletionClaim('Completely unable to finish the task.')).toBe(false)
+    })
+    it('does not match Successfully reproduced… as a completion claim', () => {
+        expect(isCompletionClaim('Successfully reproduced the issue, but the fix is pending.')).toBe(false)
     })
     it('handles empty string', () => {
         expect(isCompletionClaim('')).toBe(false)
