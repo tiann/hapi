@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://hapi.run/schemas/settings.schema.json",
+  "$id": "https://hapi.run/docs/schemas/settings.schema.json",
   "title": "HAPI Settings",
   "description": "Configuration file for HAPI (~/.hapi/settings.json)",
   "type": "object",
@@ -54,6 +54,19 @@
       "type": "boolean",
       "default": true,
       "description": "Enable Telegram notifications. ENV: TELEGRAM_NOTIFICATION"
+    },
+    "serverChanSendKey": {
+      "type": "string",
+      "description": "ServerChan SendKey for WeChat push notifications. ENV: SERVERCHAN_SENDKEY"
+    },
+    "serverChanNotification": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable ServerChan notifications. ENV: SERVERCHAN_NOTIFICATION"
+    },
+    "relayAuthKey": {
+      "type": "string",
+      "description": "Per-hub relay auth key issued by the relay server. Auto-obtained if not set. ENV: HAPI_RELAY_AUTH"
     },
     "vapidKeys": {
       "type": "object",

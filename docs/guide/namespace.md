@@ -27,7 +27,7 @@ CLI_API_TOKEN="your-base-token:alice"
 
 ## Limitations and gotchas
 
-- Hub-side `CLI_API_TOKEN` must not include `:<namespace>`. If it does, the hub will strip the suffix and log a warning.
+- Hub-side `CLI_API_TOKEN` must not include `:<namespace>`. The hub validates the token from both the environment variable and `settings.json`, and refuses to start with an error if a suffix is present.
 - Namespaces are isolated: sessions, machines, and users are not visible across namespaces.
 - One machine ID cannot be reused across namespaces.
   - To run multiple namespaces on one machine, use a separate `HAPI_HOME` per namespace, or clear the machine ID with `hapi auth logout` before switching.

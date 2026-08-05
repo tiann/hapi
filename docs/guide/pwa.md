@@ -50,9 +50,8 @@ When offline, HAPI can:
 
 - Display cached session lists
 - Show previously loaded messages
-- Queue actions for when you're back online
 
-An offline indicator appears when you lose connection.
+HAPI does not queue actions taken while offline — an offline banner appears at the top when you lose connection, and live features resume once you're back online.
 
 ### Auto-Update
 
@@ -65,13 +64,15 @@ HAPI checks for updates in the background and lets you choose when to reload:
 
 HAPI uses a user-controlled reload instead of forcing an automatic refresh, so you choose when to reload. The banner cannot be dismissed without upgrading, so you won't forget you're on an old build.
 
-### Background Sync
+### Share Target (Android)
 
-Actions taken offline are synced when reconnected:
+On Android, HAPI appears in the system share sheet. When you share content to HAPI:
 
-- Pending messages are sent
-- Permission decisions are relayed
-- Session state is refreshed
+1. Chrome sends a `POST /share` multipart form (title, text, URL, and files) to the app
+2. The service worker intercepts the request and stores the payload in IndexedDB
+3. The app is then redirected (303) to the share picker, which reads the stored content
+
+This lets you share images, PDFs, text, and other files directly into a session from any app.
 
 ## Caching Strategy
 
@@ -82,6 +83,9 @@ HAPI uses intelligent caching:
 | App shell | Cache first | Until update |
 | Sessions API | Network first | 5 minutes |
 | Machines API | Network first | 10 minutes |
+| Session detail API | Network first | 5 minutes |
+| CDN (cdn.socket.io) | Cache first | 30 days |
+| CDN (telegram.org) | Cache first | 7 days |
 | Static assets | Cache first | Forever |
 
 ## Notifications
@@ -100,9 +104,14 @@ HAPI supports push notifications to alert you when agents need attention.
 |------|-----------|
 | Permission Request | Agent needs your approval |
 | Ready | Agent finished and awaits input |
+| Task completed / Task failed | A background task finishes (success or failure) |
+
+### Native Push via FCM
+
+In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. When FCM is configured and a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if FCM already delivered a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
 
 ::: tip
-If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./installation.md#telegram-setup) instead.
+If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./notifications.md#telegram-setup) instead.
 :::
 
 ## Managing Your PWA
@@ -143,9 +152,7 @@ If you experience issues:
 
 ### Battery Optimization
 
-On Android, disable battery optimization for HAPI to ensure:
-- Background sync works reliably
-- Notifications arrive promptly
+On Android, disable battery optimization for HAPI to ensure notifications arrive promptly.
 
 Settings → Apps → HAPI → Battery → Unrestricted
 
@@ -188,7 +195,6 @@ You can install HAPI on multiple devices:
 ### iOS-Specific Issues
 
 - Must use Safari for installation
-- No background sync on iOS
 - Limited offline capabilities
 
 ## Telegram Mini App Alternative
@@ -200,4 +206,4 @@ If PWA doesn't suit your needs, consider the Telegram Mini App:
 - Same features as PWA
 - Integrated notifications
 
-See [Installation Guide](./installation.md#telegram-setup) for Telegram setup.
+See [Notifications](./notifications.md#telegram-setup) for Telegram setup.

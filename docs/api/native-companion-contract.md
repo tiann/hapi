@@ -23,11 +23,13 @@ A companion implementing this contract is a **native client to the same hub the 
 {
   "token": "<fcm-registration-token>",
   "platform": "phone",
-  "deviceId": "<stable-install-id-uuid>"
+  "deviceId": "<stable-install-id>"
 }
 ```
 
 `platform`: `"phone"` | `"wear"`
+
+`deviceId`: any string of 1-128 characters chosen by the client (does not have to be a UUID). Must be stable across re-registrations of the same install.
 
 **Response:** `{ "ok": true }`
 
@@ -67,7 +69,8 @@ namespace to avoid duplicate OS notifications.
 | `title` | string | Notification title |
 | `body` | string | Notification body |
 | `severity` | `info` | `info` (ready), `warning` (permission), `success` / `error` (task) |
-| `notifySummary` | JSON string | Optional: parsed `AGENT_NOTIFY_SUMMARY` line from agent text |
+| `contractVersion` | `1` | Present on every message; see [Versioning](#versioning) |
+| `notifySummary` | JSON string | Only on `ready`: parsed `AGENT_NOTIFY_SUMMARY` line from agent text, when present |
 
 Native apps **must** handle `data` for Wear; notification block is for display.
 
@@ -78,6 +81,8 @@ Native apps **must** handle `data` for Wear; notification block is for display.
 | Send text | `POST /api/sessions/:id/messages` `{ "text": "...", "localId": "..." }` |
 | Allow | `POST /api/sessions/:id/permissions/:requestId/approve` |
 | Deny | `POST /api/sessions/:id/permissions/:requestId/deny` |
+
+`localId` is optional in the send-message body - an opaque client-generated id for reconciling the locally shown message with the server-echoed one.
 
 `sentFrom` extension (optional future): `android-phone`, `android-wear`.
 

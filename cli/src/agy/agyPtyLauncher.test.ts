@@ -1,15 +1,18 @@
 /**
  * Tests for the brain-UUID discovery wiring in AgyPtyLauncher.
  *
- * Bug context (2026-07-03 diagnosis): the PreToolUse hook discovers the agy
- * brain UUID and calls `session.onSessionFound(uuid)` to persist it to
- * session metadata, but nothing ever told the scanner about it — the scanner
- * only started tailing once its OWN content-match found the brain. For a
- * first message with attachments, content-match fails (see
- * agySessionScanner.test.ts), so the chat stayed empty even though the hook
- * had already discovered the UUID. Root-cause fix: register a
- * sessionFoundCallback on the shared AgentSessionBase registry so any
- * discovery path (hook OR scanner content-match) notifies the scanner.
+ * Bug context (2026-07-03 diagnosis, since generalized): the PreToolUse hook
+ * discovers the agy brain UUID and calls `session.onSessionFound(uuid)` to
+ * persist it to session metadata, but nothing ever told the scanner about
+ * it — the scanner only started tailing once its OWN transcript content-match
+ * found the brain, which failed outright for a first message with
+ * attachments. Root-cause fix: register a sessionFoundCallback on the shared
+ * AgentSessionBase registry so hook discovery notifies the scanner.
+ *
+ * The content-match fallback itself was removed once the PreToolUse and
+ * PreInvocation hooks became the sole, authoritative discovery path (see
+ * agySessionScanner.ts and the 2026-08-04 agy-preinvocation-discovery plan);
+ * this file now only exercises the hook -> scanner bridge.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,7 +22,6 @@ import { userRequestMatches } from './agyPtyLauncher'
 
 const harness = vi.hoisted(() => ({
     scannerOnNewSession: vi.fn(),
-    scannerSetSessionMessageText: vi.fn(),
     scannerCleanupCalls: 0,
     scannerOpts: null as Record<string, unknown> | null,
     scannerBrainUuid: null as string | null,
@@ -32,6 +34,31 @@ const harness = vi.hoisted(() => ({
     switchHandler: null as (() => void | Promise<void>) | null,
     liveModelHandler: null as ((model: string | null) => Promise<void>) | null,
     afterNextMessage: null as null | ((opts: any, next: unknown) => void | Promise<void>),
+    // Number of launchOnce rounds the mocked respawn loop runs before
+    // stopping (see the RemoteLauncherBase mock below). Defaults to 1 to
+    // match every existing test's single-spawn assumption; a respawn test
+    // bumps this to exercise a second launchOnce call.
+    respawnRounds: 1,
+    // Phase 2.7 (PreInvocation self-detach/respawn-reattach): every
+    // writeAgyHooksJsonAtomic call the launcher makes, in order, so tests can
+    // assert both WHICH content was written and WHEN (detach on discovery vs.
+    // reattach before a respawn).
+    hooksJsonWrites: [] as Array<{ carrierDir: string; content: string }>,
+    // Whether agyHookCarrierIsIntact() should report the carrier as present.
+    // Flipping this to false simulates the carrier vanishing (e.g. /tmp's
+    // 30-day tmpfiles.d sweep) between the initial spawn and a respawn.
+    carrierIntact: true,
+    // prepareAgyHookCarrier() call count/result for the carrier-recreation path.
+    carrierRecreateCalls: 0,
+    carrierRecreateResult: undefined as { carrierDir: string } | undefined,
+    // hooks.json content prepareAgyHookCarrier() was actually invoked with,
+    // one entry per call — R5-2: the carrier-recreation path has its own
+    // WITH/WITHOUT variant selection (syncPreInvocationHookForLaunch's
+    // `desired`, independent of the in-place writeAgyHooksJsonAtomic path
+    // that hooksJsonWrites already tracks) and nothing was asserting it, so
+    // a regression there (e.g. reverting to always pass `withDiscovery`)
+    // could pass the full suite silently.
+    carrierRecreateContents: [] as string[],
 }))
 
 let ptyOptsCaptured: any = null
@@ -55,13 +82,24 @@ vi.mock('./utils/agySessionScanner', async (importOriginal) => {
             harness.scannerOpts = opts
             return {
                 cleanup: async () => { harness.scannerCleanupCalls += 1 },
-                setSessionMessageText: harness.scannerSetSessionMessageText,
                 getBrainUuid: () => harness.scannerBrainUuid,
                 onNewSession: harness.scannerOnNewSession,
             }
         }),
     }
 })
+
+vi.mock('./utils/agyHookCarrier', () => ({
+    writeAgyHooksJsonAtomic: vi.fn((carrierDir: string, content: string) => {
+        harness.hooksJsonWrites.push({ carrierDir, content })
+    }),
+    agyHookCarrierIsIntact: vi.fn(() => harness.carrierIntact),
+    prepareAgyHookCarrier: vi.fn((content: string) => {
+        harness.carrierRecreateCalls += 1
+        harness.carrierRecreateContents.push(content)
+        return harness.carrierRecreateResult
+    }),
+}))
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({
     RemoteModeDisplay: () => null,
@@ -125,12 +163,33 @@ vi.mock('@/modules/common/remote/RemoteLauncherBase', () => ({
             harness.exitReason = reason
             await handler()
         }
-        // Simplified respawn loop: runs launchOnce exactly once (no retry/backoff)
-        // so the wiring test resolves deterministically.
-        protected async runRespawnLoop(opts: { launchOnce: (signal: AbortSignal) => Promise<unknown> }): Promise<void> {
-            const controller = new AbortController()
-            this.ptyAbortController = controller
-            await opts.launchOnce(controller.signal)
+        // Simplified respawn loop: runs launchOnce for harness.respawnRounds
+        // rounds (default 1, no retry/backoff) so most wiring tests resolve
+        // deterministically after a single spawn. A respawn-path test bumps
+        // harness.respawnRounds to observe a second launchOnce call (each
+        // round re-reads whatever `this.agySessionId` currently is, exactly
+        // like the real loop's launchOnce -> agyPty(resumeSessionId) wiring).
+        protected async runRespawnLoop(opts: {
+            launchOnce: (signal: AbortSignal) => Promise<unknown>
+            onLaunchStart?: (isNewSession: boolean) => void
+        }): Promise<void> {
+            for (let round = 0; round < harness.respawnRounds; round += 1) {
+                // Round 0 always runs regardless of harness.exitReason — several
+                // describe blocks' afterEach hooks leave a leftover 'exit' value
+                // set as a defensive default between tests, and this mock must
+                // match the original single-shot behavior (which never checked
+                // exitReason at all) for every test that never opts into a
+                // respawn. Only rounds AFTER the first are gated on it, so a
+                // respawn test naturally stops once the session actually ends.
+                if (round > 0 && harness.exitReason) break
+                // Mirrors RemoteLauncherBase's real runRespawnLoop: onLaunchStart
+                // runs synchronously before every launchOnce, including the
+                // first — see runAgy.ts's Phase 2.7 syncPreInvocationHookForLaunch call.
+                opts.onLaunchStart?.(round === 0)
+                const controller = new AbortController()
+                this.ptyAbortController = controller
+                await opts.launchOnce(controller.signal)
+            }
             this.ptyAbortController = null
         }
         async start(): Promise<string> {
@@ -149,7 +208,17 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms))
 
-function createSessionStub(opts?: { agyPermissionHandler?: Record<string, unknown> | null }) {
+function createSessionStub(opts?: {
+    agyPermissionHandler?: Record<string, unknown> | null
+    // Phase 2.7: the PreInvocation self-detach/respawn-reattach cycle only
+    // engages when these are set (mirrors runAgy.ts leaving them undefined
+    // outside PTY mode) — omitted by default so every pre-existing test in
+    // this file exercises the same no-op path it always has.
+    hookCarrierDir?: string
+    hooksJsonWithPreInvocation?: string
+    hooksJsonWithoutPreInvocation?: string
+    hookMcpServer?: { command: string; args?: string[] }
+}) {
     const passedHandler = opts?.agyPermissionHandler
     // Merge a default registerQuestionRequest/cancelPendingQuestions into
     // whatever the test passes, so tests that only care about one method
@@ -164,42 +233,44 @@ function createSessionStub(opts?: { agyPermissionHandler?: Record<string, unknow
             cancelAll: vi.fn(),
             ...(passedHandler ?? {}),
         }
-    return {
-        session: {
-            sessionId: null,
-            path: '/tmp/agy-pty-test',
-            hookCarrierDir: undefined,
-            hookPort: undefined,
-            hookToken: undefined,
-            agyPermissionHandler,
-            getModel: () => null,
-            setLiveModelHandler: (handler: ((model: string | null) => Promise<void>) | null) => { harness.liveModelHandler = handler },
-            onThinkingChange: vi.fn(),
-            setKillHandler: (_h: () => void) => {},
-            onSessionFound: vi.fn(),
-            addSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.foundCallbacks.push(cb) },
-            removeSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.removedCallbacks.push(cb) },
-            queue: {
-                waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null),
-            },
-            client: {
-                sendAgySessionMessage: vi.fn(),
-                sendSessionEvent: vi.fn(),
-                emitSessionReady: vi.fn(),
-                emitMessagesConsumed: vi.fn(),
-                resetAgentTerminal: vi.fn(),
-                setAgentTerminalControls: vi.fn(),
-                emitAgentTerminalOutput: vi.fn(),
-                rpcHandlerManager: { registerHandler: () => {} },
-            },
+    const session = {
+        sessionId: null as string | null,
+        path: '/tmp/agy-pty-test',
+        hookCarrierDir: opts?.hookCarrierDir,
+        hookPort: undefined,
+        hookToken: undefined,
+        hooksJsonWithPreInvocation: opts?.hooksJsonWithPreInvocation,
+        hooksJsonWithoutPreInvocation: opts?.hooksJsonWithoutPreInvocation,
+        hookMcpServer: opts?.hookMcpServer,
+        setHookCarrierDir: (dir: string) => { session.hookCarrierDir = dir },
+        agyPermissionHandler,
+        getModel: () => null,
+        setLiveModelHandler: (handler: ((model: string | null) => Promise<void>) | null) => { harness.liveModelHandler = handler },
+        onThinkingChange: vi.fn(),
+        setKillHandler: (_h: () => void) => {},
+        onSessionFound: vi.fn(),
+        addSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.foundCallbacks.push(cb) },
+        removeSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.removedCallbacks.push(cb) },
+        queue: {
+            waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null),
+        },
+        client: {
+            sendAgySessionMessage: vi.fn(),
+            sendSessionEvent: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn(),
+            resetAgentTerminal: vi.fn(),
+            setAgentTerminalControls: vi.fn(),
+            emitAgentTerminalOutput: vi.fn(),
+            rpcHandlerManager: { registerHandler: () => {} },
         },
     }
+    return { session }
 }
 
 describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
     afterEach(() => {
         harness.scannerOnNewSession.mockClear()
-        harness.scannerSetSessionMessageText.mockClear()
         harness.scannerCleanupCalls = 0
         harness.scannerOpts = null
         harness.scannerBrainUuid = null
@@ -211,6 +282,12 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         harness.switchHandler = null
         harness.liveModelHandler = null
         harness.afterNextMessage = null
+        harness.respawnRounds = 1
+        harness.hooksJsonWrites = []
+        harness.carrierIntact = true
+        harness.carrierRecreateCalls = 0
+        harness.carrierRecreateResult = undefined
+        harness.carrierRecreateContents = []
         ptyOptsCaptured = null
     })
 
@@ -221,19 +298,6 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
 
         expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1)
         expect(session.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
-    })
-
-    it('surfaces ambiguous brain discovery without exposing conversation identities', async () => {
-        const { session } = createSessionStub()
-
-        await agyPtyLauncher(session as never)
-        const onDiscoveryAmbiguous = harness.scannerOpts!.onDiscoveryAmbiguous as (count: number) => void
-        onDiscoveryAmbiguous(2)
-
-        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
-            type: 'error',
-            message: 'Antigravity session could not be identified because 2 conversations matched the first message. Continue in the terminal or start a new session with a more specific prompt.',
-        })
     })
 
     it('changes the live AGY model only after the picker and completion markers are observed', async () => {
@@ -378,15 +442,19 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         await launcherPromise
     })
 
-    it('persists the discovered UUID so a later PTY onMessage does not re-fire session.onSessionFound (hostile-review finding: crash-recovery resume gap)', async () => {
-        // Root-cause regression guard for a gap the initial fix missed: the hook
-        // callback must persist the uuid through the shared launcher contract
-        // handleSessionFound does (this.claudeSessionId = sessionId), otherwise a
-        // respawn between hook discovery and the next PTY output chunk would read
-        // a stale null resumeSessionId and silently start a fresh brain instead of
-        // resuming. onMessage's `if (!this.agySessionId)` fallback guard doubles as
-        // an oracle here: if the hook path failed to persist agySessionId, this
-        // guard would incorrectly re-fire session.onSessionFound on the next chunk.
+    it('persists the discovered UUID through a respawn, so the next agy spawn resumes via --conversation instead of silently starting a fresh brain (hostile-review finding: crash-recovery resume gap)', async () => {
+        // Root-cause regression guard (Fix 7 deleted the previous version of this
+        // guard along with the onMessage getBrainUuid() fallback it used as an
+        // oracle — that oracle was itself dead code, but the invariant it
+        // protected is not: handleSessionFound must persist the uuid to
+        // this.agySessionId synchronously, otherwise a PTY crash/respawn between
+        // hook discovery and the next spawn reads a stale null resumeSessionId
+        // and silently starts a fresh brain instead of resuming the one the user
+        // was already talking to. This version drives an actual second
+        // launchOnce round (via harness.respawnRounds) and inspects the args the
+        // NEXT spawn would actually be launched with — the real symptom of the
+        // original defect — instead of a proxy assertion on the first spawn.
+        harness.respawnRounds = 2
         const { session } = createSessionStub()
         const msgPromise = deferred<{ message: string } | null>()
         vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
@@ -394,18 +462,31 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         const launcherPromise = agyPtyLauncher(session as never)
         await tick(20)
 
+        expect(harness.foundCallbacks).toHaveLength(1)
+        // First spawn has no brain yet: resumeSessionId is unset.
+        expect(ptyOptsCaptured.resumeSessionId).toBeUndefined()
+
+        // The hook fires mid-round-1 (agy's PreToolUse/PreInvocation hook ->
+        // session.onSessionFound -> this handleSessionFound), then round 1 ends
+        // (e.g. the PTY crashes) and the mocked respawn loop starts round 2.
         harness.foundCallbacks[0]('hook-discovered-uuid')
-        // The real scanner's onNewSession() synchronously updates foundBrainUuid,
-        // so getBrainUuid() reflects it immediately — mirror that here.
-        harness.scannerBrainUuid = 'hook-discovered-uuid'
+        msgPromise.resolve(null)
+        await tick(20)
 
-        expect(ptyOptsCaptured).toBeTruthy()
-        ptyOptsCaptured.onMessage('some pty output chunk')
-
-        expect(session.onSessionFound).not.toHaveBeenCalled()
+        // ptyOptsCaptured now reflects the SECOND agyPty(...) call (round 2's
+        // spawn args) — this is the assertion that fails if handleSessionFound
+        // stops persisting agySessionId synchronously: resumeSessionId would
+        // read back undefined and buildAgyPtyArgs would omit --conversation.
+        expect(ptyOptsCaptured.resumeSessionId).toBe('hook-discovered-uuid')
+        // Real (non-mocked) buildAgyPtyArgs, fetched via importActual so the
+        // shared `./agyPty` mock (used by every other test in this file for
+        // agyPty itself) stays untouched — this is the pure arg-builder that
+        // turns resumeSessionId into the actual `--conversation <uuid>` CLI
+        // flag agy would be launched with.
+        const { buildAgyPtyArgs } = await vi.importActual<typeof import('./agyPty')>('./agyPty')
+        expect(buildAgyPtyArgs(ptyOptsCaptured).join(' ')).toContain('--conversation hook-discovered-uuid')
 
         harness.exitReason = 'exit'
-        msgPromise.resolve(null)
         await launcherPromise
     })
 
@@ -422,18 +503,6 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         await agyPtyLauncher(session as never)
 
         expect(harness.scannerCleanupCalls).toBe(1)
-    })
-
-    it('forwards a queued user message with the current scanner interface', async () => {
-        const { session } = createSessionStub()
-        vi.mocked(session.queue.waitForMessagesAndGetAsString)
-            .mockResolvedValueOnce({ message: 'hello agy', mode: 'default' } as never)
-        harness.afterNextMessage = async (opts) => {
-            await opts.onBeforeMessageSubmit?.('hello agy')
-        }
-
-        await expect(agyPtyLauncher(session as never)).resolves.toBe('exit')
-        expect(harness.scannerSetSessionMessageText).toHaveBeenCalledWith('hello agy')
     })
 
     it('acknowledges a dequeued web message only after a matching USER_INPUT is observed', async () => {
@@ -603,8 +672,6 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         await agyPtyLauncher(session as never)
 
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-clear'])
-        expect(harness.scannerSetSessionMessageText).toHaveBeenCalledOnce()
-        expect(harness.scannerSetSessionMessageText).toHaveBeenCalledWith('following prompt')
     })
 
     it('ends the launcher instead of respawning when PTY exits with an unconfirmed web delivery', async () => {
@@ -875,6 +942,419 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
         await launcherPromise
+    })
+})
+
+// Phase 2.7 (agy-preinvocation-discovery plan §6.6/§8): PreInvocation fires
+// on EVERY model call (measured ~424ms round trip) but is only useful until
+// the brain UUID is confirmed — after that it's pure waste. agy re-reads
+// hooks.json before every model call, so the carrier's hooks.json can be
+// rewritten in place to drop PreInvocation once discovery succeeds, and
+// restored before every respawn (a resume that silently fails would
+// otherwise leave no way to discover the replacement conversation's UUID).
+describe('agyPtyLauncher PreInvocation self-detach/respawn-reattach (Phase 2.7)', () => {
+    afterEach(() => {
+        harness.scannerOnNewSession.mockClear()
+        harness.scannerCleanupCalls = 0
+        harness.scannerOpts = null
+        harness.scannerBrainUuid = null
+        harness.foundCallbacks = []
+        harness.removedCallbacks = []
+        harness.exitReason = null
+        harness.sendKeys.mockClear()
+        harness.abortHandler = null
+        harness.switchHandler = null
+        harness.liveModelHandler = null
+        harness.afterNextMessage = null
+        harness.respawnRounds = 1
+        harness.hooksJsonWrites = []
+        harness.carrierIntact = true
+        harness.carrierRecreateCalls = 0
+        harness.carrierRecreateResult = undefined
+        harness.carrierRecreateContents = []
+        ptyOptsCaptured = null
+    })
+
+    const HOOKS_JSON_WITH = '{"hapi-bridge":{"PreToolUse":[{"matcher":"*","hooks":[{"command":"pre-tool-use-cmd","timeout":3600}]}],"PreInvocation":[{"type":"command","command":"pre-invocation-cmd","timeout":5}]}}'
+    const HOOKS_JSON_WITHOUT = '{"hapi-bridge":{"PreToolUse":[{"matcher":"*","hooks":[{"command":"pre-tool-use-cmd","timeout":3600}]}]}}'
+
+    it('1) drops the PreInvocation block once the brain UUID is confirmed, leaving PreToolUse untouched', async () => {
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-a',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+        // Round 1's onLaunchStart already reattached once (idempotent restore
+        // of the same with-discovery content the carrier was born with) —
+        // clear it so this test only inspects the discovery-triggered write.
+        harness.hooksJsonWrites = []
+
+        harness.foundCallbacks[0]('hook-discovered-uuid')
+
+        // Fails if handleSessionFound stops calling detachPreInvocationHook,
+        // or if it writes the wrong (with-discovery) content, or writes to
+        // the wrong carrier directory.
+        expect(harness.hooksJsonWrites).toHaveLength(1)
+        expect(harness.hooksJsonWrites[0].carrierDir).toBe('/tmp/carrier-a')
+        const parsed = JSON.parse(harness.hooksJsonWrites[0].content)
+        const group = Object.values(parsed)[0] as { PreToolUse: Array<{ matcher: string }>; PreInvocation?: unknown }
+        expect(group.PreInvocation).toBeUndefined()
+        expect(group.PreToolUse[0].matcher).toBe('*')
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('2) keeps PreInvocation detached across a respawn once the brain UUID is already known (Fix N1)', async () => {
+        harness.respawnRounds = 2
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-b',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+        harness.hooksJsonWrites = []
+
+        // Discovery detaches PreInvocation mid-round-1 (e.g. the PTY then crashes).
+        harness.foundCallbacks[0]('hook-discovered-uuid')
+        expect(harness.hooksJsonWrites).toHaveLength(1)
+        expect(harness.hooksJsonWrites[0].content).toBe(HOOKS_JSON_WITHOUT)
+
+        // Round 1 ends and the mocked respawn loop starts round 2 — its
+        // onLaunchStart must NOT re-arm PreInvocation: this.agySessionId is
+        // already set from the discovery above, so syncPreInvocationHookForLaunch
+        // writes WITHOUT again (a no-op re-assertion of the current state),
+        // not WITH. Before Fix N1 this wrote WITH unconditionally, silently
+        // undoing detachPreInvocationHook's work on every single respawn —
+        // the exact bug this test now guards against (see
+        // agyPtyLauncher.ts:syncPreInvocationHookForLaunch's docstring for why
+        // resuming the SAME brain via --conversation makes re-arming
+        // pointless: a resume failure is out of scope, per Fix N2).
+        msgPromise.resolve(null)
+        await tick(20)
+
+        // Fails (mutation check: revert syncPreInvocationHookForLaunch to always
+        // write `withDiscovery`) if PreInvocation gets re-armed on a respawn
+        // after discovery already succeeded.
+        expect(harness.hooksJsonWrites).toHaveLength(2)
+        expect(harness.hooksJsonWrites[1].content).toBe(HOOKS_JSON_WITHOUT)
+        expect(harness.hooksJsonWrites[1].carrierDir).toBe('/tmp/carrier-b')
+
+        harness.exitReason = 'exit'
+        await launcherPromise
+    })
+
+    it('3) detaches PreInvocation on the very first launch when the session is resume-seeded, and it stays detached across a respawn (Fix N1)', async () => {
+        harness.respawnRounds = 2
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-resume',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+        // Mirrors loop.ts calling session.onSessionFound(resumeSessionId)
+        // BEFORE the launcher is constructed — by the time AgyPtyLauncher's
+        // constructor runs, session.sessionId is already the resumed UUID,
+        // so this.agySessionId is seeded, and no PreToolUse/PreInvocation
+        // hook will ever fire addSessionFoundCallback's handleSessionFound
+        // for it (first-wins guard: wrapper.sessionId is already set).
+        session.sessionId = 'resumed-uuid'
+
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        // Fails (mutation check: revert syncPreInvocationHookForLaunch to always
+        // write `withDiscovery`) if a resume-seeded session's first launch
+        // still writes WITH — before Fix N1 this never wrote WITHOUT at all
+        // for a resume, since handleSessionFound (the only other writer of
+        // WITHOUT) never fires for it.
+        expect(harness.hooksJsonWrites).toHaveLength(1)
+        expect(harness.hooksJsonWrites[0].content).toBe(HOOKS_JSON_WITHOUT)
+        expect(harness.hooksJsonWrites[0].carrierDir).toBe('/tmp/carrier-resume')
+
+        // No PreToolUse/PreInvocation hook fires in this test (harness.foundCallbacks
+        // is never invoked) — the resumed conversation is assumed to keep
+        // resuming successfully, which is the common case (resume-failure
+        // detection is explicitly out of scope, per Fix N2).
+        msgPromise.resolve(null)
+        await tick(20)
+
+        expect(harness.hooksJsonWrites).toHaveLength(2)
+        expect(harness.hooksJsonWrites[1].content).toBe(HOOKS_JSON_WITHOUT)
+
+        harness.exitReason = 'exit'
+        await launcherPromise
+    })
+
+    it('4) recreates a vanished carrier before a respawn and repoints hookCarrierDir for the next agy spawn', async () => {
+        harness.respawnRounds = 2
+        harness.carrierIntact = false
+        harness.carrierRecreateResult = { carrierDir: '/tmp/carrier-c-recreated' }
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-c-original',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+        harness.carrierRecreateCalls = 0
+        // Round 1's onLaunchStart already recreated the carrier once (the
+        // brain UUID isn't known yet at that point, so it recreated with
+        // `withDiscovery`) — reset alongside carrierRecreateCalls so what's
+        // left below is only round 2's call, the one this test actually
+        // targets (recreation happening AFTER discovery, before a respawn).
+        harness.carrierRecreateContents = []
+
+        harness.foundCallbacks[0]('hook-discovered-uuid')
+        msgPromise.resolve(null)
+        await tick(20)
+
+        // Fails if the launcher writes to the (now-nonexistent) old carrier
+        // path instead of checking agyHookCarrierIsIntact() and rebuilding,
+        // or if it forgets to repoint session.hookCarrierDir afterward.
+        expect(harness.carrierRecreateCalls).toBe(1)
+        expect(session.hookCarrierDir).toBe('/tmp/carrier-c-recreated')
+        // R5-2: the recreation path picks its own WITH/WITHOUT variant
+        // independently of the in-place writeAgyHooksJsonAtomic path — by
+        // this point in the test, discovery already happened
+        // (this.agySessionId is set), so the carrier must be recreated with
+        // WITHOUT, never WITH. Mutation check: reverting
+        // agyPtyLauncher.ts's prepareAgyHookCarrier(desired, ...) call back
+        // to prepareAgyHookCarrier(withDiscovery, ...) keeps every assertion
+        // above green (carrierRecreateCalls, hookCarrierDir, --add-dir all
+        // still pass) while this one alone catches PreInvocation getting
+        // silently re-armed on the recreated carrier.
+        expect(harness.carrierRecreateContents).toEqual([HOOKS_JSON_WITHOUT])
+        // The recreated carrier is what the SECOND agy spawn must actually
+        // use for --add-dir — this is the real symptom a stale hookCarrierDir
+        // would produce (agy launched pointed at a directory that no longer
+        // carries any hooks at all).
+        expect(ptyOptsCaptured.hookCarrierDir).toBe('/tmp/carrier-c-recreated')
+
+        harness.exitReason = 'exit'
+        await launcherPromise
+    })
+
+    it('6) aborts before agy ever spawns when the carrier cannot be recreated (Fix 1: fail-closed)', async () => {
+        harness.carrierIntact = false
+        // harness.carrierRecreateResult stays undefined (afterEach's reset
+        // default) — simulates prepareAgyHookCarrier() failing (ENOSPC, an
+        // unwritable HAPI_HOME, ...).
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-fail',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+
+        const launcherPromise = agyPtyLauncher(session as never)
+
+        // Fails (mutation check: revert syncPreInvocationHookForLaunch's
+        // `if (!recreated)` branch back to log-and-return) if the launcher
+        // resolves/exits cleanly instead of propagating the fail-closed abort.
+        await expect(launcherPromise).rejects.toThrow(/hook carrier/i)
+
+        // The explicit ask this test guards: agyPty (and therefore
+        // --dangerously-skip-permissions) must never be spawned when the
+        // permission bridge cannot be rebuilt. ptyOptsCaptured is only ever
+        // set from inside the mocked agyPty() body (see the top-of-file
+        // vi.mock('./agyPty', ...)), so it staying null proves agyPty was
+        // never invoked for this launch.
+        expect(ptyOptsCaptured).toBeNull()
+
+        // The web chat must show WHY the session ended, not just that it
+        // did — mirrors the discovery-timeout warning's
+        // sendSessionEvent({type:'error'}) (Fix 6, above).
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error' })
+        )
+    })
+
+    it('5) detach/reattach do not disturb the existing discovery or resume wiring', async () => {
+        harness.respawnRounds = 2
+        const { session } = createSessionStub({
+            hookCarrierDir: '/tmp/carrier-d',
+            hooksJsonWithPreInvocation: HOOKS_JSON_WITH,
+            hooksJsonWithoutPreInvocation: HOOKS_JSON_WITHOUT,
+        })
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        harness.foundCallbacks[0]('hook-discovered-uuid')
+        // The scanner bridge (pre-existing discovery wiring) must still fire
+        // despite the hooks.json rewrite alongside it.
+        expect(harness.scannerOnNewSession).toHaveBeenCalledWith('hook-discovered-uuid')
+
+        msgPromise.resolve(null)
+        await tick(20)
+
+        // Fails if detachPreInvocationHook/syncPreInvocationHookForLaunch throw
+        // (breaking the launcher's promise chain) or otherwise corrupt
+        // this.agySessionId — the pre-existing crash-recovery guard (round 2
+        // must resume the SAME conversation via --conversation) is the oracle.
+        expect(ptyOptsCaptured.resumeSessionId).toBe('hook-discovered-uuid')
+        expect(ptyOptsCaptured.hookCarrierDir).toBe(session.hookCarrierDir)
+        const { buildAgyPtyArgs } = await vi.importActual<typeof import('./agyPty')>('./agyPty')
+        expect(buildAgyPtyArgs(ptyOptsCaptured).join(' ')).toContain('--conversation hook-discovered-uuid')
+
+        harness.exitReason = 'exit'
+        await launcherPromise
+    })
+})
+
+// Fix 6 (hostile-review round 1): dropping the scanner's content-match
+// discovery also dropped onDiscoveryAmbiguous, which used to be the ONLY
+// path that ever told the user discovery had failed. Without a replacement,
+// a hook that never fires (misconfigured bridge, hooks.json didn't load, a
+// future agy version drops the field, ...) leaves the web chat silently
+// empty forever with no explanation. These tests pin the one-shot timeout
+// warning that replaces it.
+describe('agyPtyLauncher discovery-timeout warning (Fix 6)', () => {
+    afterEach(() => {
+        vi.useRealTimers()
+        harness.scannerOnNewSession.mockClear()
+        harness.scannerCleanupCalls = 0
+        harness.scannerOpts = null
+        harness.scannerBrainUuid = null
+        harness.foundCallbacks = []
+        harness.removedCallbacks = []
+        harness.exitReason = null
+        harness.sendKeys.mockClear()
+        harness.abortHandler = null
+        harness.switchHandler = null
+        harness.liveModelHandler = null
+        harness.afterNextMessage = null
+        harness.respawnRounds = 1
+        harness.hooksJsonWrites = []
+        harness.carrierIntact = true
+        harness.carrierRecreateCalls = 0
+        harness.carrierRecreateResult = undefined
+        harness.carrierRecreateContents = []
+        ptyOptsCaptured = null
+    })
+
+    const errorEvents = (session: ReturnType<typeof createSessionStub>['session']) =>
+        vi.mocked(session.client.sendSessionEvent).mock.calls
+            .map(([event]) => event as { type: string; message?: string })
+            .filter((event) => event.type === 'error')
+
+    it('does not warn when the PTY is ready but idle — no message ever submitted, no model call started (Fix 9 N1 regression guard)', async () => {
+        // onReady only means the TUI prompt can accept keystrokes; a user who
+        // spawns agy and reads the prompt for a minute (or switches away) before
+        // typing anything is a completely normal, common flow — not a discovery
+        // failure. Before Fix 9 (which armed on onReady instead of the first
+        // evidence of an actual model call), this was a false positive that
+        // fired for every idle new session and burned the one-shot latch before
+        // a real failure could ever be reported.
+        vi.useFakeTimers()
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await vi.advanceTimersByTimeAsync(0)
+
+        // Idle: never call onThinkingChange(true), never fire the discovery
+        // hook — just let well over the timeout window pass.
+        await vi.advanceTimersByTimeAsync(120_000)
+
+        expect(errorEvents(session)).toHaveLength(0)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('does not warn when the brain UUID is discovered before the timeout elapses', async () => {
+        vi.useFakeTimers()
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await vi.advanceTimersByTimeAsync(0)
+
+        // A model call actually starts — this is what arms the timer now.
+        ptyOptsCaptured.onThinkingChange(true)
+        harness.foundCallbacks[0]('hook-discovered-uuid')
+        await vi.advanceTimersByTimeAsync(60_000)
+
+        expect(errorEvents(session)).toHaveLength(0)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('warns exactly once when a model call starts but the brain UUID is never discovered within the timeout (no duplicate notifications)', async () => {
+        vi.useFakeTimers()
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await vi.advanceTimersByTimeAsync(0)
+
+        // The model call starting (thinking=true) is what arms the timer —
+        // covers both a web-queued submission and text typed directly into the
+        // terminal, since both eventually flip agy's busy marker.
+        ptyOptsCaptured.onThinkingChange(true)
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(errorEvents(session)).toHaveLength(1)
+        expect(errorEvents(session)[0]!.message).toMatch(/continue in the terminal/i)
+
+        // Time continuing to pass (e.g. a respawn cycle) must not re-fire it.
+        await vi.advanceTimersByTimeAsync(120_000)
+        expect(errorEvents(session)).toHaveLength(1)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('clears the pending timer on session teardown — no leak, no late fire after exit', async () => {
+        vi.useFakeTimers()
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await vi.advanceTimersByTimeAsync(0)
+
+        // Arm the timer first (a model call started) so teardown actually has
+        // something pending to clear — without this the assertions below would
+        // pass vacuously regardless of whether clearDiscoveryTimeoutWarning()
+        // does anything, since an unarmed timer trivially leaves 0 pending.
+        ptyOptsCaptured.onThinkingChange(true)
+        expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+
+        expect(vi.getTimerCount()).toBe(0)
+
+        vi.mocked(session.client.sendSessionEvent).mockClear()
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(errorEvents(session)).toHaveLength(0)
     })
 })
 

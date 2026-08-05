@@ -4,25 +4,11 @@
 
 ## Install HAPI
 
-::: code-group
-
-```bash [npm]
+```bash
 npm install -g @twsxtd/hapi --registry=https://registry.npmjs.org
 ```
 
-```bash [Homebrew]
-brew install tiann/tap/hapi
-```
-
-```bash [npx (one-off)]
-npx @twsxtd/hapi
-```
-
-:::
-
-> Recommendation: use the official npm registry for global install. Some mirrors may not sync platform packages in time.
-
-Other install options: [Installation](./installation.md)
+Other install options (Homebrew, npx, prebuilt binary, source): [Installation](./installation.md#install-the-cli)
 
 ## Start the hub
 
@@ -30,13 +16,9 @@ Other install options: [Installation](./installation.md)
 hapi hub --relay
 ```
 
-On first run, HAPI prints an access token and saves it to `~/.hapi/settings.json`.
+On first run, HAPI prints an access token and saves it to `~/.hapi/settings.json`. The terminal displays a URL and QR code for remote access.
 
-`hapi server` remains supported as an alias.
-
-The terminal will display a URL and QR code for remote access.
-
-> End-to-end encrypted with WireGuard + TLS.
+Details and local-only mode: [Hub setup](./installation.md#hub-setup)
 
 ## Start a coding session
 
@@ -58,5 +40,6 @@ Enter your access token to log in.
 
 - [Seamless Handoff](./how-it-works.md#seamless-handoff) - Switch between terminal and phone seamlessly
 - [Hub setup](./installation.md#hub-setup) - Access HAPI from anywhere
-- [Notifications](./installation.md#telegram-setup) - Set up Telegram notifications
+- [Notifications](./notifications.md#telegram-setup) - Set up Telegram or ServerChan notifications
+- [Deployment](./deployment.md) - Run HAPI as a persistent background service
 - [Install the App](./pwa.md) - Add HAPI to your home screen

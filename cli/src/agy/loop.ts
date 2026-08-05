@@ -7,6 +7,7 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import type { AgyMode, PermissionMode } from './types';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgyPermissionHandler } from './utils/agyPermissionHandler';
+import type { AgyMcpServerEntry } from './utils/agyHookCarrier';
 
 interface AgyLoopOptions {
     path: string;
@@ -25,6 +26,11 @@ interface AgyLoopOptions {
     hookCarrierDir?: string;
     hookPort?: number;
     hookToken?: string;
+    /** hooks.json contents for the with/without-PreInvocation carrier states (see AgySession's docstring). */
+    hooksJsonWithPreInvocation?: string;
+    hooksJsonWithoutPreInvocation?: string;
+    /** MCP server entry needed to rebuild the carrier if it has to be recreated mid-session. */
+    hookMcpServer?: AgyMcpServerEntry;
     /** PTY-mode permission bridge. */
     agyPermissionHandler?: AgyPermissionHandler | null;
 }
@@ -52,6 +58,9 @@ export async function agyLoop(opts: AgyLoopOptions): Promise<void> {
         hookCarrierDir: opts.hookCarrierDir,
         hookPort: opts.hookPort,
         hookToken: opts.hookToken,
+        hooksJsonWithPreInvocation: opts.hooksJsonWithPreInvocation,
+        hooksJsonWithoutPreInvocation: opts.hooksJsonWithoutPreInvocation,
+        hookMcpServer: opts.hookMcpServer,
         agyPermissionHandler: opts.agyPermissionHandler,
     });
 

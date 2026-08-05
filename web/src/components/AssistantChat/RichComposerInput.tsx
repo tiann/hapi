@@ -142,6 +142,29 @@ function selectionIsAfterCaretPad(
         && caretIsAfterCaretPad(root)
 }
 
+/**
+ * True for the bogus `<br>` Chromium/WebKit/Gecko park in an editor whose
+ * content was just deleted (Firefox marks it `type="_moz"`, Blink leaves it
+ * bare). It is a caret placeholder, not user content: counting it as a newline
+ * leaves a visually empty composer holding `"\n"` forever, which then persists
+ * as a draft and repaints as a real blank first line.
+ *
+ * Our own renderer never emits a naked trailing `<br>` — a real trailing
+ * newline always carries a CARET_PAD text node after it (see
+ * `renderSegmentsToEditor` / `insertLineBreakAtCaret`), so "nothing at all
+ * after this node" is exactly the filler shape.
+ */
+function isFillerLineBreak(root: HTMLElement, br: Node): boolean {
+    for (let node: Node | null = br; node && node !== root; node = node.parentNode) {
+        for (let next = node.nextSibling; next; next = next.nextSibling) {
+            if (next.nodeType !== Node.TEXT_NODE) return false
+            // Raw length, not stripCaretPad: the pad marks a deliberate break.
+            if ((next.textContent ?? '').length > 0) return false
+        }
+    }
+    return true
+}
+
 type ComposerDomSpan = {
     /** Mirror offset at the point inside this node where its visible content begins. */
     start: number
@@ -225,6 +248,11 @@ function mapComposerEditorDom(root: HTMLElement): ComposerDomMapping {
             return
         }
         if (el.tagName === 'BR') {
+            if (isFillerLineBreak(root, node)) {
+                // Zero-width: the caret placeholder owns no mirror position.
+                spans.set(node, { start: mirrorLength, end: mirrorLength, producesOutput: false })
+                return
+            }
             pushNewlineIfNeeded()
             const start = mirrorLength
             pushText('\n')
@@ -565,6 +593,9 @@ function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
         if (el.tagName === 'BR') {
             const parent = el.parentNode
             if (!parent) return true
+            // Mirror mapping gives a filler br zero width; consuming one here
+            // would shift every later offset by one.
+            if (isFillerLineBreak(root, el)) return false
             if (remaining === 0) {
                 place(parent, Array.from(parent.childNodes).indexOf(el))
                 return true

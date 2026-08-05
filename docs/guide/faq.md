@@ -4,7 +4,7 @@
 
 ### What is HAPI?
 
-HAPI is a local-first, self-hosted platform for running and controlling AI coding agents (Claude Code, Codex, Cursor Agent, Grok Build, and OpenCode) remotely. It lets you start coding sessions on your computer and monitor/control them from your phone.
+HAPI is a local-first, self-hosted platform for running and controlling AI coding agents remotely (Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, and more — see [Supported Agents](./agents.md)). It lets you start coding sessions on your computer and monitor/control them from your phone.
 
 ### What does HAPI stand for?
 
@@ -16,11 +16,7 @@ Yes, HAPI is open source and free to use under the AGPL-3.0-only license.
 
 ### What AI agents does HAPI support?
 
-- **Claude Code** (recommended)
-- **OpenAI Codex**
-- **Cursor Agent**
-- **Grok Build**
-- **OpenCode**
+HAPI supports several coding agents, with Claude Code as the recommended option. See [Supported Agents](./agents.md) for the full list and per-agent setup notes.
 
 ## Setup & Installation
 
@@ -40,8 +36,9 @@ http://<your-computer-ip>:3006
 If your phone cannot connect, make sure the hub is not only listening on `127.0.0.1`. For LAN access, set `listenHost` to `0.0.0.0` in `~/.hapi/settings.json` or set `HAPI_LISTEN_HOST=0.0.0.0`, then restart `hapi hub`.
 
 For internet access:
+- Use the built-in relay tunnel: start the hub with `hapi hub --relay` to get a public URL via the tunwg relay (defaults to the official `relay.hapi.run`)
 - If the hub has a public IP, access it directly (use HTTPS via reverse proxy for production)
-- If behind NAT, set up a tunnel (Cloudflare Tunnel, Tailscale, or ngrok)
+- If behind NAT, set up your own tunnel (Cloudflare Tunnel, Tailscale, or ngrok)
 
 ### What's the access token for?
 
@@ -71,10 +68,11 @@ Yes. Telegram is optional. You can use the web app directly in any browser or in
 
 ### How do I receive notifications?
 
-HAPI supports two methods:
+HAPI supports three methods:
 
 1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
-2. **Telegram Bot** - See [Telegram Setup](./installation.md#telegram-setup)
+2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
+3. **FCM native push** - Used by the Android/Wear OS companion apps; notifications are delivered via Firebase Cloud Messaging
 
 ### Can I start sessions remotely?
 
@@ -103,7 +101,7 @@ Linux and macOS hosts use Bun's POSIX PTY support. Windows hosts use Bun's ConPT
 
 ### How do I use voice control?
 
-Set `ELEVENLABS_API_KEY`, open a session in the web app, and click the microphone button. See [Voice Assistant](./voice-assistant.md).
+The voice assistant supports three backends: ElevenLabs, Gemini Live, and Qwen Realtime. Configure at least one, open a session in the web app, and click the microphone button. See [Voice Assistant](./voice-assistant.md) for setup details.
 
 ## Security
 
@@ -159,21 +157,34 @@ Also verify your OS firewall allows inbound connections on port `3006`.
 
 ### "Invalid token" error
 
+Run `hapi doctor` first - it shows whether `CLI_API_TOKEN` is set and where it comes from (environment variable or settings file).
+
 - Re-run `hapi auth login`
 - Check token matches in CLI and hub
 - Verify `~/.hapi/settings.json` has correct `cliApiToken`
 
 ### Runner won't start
 
+Run `hapi doctor` first - it shows runner status (including stale state), all hapi processes, and recent log files.
+
 ```bash
 # Check status
 hapi runner status
+
+# List sessions the runner is aware of
+hapi runner list
+
+# Stop a specific runner-spawned session
+hapi runner stop-session <session-id>
 
 # Clear stale lock file
 rm ~/.hapi/runner.state.json.lock
 
 # Check logs
 hapi runner logs
+
+# Kill runaway hapi processes
+hapi doctor clean
 ```
 
 ### Claude Code not found
@@ -204,7 +215,21 @@ Ensure `agent` is on your PATH.
 hapi doctor
 ```
 
-This checks hub connectivity, token validity, agent availability, and more.
+This is the first diagnostic step for most issues. It prints:
+
+- CLI version, platform, and spawn diagnostics
+- Configuration and relevant environment variables
+- Contents of `settings.json` (token redacted)
+- Whether `CLI_API_TOKEN` is set, and its source (it does not contact the hub or validate the token)
+- Runner status and runner state (including stale state)
+- All running hapi processes
+- Recent log files (including runner logs)
+
+To clean up runaway processes:
+
+```bash
+hapi doctor clean
+```
 
 ## Comparison
 
@@ -213,7 +238,7 @@ This checks hub connectivity, token validity, agent availability, and more.
 | Aspect | Happy | HAPI |
 |--------|-------|------|
 | Design | Cloud-first | Local-first |
-| Users | Multi-user | Single user |
+| Users | Multi-user | Single user by default; lightweight multi-account isolation via [namespaces](./namespace.md) |
 | Deployment | Multiple services | Single binary |
 | Data | Encrypted on server | Never leaves your machine |
 

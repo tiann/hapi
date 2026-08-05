@@ -45,8 +45,17 @@ type SessionGroup = {
 const RUNNING_BUCKETS = [
     { key: 'working', labelKey: 'session.item.running', colorClass: 'text-[var(--app-badge-success-text)]', pulse: true },
     { key: 'pending', labelKey: 'session.item.pending', colorClass: 'text-[var(--app-badge-warning-text)]', pulse: true },
-    { key: 'idle', labelKey: 'session.item.idle', colorClass: 'text-[var(--app-hint)]', pulse: false },
 ] as const
+
+/** Active sessions that warrant the optional pinned In progress section. Quiet actives stay in directory groups. */
+function isPinnedInProgressSession(session: SessionSummary): boolean {
+    if (!session.active) {
+        return false
+    }
+    return session.thinking
+        || (session.backgroundTaskCount ?? 0) > 0
+        || (session.pendingRequestsCount ?? 0) > 0
+}
 
 export type SessionTimeRange = {
     start: number | null
@@ -1099,10 +1108,9 @@ export function SessionList(props: {
         [visibleSessions, activeMachineFilter]
     )
     const runningSessions = useMemo(() => {
-        const buckets: Record<'working' | 'pending' | 'idle', SessionSummary[]> = {
+        const buckets: Record<'working' | 'pending', SessionSummary[]> = {
             working: [],
             pending: [],
-            idle: []
         }
         if (!pinInProgressSessions) {
             return buckets
@@ -1115,9 +1123,8 @@ export function SessionList(props: {
                 buckets.working.push(session)
             } else if ((session.pendingRequestsCount ?? 0) > 0) {
                 buckets.pending.push(session)
-            } else {
-                buckets.idle.push(session)
             }
+            // Quiet active sessions stay in directory groups (no Idle pin bucket).
         }
         const byRecent = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt
         for (const key of Object.keys(buckets) as Array<keyof typeof buckets>) {
@@ -1127,11 +1134,10 @@ export function SessionList(props: {
     }, [machineFilteredSessions, pinInProgressSessions])
     const runningSessionTotal = runningSessions.working.length
         + runningSessions.pending.length
-        + runningSessions.idle.length
     const groups = useMemo(
         () => groupSessionsByDirectory(
             pinInProgressSessions
-                ? machineFilteredSessions.filter((session) => !session.active)
+                ? machineFilteredSessions.filter((session) => !isPinnedInProgressSession(session))
                 : machineFilteredSessions
         ),
         [machineFilteredSessions, pinInProgressSessions]

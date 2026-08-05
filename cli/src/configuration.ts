@@ -47,6 +47,21 @@ export function parseExtraHeaders(raw: string | undefined, warn: (message: strin
     }
 }
 
+/**
+ * Resolves HAPI's home directory: the `HAPI_HOME` env override (with a
+ * leading `~` expanded to the current user's home) takes priority, else
+ * `~/.hapi`. Takes an explicit env object (defaulting to `process.env`) so
+ * callers that need a fresh read on every call — rather than the cached
+ * `Configuration.happyHomeDir` singleton value, which is fixed at process
+ * startup — can reuse this instead of re-deriving the same priority logic.
+ */
+export function resolveHapiHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+    if (env.HAPI_HOME) {
+        return env.HAPI_HOME.replace(/^~/, homedir())
+    }
+    return join(homedir(), '.hapi')
+}
+
 class Configuration {
     private _apiUrl: string
     private _cliApiToken: string
@@ -75,13 +90,7 @@ class Configuration {
         this.isRunnerProcess = args.length >= 2 && args[0] === 'runner' && (args[1] === 'start-sync')
 
         // Directory configuration - Priority: HAPI_HOME env > default home dir
-        if (process.env.HAPI_HOME) {
-            // Expand ~ to home directory if present
-            const expandedPath = process.env.HAPI_HOME.replace(/^~/, homedir())
-            this.happyHomeDir = expandedPath
-        } else {
-            this.happyHomeDir = join(homedir(), '.hapi')
-        }
+        this.happyHomeDir = resolveHapiHomeDir()
 
         this.logsDir = join(this.happyHomeDir, 'logs')
         this.settingsFile = join(this.happyHomeDir, 'settings.json')

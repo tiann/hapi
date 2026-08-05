@@ -47,7 +47,7 @@ HAPI consists of three interconnected components that work together to provide r
 
 ### HAPI CLI
 
-The CLI is a wrapper around AI coding agents (Claude Code, Codex, Cursor Agent, Grok Build, OpenCode). It:
+The CLI is a wrapper around AI coding agents. It supports multiple agent flavors out of the box — see [Supported agents](./agents.md) for the full list. It:
 
 - Starts and manages coding sessions
 - Registers sessions with the HAPI hub
@@ -56,11 +56,8 @@ The CLI is a wrapper around AI coding agents (Claude Code, Codex, Cursor Agent, 
 
 **Key Commands:**
 ```bash
-hapi              # Start Claude Code session
-hapi codex       # Start OpenAI Codex session
-hapi cursor      # Start Cursor Agent session
-hapi grok        # Start Grok Build session
-hapi opencode    # Start OpenCode session
+hapi              # Start a session (Claude Code by default)
+hapi <agent>      # Start a session with another agent flavor (see Supported agents)
 hapi runner start # Run background service for remote session spawning
 ```
 
@@ -82,6 +79,9 @@ A React-based PWA that provides the mobile interface:
 - **Chat Interface** - Send messages and view agent responses
 - **Permission Management** - Approve or deny tool access
 - **File Browser** - Browse project files and view git diffs
+- **Terminal View** - Watch the full terminal output of a session
+- **Voice Assistant** - Talk to your agent and approve permissions by voice (see [Voice input and assistant](./voice-assistant.md))
+- **Session Sharing** - Share a read-only view of a session via a link
 - **Remote Spawn** - Start new sessions on any connected machine
 
 ## Data Flow
@@ -165,6 +165,7 @@ Real-time bidirectional communication for:
 ### External Access: Tunnel
 
 For remote access outside your local network:
+- **Built-in relay** (`hapi hub --relay`) - Managed tunwg tunnel (WireGuard + TLS), no third-party account required
 - **Cloudflare Tunnel** (recommended) - Free, secure, reliable
 - **Tailscale** - Mesh VPN for private networks
 - **ngrok** - Quick setup for testing
@@ -175,7 +176,7 @@ HAPI's defining feature is the ability to seamlessly hand off control between lo
 
 ### Local Mode
 
-When working in local mode, you have the full terminal experience — it is native Claude Code, Codex, or OpenCode:
+When working in local mode, you have the full terminal experience — it is the native agent CLI (Claude Code, Codex, OpenCode, and more):
 
 - Direct keyboard input with instant response
 - Full terminal UI with syntax highlighting

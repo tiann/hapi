@@ -322,3 +322,174 @@ describe('runSessionHookForwarder — agy flavor', () => {
         expect('hookSpecificOutput' in response).toBe(false);
     });
 });
+
+describe('runSessionHookForwarder — agy PreInvocation (discovery, fail-open)', () => {
+    it('POSTs to /hook/agy-pre-invocation and always writes {} + exit 0 on stdout', async () => {
+        let hitPath = '';
+        let hitBody = '';
+        const port = await startStub((path, body) => {
+            hitPath = path;
+            hitBody = body;
+            return { status: 200, body: '{}' };
+        });
+
+        const payload = JSON.stringify({ conversationId: 'brain-1', invocationNum: 0 });
+        const out = captureStdout();
+        const originalExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withStdin(payload, () =>
+                runSessionHookForwarder(['--port', String(port), '--token', 'tok', '--flavor', 'agy', '--event', 'pre-invocation'])
+            );
+            expect(process.exitCode).toBeUndefined();
+        } finally {
+            out.restore();
+            process.exitCode = originalExitCode;
+        }
+
+        expect(hitPath).toBe('/hook/agy-pre-invocation');
+        expect(JSON.parse(hitBody).conversationId).toBe('brain-1');
+        expect(out.get()).toBe('{}');
+    });
+
+    it('fails OPEN (still writes {} + exit 0) when the bridge is unreachable', async () => {
+        // Port 1 is a well-known low port nothing listens on in this test
+        // environment — connecting refuses immediately without needing a
+        // real (and then torn-down) stub server.
+        const out = captureStdout();
+        const originalExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withStdin(
+                JSON.stringify({ conversationId: 'brain-2' }),
+                () => runSessionHookForwarder(['--port', '1', '--token', 'tok', '--flavor', 'agy', '--event', 'pre-invocation'])
+            );
+            expect(process.exitCode).toBeUndefined();
+        } finally {
+            out.restore();
+            process.exitCode = originalExitCode;
+        }
+
+        expect(out.get()).toBe('{}');
+    }, 10_000);
+
+    it('fails OPEN (still writes {} + exit 0) even when the bridge replies with an error status', async () => {
+        const port = await startStub(() => ({ status: 500, body: 'boom' }));
+
+        const out = captureStdout();
+        const originalExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withStdin(
+                JSON.stringify({ conversationId: 'brain-3' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok', '--flavor', 'agy', '--event', 'pre-invocation'])
+            );
+            expect(process.exitCode).toBeUndefined();
+        } finally {
+            out.restore();
+            process.exitCode = originalExitCode;
+        }
+
+        expect(out.get()).toBe('{}');
+    });
+
+    it('defaults to pre-tool-use when --event is omitted (existing agy callers keep working)', async () => {
+        let hitPath = '';
+        const port = await startStub((path) => {
+            hitPath = path;
+            return { status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) };
+        });
+
+        const out = captureStdout();
+        try {
+            await withStdin(
+                JSON.stringify({ toolCall: { name: 'run_command', args: {} }, conversationId: 'brain-4' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok', '--flavor', 'agy'])
+            );
+        } finally {
+            out.restore();
+        }
+
+        expect(hitPath).toBe('/hook/pre-tool-use');
+        expect(JSON.parse(out.get()).decision).toBe('allow');
+    });
+
+    it('rejects an unrecognized --event value instead of silently degrading to pre-tool-use', async () => {
+        // A discovery payload (no toolCall field) routed down the
+        // permission-gate path would produce a phantom approval card with an
+        // empty tool name and violate the pre-invocation {} stdout contract.
+        // An unknown --event (typo, future value) must fail loudly instead.
+        let serverHit = false;
+        const port = await startStub(() => {
+            serverHit = true;
+            return { status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) };
+        });
+
+        const out = captureStdout();
+        const originalExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withStdin(
+                JSON.stringify({ conversationId: 'brain-5' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok', '--flavor', 'agy', '--event', 'pre-invocaiton'])
+            );
+            expect(process.exitCode).toBe(1);
+        } finally {
+            out.restore();
+            process.exitCode = originalExitCode;
+        }
+
+        expect(serverHit).toBe(false);
+        expect(out.get()).toBe('');
+    });
+
+    it('rejects an unrecognized --event=value form the same way', async () => {
+        const port = await startStub(() => ({ status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) }));
+
+        const out = captureStdout();
+        const originalExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withStdin(
+                JSON.stringify({ conversationId: 'brain-6' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok', '--flavor', 'agy', '--event=bogus'])
+            );
+            expect(process.exitCode).toBe(1);
+        } finally {
+            out.restore();
+            process.exitCode = originalExitCode;
+        }
+
+        expect(out.get()).toBe('');
+    });
+
+    it('rejects a trailing --event with no value instead of silently defaulting to pre-tool-use', async () => {
+        // args[i+1] is undefined when --event is the last argument — that must
+        // NOT collapse to the same "flag omitted" undefined that legitimately
+        // defaults to pre-tool-use, or a malformed invocation missing only the
+        // value would silently reopen the fail-open degrade this whole guard
+        // exists to close.
+        let serverHit = false;
+        const port = await startStub(() => {
+            serverHit = true;
+            return { status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) };
+        });
+
+        const out = captureStdout();
+        const originalExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withStdin(
+                JSON.stringify({ conversationId: 'brain-7' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok', '--flavor', 'agy', '--event'])
+            );
+            expect(process.exitCode).toBe(1);
+        } finally {
+            out.restore();
+            process.exitCode = originalExitCode;
+        }
+
+        expect(serverHit).toBe(false);
+        expect(out.get()).toBe('');
+    });
+});

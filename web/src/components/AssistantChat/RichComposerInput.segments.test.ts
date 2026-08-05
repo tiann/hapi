@@ -40,6 +40,28 @@ describe('segmentsFromEditor', () => {
         expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\nb')
     })
 
+    it('ignores the filler br browsers park in an emptied editor', () => {
+        // Deleting the last character leaves Chromium/WebKit with `<br>` as the
+        // sole child. Counting it made an empty composer hold "\n".
+        const root = document.createElement('div')
+        root.innerHTML = '<br>'
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('')
+        expect(mirrorOffsetFromPoint(root, root, 0)).toBe(0)
+        expect(mirrorOffsetFromPoint(root, root, 1)).toBe(0)
+
+        const moz = document.createElement('div')
+        moz.innerHTML = '<br type="_moz">'
+        expect(serializeComposerSegments(segmentsFromEditor(moz))).toBe('')
+    })
+
+    it('keeps a trailing br that carries our caret pad (real trailing newline)', () => {
+        // renderSegmentsToEditor maps "a\n" → text + <br> + ZWSP; the pad is
+        // what separates a deliberate break from browser filler.
+        const root = document.createElement('div')
+        root.innerHTML = 'a<br>​'
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\n')
+    })
+
     it('preserves blank-line endings from renderSegments (br+br+pad)', () => {
         // renderSegmentsToEditor maps "...\n\n" → text + <br> + <br> + ZWSP.
         // Must not strip a real trailing blank line on re-serialize.

@@ -18,15 +18,43 @@ export default defineConfig({
     ],
 
     sidebar: [
-      { text: 'Quick Start', link: '/guide/quick-start' },
-      { text: 'Installation', link: '/guide/installation' },
-      { text: 'PWA', link: '/guide/pwa' },
-      { text: 'How it Works', link: '/guide/how-it-works' },
-      { text: 'Cursor Agent', link: '/guide/cursor' },
-      { text: 'Grok Build', link: '/guide/grok' },
-      { text: 'Voice Assistant', link: '/guide/voice-assistant' },
-      { text: 'Why HAPI', link: '/guide/why-hapi' },
-      { text: 'FAQ', link: '/guide/faq' }
+      {
+        text: 'Get Started',
+        items: [
+          { text: 'Quick Start', link: '/guide/quick-start' },
+          { text: 'Installation', link: '/guide/installation' },
+          { text: 'PWA', link: '/guide/pwa' }
+        ]
+      },
+      {
+        text: 'Guide',
+        items: [
+          { text: 'How it Works', link: '/guide/how-it-works' },
+          { text: 'Voice Assistant', link: '/guide/voice-assistant' },
+          { text: 'Why HAPI', link: '/guide/why-hapi' },
+          { text: 'FAQ', link: '/guide/faq' }
+        ]
+      },
+      {
+        text: 'Agents',
+        items: [
+          { text: 'Agents', link: '/guide/agents' }
+        ]
+      },
+      {
+        text: 'Advanced',
+        items: [
+          { text: 'Namespace', link: '/guide/namespace' },
+          { text: 'Deployment', link: '/guide/deployment' },
+          { text: 'Notifications', link: '/guide/notifications' }
+        ]
+      },
+      {
+        text: 'API',
+        items: [
+          { text: 'Native Companion Contract', link: '/api/native-companion-contract' }
+        ]
+      }
     ],
 
     socialLinks: [
@@ -34,8 +62,8 @@ export default defineConfig({
     ],
 
     footer: {
-      message: 'Released under the LGPL-3.0 License.',
-      copyright: 'Copyright © 2024-present'
+      message: 'Released under the AGPL-3.0 License.',
+      copyright: 'Copyright © 2025-present'
     },
 
     search: {
