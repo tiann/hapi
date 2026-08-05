@@ -30,7 +30,10 @@ export class NotificationHub {
     private readonly lastModelErrorNotifiedId: Map<string, string> = new Map()
     private readonly modelErrorRetryTimers: Map<string, NodeJS.Timeout> = new Map()
     private readonly modelErrorRetryAttempts: Map<string, number> = new Map()
+    /** In-flight notifiedAt persistence tasks (delivery already succeeded). */
+    private readonly modelErrorWatermarkTasks: Map<string, Promise<void>> = new Map()
     private unsubscribeSyncEvents: (() => void) | null = null
+    private stopped = false
 
     constructor(
         private readonly syncEngine: SyncEngine,
@@ -66,6 +69,7 @@ export class NotificationHub {
     }
 
     stop(): void {
+        this.stopped = true
         if (this.unsubscribeSyncEvents) {
             this.unsubscribeSyncEvents()
             this.unsubscribeSyncEvents = null
@@ -83,6 +87,7 @@ export class NotificationHub {
         }
         this.modelErrorRetryTimers.clear()
         this.modelErrorRetryAttempts.clear()
+        this.modelErrorWatermarkTasks.clear()
     }
 
     private handleSyncEvent(event: SyncEvent): void {
@@ -214,11 +219,7 @@ export class NotificationHub {
                 return
             }
             if (completed) {
-                try {
-                    await this.syncEngine.markModelErrorNotified(session.id, eventId)
-                } catch (error) {
-                    console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
-                }
+                this.persistModelErrorWatermark(session.id, eventId)
                 return
             }
             this.scheduleModelErrorRetry(session.id, eventId)
@@ -228,6 +229,40 @@ export class NotificationHub {
                 this.scheduleModelErrorRetry(session.id, eventId)
             }
         })
+    }
+
+    /**
+     * Delivery already succeeded — retry only the durable notifiedAt write so
+     * a hub restart cannot re-page. Never re-invokes channels.
+     */
+    private persistModelErrorWatermark(sessionId: string, eventId: string): void {
+        const task = this.runPersistModelErrorWatermark(sessionId, eventId)
+        this.modelErrorWatermarkTasks.set(sessionId, task)
+        void task.finally(() => {
+            if (this.modelErrorWatermarkTasks.get(sessionId) === task) {
+                this.modelErrorWatermarkTasks.delete(sessionId)
+            }
+        })
+    }
+
+    private async runPersistModelErrorWatermark(sessionId: string, eventId: string): Promise<void> {
+        for (const delayMs of [0, ...this.modelErrorRetryDelaysMs]) {
+            if (delayMs > 0) {
+                await new Promise((resolve) => setTimeout(resolve, delayMs))
+            }
+            if (this.stopped) {
+                return
+            }
+            if (this.lastModelErrorNotifiedId.get(sessionId) !== eventId) {
+                return
+            }
+            try {
+                await this.syncEngine.markModelErrorNotified(sessionId, eventId)
+                return
+            } catch (error) {
+                console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
+            }
+        }
     }
 
     private scheduleModelErrorRetry(sessionId: string, eventId: string): void {
@@ -285,11 +320,7 @@ export class NotificationHub {
             }
             if (completed) {
                 this.modelErrorRetryAttempts.delete(sessionId)
-                try {
-                    await this.syncEngine.markModelErrorNotified(sessionId, eventId)
-                } catch (error) {
-                    console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
-                }
+                this.persistModelErrorWatermark(sessionId, eventId)
                 return
             }
             this.scheduleModelErrorRetry(sessionId, eventId)
