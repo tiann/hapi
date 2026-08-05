@@ -1,0 +1,233 @@
+import { useCallback, useEffect, useState } from 'react'
+import { ApiError, type ApiClient, type TranscriptionCredentialStatus, type TranscriptionCredentialsUpdate } from '@/api/client'
+import { useTranslation } from '@/lib/use-translation'
+import { SelectControl } from '@/components/ui/select-control'
+import { Button } from '@/components/ui/button'
+
+type CloudProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'groq' | 'openai-compatible'
+
+const CLOUD_PROVIDERS: CloudProvider[] = [
+    'openai',
+    'elevenlabs',
+    'deepgram',
+    'groq',
+    'openai-compatible',
+]
+
+function providerLabel(provider: CloudProvider, t: (key: string) => string): string {
+    switch (provider) {
+        case 'openai':
+            return 'OpenAI'
+        case 'elevenlabs':
+            return 'ElevenLabs'
+        case 'deepgram':
+            return 'Deepgram'
+        case 'groq':
+            return 'Groq'
+        case 'openai-compatible':
+            return t('settings.voice.credentials.openaiCompatible')
+    }
+}
+
+function statusForProvider(
+    status: TranscriptionCredentialStatus | null,
+    provider: CloudProvider
+): { configured: boolean; hint: string | null; source: string; editable: boolean } | null {
+    if (!status) return null
+    if (provider === 'openai-compatible') {
+        return {
+            configured: status.openaiCompatible.configured,
+            hint: status.openaiCompatible.apiKey.hint,
+            source: status.openaiCompatible.source,
+            editable: status.openaiCompatible.baseUrlEditable
+                && status.openaiCompatible.modelEditable
+                && status.openaiCompatible.apiKey.editable,
+        }
+    }
+    return status[provider]
+}
+
+function errorMessage(err: unknown, fallback: string): string {
+    if (err instanceof ApiError && err.body) {
+        try {
+            const parsed = JSON.parse(err.body) as { error?: unknown }
+            if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error
+        } catch {
+            // fall through
+        }
+    }
+    return err instanceof Error ? err.message : fallback
+}
+
+export function TranscriptionProviderOnboard(props: {
+    api: ApiClient
+    onConfigured: () => void
+}) {
+    const { t } = useTranslation()
+    const [status, setStatus] = useState<TranscriptionCredentialStatus | null>(null)
+    const [provider, setProvider] = useState<CloudProvider>('openai')
+    const [apiKey, setApiKey] = useState('')
+    const [baseUrl, setBaseUrl] = useState('')
+    const [model, setModel] = useState('')
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+    const [message, setMessage] = useState<string | null>(null)
+
+    const reload = useCallback(async () => {
+        try {
+            const next = await props.api.fetchTranscriptionCredentials()
+            setStatus(next)
+        } catch {
+            setStatus(null)
+        }
+    }, [props.api])
+
+    useEffect(() => {
+        void reload()
+    }, [reload])
+
+    const selected = statusForProvider(status, provider)
+
+    const save = async () => {
+        setBusy(true)
+        setError(null)
+        setMessage(null)
+        try {
+            const update: TranscriptionCredentialsUpdate = {}
+            if (provider === 'openai-compatible') {
+                update.openaiCompatible = {
+                    baseUrl: baseUrl.trim() || null,
+                    model: model.trim() || null,
+                    apiKey: apiKey.trim() || null,
+                }
+            } else {
+                update[provider] = apiKey.trim() || null
+            }
+            const next = await props.api.updateTranscriptionCredentials(update)
+            setStatus(next)
+            setApiKey('')
+            setMessage(t('settings.voice.credentials.saved'))
+            props.onConfigured()
+        } catch (err) {
+            setError(errorMessage(err, t('settings.voice.credentials.saveFailed')))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const clear = async () => {
+        if (!selected?.editable) return
+        setBusy(true)
+        setError(null)
+        setMessage(null)
+        try {
+            const update: TranscriptionCredentialsUpdate = {}
+            if (provider === 'openai-compatible') {
+                update.openaiCompatible = { baseUrl: null, model: null, apiKey: null }
+            } else {
+                update[provider] = null
+            }
+            const next = await props.api.updateTranscriptionCredentials(update)
+            setStatus(next)
+            setMessage(t('settings.voice.credentials.cleared'))
+            props.onConfigured()
+        } catch (err) {
+            setError(errorMessage(err, t('settings.voice.credentials.saveFailed')))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    return (
+        <div className="space-y-3 px-3 py-3">
+            <p className="text-sm text-[var(--app-hint)]">{t('settings.voice.credentials.hint')}</p>
+            <label className="block space-y-1">
+                <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.credentials.provider')}</span>
+                <SelectControl
+                    value={provider}
+                    onChange={(event) => {
+                        setProvider(event.target.value as CloudProvider)
+                        setApiKey('')
+                        setError(null)
+                        setMessage(null)
+                    }}
+                    className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-2 text-sm text-[var(--app-fg)]"
+                >
+                    {CLOUD_PROVIDERS.map((option) => (
+                        <option key={option} value={option}>{providerLabel(option, t)}</option>
+                    ))}
+                </SelectControl>
+            </label>
+
+            {selected?.configured ? (
+                <p className="text-xs text-[var(--app-hint)]">
+                    {t('settings.voice.credentials.configuredAs', {
+                        source: selected.source === 'env'
+                            ? t('settings.voice.credentials.source.env')
+                            : t('settings.voice.credentials.source.settings'),
+                        hint: selected.hint ?? '••••',
+                    })}
+                </p>
+            ) : null}
+
+            {provider === 'openai-compatible' ? (
+                <>
+                    <label className="block space-y-1">
+                        <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.credentials.baseUrl')}</span>
+                        <input
+                            type="url"
+                            value={baseUrl}
+                            onChange={(event) => setBaseUrl(event.target.value)}
+                            placeholder="http://127.0.0.1:8000/v1"
+                            disabled={busy || selected?.editable === false}
+                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
+                        />
+                    </label>
+                    <label className="block space-y-1">
+                        <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.credentials.model')}</span>
+                        <input
+                            type="text"
+                            value={model}
+                            onChange={(event) => setModel(event.target.value)}
+                            placeholder="whisper-large-v3"
+                            disabled={busy || selected?.editable === false}
+                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
+                        />
+                    </label>
+                </>
+            ) : null}
+
+            <label className="block space-y-1">
+                <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.credentials.apiKey')}</span>
+                <input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={apiKey}
+                    onChange={(event) => setApiKey(event.target.value)}
+                    placeholder={selected?.configured ? t('settings.voice.credentials.apiKeyReplace') : t('settings.voice.credentials.apiKeyPlaceholder')}
+                    disabled={busy || selected?.editable === false}
+                    className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
+                />
+            </label>
+
+            {selected?.editable === false ? (
+                <p className="text-xs text-[var(--app-hint)]">{t('settings.voice.credentials.envLocked')}</p>
+            ) : null}
+
+            {error ? <p className="text-xs text-red-500">{error}</p> : null}
+            {message ? <p className="text-xs text-[var(--app-hint)]">{message}</p> : null}
+
+            <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" disabled={busy || selected?.editable === false} onClick={() => void save()}>
+                    {t('settings.voice.credentials.save')}
+                </Button>
+                {selected?.configured && selected.editable ? (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void clear()}>
+                        {t('settings.voice.credentials.clear')}
+                    </Button>
+                ) : null}
+            </div>
+        </div>
+    )
+}

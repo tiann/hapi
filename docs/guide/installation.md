@@ -196,14 +196,14 @@ On first run, HAPI:
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
 | `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |
-| `ELEVENLABS_API_KEY` | - | - | ElevenLabs API key for voice |
+| `ELEVENLABS_API_KEY` | - | Settings / env | ElevenLabs API key for voice + dictation |
 | `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |
-| `OPENAI_API_KEY` | - | - | OpenAI API key for dictation (`gpt-transcribe` / `gpt-live-transcribe`) |
-| `DEEPGRAM_API_KEY` | - | - | Deepgram API key for dictation (`nova-3`) |
-| `GROQ_API_KEY` | - | - | Groq API key for dictation (`whisper-large-v3`) |
-| `TRANSCRIPTION_BASE_URL` | - | - | OpenAI-compatible/local transcription base URL |
-| `TRANSCRIPTION_MODEL` | - | - | Model for the OpenAI-compatible transcription endpoint |
-| `TRANSCRIPTION_API_KEY` | - | - | Optional bearer token for that endpoint |
+| `OPENAI_API_KEY` | - | Settings / env | OpenAI API key for dictation (`gpt-transcribe` / `gpt-live-transcribe`) |
+| `DEEPGRAM_API_KEY` | - | Settings / env | Deepgram API key for dictation (`nova-3`) |
+| `GROQ_API_KEY` | - | Settings / env | Groq API key for dictation (`whisper-large-v3`) |
+| `TRANSCRIPTION_BASE_URL` | - | Settings / env | OpenAI-compatible/local transcription base URL |
+| `TRANSCRIPTION_MODEL` | - | Settings / env | Model for the OpenAI-compatible transcription endpoint |
+| `TRANSCRIPTION_API_KEY` | - | Settings / env | Optional bearer token for that endpoint |
 </details>
 
 <details>

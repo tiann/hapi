@@ -28,6 +28,11 @@ export interface Settings {
      * into supported flavor system / developer instructions. Default off.
      */
     sessionSummaryContract?: boolean
+    /**
+     * Hub-side provider API keys / endpoints managed from Settings.
+     * Env vars still win when set at process start (ops override).
+     */
+    providerCredentials?: Partial<Record<string, string>>
 }
 
 export function getSettingsFile(dataDir: string): string {

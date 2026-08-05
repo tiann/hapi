@@ -3,18 +3,24 @@ import { useNavigate } from '@tanstack/react-router'
 import { VOICE_BACKEND_LABELS } from '@hapi/protocol/voicePickerCatalog'
 import { getLanguageDisplayName } from '@/lib/languages'
 import { useTranslation } from '@/lib/use-translation'
+import { useAppContext } from '@/lib/app-context'
 import { VoiceRespondsControls } from '@/components/settings/VoiceAdvancedControls'
+import { TranscriptionProviderOnboard } from '@/components/settings/TranscriptionProviderOnboard'
 import { SettingsChoiceGroup, SettingsLinkRow, SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
 import { SelectControl } from '@/components/ui/select-control'
 import { useVoiceSettings } from './useVoiceSettings'
 
 export default function SettingsVoicePage() {
     const { t } = useTranslation()
+    const { api } = useAppContext()
     const navigate = useNavigate()
     const voice = useVoiceSettings()
     const [opening, setOpening] = useState<'greet' | 'brief'>(() => localStorage.getItem('hapi-voice-proactive') === 'true' ? 'brief' : 'greet')
+    const [showCredentials, setShowCredentials] = useState(false)
     const selectedLanguage = voice.voiceLanguages.find((language) => language.code === voice.voiceLanguage)
     const selectedVoice = voice.voices.find((option) => option.id === voice.voiceId)
+    const hubProviders = voice.providers.filter((provider) => provider.id !== 'browser-local')
+    const credentialsOpen = showCredentials || (voice.voiceMode === 'dictation' && hubProviders.length === 0)
 
     const setVoiceOpening = (value: 'greet' | 'brief') => {
         setOpening(value)
@@ -54,7 +60,7 @@ export default function SettingsVoicePage() {
                         onChange={voice.setProvider}
                     />
                 ) : null}
-                {voice.voiceMode === 'dictation' && voice.providers.length === 0 ? (
+                {voice.voiceMode === 'dictation' && hubProviders.length === 0 ? (
                     <div className="px-3 py-3 text-sm text-[var(--app-hint)]">
                         {t('settings.voice.noTranscriptionProvider')}
                     </div>
@@ -70,6 +76,26 @@ export default function SettingsVoicePage() {
                         }))}
                         onChange={voice.setTranscriptionMode}
                     />
+                ) : null}
+                {voice.voiceMode === 'dictation' && api ? (
+                    <>
+                        {hubProviders.length > 0 && !credentialsOpen ? (
+                            <SettingsLinkRow
+                                label={t('settings.voice.credentials.manage')}
+                                description={t('settings.voice.credentials.manageHint')}
+                                onClick={() => setShowCredentials(true)}
+                            />
+                        ) : null}
+                        {credentialsOpen ? (
+                            <TranscriptionProviderOnboard
+                                api={api}
+                                onConfigured={() => {
+                                    voice.refreshProviders()
+                                    setShowCredentials(false)
+                                }}
+                            />
+                        ) : null}
+                    </>
                 ) : null}
                 <label className="flex min-h-12 items-center justify-between gap-3 px-3 py-3">
                     <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.language')}</span>

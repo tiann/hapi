@@ -17,6 +17,11 @@ import {
     resolveHubVoiceBackend
 } from '@hapi/protocol/voice'
 import type { TranscriptionProvider, VoiceBackendType } from '@hapi/protocol/voice'
+import {
+    getTranscriptionCredentialStatus,
+    updateTranscriptionCredentials,
+} from '../../config/providerCredentials'
+import { getConfiguration } from '../../configuration'
 
 function buildVoiceWsUrl(base: string, pathname: string): string {
     const url = new URL(base)
@@ -449,8 +454,21 @@ async function getOrCreateAgentIdForVoice(apiKey: string, voiceId?: string): Pro
     return agentId
 }
 
-export function createVoiceRoutes(): Hono<WebAppEnv> {
+const transcriptionCredentialsUpdateSchema = z.object({
+    openai: z.string().nullable().optional(),
+    elevenlabs: z.string().nullable().optional(),
+    deepgram: z.string().nullable().optional(),
+    groq: z.string().nullable().optional(),
+    openaiCompatible: z.object({
+        baseUrl: z.string().nullable().optional(),
+        model: z.string().nullable().optional(),
+        apiKey: z.string().nullable().optional(),
+    }).optional(),
+}).strict()
+
+export function createVoiceRoutes(options: { dataDir?: string } = {}): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const resolveDataDir = () => options.dataDir ?? getConfiguration().dataDir
 
     // Hub default backend + all backends with credentials configured
     app.get('/voice/backend', (c) => {
@@ -461,6 +479,28 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
 
     app.get('/voice/transcription/providers', (c) => {
         return c.json({ providers: listConfiguredTranscriptionProviders(process.env) })
+    })
+
+    app.get('/voice/transcription/credentials', async (c) => {
+        return c.json(await getTranscriptionCredentialStatus(resolveDataDir()))
+    })
+
+    app.put('/voice/transcription/credentials', async (c) => {
+        const json = await c.req.json().catch(() => null)
+        const parsed = transcriptionCredentialsUpdateSchema.safeParse(json)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid transcription credentials payload' }, 400)
+        }
+        try {
+            const status = await updateTranscriptionCredentials(resolveDataDir(), parsed.data)
+            return c.json(status)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to update credentials'
+            if (message.includes('environment variable')) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
     })
 
     app.post('/voice/transcription', bodyLimit({

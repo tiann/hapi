@@ -26,6 +26,8 @@ See `src/configuration.ts` for all options.
 
 ### Optional (Voice)
 
+Dictation provider keys can also be added from **Settings → Voice** (stored in `settings.json` under `providerCredentials`; env vars still win when set at process start).
+
 - `ELEVENLABS_API_KEY` - ElevenLabs API key for voice assistant.
 - `ELEVENLABS_AGENT_ID` - Custom ElevenLabs agent ID (auto-created if not set).
 - `OPENAI_API_KEY` - OpenAI dictation (`gpt-transcribe` / `gpt-live-transcribe`).
