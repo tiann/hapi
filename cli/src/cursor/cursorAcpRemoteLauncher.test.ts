@@ -1089,6 +1089,33 @@ describe('cursorAcpRemoteLauncher', () => {
         )).toBe(false);
     });
 
+    it('prefers RPC rejection over deferred stderr when both fire during prompt', async () => {
+        // Non-transient quota stderr first, then transient transport RPC reject.
+        harness.emitStderrOnPrompt = {
+            type: 'quota_exceeded',
+            message: 'Quota exceeded.',
+            raw: 'resource_exhausted'
+        };
+        harness.promptReject = new Error('WritableIterable is closed');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        expect(modelErrors[0]?.kind).toBe('transport_closed');
+        expect(modelErrors[0]?.transient).toBe(true);
+    });
+
     it('still records modelError for canceled RPC rejection without user abort', async () => {
         harness.promptReject = new Error('Error: T: [canceled] Operation aborted');
 

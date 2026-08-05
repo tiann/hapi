@@ -81,6 +81,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * in catch.
      */
     private pendingTextFailure: CursorAgentStreamFailure | null = null;
+    /**
+     * Typed stderr failure deferred while prompt is in flight so RPC rejection
+     * keeps precedence (RPC → stderr → text). Flushed on settle like text.
+     */
+    private pendingStderrFailure: CursorAgentStreamFailure | null = null;
     /** True while backend.prompt() is in flight — lets stderr model_not_found
      *  surface as modelError during a turn without breaking setup/load remap. */
     private promptInFlight = false;
@@ -417,16 +422,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.userAbortRequested = false;
             this.lastAssistantText = null;
             this.pendingTextFailure = null;
+            this.pendingStderrFailure = null;
 
             this.promptInFlight = true;
             try {
                 await backend.prompt(acpSessionId, promptContent, (message) => {
                     this.handleAgentMessage(message);
                 });
-                // Prompt resolved: flush any deferred text-classifier fallback.
-                if (this.pendingTextFailure && !this.turnHasModelError) {
-                    this.recordModelError(this.pendingTextFailure);
+                // Prompt resolved: flush deferred structural stderr, then text.
+                const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
+                if (settled && !this.turnHasModelError) {
+                    this.recordModelError(settled);
                 }
+                this.pendingStderrFailure = null;
                 this.pendingTextFailure = null;
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
@@ -438,15 +446,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     session.sendAgentMessage(converted);
                 }
                 messageBuffer.addMessage(message, 'status');
-                // STRUCTURAL signal first: classify the RPC rejection. Prefer
-                // it over any deferred text fallback from the prompt callback.
-                const failure = classifyAcpRpcRejection(error) ?? this.pendingTextFailure;
+                // Priority: RPC rejection → deferred stderr → deferred text.
+                const failure = classifyAcpRpcRejection(error)
+                    ?? this.pendingStderrFailure
+                    ?? this.pendingTextFailure;
+                this.pendingStderrFailure = null;
                 this.pendingTextFailure = null;
                 if (failure) {
                     this.recordModelError(failure);
                 }
             } finally {
                 this.promptInFlight = false;
+                this.pendingStderrFailure = null;
                 this.pendingTextFailure = null;
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
@@ -511,6 +522,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             const failure = mapAcpStderrToFailure(error);
             if (error.type === 'model_not_found' && extractCannotUseThisModelMessage(hint)) {
                 if (this.promptInFlight && failure) {
+                    this.pendingStderrFailure ??= failure;
+                } else if (failure && !this.promptInFlight) {
                     this.recordModelError(failure);
                 }
                 return;
@@ -525,8 +538,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // without text matching. Generic `unknown` stderr stays status-only —
             // ACP treats stderr as logging, and the transport labels any
             // "error"/"failed"/"exception" line as unknown.
+            // While prompt is in flight, defer so RPC rejection keeps precedence.
             if (failure) {
-                this.recordModelError(failure);
+                if (this.promptInFlight) {
+                    this.pendingStderrFailure ??= failure;
+                } else {
+                    this.recordModelError(failure);
+                }
             }
         });
     }
@@ -635,6 +653,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
         this.turnHasModelError = true;
         this.pendingTextFailure = null;
+        this.pendingStderrFailure = null;
 
         // Same-message case: Cursor often appends `Error: T: ...` onto the
         // assistant block that already claimed "Done." — lastAssistantText is
