@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
@@ -136,14 +136,29 @@ vi.mock('@/components/CodexSessionSyncDialog', () => ({
     CodexSessionSyncDialog: () => null
 }))
 vi.mock('@/components/PiSessionImportDialog', () => ({
-    PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
-        <button type="button" data-testid="select-pi-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.piDialogSelection)}>
-            select pi history
-        </button>
+    PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onClose: () => void; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <>
+            <div data-testid="pi-session-ids">{props.sessions.map((session) => session.id).join(',')}</div>
+            <button type="button" data-testid="close-pi-history" onClick={props.onClose}>close pi history</button>
+            <button type="button" data-testid="select-pi-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.piDialogSelection)}>
+                select pi history
+            </button>
+        </>
     ) : null
 }))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
-vi.mock('./MachineSelector', () => ({ MachineSelector: () => null }))
+vi.mock('./MachineSelector', () => ({
+    MachineSelector: (props: { machines: Machine[]; machineId: string | null; isDisabled: boolean; onChange: (machineId: string) => void }) => (
+        <select
+            aria-label="machine-selector"
+            value={props.machineId ?? ''}
+            disabled={props.isDisabled}
+            onChange={(event) => props.onChange(event.target.value)}
+        >
+            {props.machines.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.id}</option>)}
+        </select>
+    )
+}))
 vi.mock('./SessionTypeSelector', () => ({ SessionTypeSelector: () => null }))
 vi.mock('./GrokPermissionModeSelector', () => ({ GrokPermissionModeSelector: () => null }))
 vi.mock('./CodexFamilyPermissionModeSelector', () => ({ CodexFamilyPermissionModeSelector: () => null }))
@@ -527,6 +542,77 @@ describe('NewSession launch preferences', () => {
         })
         expect(piApi.reopenSession).toHaveBeenCalledWith('hapi-imported-1')
         expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('discards a stale Pi scan after switching machines', async () => {
+        savePreferredAgent('pi')
+        mocks.piDialogSelection = ['pi-machine-b']
+        const machineA = { id: 'machine-a' } as Machine
+        const machineB = { id: 'machine-b' } as Machine
+        let resolveMachineA!: (value: Awaited<ReturnType<ApiClient['getPiSessions']>>) => void
+        let resolveMachineB!: (value: Awaited<ReturnType<ApiClient['getPiSessions']>>) => void
+        const machineAScan = new Promise<Awaited<ReturnType<ApiClient['getPiSessions']>>>((resolve) => {
+            resolveMachineA = resolve
+        })
+        const machineBScan = new Promise<Awaited<ReturnType<ApiClient['getPiSessions']>>>((resolve) => {
+            resolveMachineB = resolve
+        })
+        const piApi = {
+            getPiSessions: vi.fn((_cwd: string | null, selectedMachineId: string) => (
+                selectedMachineId === machineA.id ? machineAScan : machineBScan
+            )),
+            importPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: machineB.id,
+                results: [{ piSessionId: 'pi-machine-b', hapiSessionId: 'hapi-machine-b', action: 'created', appended: 1 }]
+            }),
+            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-machine-b', resumed: true })
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={piApi}
+                machines={[machineA, machineB]}
+                initialMachineId={machineA.id}
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        fireEvent.click(screen.getByTestId('close-pi-history'))
+        fireEvent.change(screen.getByLabelText('machine-selector'), { target: { value: machineB.id } })
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        await act(async () => {
+            resolveMachineB({
+                success: true,
+                machineId: machineB.id,
+                sessions: [{ id: 'pi-machine-b', title: 'Machine B', cwd: 'C:\\repo', file: 'B.jsonl', modifiedAt: 2, messageCount: 1 }]
+            })
+            await machineBScan
+        })
+        await waitFor(() => expect(screen.getByTestId('pi-session-ids')).toHaveTextContent('pi-machine-b'))
+
+        await act(async () => {
+            resolveMachineA({
+                success: true,
+                machineId: machineA.id,
+                sessions: [{ id: 'pi-machine-a', title: 'Machine A', cwd: 'C:\\repo', file: 'A.jsonl', modifiedAt: 1, messageCount: 1 }]
+            })
+            await machineAScan
+        })
+        expect(screen.getByTestId('pi-session-ids')).toHaveTextContent('pi-machine-b')
+        expect(screen.getByTestId('pi-session-ids')).not.toHaveTextContent('pi-machine-a')
+
+        fireEvent.click(screen.getByTestId('select-pi-history'))
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-machine-b'))
+        expect(piApi.importPiSessions).toHaveBeenCalledWith({
+            sessionIds: ['pi-machine-b'],
+            cwd: 'C:\\repo',
+            machineId: machineB.id
+        })
     })
 
     it('refreshes successful Pi imports even when another batch item fails', async () => {

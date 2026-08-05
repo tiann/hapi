@@ -131,6 +131,7 @@ export function NewSession(props: {
     const [isImportingPiSession, setIsImportingPiSession] = useState(false)
     const [isBulkImportingPiSessions, setIsBulkImportingPiSessions] = useState(false)
     const [isPiImportDialogOpen, setIsPiImportDialogOpen] = useState(false)
+    const piLoadGenerationRef = useRef(0)
     const [isCreating, setIsCreating] = useState(false)
     const createInFlightRef = useRef(false)
     const [isBulkImportingCodexSessions, setIsBulkImportingCodexSessions] = useState(false)
@@ -809,23 +810,35 @@ export function NewSession(props: {
         }
     }, [agent, machineId, props.api, trimmedDirectory, t])
 
+    useEffect(() => {
+        piLoadGenerationRef.current += 1
+        setIsLoadingPiImportSessions(false)
+    }, [agent, machineId, trimmedDirectory])
+
+    useEffect(() => () => {
+        piLoadGenerationRef.current += 1
+    }, [])
+
     const loadPiImportSessions = useCallback(async () => {
         if (agent !== 'pi' || !machineId) return
+        const generation = ++piLoadGenerationRef.current
         setIsLoadingPiImportSessions(true)
         setPiImportError(null)
         try {
             const result = await props.api.getPiSessions(trimmedDirectory || null, machineId)
+            if (generation !== piLoadGenerationRef.current) return
             if (!result.success) throw new Error(result.error)
             setPiImportSessions(result.sessions)
             setPiImportMachineId(result.machineId ?? machineId)
             setSelectedPiImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
         } catch (loadError) {
+            if (generation !== piLoadGenerationRef.current) return
             setPiImportSessions([])
             setPiImportMachineId(null)
             setSelectedPiImportSessionId(null)
             setPiImportError(loadError instanceof Error ? loadError.message : t('piImport.failed.body'))
         } finally {
-            setIsLoadingPiImportSessions(false)
+            if (generation === piLoadGenerationRef.current) setIsLoadingPiImportSessions(false)
         }
     }, [agent, machineId, props.api, trimmedDirectory, t])
 
