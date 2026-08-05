@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { StorageUsagePie } from '@/components/settings/StorageUsagePie'
 import { SettingsPageContent, SettingsRow, SettingsSection } from '@/components/settings/SettingsPrimitives'
 import { useAppContext } from '@/lib/app-context'
 import { formatFileSize } from '@/lib/file-metadata'
@@ -40,6 +41,22 @@ export default function SettingsStoragePage() {
                     </>
                 ) : null}
             </SettingsSection>
+            {query.data ? (
+                <StorageUsagePie
+                    usage={{
+                        databaseBytes: query.data.databaseBytes,
+                        walBytes: query.data.walBytes,
+                        shmBytes: query.data.shmBytes,
+                    }}
+                    labels={{
+                        title: t('settings.storage.chartTitle'),
+                        empty: t('settings.storage.chartEmpty'),
+                        database: t('settings.storage.database'),
+                        wal: t('settings.storage.wal'),
+                        shm: t('settings.storage.shm'),
+                    }}
+                />
+            ) : null}
             <button
                 type="button"
                 onClick={() => void query.refetch()}
