@@ -9,6 +9,7 @@ import {
     getPullToLoadState,
     getScrollIntent,
     hasAppliedHistoryVersion,
+    isNestedScrollEvent,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
     restoreScrollAnchor,
@@ -33,6 +34,28 @@ const outlineItems: ConversationOutlineItem[] = [
         createdAt: 2000
     }
 ]
+
+describe('nested scroll event ownership', () => {
+    it('recognizes events from a nested scroll viewport and its descendants', () => {
+        const nested = document.createElement('div')
+        nested.dataset.hapiNestedScroll = 'true'
+        const child = document.createElement('span')
+        child.textContent = 'reasoning'
+        nested.append(child)
+        document.body.append(nested)
+
+        const nestedEvent = new Event('wheel')
+        Object.defineProperty(nestedEvent, 'target', { value: nested })
+        const childEvent = new Event('keydown')
+        Object.defineProperty(childEvent, 'target', { value: child })
+
+        expect(isNestedScrollEvent(new WheelEvent('wheel'))).toBe(false)
+        expect(isNestedScrollEvent(nestedEvent)).toBe(true)
+        expect(isNestedScrollEvent(childEvent)).toBe(true)
+
+        nested.remove()
+    })
+})
 
 function rect(values: Pick<DOMRect, 'top' | 'bottom'> & Partial<DOMRect>): DOMRect {
     return {

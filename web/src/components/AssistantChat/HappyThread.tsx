@@ -68,6 +68,16 @@ type ShareTurnSnapshot = {
     role?: 'user' | 'assistant'
 }
 
+export function isNestedScrollEvent(event: Event): boolean {
+    const target = event.target
+    const element = typeof Element !== 'undefined' && target instanceof Element
+        ? target
+        : typeof Node !== 'undefined' && target instanceof Node
+            ? target.parentElement
+            : null
+    return element?.closest('[data-hapi-nested-scroll="true"]') != null
+}
+
 function findNearestMessageElement(content: HTMLElement, clientY?: number): HTMLElement | null {
     const messages = Array.from(content.querySelectorAll('.happy-thread-messages > [id]'))
         .filter((element): element is HTMLElement => element instanceof HTMLElement)
@@ -786,6 +796,7 @@ export function HappyThread(props: {
         }
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (isNestedScrollEvent(event)) return
             const target = event.target
             if (
                 event.defaultPrevented
@@ -814,7 +825,7 @@ export function HappyThread(props: {
         }
 
         const handlePointerDown = (event: PointerEvent) => {
-            if (event.button !== 0) {
+            if (isNestedScrollEvent(event) || event.button !== 0) {
                 return
             }
             armPointerIntent()
@@ -832,12 +843,14 @@ export function HappyThread(props: {
         // listeners. Capture pointer and mouse input at the window boundary,
         // then scope it back to the chat viewport by coordinates.
         const handleWindowPointerDown = (event: PointerEvent) => {
+            if (isNestedScrollEvent(event)) return
             if (event.button === 0 && isInsideViewport(event.clientX, event.clientY)) {
                 armPointerIntent()
             }
         }
 
         const handleWindowMouseDown = (event: MouseEvent) => {
+            if (isNestedScrollEvent(event)) return
             if (event.button === 0 && isInsideViewport(event.clientX, event.clientY)) {
                 armPointerIntent()
             }
@@ -850,6 +863,7 @@ export function HappyThread(props: {
         }
 
         const handlePointerCancel = (event: PointerEvent) => {
+            if (isNestedScrollEvent(event)) return
             const hadActivePointer = pointerResumeActive
             pointerResumeActive = false
             if (hadActivePointer && (event.pointerType === 'touch' || event.pointerType === 'pen')) {
@@ -864,6 +878,7 @@ export function HappyThread(props: {
         }
 
         const handleWheel = (event: WheelEvent) => {
+            if (isNestedScrollEvent(event)) return
             if (event.deltaY >= 0) {
                 wheelIntentUntil = 0
                 return
@@ -886,6 +901,7 @@ export function HappyThread(props: {
         }
 
         const handleTouchStart = (event: TouchEvent) => {
+            if (isNestedScrollEvent(event)) return
             updatePullToLoadState('idle')
             pullStartY = (
                 viewport.scrollTop <= 0
@@ -899,6 +915,7 @@ export function HappyThread(props: {
         }
 
         const handleTouchMove = (event: TouchEvent) => {
+            if (isNestedScrollEvent(event)) return
             if (pullStartY === null) {
                 return
             }
@@ -913,7 +930,8 @@ export function HappyThread(props: {
             }
         }
 
-        const handleTouchEnd = () => {
+        const handleTouchEnd = (event: TouchEvent) => {
+            if (isNestedScrollEvent(event)) return
             const shouldLoad = pullStartY !== null
                 && pullToLoadStateRef.current === 'ready'
                 && viewport.scrollTop <= 0
@@ -924,7 +942,8 @@ export function HappyThread(props: {
             }
         }
 
-        const handleTouchCancel = () => {
+        const handleTouchCancel = (event: TouchEvent) => {
+            if (isNestedScrollEvent(event)) return
             pullStartY = null
             updatePullToLoadState('idle')
         }
@@ -968,6 +987,13 @@ export function HappyThread(props: {
             lastScrollTopRef.current = viewport.scrollTop
         }
     }, [])
+
+    const handleNestedScrollFollowChange = useCallback((followLatest: boolean) => {
+        if (!followLatest) {
+            clearInitialScrollTimers()
+        }
+        autoScrollEnabledRef.current = followLatest && atBottomRef.current
+    }, [clearInitialScrollTimers])
 
     // Scroll to bottom handler for the indicator button
     const scrollToBottom = useCallback(() => {
@@ -1539,6 +1565,7 @@ export function HappyThread(props: {
             hasMoreMessages: props.hasMoreMessages,
             isSyncingTail: props.isSyncingTail,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
+            onNestedScrollFollowChange: handleNestedScrollFollowChange,
             loadOlderMessagesPreservingScroll: loadOlderFromConsumer
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
