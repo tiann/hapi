@@ -17,7 +17,7 @@ function addAgentMessage(store: Store, sessionId: string, content: unknown, crea
 }
 
 describe('usage service', () => {
-    it('deduplicates Claude stream fragments and normalizes cached input', () => {
+    it('normalizes historical Claude input that excludes cached tokens', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'claude-usage-test',
@@ -61,7 +61,7 @@ describe('usage service', () => {
         store.close()
     })
 
-    it('uses the latest request as the baseline for a resumed Codex thread', () => {
+    it('normalizes historical Codex cumulative usage with inclusive input', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'codex-usage-test',
@@ -121,7 +121,7 @@ describe('usage service', () => {
         store.close()
     })
 
-    it('treats ACP usage totals as per-request deltas', () => {
+    it('normalizes historical Kimi usage totals as inclusive per-request deltas', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'kimi-usage-test',
@@ -156,7 +156,7 @@ describe('usage service', () => {
         store.close()
     })
 
-    it('counts normalized ACP cached input as processed input', () => {
+    it('recognizes the model-bearing historical generic ACP wire as inclusive', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'acp-cache-usage-test',
@@ -185,6 +185,243 @@ describe('usage service', () => {
         expect(result.totals.cacheReadTokens).toBe(5_760)
         expect(result.totals.totalTokens).toBe(13_881)
         expect(result.totals.uncachedTokens).toBe(8_121)
+        store.close()
+    })
+
+    it('falls back to legacy provenance when v1 usage semantics are malformed', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'malformed-generic-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'opencode' },
+            null,
+            'default'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                usageSchema: 'hapi.usage.v1',
+                inputTokenSemantics: 'unknown',
+                info: {
+                    total: {
+                        inputTokens: 100,
+                        outputTokens: 20,
+                        cachedInputTokens: 40,
+                        cacheWriteInputTokens: 10
+                    }
+                }
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals).toEqual(expect.objectContaining({
+            inputTokens: 150,
+            cacheReadTokens: 40,
+            cacheCreationTokens: 10,
+            totalTokens: 170
+        }))
+        store.close()
+    })
+
+    it('repairs unmarked legacy generic ACP input that excluded cache', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'legacy-generic-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'opencode' },
+            null,
+            'default'
+        )
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                info: { total: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 80, cacheWriteInputTokens: 20 } }
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals.inputTokens).toBe(200)
+        expect(result.totals.cacheReadTokens).toBe(80)
+        expect(result.totals.cacheCreationTokens).toBe(20)
+        expect(result.totals.uncachedTokens).toBe(125)
+        store.close()
+    })
+
+    it('normalizes mixed legacy and marked generic usage per message in one session', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'mixed-generic-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'opencode' },
+            null,
+            'default'
+        )
+        const messages = [
+            { type: 'token_count', info: { total: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 80 } } },
+            { type: 'token_count', usageSchema: 'hapi.usage.v1', inputTokenSemantics: 'includes-cache', info: { total: { inputTokens: 180, outputTokens: 5, cachedInputTokens: 80 } } },
+            { type: 'token_count', model: null, info: { total: { inputTokens: 180, outputTokens: 5, cachedInputTokens: 80 } } }
+        ]
+        for (const data of messages) addAgentMessage(store, session.id, { type: 'codex', data })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals.inputTokens).toBe(540)
+        expect(result.totals.outputTokens).toBe(15)
+        expect(result.totals.cacheReadTokens).toBe(240)
+        expect(result.totals.requests).toBe(3)
+        store.close()
+    })
+
+    it('uses the explicit v1 generic usage input semantics without double-counting cache', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'generic-v1-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'opencode' },
+            null,
+            'default',
+            'acp-model'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                usageSchema: 'hapi.usage.v1',
+                inputTokenSemantics: 'includes-cache',
+                info: {
+                    total: {
+                        inputTokens: 150,
+                        outputTokens: 20,
+                        cachedInputTokens: 40,
+                        cacheWriteInputTokens: 10
+                    }
+                }
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals).toEqual(expect.objectContaining({
+            inputTokens: 150,
+            outputTokens: 20,
+            cacheReadTokens: 40,
+            cacheCreationTokens: 10,
+            totalTokens: 170,
+            uncachedTokens: 130,
+            requests: 1
+        }))
+        store.close()
+    })
+
+    it('normalizes cumulative total and last snapshots with the same declared semantics', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'codex-exclusive-cumulative-test',
+            { path: '/tmp', host: 'test', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const snapshots = [
+            {
+                total: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 80 },
+                last: { inputTokens: 20, outputTokens: 2, cachedInputTokens: 10 }
+            },
+            {
+                total: { inputTokens: 130, outputTokens: 15, cachedInputTokens: 100 },
+                last: { inputTokens: 30, outputTokens: 5, cachedInputTokens: 20 }
+            }
+        ]
+        snapshots.forEach((info, index) => addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                usageSchema: 'hapi.usage.v1',
+                inputTokenSemantics: 'excludes-cache',
+                threadId: 'thread-exclusive',
+                turnId: `turn-${index}`,
+                info
+            }
+        }))
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals).toEqual(expect.objectContaining({
+            inputTokens: 80,
+            outputTokens: 7,
+            cacheReadTokens: 30,
+            requests: 2
+        }))
+        store.close()
+    })
+
+    it('treats a cumulative counter reset as a whole-snapshot reset', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'codex-whole-reset-test',
+            { path: '/tmp', host: 'test', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const snapshots = [
+            {
+                total: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 80 },
+                last: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 80 }
+            },
+            {
+                // Only input/cache regressed; output alone still increased.
+                total: { inputTokens: 50, outputTokens: 70, cachedInputTokens: 40 },
+                last: { inputTokens: 50, outputTokens: 7, cachedInputTokens: 40 }
+            }
+        ]
+        snapshots.forEach((info, index) => addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                threadId: 'thread-reset',
+                turnId: `turn-${index}`,
+                info
+            }
+        }))
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals).toEqual(expect.objectContaining({
+            inputTokens: 150,
+            outputTokens: 27,
+            cacheReadTokens: 120,
+            requests: 2
+        }))
+        store.close()
+    })
+
+    it('preserves primary usage and requests when the cache partition is impossible', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'invalid-cache-partition-test',
+            { path: '/tmp', host: 'test', flavor: 'opencode' },
+            null,
+            'default'
+        )
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'usage',
+                usageSchema: 'hapi.usage.v1',
+                inputTokenSemantics: 'includes-cache',
+                inputTokens: 100,
+                outputTokens: 20,
+                cachedInputTokens: 120,
+                cacheWriteInputTokens: 5
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals).toEqual(expect.objectContaining({
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: 120,
+            uncachedTokens: 120,
+            requests: 1
+        }))
+        expect(result.totals.sessions).toBe(1)
         store.close()
     })
 

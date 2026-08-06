@@ -81,6 +81,8 @@ describe('convertKimiWireEvent', () => {
             message: {
                 type: 'token_count',
                 model: 'kimi-k2.5',
+                usageSchema: 'hapi.usage.v1',
+                inputTokenSemantics: 'includes-cache',
                 info: {
                     total: {
                         inputTokens: 160,

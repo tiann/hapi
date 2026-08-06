@@ -32,6 +32,27 @@ describe('convertCodexEvent', () => {
         expect(result?.userMessage).toBe('hello user');
     });
 
+    it('marks native token counts as inclusive of cached input', () => {
+        const info = {
+            total_token_usage: {
+                input_tokens: 120,
+                cached_input_tokens: 20,
+                output_tokens: 12
+            }
+        };
+        const result = convertCodexEvent({
+            type: 'event_msg',
+            payload: { type: 'token_count', info }
+        });
+
+        expect(result?.messages?.[0]).toMatchObject({
+            type: 'token_count',
+            usageSchema: 'hapi.usage.v1',
+            inputTokenSemantics: 'includes-cache',
+            info
+        });
+    });
+
     it('converts completed plan items into proposed plan messages', () => {
         const result = convertCodexEvent({
             type: 'event_msg',

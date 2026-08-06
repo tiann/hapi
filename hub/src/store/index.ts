@@ -33,7 +33,7 @@ export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { UsageStore } from './usageStore'
 
-const SCHEMA_VERSION: number = 20
+const SCHEMA_VERSION: number = 21
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -288,6 +288,7 @@ export class Store {
             17: () => this.migrateFromV17ToV18(),
             18: () => this.migrateFromV18ToV19(),
             19: () => this.migrateFromV19ToV20(),
+            20: () => this.migrateFromV20ToV21(),
         })
 
         if (currentVersion === 0) {
@@ -824,6 +825,16 @@ export class Store {
                 last_seq INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
+            DELETE FROM usage_scan_state;
+        `)
+    }
+
+    private migrateFromV20ToV21(): void {
+        // Usage events and scan cursors are a derived index. v21 moves cache
+        // normalization to parse time, so every row must be rebuilt under the
+        // same inclusive-input invariant rather than mixing old and new rows.
+        this.db.exec(`
+            DELETE FROM usage_events;
             DELETE FROM usage_scan_state;
         `)
     }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
 import { open, stat } from 'node:fs/promises';
 import { BaseSessionScanner, type SessionFileScanResult, type SessionFileScanStats } from '@/modules/common/session/BaseSessionScanner';
 import { logger } from '@/ui/logger';
@@ -150,6 +151,7 @@ export function convertKimiWireEvent(event: KimiWireEvent, model?: string | null
             message: {
                 type: 'token_count',
                 model: typeof model === 'string' && model.trim() ? model.trim() : null,
+                ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER,
                 info: {
                     total: {
                         inputTokens: inputOther + cacheRead + cacheCreation,

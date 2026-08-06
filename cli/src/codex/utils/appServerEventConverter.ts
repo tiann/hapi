@@ -1,3 +1,4 @@
+import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
 import { logger } from '@/ui/logger';
 
 type ConvertedEvent = {
@@ -784,7 +785,7 @@ export class AppServerEventConverter {
 
         if (method === 'thread/tokenUsage/updated') {
             const info = asRecord(paramsRecord.tokenUsage ?? paramsRecord.token_usage ?? paramsRecord) ?? {};
-            events.push(scoped({ type: 'token_count', info }));
+            events.push(scoped({ type: 'token_count', ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER, info }));
             return events;
         }
 

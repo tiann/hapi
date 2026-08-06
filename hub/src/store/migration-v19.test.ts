@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { Store } from './index'
 import { getUsageSummary } from '../sync/usageService'
 
-describe('Store V19->V20 migration: usage re-index for model fallback', () => {
-    it('clears usage scan state while keeping derived events', () => {
+describe('Store V19->current migration: usage re-index', () => {
+    it('clears stale derived usage rows and scan state', () => {
         const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v19-to-v20-'))
         const dbPath = join(directory, 'test.db')
         let store: Store | undefined
@@ -37,9 +37,9 @@ describe('Store V19->V20 migration: usage re-index for model fallback', () => {
             const scanRows = internalDb.prepare('SELECT COUNT(*) AS count FROM usage_scan_state').get() as { count: number }
             const usageRows = internalDb.prepare('SELECT COUNT(*) AS count FROM usage_events').get() as { count: number }
 
-            expect(version.user_version).toBe(20)
+            expect(version.user_version).toBe(21)
             expect(scanRows.count).toBe(0)
-            expect(usageRows.count).toBe(1)
+            expect(usageRows.count).toBe(0)
         } finally {
             store?.close()
             rmSync(directory, { recursive: true, force: true })

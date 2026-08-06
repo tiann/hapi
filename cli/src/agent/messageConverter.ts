@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER, type InclusiveInputTokenUsageMarker } from '@hapi/protocol/usage';
 import type { AgentMessage, PlanItem } from './types';
 
 export type CodexMessage =
@@ -7,6 +8,8 @@ export type CodexMessage =
     | {
         type: 'token_count';
         model: string | null;
+        usageSchema: InclusiveInputTokenUsageMarker['usageSchema'];
+        inputTokenSemantics: InclusiveInputTokenUsageMarker['inputTokenSemantics'];
         info: {
             total: {
                 inputTokens: number;
@@ -57,6 +60,7 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
             return {
                 type: 'token_count',
                 model: typeof model === 'string' && model.trim() ? model.trim() : null,
+                ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER,
                 info: {
                     total: {
                         inputTokens: message.inputTokens
