@@ -323,6 +323,40 @@ describe('providerCredentials', () => {
         expect(process.env.OPENAI_API_KEY).toBe('race-openai')
     })
 
+    it('preserves hub credentials when raced with CLI-style settings lock writer', async () => {
+        if (process.platform === 'win32') return
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ machineId: 'keep-me' }))
+        await applyProviderCredentialsFromSettings(dir)
+        const { updateSettings, getSettingsFile, readSettings } = await import('./settings')
+        const { withSettingsFileLock } = await import('@hapi/protocol/settingsFileLock')
+        const { writeFile, chmod, rename, stat } = await import('node:fs/promises')
+        const settingsFile = getSettingsFile(dir)
+
+        await Promise.all([
+            updateTranscriptionCredentials(dir, { openai: 'hub-cli-race' }),
+            withSettingsFileLock(settingsFile, async () => {
+                const current = (await readSettings(settingsFile)) ?? {}
+                const updated = { ...current, apiUrl: 'http://cli-writer.example' }
+                const tmpFile = `${settingsFile}.tmp`
+                await writeFile(tmpFile, JSON.stringify(updated, null, 2), { mode: 0o600 })
+                await chmod(tmpFile, 0o600)
+                await rename(tmpFile, settingsFile)
+                await chmod(settingsFile, 0o600)
+            }),
+        ])
+
+        const saved = JSON.parse(readFileSync(settingsFile, 'utf8')) as {
+            providerCredentials?: Record<string, string>
+            machineId?: string
+            apiUrl?: string
+        }
+        expect(saved.machineId).toBe('keep-me')
+        expect(saved.apiUrl).toBe('http://cli-writer.example')
+        expect(saved.providerCredentials?.OPENAI_API_KEY).toBe('hub-cli-race')
+        expect((await stat(settingsFile)).mode & 0o777).toBe(0o600)
+    })
+
     it('keeps partial OpenAI-compatible values queryable for clear UX', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))

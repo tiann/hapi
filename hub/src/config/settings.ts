@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
+import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 
 export interface Settings {
     machineId?: string
@@ -67,10 +68,10 @@ export async function readSettingsOrThrow(settingsFile: string): Promise<Setting
     return settings
 }
 
-/** Per-file promise chain so concurrent settings writers cannot clobber each other. */
+/** Per-file in-process promise chain (hub concurrent requests). */
 const settingsUpdateChains = new Map<string, Promise<unknown>>()
 
-export async function withSettingsLock<T>(
+async function withInProcessSettingsLock<T>(
     settingsFile: string,
     work: () => Promise<T>
 ): Promise<T> {
@@ -78,6 +79,16 @@ export async function withSettingsLock<T>(
     const run = previous.catch(() => undefined).then(work)
     settingsUpdateChains.set(settingsFile, run.then(() => undefined, () => undefined))
     return run
+}
+
+/**
+ * Serialize against in-process writers and the CLI's cross-process `.lock` file.
+ */
+export async function withSettingsLock<T>(
+    settingsFile: string,
+    work: () => Promise<T>
+): Promise<T> {
+    return withInProcessSettingsLock(settingsFile, () => withSettingsFileLock(settingsFile, work))
 }
 
 /**
