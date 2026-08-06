@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+    fitSingleLineFontSize,
     mirrorOffsetFromPoint,
     RichComposerInput,
     type RichComposerInputHandle,
@@ -87,6 +88,69 @@ function LineBreakDeletionHarness() {
         </>
     )
 }
+
+describe('RichComposerInput responsive placeholder', () => {
+    it('calculates a smaller font that fits overflowing text', () => {
+        expect(fitSingleLineFontSize(160, 320)).toBeCloseTo(7.95)
+        expect(fitSingleLineFontSize(320, 320)).toBe(16)
+        expect(fitSingleLineFontSize(640, 320)).toBe(16)
+        expect(fitSingleLineFontSize(0, 320)).toBe(16)
+        expect(fitSingleLineFontSize(Number.NaN, 320)).toBe(16)
+        expect(fitSingleLineFontSize(384, 320, 19.2)).toBe(19.2)
+        expect(fitSingleLineFontSize(160, 320, 19.2)).toBeCloseTo(9.54)
+    })
+
+    it('refits the complete single-line placeholder when its container width changes', () => {
+        let resizeCallback: ResizeObserverCallback | undefined
+        class TestResizeObserver {
+            constructor(callback: ResizeObserverCallback) {
+                resizeCallback = callback
+            }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        vi.stubGlobal('ResizeObserver', TestResizeObserver)
+        vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+            fontSize: '19.2px',
+        } as CSSStyleDeclaration)
+
+        try {
+            render(
+                <RichComposerInput
+                    value=""
+                    placeholder="Type what you want the agent to do, without truncation"
+                    onValueChange={() => {}}
+                    onMirrorChange={() => {}}
+                />
+            )
+
+            const placeholder = screen.getByTestId('rich-composer-placeholder')
+            let availableWidth = 160
+            Object.defineProperty(placeholder, 'clientWidth', {
+                configurable: true,
+                get: () => availableWidth,
+            })
+            Object.defineProperty(placeholder, 'scrollWidth', {
+                configurable: true,
+                get: () => 320,
+            })
+
+            resizeCallback?.([], {} as ResizeObserver)
+            expect(placeholder).toHaveTextContent('Type what you want the agent to do, without truncation')
+            expect(placeholder).not.toHaveClass('text-ellipsis')
+            expect(placeholder).toHaveClass('text-base')
+            expect(placeholder.style.fontSize).toBe('9.54px')
+
+            availableWidth = 640
+            resizeCallback?.([], {} as ResizeObserver)
+            expect(placeholder.style.fontSize).toBe('19.2px')
+        } finally {
+            vi.restoreAllMocks()
+            vi.unstubAllGlobals()
+        }
+    })
+})
 
 describe('RichComposerInput controlled synchronization', () => {
     afterEach(() => {
