@@ -692,7 +692,6 @@ export default {
   'settings.storage.refreshing': '正在刷新…',
   'settings.storage.chartTitle': '相对占比',
   'settings.storage.chartEmpty': '暂无可绘制的磁盘占用。',
-  'settings.storage.detailsTitle': '精确大小',
   'settings.usage.title': 'Token 用量',
   'settings.usage.summary': 'Token 用量看板',
   'settings.usage.description': '统计 Agent 由 HAPI 管理期间处理的 Token；不含导入前的历史会话用量和费用估算。',

@@ -693,7 +693,6 @@ export default {
   'settings.storage.refreshing': 'Refreshing…',
   'settings.storage.chartTitle': 'Relative share',
   'settings.storage.chartEmpty': 'No on-disk size to chart yet.',
-  'settings.storage.detailsTitle': 'Exact sizes',
   'settings.usage.title': 'Token usage',
   'settings.usage.summary': 'Token-only usage dashboard',
   'settings.usage.description': 'Tokens processed while agents are managed by HAPI. Imported earlier transcript usage is excluded; costs are not included.',

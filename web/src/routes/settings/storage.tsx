@@ -36,33 +36,24 @@ export default function SettingsStoragePage() {
                 </SettingsSection>
             ) : null}
             {query.data ? (
-                <>
-                    <StorageUsagePie
-                        usage={{
-                            databaseBytes: query.data.databaseBytes,
-                            walBytes: query.data.walBytes,
-                            shmBytes: query.data.shmBytes,
-                        }}
-                        labels={{
-                            title: t('settings.storage.chartTitle'),
-                            empty: t('settings.storage.chartEmpty'),
-                            database: t('settings.storage.database'),
-                            wal: t('settings.storage.wal'),
-                            shm: t('settings.storage.shm'),
-                        }}
-                    />
-                    <SettingsSection title={t('settings.storage.detailsTitle')}>
-                        <SettingsRow label={t('settings.storage.total')} trailing={<span className="font-medium text-[var(--app-fg)]">{formatFileSize(query.data.totalBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.database')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.databaseBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.wal')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.walBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.shm')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.shmBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.path')} trailing={
-                            <code className="block max-w-[min(20rem,55vw)] truncate text-xs text-[var(--app-hint)]" title={query.data.path}>
-                                {query.data.path}
-                            </code>
-                        } />
-                    </SettingsSection>
-                </>
+                <StorageUsagePie
+                    usage={{
+                        databaseBytes: query.data.databaseBytes,
+                        walBytes: query.data.walBytes,
+                        shmBytes: query.data.shmBytes,
+                    }}
+                    totalBytes={query.data.totalBytes}
+                    path={query.data.path}
+                    labels={{
+                        title: t('settings.storage.chartTitle'),
+                        empty: t('settings.storage.chartEmpty'),
+                        database: t('settings.storage.database'),
+                        wal: t('settings.storage.wal'),
+                        shm: t('settings.storage.shm'),
+                        total: t('settings.storage.total'),
+                        path: t('settings.storage.path'),
+                    }}
+                />
             ) : null}
             <button
                 type="button"

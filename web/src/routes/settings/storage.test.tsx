@@ -17,7 +17,7 @@ vi.mock('@/lib/app-context', () => ({
 }))
 
 describe('SettingsStoragePage', () => {
-    it('uses paired button theme colors for the refresh action and renders the pie chart', async () => {
+    it('uses paired button theme colors and shows a single chart card without a duplicate exact-sizes table', async () => {
         const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
         render(
             <QueryClientProvider client={queryClient}>
@@ -36,8 +36,9 @@ describe('SettingsStoragePage', () => {
             expect(screen.getByRole('img', { name: /Relative share/i })).toBeInTheDocument()
         })
 
-        const chart = screen.getByRole('img', { name: /Relative share/i })
-        const details = screen.getByRole('heading', { name: /Exact sizes/i })
-        expect(chart.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        expect(screen.queryByRole('heading', { name: /Exact sizes/i })).not.toBeInTheDocument()
+        expect(screen.getByTestId('storage-pie-legend-database')).toBeInTheDocument()
+        expect(screen.getByTestId('storage-pie-total')).toBeInTheDocument()
+        expect(screen.getByTestId('storage-pie-path')).toHaveTextContent('C:\\hapi\\hapi.db')
     })
 })

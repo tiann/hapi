@@ -21,10 +21,14 @@ type Labels = {
     database: string
     wal: string
     shm: string
+    total: string
+    path: string
 }
 
 type StorageUsagePieProps = {
     usage: StorageUsageBytes
+    totalBytes: number
+    path: string
     labels: Labels
 }
 
@@ -33,7 +37,7 @@ function labelFor(key: StorageUsageSliceKey, labels: Labels): string {
 }
 
 export function StorageUsagePie(props: StorageUsagePieProps) {
-    const { usage, labels } = props
+    const { usage, totalBytes, path, labels } = props
     const chartId = useId()
     const slices = useMemo(() => buildStorageUsageSlices(usage), [usage])
     const [activeKey, setActiveKey] = useState<StorageUsageSliceKey | null>(null)
@@ -57,6 +61,7 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
     const innerRadius = 58
     const outerRadius = 88
     const activeOuterRadius = 96
+    const totalLabel = formatFileSize(totalBytes) ?? '0 B'
 
     const onLegendKeyDown = (event: KeyboardEvent<HTMLButtonElement>, key: StorageUsageSliceKey) => {
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
@@ -76,7 +81,7 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
     return (
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-4 shadow-sm">
             <h3 className="mb-3 text-sm font-medium text-[var(--app-fg)]">{labels.title}</h3>
-            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center sm:justify-center sm:gap-6">
+            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-center sm:gap-6">
                 <div className="relative shrink-0" style={{ width: size, height: size }}>
                     <svg
                         viewBox={`0 0 ${size} ${size}`}
@@ -94,7 +99,7 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
                         </desc>
                         {slices.map((slice) => {
                             const isActive = active?.key === slice.key
-                            const path = describeDonutArc(
+                            const pathD = describeDonutArc(
                                 cx,
                                 cy,
                                 innerRadius,
@@ -105,7 +110,7 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
                             return (
                                 <path
                                     key={slice.key}
-                                    d={path}
+                                    d={pathD}
                                     fill={SLICE_FILL[slice.key]}
                                     opacity={isActive ? 1 : 0.82}
                                     className="cursor-pointer transition-[opacity] duration-150"
@@ -155,7 +160,20 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
                             </button>
                         )
                     })}
+                    <div
+                        className="mt-1 flex items-center justify-between gap-2 border-t border-[var(--app-divider)] px-2 pt-2 text-sm"
+                        data-testid="storage-pie-total"
+                    >
+                        <span className="font-medium text-[var(--app-fg)]">{labels.total}</span>
+                        <span className="tabular-nums font-medium text-[var(--app-fg)]">{totalLabel}</span>
+                    </div>
                 </div>
+            </div>
+            <div className="mt-3 border-t border-[var(--app-divider)] pt-3" data-testid="storage-pie-path">
+                <div className="text-xs font-medium text-[var(--app-hint)]">{labels.path}</div>
+                <code className="mt-0.5 block truncate text-xs text-[var(--app-hint)]" title={path}>
+                    {path}
+                </code>
             </div>
         </div>
     )
