@@ -79,6 +79,19 @@ export async function readSettings(): Promise<Settings> {
   }
 }
 
+/** Strict read for locked updates — never treat corrupt/unreadable files as empty. */
+async function readSettingsForUpdate(): Promise<Settings> {
+  if (!existsSync(configuration.settingsFile)) {
+    return { ...defaultSettings }
+  }
+  const content = await readFile(configuration.settingsFile, 'utf8')
+  const parsed: unknown = JSON.parse(content)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Invalid settings file: ${configuration.settingsFile}`)
+  }
+  return parsed as Settings
+}
+
 export async function writeSettings(settings: Settings): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
     await mkdir(configuration.happyHomeDir, { recursive: true, mode: 0o700 })
@@ -108,7 +121,7 @@ export async function updateSettings(
   await chmod(configuration.happyHomeDir, 0o700).catch(() => {})
 
   return withSettingsFileLock(configuration.settingsFile, async () => {
-    const current = await readSettings() || { ...defaultSettings }
+    const current = await readSettingsForUpdate()
     const updated = await updater(current)
     const tmpFile = configuration.settingsFile + '.tmp'
     await writeFile(tmpFile, JSON.stringify(updated, null, 2), { mode: 0o600 })

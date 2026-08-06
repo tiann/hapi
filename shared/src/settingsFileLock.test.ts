@@ -175,12 +175,37 @@ describe('withSettingsFileLock', () => {
         })
 
         await firstReady
-        // First holds a live successor lock; only then let the delayed reclaimer proceed.
         releaseSecond()
         const results = await Promise.all([first, second])
         expect(results.sort()).toEqual(['first', 'second'])
         expect(maxInCritical).toBe(1)
         expect(existsSync(lockFile)).toBe(false)
         expect(existsSync(`${lockFile}.reap`)).toBe(false)
+    })
+
+    test('backs off when another process owns the reaper instead of burning retries', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-reap-wait-'))
+        const settingsFile = join(dir, 'settings.json')
+        const lockFile = `${settingsFile}.lock`
+        const reapLock = `${lockFile}.reap`
+        writeFileSync(lockFile, JSON.stringify({ pid: 2_147_483_643, token: 'shared-dead' }))
+
+        // Hold the reaper so reclaim returns false.
+        writeFileSync(reapLock, JSON.stringify({ pid: process.pid, token: 'busy-reaper' }))
+
+        setSettingsLockMaxAttemptsForTests(8)
+        const started = Date.now()
+        const pending = withSettingsFileLock(settingsFile, async () => 'should-wait')
+
+        await new Promise((r) => setTimeout(r, 250))
+        // Still waiting (not failed yet) while reaper is held.
+        expect(existsSync(reapLock)).toBe(true)
+
+        // Release reaper so reclaim can proceed.
+        const { unlinkSync } = await import('node:fs')
+        unlinkSync(reapLock)
+        await expect(pending).resolves.toBe('should-wait')
+        expect(Date.now() - started).toBeGreaterThanOrEqual(200)
+        expect(existsSync(lockFile)).toBe(false)
     })
 })

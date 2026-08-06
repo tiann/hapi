@@ -189,7 +189,10 @@ export async function withSettingsFileLock<T>(
                 const existing = readLockOwnerSync(lockFile)
                 if (existing && !isPidAlive(existing.pid)) {
                     if (reclaimGateForTests) await reclaimGateForTests()
-                    tryReclaimDeadOwner(lockFile, existing)
+                    const reclaimed = tryReclaimDeadOwner(lockFile, existing)
+                    if (!reclaimed) {
+                        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS))
+                    }
                     continue
                 }
                 await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS))
