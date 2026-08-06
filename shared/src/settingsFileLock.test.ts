@@ -1,19 +1,20 @@
 import { describe, expect, test, afterEach } from 'bun:test'
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     setSettingsLockMaxAttemptsForTests,
-    setSettingsLockWriteOwnerForTests,
     setSettingsLockReclaimGateForTests,
+    setSettingsLockPublishForTests,
     withSettingsFileLock,
 } from './settingsFileLock'
 
 describe('withSettingsFileLock', () => {
     afterEach(() => {
         setSettingsLockMaxAttemptsForTests(undefined)
-        setSettingsLockWriteOwnerForTests(undefined)
         setSettingsLockReclaimGateForTests(undefined)
+        setSettingsLockPublishForTests(undefined)
     })
 
     test('reclaims a lock whose recorded PID is dead under the reaper', async () => {
@@ -47,7 +48,7 @@ describe('withSettingsFileLock', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-writefail-'))
         const settingsFile = join(dir, 'settings.json')
         const lockFile = `${settingsFile}.lock`
-        setSettingsLockWriteOwnerForTests(() => {
+        setSettingsLockPublishForTests(() => {
             throw new Error('injected short-write')
         })
 
@@ -56,9 +57,25 @@ describe('withSettingsFileLock', () => {
         ).rejects.toThrow(/injected short-write/)
         expect(existsSync(lockFile)).toBe(false)
 
-        setSettingsLockWriteOwnerForTests(undefined)
+        setSettingsLockPublishForTests(undefined)
         const result = await withSettingsFileLock(settingsFile, async () => 'recovered')
         expect(result).toBe('recovered')
+    })
+
+    test('orphan candidate from a crashed publish does not wedge the next writer', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-orphan-'))
+        const settingsFile = join(dir, 'settings.json')
+        const lockFile = `${settingsFile}.lock`
+        // Simulate SIGKILL after writing a complete candidate but before link.
+        writeFileSync(
+            `${lockFile}.${randomUUID()}.candidate`,
+            JSON.stringify({ pid: process.pid, token: 'orphan' }),
+            { mode: 0o600 }
+        )
+
+        const result = await withSettingsFileLock(settingsFile, async () => 'recovered')
+        expect(result).toBe('recovered')
+        expect(existsSync(lockFile)).toBe(false)
     })
 
     test('does not unlink a successor lock on release', async () => {

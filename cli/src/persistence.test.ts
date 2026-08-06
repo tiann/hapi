@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
-const dir = mkdtempSync(join(tmpdir(), 'hapi-cli-settings-'))
+const { dir } = vi.hoisted(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { tmpdir } = require('node:os') as typeof import('node:os')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { join: pathJoin } = require('node:path') as typeof import('node:path')
+    return { dir: mkdtempSync(pathJoin(tmpdir(), 'hapi-cli-settings-')) }
+})
 
 vi.mock('@/configuration', () => ({
     configuration: {
@@ -21,7 +28,8 @@ import { updateSettings } from './persistence'
 describe('updateSettings', () => {
     afterEach(() => {
         try {
-            rmSync(dir, { recursive: true, force: true })
+            rmSync(join(dir, 'settings.json'), { force: true })
+            rmSync(join(dir, 'settings.json.lock'), { force: true })
         } catch {
             // ignore
         }
@@ -29,10 +37,6 @@ describe('updateSettings', () => {
 
     it('rejects corrupt settings.json and leaves the original bytes intact', async () => {
         const settingsFile = join(dir, 'settings.json')
-        const original = '{"providerCredentials":{"OPENAI_API_KEY":"keep-me"},"relayAuthKey":"relay"}'
-        writeFileSync(settingsFile, original)
-
-        // Overwrite with invalid JSON after the mock dir exists
         writeFileSync(settingsFile, '{not-json')
 
         await expect(

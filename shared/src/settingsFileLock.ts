@@ -2,21 +2,21 @@
  * Cross-process exclusive lock for settings.json (and similar).
  * Shared by hub and CLI.
  *
- * Acquisition: sync `openSync('wx')` + full owner write; on write failure the
- * sidecar is removed so we never leave an unreadable wedged lock.
+ * Acquisition publishes a fully-written candidate then `linkSync`s it onto the
+ * fixed lock path, so a crash cannot leave an empty/partial live sidecar.
  * Stale reclaim: only under a fixed exclusive `${lock}.reap` sidecar, after
- * re-validating pid+token, unlink the dead owner — never rename the live path
- * without holding the reaper (a delayed renamer could otherwise steal a
- * successor's lock).
+ * re-validating pid+token, unlink the dead owner.
  * Release: unlink only when the sidecar still contains our owner token.
  */
 
 import { randomUUID } from 'node:crypto'
 import {
     closeSync,
+    linkSync,
     openSync,
     readFileSync,
     unlinkSync,
+    writeFileSync,
     writeSync,
 } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
@@ -30,19 +30,12 @@ type LockOwner = {
 }
 
 let maxLockAttemptsForTests: number | undefined
-let writeOwnerForTests: ((fd: number, payload: string) => void) | undefined
 let reclaimGateForTests: (() => Promise<void>) | undefined
+let publishHookForTests: ((lockFile: string, ownerPayload: string) => void) | undefined
 
 /** @internal test-only: shorten acquire retries for fail-closed empty-lock coverage */
 export function setSettingsLockMaxAttemptsForTests(value: number | undefined): void {
     maxLockAttemptsForTests = value
-}
-
-/** @internal test-only: inject owner-publication failures */
-export function setSettingsLockWriteOwnerForTests(
-    writer: ((fd: number, payload: string) => void) | undefined
-): void {
-    writeOwnerForTests = writer
 }
 
 /** @internal test-only: pause after reading a dead owner, before reclaim */
@@ -50,6 +43,13 @@ export function setSettingsLockReclaimGateForTests(
     gate: (() => Promise<void>) | undefined
 ): void {
     reclaimGateForTests = gate
+}
+
+/** @internal test-only: replace atomic publish (e.g. simulate crash after candidate write) */
+export function setSettingsLockPublishForTests(
+    publish: ((lockFile: string, ownerPayload: string) => void) | undefined
+): void {
+    publishHookForTests = publish
 }
 
 function isPidAlive(pid: number): boolean {
@@ -76,17 +76,26 @@ function readLockOwnerSync(lockFile: string): LockOwner | null {
     }
 }
 
-function publishOwner(fd: number, ownerPayload: string): void {
-    if (writeOwnerForTests) {
-        writeOwnerForTests(fd, ownerPayload)
+/**
+ * Publish a complete owner document, then atomically attach it to the fixed
+ * lock path. A crash leaves at most an orphan `.candidate` file — never an
+ * empty live sidecar that wedges every future writer.
+ */
+function publishLockAtomically(lockFile: string, ownerPayload: string): void {
+    if (publishHookForTests) {
+        publishHookForTests(lockFile, ownerPayload)
         return
     }
-    const payload = Buffer.from(ownerPayload)
-    let offset = 0
-    while (offset < payload.length) {
-        const written = writeSync(fd, payload, offset, payload.length - offset)
-        if (written === 0) throw new Error('Failed to publish settings lock owner')
-        offset += written
+    const candidate = `${lockFile}.${randomUUID()}.candidate`
+    writeFileSync(candidate, ownerPayload, { flag: 'wx', mode: 0o600 })
+    try {
+        linkSync(candidate, lockFile)
+    } finally {
+        try {
+            unlinkSync(candidate)
+        } catch {
+            // ignore — orphan candidates do not block acquisition
+        }
     }
 }
 
@@ -162,23 +171,10 @@ export async function withSettingsFileLock<T>(
 
     while (attempts < maxAttempts) {
         try {
-            const fd = openSync(lockFile, 'wx', 0o600)
-            try {
-                publishOwner(fd, ownerPayload)
-                acquired = true
-            } catch (error) {
-                try {
-                    unlinkSync(lockFile)
-                } catch {
-                    // ignore cleanup failure
-                }
-                throw error
-            } finally {
-                closeSync(fd)
-            }
+            publishLockAtomically(lockFile, ownerPayload)
+            acquired = true
             break
         } catch (err: unknown) {
-            if (acquired) throw err
             const code = err && typeof err === 'object' && 'code' in err
                 ? String((err as { code?: unknown }).code)
                 : undefined
