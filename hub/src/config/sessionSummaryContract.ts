@@ -23,9 +23,14 @@ export async function writeSessionSummaryContractEnabled(
     dataDir: string,
     enabled: boolean
 ): Promise<boolean> {
-    const next = await updateSettings(getSettingsFile(dataDir), (current) => ({
-        ...current,
-        sessionSummaryContract: enabled
-    }))
-    return next.sessionSummaryContract === true
+    return updateSettings(getSettingsFile(dataDir), (current) => {
+        const settings = {
+            ...current,
+            sessionSummaryContract: enabled
+        }
+        return {
+            settings,
+            result: settings.sessionSummaryContract === true
+        }
+    })
 }

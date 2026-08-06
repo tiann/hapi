@@ -269,14 +269,38 @@ describe('providerCredentials', () => {
         expect(process.env.ELEVENLABS_API_KEY).toBe('env-eleven')
     })
 
-    it('leaves process.env unchanged when writeSettings fails after staging', async () => {
+    it('does not sync overlay when settings write fails before afterCommit', async () => {
         dir = makeTempDir()
-        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        const settingsFile = join(dir, 'settings.json')
+        writeFileSync(settingsFile, JSON.stringify({}))
         await applyProviderCredentialsFromSettings(dir)
-        // Occupy the atomic temp path so writeFile fails (EISDIR) before overlay sync.
-        const { mkdirSync } = await import('node:fs')
-        mkdirSync(join(dir, 'settings.json.tmp'))
-        await expect(updateTranscriptionCredentials(dir, { openai: 'disk-full-secret' })).rejects.toThrow()
+
+        // Unique tmp paths (#1376) mean occupying settings.json.tmp no longer
+        // blocks writes. Sabotage rename instead: after the locked read, turn
+        // settings.json into a directory so rename(tmp → settings) fails and
+        // afterCommit (overlay sync) must not run.
+        const { updateSettings } = await import('./settings')
+        const { unlinkSync, mkdirSync } = await import('node:fs')
+        let afterCommitRan = false
+        await expect(
+            updateSettings(settingsFile, (current) => {
+                unlinkSync(settingsFile)
+                mkdirSync(settingsFile)
+                writeFileSync(join(settingsFile, 'blocker'), 'x')
+                return {
+                    settings: {
+                        ...current,
+                        providerCredentials: { OPENAI_API_KEY: 'disk-full-secret' },
+                    },
+                    result: undefined,
+                    afterCommit: () => {
+                        afterCommitRan = true
+                    },
+                }
+            })
+        ).rejects.toThrow()
+
+        expect(afterCommitRan).toBe(false)
         expect(process.env.OPENAI_API_KEY).toBeUndefined()
         expect(getProviderEnvironment().OPENAI_API_KEY).toBeUndefined()
     })
