@@ -4,9 +4,10 @@
  *
  * Acquisition: sync `openSync('wx')` + full owner write; on write failure the
  * sidecar is removed so we never leave an unreadable wedged lock.
- * Stale reclaim: rename the sidecar to a unique break path (atomic), re-verify
- * the expected dead owner, then unlink the break path — never `unlink` the live
- * lock path while contenders race.
+ * Stale reclaim: only under a fixed exclusive `${lock}.reap` sidecar, after
+ * re-validating pid+token, unlink the dead owner — never rename the live path
+ * without holding the reaper (a delayed renamer could otherwise steal a
+ * successor's lock).
  * Release: unlink only when the sidecar still contains our owner token.
  */
 
@@ -15,7 +16,6 @@ import {
     closeSync,
     openSync,
     readFileSync,
-    renameSync,
     unlinkSync,
     writeSync,
 } from 'node:fs'
@@ -31,6 +31,7 @@ type LockOwner = {
 
 let maxLockAttemptsForTests: number | undefined
 let writeOwnerForTests: ((fd: number, payload: string) => void) | undefined
+let reclaimGateForTests: (() => Promise<void>) | undefined
 
 /** @internal test-only: shorten acquire retries for fail-closed empty-lock coverage */
 export function setSettingsLockMaxAttemptsForTests(value: number | undefined): void {
@@ -42,6 +43,13 @@ export function setSettingsLockWriteOwnerForTests(
     writer: ((fd: number, payload: string) => void) | undefined
 ): void {
     writeOwnerForTests = writer
+}
+
+/** @internal test-only: pause after reading a dead owner, before reclaim */
+export function setSettingsLockReclaimGateForTests(
+    gate: (() => Promise<void>) | undefined
+): void {
+    reclaimGateForTests = gate
 }
 
 function isPidAlive(pid: number): boolean {
@@ -83,38 +91,61 @@ function publishOwner(fd: number, ownerPayload: string): void {
 }
 
 /**
- * Atomically move a dead owner's lock aside, verify it is still the expected
- * owner, then delete the break path. Contenders that lose the rename simply
- * retry — they never unlink another writer's live lock path.
+ * Reclaim a dead owner under a fixed exclusive reaper sidecar so only one
+ * contender can unlink the live lock path. Re-validates pid+token while holding
+ * the reaper before unlinking.
  */
 function tryReclaimDeadOwner(lockFile: string, expected: LockOwner): boolean {
-    const breakPath = `${lockFile}.break.${randomUUID()}`
+    const reapLock = `${lockFile}.reap`
+    let reapFd: number | undefined
     try {
-        renameSync(lockFile, breakPath)
-    } catch {
-        return false
+        reapFd = openSync(reapLock, 'wx', 0o600)
+        writeSync(reapFd, JSON.stringify({ pid: process.pid, token: randomUUID() }))
+    } catch (err: unknown) {
+        const code = err && typeof err === 'object' && 'code' in err
+            ? String((err as { code?: unknown }).code)
+            : undefined
+        if (reapFd !== undefined) {
+            try {
+                closeSync(reapFd)
+            } catch {
+                // ignore
+            }
+            try {
+                unlinkSync(reapLock)
+            } catch {
+                // ignore
+            }
+        }
+        if (code === 'EEXIST') return false
+        throw err
     }
     try {
-        const moved = readLockOwnerSync(breakPath)
-        if (
-            moved
-            && moved.pid === expected.pid
-            && moved.token === expected.token
-            && !isPidAlive(moved.pid)
-        ) {
-            unlinkSync(breakPath)
-            return true
-        }
-        // Unexpected content (or PID revived) — leave the break path for ops,
-        // do not put a dubious owner back on the live lock path.
-        return false
+        closeSync(reapFd)
     } catch {
+        // ignore
+    }
+
+    try {
+        const current = readLockOwnerSync(lockFile)
+        if (
+            !current
+            || current.pid !== expected.pid
+            || current.token !== expected.token
+            || isPidAlive(current.pid)
+        ) {
+            return false
+        }
+        unlinkSync(lockFile)
+        return true
+    } catch {
+        return false
+    } finally {
         try {
-            unlinkSync(breakPath)
+            unlinkSync(reapLock)
         } catch {
             // ignore
         }
-        return false
     }
 }
 
@@ -153,10 +184,11 @@ export async function withSettingsFileLock<T>(
                 : undefined
             if (code === 'EEXIST') {
                 attempts++
-                // Sync read + reclaim: an await here lets every contender observe the
-                // same dead owner and race the exclusive create after one rename wins.
+                // Sync read: an await here lets every contender observe the same
+                // dead owner across a yield and race the exclusive create.
                 const existing = readLockOwnerSync(lockFile)
                 if (existing && !isPidAlive(existing.pid)) {
+                    if (reclaimGateForTests) await reclaimGateForTests()
                     tryReclaimDeadOwner(lockFile, existing)
                     continue
                 }

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
     setSettingsLockMaxAttemptsForTests,
     setSettingsLockWriteOwnerForTests,
+    setSettingsLockReclaimGateForTests,
     withSettingsFileLock,
 } from './settingsFileLock'
 
@@ -12,9 +13,10 @@ describe('withSettingsFileLock', () => {
     afterEach(() => {
         setSettingsLockMaxAttemptsForTests(undefined)
         setSettingsLockWriteOwnerForTests(undefined)
+        setSettingsLockReclaimGateForTests(undefined)
     })
 
-    test('reclaims a lock whose recorded PID is dead via rename', async () => {
+    test('reclaims a lock whose recorded PID is dead under the reaper', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-'))
         const settingsFile = join(dir, 'settings.json')
         const lockFile = `${settingsFile}.lock`
@@ -23,6 +25,7 @@ describe('withSettingsFileLock', () => {
         const result = await withSettingsFileLock(settingsFile, async () => 'ok')
         expect(result).toBe('ok')
         expect(existsSync(lockFile)).toBe(false)
+        expect(existsSync(`${lockFile}.reap`)).toBe(false)
         expect(readdirSync(dir).some((name) => name.includes('.break.'))).toBe(false)
     })
 
@@ -129,5 +132,55 @@ describe('withSettingsFileLock', () => {
         expect(results).toEqual(['ok', 'ok', 'ok'])
         expect(maxInCritical).toBe(1)
         expect(existsSync(lockFile)).toBe(false)
+    })
+
+    test('delayed reclaim cannot steal a successor lock', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-delayed-'))
+        const settingsFile = join(dir, 'settings.json')
+        const lockFile = `${settingsFile}.lock`
+        writeFileSync(lockFile, JSON.stringify({ pid: 2_147_483_644, token: 'shared-dead' }))
+
+        let releaseSecond!: () => void
+        const secondGate = new Promise<void>((resolve) => {
+            releaseSecond = resolve
+        })
+        let seenDead = 0
+        setSettingsLockReclaimGateForTests(async () => {
+            seenDead++
+            if (seenDead === 2) await secondGate
+        })
+
+        let inCritical = 0
+        let maxInCritical = 0
+        let firstAcquired!: () => void
+        const firstReady = new Promise<void>((resolve) => {
+            firstAcquired = resolve
+        })
+
+        const first = withSettingsFileLock(settingsFile, async () => {
+            inCritical++
+            maxInCritical = Math.max(maxInCritical, inCritical)
+            firstAcquired()
+            await new Promise((r) => setTimeout(r, 80))
+            inCritical--
+            return 'first'
+        })
+
+        const second = withSettingsFileLock(settingsFile, async () => {
+            inCritical++
+            maxInCritical = Math.max(maxInCritical, inCritical)
+            await new Promise((r) => setTimeout(r, 20))
+            inCritical--
+            return 'second'
+        })
+
+        await firstReady
+        // First holds a live successor lock; only then let the delayed reclaimer proceed.
+        releaseSecond()
+        const results = await Promise.all([first, second])
+        expect(results.sort()).toEqual(['first', 'second'])
+        expect(maxInCritical).toBe(1)
+        expect(existsSync(lockFile)).toBe(false)
+        expect(existsSync(`${lockFile}.reap`)).toBe(false)
     })
 })
