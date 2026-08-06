@@ -19,6 +19,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { WecomBot } from './wecom/bot'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -105,6 +106,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
 
     let syncEngine: SyncEngine | null = null
     let happyBot: HappyBot | null = null
+    let wecomBot: WecomBot | null = null
     let webServer: BunServer<WebSocketData> | null = null
     let sseManager: SSEManager | null = null
     let visibilityTracker: VisibilityTracker | null = null
@@ -159,6 +161,14 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         console.log(`[Hub] ServerChan notifications: ${config.serverChanNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     } else {
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
+    }
+    if (config.wecomEnabled) {
+        const source = formatSource(config.sources.wecomBotId)
+        const notificationSource = formatSource(config.sources.wecomNotification)
+        console.log(`[Hub] WeCom: enabled (${source})`)
+        console.log(`[Hub] WeCom notifications: ${config.wecomNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
+    } else {
+        console.log('[Hub] WeCom: disabled (no WECOM_BOT_ID/WECOM_BOT_SECRET)')
     }
 
     // Display tunnel status
@@ -246,6 +256,19 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         }
     }
 
+    // Initialize WeCom bot (optional)
+    if (config.wecomEnabled && config.wecomBotId && config.wecomBotSecret && config.wecomNotification) {
+        wecomBot = new WecomBot({
+            botId: config.wecomBotId,
+            secret: config.wecomBotSecret,
+            cliApiToken: config.cliApiToken,
+            publicUrl: config.publicUrl,
+            store,
+            syncEngine
+        })
+        notificationChannels.push(wecomBot)
+    }
+
     notificationHub = new NotificationHub(syncEngine, notificationChannels)
 
     // Start HTTP service first (before tunnel, so tunnel has something to forward to)
@@ -265,6 +288,10 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     // Start the bot if configured
     if (happyBot) {
         await happyBot.start()
+    }
+
+    if (wecomBot) {
+        wecomBot.start()
     }
 
     console.log('')
@@ -364,6 +391,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         stop: async () => {
             await tunnelManager?.stop()
             await happyBot?.stop()
+            wecomBot?.stop()
             notificationHub?.stop()
             syncEngine?.stop()
             sseManager?.stop()

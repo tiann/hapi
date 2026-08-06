@@ -17,6 +17,9 @@ export interface Settings {
     telegramNotification?: boolean
     serverChanSendKey?: string
     serverChanNotification?: boolean
+    wecomBotId?: string
+    wecomBotSecret?: string
+    wecomNotification?: boolean
     listenHost?: string
     listenPort?: number
     publicUrl?: string

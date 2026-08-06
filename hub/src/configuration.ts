@@ -11,6 +11,9 @@
  * - TELEGRAM_NOTIFICATION: Enable/disable Telegram notifications (default: true)
  * - SERVERCHAN_SENDKEY: Server酱 SendKey/AppKey for push notifications
  * - SERVERCHAN_NOTIFICATION: Enable/disable Server酱 notifications (default: true)
+ * - WECOM_BOT_ID: WeCom smart robot BotID (long-connection mode)
+ * - WECOM_BOT_SECRET: WeCom smart robot long-connection Secret
+ * - WECOM_NOTIFICATION: Enable/disable WeCom notifications (default: true)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
@@ -37,6 +40,9 @@ export interface ConfigSources {
     telegramNotification: ConfigSource
     serverChanSendKey: ConfigSource
     serverChanNotification: ConfigSource
+    wecomBotId: ConfigSource
+    wecomBotSecret: ConfigSource
+    wecomNotification: ConfigSource
     listenHost: ConfigSource
     listenPort: ConfigSource
     publicUrl: ConfigSource
@@ -59,6 +65,18 @@ class Configuration {
 
     /** Server酱 notifications enabled */
     public readonly serverChanNotification: boolean
+
+    /** WeCom Bot ID */
+    public readonly wecomBotId: string | null
+
+    /** WeCom Bot Secret */
+    public readonly wecomBotSecret: string | null
+
+    /** WeCom bot enabled status (both ID and Secret present) */
+    public readonly wecomEnabled: boolean
+
+    /** WeCom notifications enabled */
+    public readonly wecomNotification: boolean
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -110,6 +128,10 @@ class Configuration {
         this.telegramNotification = serverSettings.telegramNotification
         this.serverChanSendKey = serverSettings.serverChanSendKey
         this.serverChanNotification = serverSettings.serverChanNotification
+        this.wecomBotId = serverSettings.wecomBotId
+        this.wecomBotSecret = serverSettings.wecomBotSecret
+        this.wecomEnabled = Boolean(this.wecomBotId && this.wecomBotSecret)
+        this.wecomNotification = serverSettings.wecomNotification
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
