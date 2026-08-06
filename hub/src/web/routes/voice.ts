@@ -484,10 +484,16 @@ export function createVoiceRoutes(options: { dataDir?: string } = {}): Hono<WebA
     })
 
     app.get('/voice/transcription/credentials', async (c) => {
+        if (c.get('namespace') !== 'default') {
+            return c.json({ error: 'Provider credentials are only available to the hub owner' }, 403)
+        }
         return c.json(await getTranscriptionCredentialStatus(resolveDataDir()))
     })
 
     app.put('/voice/transcription/credentials', async (c) => {
+        if (c.get('namespace') !== 'default') {
+            return c.json({ error: 'Provider credentials are only available to the hub owner' }, 403)
+        }
         const json = await c.req.json().catch(() => null)
         const parsed = transcriptionCredentialsUpdateSchema.safeParse(json)
         if (!parsed.success) {

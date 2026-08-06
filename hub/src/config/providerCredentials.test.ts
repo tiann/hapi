@@ -238,15 +238,45 @@ describe('providerCredentials', () => {
         expect(process.env.TRANSCRIPTION_API_KEY).toBe('rotated-token')
     })
 
-    it('writes settings.json with owner-only permissions on POSIX', async () => {
-        if (process.platform === 'win32') return
+    it('leaves process.env unchanged when a later field in the same update is env-locked', async () => {
         dir = makeTempDir()
-        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}), { mode: 0o644 })
+        process.env.ELEVENLABS_API_KEY = 'env-eleven'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
         await applyProviderCredentialsFromSettings(dir)
-        await updateTranscriptionCredentials(dir, { openai: 'perm-secret' })
 
-        const { statSync } = await import('node:fs')
-        const mode = statSync(join(dir, 'settings.json')).mode & 0o777
-        expect(mode).toBe(0o600)
+        await expect(updateTranscriptionCredentials(dir, {
+            openai: 'should-not-apply',
+            elevenlabs: 'also-blocked',
+        })).rejects.toThrow(/environment variable/)
+
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        expect(process.env.ELEVENLABS_API_KEY).toBe('env-eleven')
+    })
+
+    it('leaves process.env unchanged when writeSettings fails after staging', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+        // Occupy the atomic temp path so writeFile fails (EISDIR) before env sync.
+        const { mkdirSync } = await import('node:fs')
+        mkdirSync(join(dir, 'settings.json.tmp'))
+        await expect(updateTranscriptionCredentials(dir, { openai: 'disk-full-secret' })).rejects.toThrow()
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+    })
+
+    it('reports OpenAI-compatible fields independently editable under mixed env locks', async () => {
+        dir = makeTempDir()
+        process.env.TRANSCRIPTION_API_KEY = 'env-api-key'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            providerCredentials: {
+                TRANSCRIPTION_BASE_URL: 'http://127.0.0.1:8000/v1',
+                TRANSCRIPTION_MODEL: 'whisper-large',
+            }
+        }))
+        await applyProviderCredentialsFromSettings(dir)
+        const status = await getTranscriptionCredentialStatus(dir)
+        expect(status.openaiCompatible.apiKey.editable).toBe(false)
+        expect(status.openaiCompatible.baseUrlEditable).toBe(true)
+        expect(status.openaiCompatible.modelEditable).toBe(true)
     })
 })

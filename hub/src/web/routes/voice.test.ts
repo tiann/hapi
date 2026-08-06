@@ -754,4 +754,33 @@ describe('transcription credentials onboarding', () => {
         expect(put.status).toBe(409)
         expect(process.env.OPENAI_API_KEY).toBe('env-locked-key')
     })
+
+    test('credentials routes refuse non-owner namespaces', async () => {
+        clearManagedEnv()
+        dir = mkdtempSync(join(tmpdir(), 'hapi-voice-creds-ns-'))
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        const app = createApp(dir)
+        const token = await new SignJWT({ uid: 2, ns: 'other' })
+            .setProtectedHeader({ alg: 'HS256' })
+            .setIssuedAt()
+            .setExpirationTime('1h')
+            .sign(JWT_SECRET)
+        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+
+        const get = await app.request('/api/voice/transcription/credentials', { headers })
+        expect(get.status).toBe(403)
+
+        const put = await app.request('/api/voice/transcription/credentials', {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ openai: 'ns-attack' }),
+        })
+        expect(put.status).toBe(403)
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        const { readFileSync } = await import('node:fs')
+        const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
+            providerCredentials?: Record<string, string>
+        }
+        expect(saved.providerCredentials?.OPENAI_API_KEY).toBeUndefined()
+    })
 })

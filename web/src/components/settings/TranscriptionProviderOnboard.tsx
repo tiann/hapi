@@ -47,13 +47,14 @@ function statusForProvider(
 ): { configured: boolean; hint: string | null; source: string; editable: boolean } | null {
     if (!status) return null
     if (provider === 'openai-compatible') {
+        const compatible = status.openaiCompatible
         return {
-            configured: status.openaiCompatible.configured,
-            hint: status.openaiCompatible.apiKey.hint,
-            source: status.openaiCompatible.source,
-            editable: status.openaiCompatible.baseUrlEditable
-                && status.openaiCompatible.modelEditable
-                && status.openaiCompatible.apiKey.editable,
+            configured: compatible.configured,
+            hint: compatible.apiKey.hint,
+            source: compatible.source,
+            editable: compatible.baseUrlEditable
+                || compatible.modelEditable
+                || compatible.apiKey.editable,
         }
     }
     if (provider === 'gemini-live') return status.voiceBackends.geminiLive
@@ -118,19 +119,32 @@ export function TranscriptionProviderOnboard(props: {
     }, [reload])
 
     const selected = statusForProvider(status, provider)
+    const compatible = status?.openaiCompatible
+    const baseUrlEditable = compatible?.baseUrlEditable !== false
+    const modelEditable = compatible?.modelEditable !== false
+    const apiKeyEditable = provider === 'openai-compatible'
+        ? compatible?.apiKey.editable !== false
+        : selected?.editable !== false
 
     const buildUpdate = (clear: boolean): TranscriptionCredentialsUpdate => {
         // Empty password/fields mean "leave unchanged" (undefined). Only Clear sends null.
         const value = clear ? null : (apiKey.trim() || undefined)
         if (provider === 'openai-compatible') {
-            return {
-                openaiCompatible: clear
-                    ? { baseUrl: null, model: null, apiKey: null }
-                    : {
-                        baseUrl: baseUrl.trim() || undefined,
-                        model: model.trim() || undefined,
-                        apiKey: value,
+            if (clear) {
+                return {
+                    openaiCompatible: {
+                        baseUrl: baseUrlEditable ? null : undefined,
+                        model: modelEditable ? null : undefined,
+                        apiKey: apiKeyEditable ? null : undefined,
                     },
+                }
+            }
+            return {
+                openaiCompatible: {
+                    baseUrl: baseUrlEditable ? (baseUrl.trim() || undefined) : undefined,
+                    model: modelEditable ? (model.trim() || undefined) : undefined,
+                    apiKey: apiKeyEditable ? value : undefined,
+                },
             }
         }
         if (provider === 'gemini-live') return { geminiLive: value }
@@ -220,7 +234,7 @@ export function TranscriptionProviderOnboard(props: {
                             value={baseUrl}
                             onChange={(event) => setBaseUrl(event.target.value)}
                             placeholder="http://127.0.0.1:8000/v1"
-                            disabled={busy || selected?.editable === false}
+                            disabled={busy || !baseUrlEditable}
                             className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
                         />
                     </label>
@@ -231,7 +245,7 @@ export function TranscriptionProviderOnboard(props: {
                             value={model}
                             onChange={(event) => setModel(event.target.value)}
                             placeholder="whisper-large-v3"
-                            disabled={busy || selected?.editable === false}
+                            disabled={busy || !modelEditable}
                             className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
                         />
                     </label>
@@ -247,7 +261,7 @@ export function TranscriptionProviderOnboard(props: {
                     value={apiKey}
                     onChange={(event) => setApiKey(event.target.value)}
                     placeholder={selected?.configured ? t('settings.voice.credentials.apiKeyReplace') : t('settings.voice.credentials.apiKeyPlaceholder')}
-                    disabled={busy || selected?.editable === false}
+                    disabled={busy || !apiKeyEditable}
                     className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
                 />
             </label>

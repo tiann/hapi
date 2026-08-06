@@ -264,11 +264,9 @@ function applyPatchToStored(
     }
     if (value === null) {
         delete stored[key]
-        delete process.env[key]
         return
     }
     stored[key] = value
-    process.env[key] = value
 }
 
 function applyAliasPairPatch(
@@ -278,7 +276,7 @@ function applyAliasPairPatch(
     value: string | null | undefined
 ): void {
     if (value === undefined) return
-    if (envLockedKeys.has(primary) || envLockedKeys.has(secondary)) {
+    if (isLogicallyEnvLocked(primary) || isLogicallyEnvLocked(secondary)) {
         throw new Error(
             `${primary} (or ${secondary}) is set by an environment variable and cannot be changed from Settings`
         )
@@ -286,15 +284,21 @@ function applyAliasPairPatch(
     if (value === null) {
         delete stored[primary]
         delete stored[secondary]
-        delete process.env[primary]
-        delete process.env[secondary]
         return
     }
     // Canonical primary; drop secondary settings entry so one source of truth
     stored[primary] = value
     delete stored[secondary]
-    process.env[primary] = value
-    delete process.env[secondary]
+}
+
+/** Apply unlocked settings-backed credentials into process.env after a successful persist. */
+function syncSettingsCredentialsToEnv(stored: ProviderCredentialsMap): void {
+    for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
+        if (isLogicallyEnvLocked(key)) continue
+        const value = stored[key]
+        if (value) process.env[key] = value
+        else delete process.env[key]
+    }
 }
 
 export async function updateTranscriptionCredentials(
@@ -307,45 +311,47 @@ export async function updateTranscriptionCredentials(
         throw new Error(`Cannot read ${settingsFile}. Please fix or remove the file and retry.`)
     }
 
-    const stored = readProviderCredentials(settings)
+    // Stage all mutations in a copy; only touch process.env after writeSettings succeeds.
+    const nextStored: ProviderCredentialsMap = { ...readProviderCredentials(settings) }
 
-    applyPatchToStored(stored, 'OPENAI_API_KEY', normalizeOptionalSecret(update.openai))
-    applyPatchToStored(stored, 'ELEVENLABS_API_KEY', normalizeOptionalSecret(update.elevenlabs))
-    applyPatchToStored(stored, 'DEEPGRAM_API_KEY', normalizeOptionalSecret(update.deepgram))
-    applyPatchToStored(stored, 'GROQ_API_KEY', normalizeOptionalSecret(update.groq))
+    applyPatchToStored(nextStored, 'OPENAI_API_KEY', normalizeOptionalSecret(update.openai))
+    applyPatchToStored(nextStored, 'ELEVENLABS_API_KEY', normalizeOptionalSecret(update.elevenlabs))
+    applyPatchToStored(nextStored, 'DEEPGRAM_API_KEY', normalizeOptionalSecret(update.deepgram))
+    applyPatchToStored(nextStored, 'GROQ_API_KEY', normalizeOptionalSecret(update.groq))
 
     if (update.openaiCompatible) {
         applyPatchToStored(
-            stored,
+            nextStored,
             'TRANSCRIPTION_BASE_URL',
             normalizeOptionalSecret(update.openaiCompatible.baseUrl)
         )
         applyPatchToStored(
-            stored,
+            nextStored,
             'TRANSCRIPTION_MODEL',
             normalizeOptionalSecret(update.openaiCompatible.model)
         )
         applyPatchToStored(
-            stored,
+            nextStored,
             'TRANSCRIPTION_API_KEY',
             normalizeOptionalSecret(update.openaiCompatible.apiKey)
         )
     }
 
     applyAliasPairPatch(
-        stored,
+        nextStored,
         'GEMINI_API_KEY',
         'GOOGLE_API_KEY',
         normalizeOptionalSecret(update.geminiLive)
     )
     applyAliasPairPatch(
-        stored,
+        nextStored,
         'DASHSCOPE_API_KEY',
         'QWEN_API_KEY',
         normalizeOptionalSecret(update.qwenRealtime)
     )
 
-    settings.providerCredentials = stored
+    settings.providerCredentials = nextStored
     await writeSettings(settingsFile, settings)
-    return buildStatus(stored)
+    syncSettingsCredentialsToEnv(nextStored)
+    return buildStatus(nextStored)
 }
