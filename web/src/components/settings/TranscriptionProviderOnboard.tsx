@@ -277,11 +277,21 @@ export function TranscriptionProviderOnboard(props: {
                 <Button type="button" size="sm" disabled={busy || selected?.editable === false} onClick={() => void save()}>
                     {t('settings.voice.credentials.save')}
                 </Button>
-                {selected?.configured && selected.editable ? (
-                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void clear()}>
-                        {t('settings.voice.credentials.clear')}
-                    </Button>
-                ) : null}
+                {(() => {
+                    const canClearCompatible = provider === 'openai-compatible' && Boolean(
+                        (baseUrlEditable && compatible?.baseUrl)
+                        || (modelEditable && compatible?.model)
+                        || (apiKeyEditable && compatible?.apiKey.configured)
+                    )
+                    const canClear = canClearCompatible || Boolean(
+                        provider !== 'openai-compatible' && selected?.configured && selected.editable
+                    )
+                    return canClear ? (
+                        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void clear()}>
+                            {t('settings.voice.credentials.clear')}
+                        </Button>
+                    ) : null
+                })()}
             </div>
         </div>
     )

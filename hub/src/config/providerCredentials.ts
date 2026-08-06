@@ -7,7 +7,7 @@
  * helpers keep working without restart.
  */
 
-import { getSettingsFile, readSettings, writeSettings, type Settings } from './settings'
+import { getSettingsFile, readSettings, withSettingsLock, writeSettings, type Settings } from './settings'
 
 export const PROVIDER_CREDENTIAL_ENV_KEYS = [
     'OPENAI_API_KEY',
@@ -306,52 +306,54 @@ export async function updateTranscriptionCredentials(
     update: TranscriptionCredentialsUpdate
 ): Promise<TranscriptionCredentialStatus> {
     const settingsFile = getSettingsFile(dataDir)
-    const settings = await readSettings(settingsFile)
-    if (settings === null) {
-        throw new Error(`Cannot read ${settingsFile}. Please fix or remove the file and retry.`)
-    }
+    return withSettingsLock(settingsFile, async () => {
+        const settings = await readSettings(settingsFile)
+        if (settings === null) {
+            throw new Error(`Cannot read ${settingsFile}. Please fix or remove the file and retry.`)
+        }
 
-    // Stage all mutations in a copy; only touch process.env after writeSettings succeeds.
-    const nextStored: ProviderCredentialsMap = { ...readProviderCredentials(settings) }
+        // Stage all mutations in a copy; only touch process.env after writeSettings succeeds.
+        const nextStored: ProviderCredentialsMap = { ...readProviderCredentials(settings) }
 
-    applyPatchToStored(nextStored, 'OPENAI_API_KEY', normalizeOptionalSecret(update.openai))
-    applyPatchToStored(nextStored, 'ELEVENLABS_API_KEY', normalizeOptionalSecret(update.elevenlabs))
-    applyPatchToStored(nextStored, 'DEEPGRAM_API_KEY', normalizeOptionalSecret(update.deepgram))
-    applyPatchToStored(nextStored, 'GROQ_API_KEY', normalizeOptionalSecret(update.groq))
+        applyPatchToStored(nextStored, 'OPENAI_API_KEY', normalizeOptionalSecret(update.openai))
+        applyPatchToStored(nextStored, 'ELEVENLABS_API_KEY', normalizeOptionalSecret(update.elevenlabs))
+        applyPatchToStored(nextStored, 'DEEPGRAM_API_KEY', normalizeOptionalSecret(update.deepgram))
+        applyPatchToStored(nextStored, 'GROQ_API_KEY', normalizeOptionalSecret(update.groq))
 
-    if (update.openaiCompatible) {
-        applyPatchToStored(
+        if (update.openaiCompatible) {
+            applyPatchToStored(
+                nextStored,
+                'TRANSCRIPTION_BASE_URL',
+                normalizeOptionalSecret(update.openaiCompatible.baseUrl)
+            )
+            applyPatchToStored(
+                nextStored,
+                'TRANSCRIPTION_MODEL',
+                normalizeOptionalSecret(update.openaiCompatible.model)
+            )
+            applyPatchToStored(
+                nextStored,
+                'TRANSCRIPTION_API_KEY',
+                normalizeOptionalSecret(update.openaiCompatible.apiKey)
+            )
+        }
+
+        applyAliasPairPatch(
             nextStored,
-            'TRANSCRIPTION_BASE_URL',
-            normalizeOptionalSecret(update.openaiCompatible.baseUrl)
+            'GEMINI_API_KEY',
+            'GOOGLE_API_KEY',
+            normalizeOptionalSecret(update.geminiLive)
         )
-        applyPatchToStored(
+        applyAliasPairPatch(
             nextStored,
-            'TRANSCRIPTION_MODEL',
-            normalizeOptionalSecret(update.openaiCompatible.model)
+            'DASHSCOPE_API_KEY',
+            'QWEN_API_KEY',
+            normalizeOptionalSecret(update.qwenRealtime)
         )
-        applyPatchToStored(
-            nextStored,
-            'TRANSCRIPTION_API_KEY',
-            normalizeOptionalSecret(update.openaiCompatible.apiKey)
-        )
-    }
 
-    applyAliasPairPatch(
-        nextStored,
-        'GEMINI_API_KEY',
-        'GOOGLE_API_KEY',
-        normalizeOptionalSecret(update.geminiLive)
-    )
-    applyAliasPairPatch(
-        nextStored,
-        'DASHSCOPE_API_KEY',
-        'QWEN_API_KEY',
-        normalizeOptionalSecret(update.qwenRealtime)
-    )
-
-    settings.providerCredentials = nextStored
-    await writeSettings(settingsFile, settings)
-    syncSettingsCredentialsToEnv(nextStored)
-    return buildStatus(nextStored)
+        settings.providerCredentials = nextStored
+        await writeSettings(settingsFile, settings)
+        syncSettingsCredentialsToEnv(nextStored)
+        return buildStatus(nextStored)
+    })
 }

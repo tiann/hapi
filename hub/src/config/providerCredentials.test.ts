@@ -279,4 +279,38 @@ describe('providerCredentials', () => {
         expect(status.openaiCompatible.baseUrlEditable).toBe(true)
         expect(status.openaiCompatible.modelEditable).toBe(true)
     })
+
+    it('serializes concurrent disjoint credential updates without losing either', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+
+        await Promise.all([
+            updateTranscriptionCredentials(dir, { openai: 'concurrent-openai' }),
+            updateTranscriptionCredentials(dir, { groq: 'concurrent-groq' }),
+        ])
+
+        expect(process.env.OPENAI_API_KEY).toBe('concurrent-openai')
+        expect(process.env.GROQ_API_KEY).toBe('concurrent-groq')
+        const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
+            providerCredentials: Record<string, string>
+        }
+        expect(saved.providerCredentials.OPENAI_API_KEY).toBe('concurrent-openai')
+        expect(saved.providerCredentials.GROQ_API_KEY).toBe('concurrent-groq')
+    })
+
+    it('keeps partial OpenAI-compatible values queryable for clear UX', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+        await updateTranscriptionCredentials(dir, {
+            openaiCompatible: { apiKey: 'partial-only-key' },
+        })
+        const status = await getTranscriptionCredentialStatus(dir)
+        expect(status.openaiCompatible.configured).toBe(false)
+        expect(status.openaiCompatible.apiKey.configured).toBe(true)
+        expect(status.openaiCompatible.apiKey.hint).toBe('••••-key')
+        expect(status.openaiCompatible.baseUrl).toBeNull()
+        expect(status.openaiCompatible.model).toBeNull()
+    })
 })

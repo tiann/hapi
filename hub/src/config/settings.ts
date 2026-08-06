@@ -163,3 +163,16 @@ export async function updateSettings(
         await unlink(lockFile).catch(() => {})
     }
 }
+
+/** Per-file promise chain so concurrent read-modify-write updates cannot clobber each other. */
+const settingsUpdateChains = new Map<string, Promise<unknown>>()
+
+export async function withSettingsLock<T>(
+    settingsFile: string,
+    work: () => Promise<T>
+): Promise<T> {
+    const previous = settingsUpdateChains.get(settingsFile) ?? Promise.resolve()
+    const run = previous.catch(() => undefined).then(work)
+    settingsUpdateChains.set(settingsFile, run.then(() => undefined, () => undefined))
+    return run
+}
