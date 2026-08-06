@@ -411,7 +411,9 @@ describe('codexLocalLauncher', () => {
         expect(getModelReasoningEffort()).toBeNull();
         expect(agentMessages).toContainEqual(expect.objectContaining({
             type: 'token_count',
-            model: 'gpt-5.4'
+            model: 'gpt-5.4',
+            usageSchema: 'hapi.usage.v1',
+            inputTokenSemantics: 'includes-cache'
         }));
     });
 
@@ -735,12 +737,18 @@ describe('codexLocalLauncher', () => {
             message as { type?: string }
         ).type === 'token_count') as Array<Record<string, unknown>>;
         expect(tokenMessages).toHaveLength(2);
-        expect(tokenMessages[0]).toMatchObject({ hapiUsageScope: 'imported-history' });
+        expect(tokenMessages[0]).toMatchObject({
+            hapiUsageScope: 'imported-history',
+            usageSchema: 'hapi.usage.v1',
+            inputTokenSemantics: 'includes-cache'
+        });
         expect(tokenMessages[0]).not.toHaveProperty('thread_id');
         expect(tokenMessages[1]).toMatchObject({
             threadId: 'codex-thread-import',
             thread_id: 'codex-thread-import',
-            hapiUsageScope: 'managed'
+            hapiUsageScope: 'managed',
+            usageSchema: 'hapi.usage.v1',
+            inputTokenSemantics: 'includes-cache'
         });
     });
 

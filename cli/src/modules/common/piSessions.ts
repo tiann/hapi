@@ -2,6 +2,7 @@ import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } fr
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage'
 import type {
     PiImportedMessage,
     PiImportedMessageContent,
@@ -252,6 +253,7 @@ function convertMessageRecord(
         pushImportedMessage(result, sessionId, entryId, parentEntryId, createdAt, 'usage', importedAgent({
             type: 'token_count',
             model: asString(message.model),
+            ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER,
             info: {
                 total: {
                     inputTokens: input + cacheRead + cacheWrite,

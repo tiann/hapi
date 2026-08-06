@@ -129,13 +129,15 @@ export type SessionCitationSteerTools = {
     inspectTool: string
     /** Flavor-specific ping tool name, e.g. `mcp__hapi__ping_peer`. */
     pingTool: string
+    /** Flavor-specific discovery tool when no citation is available. */
+    listPeersTool?: string
 }
 
 /**
  * Always-on system-prompt line: both citation forms + hub-not-FS + tool names.
  */
 export function buildSessionCitationSteerInstruction(tools: SessionCitationSteerTools): string {
-    return (
+    let text =
         `When the user cites another HAPI session as [title](/sessions/<id>), ` +
         `Copy-reference prose See session "…" (/sessions/<id>) for context, ` +
         `or a bare /sessions/<id>, extract that <id>. ` +
@@ -143,5 +145,11 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
         `Call "${tools.inspectTool}" with sessionIdPrefix=<id> to read metadata and recent messages; ` +
         `call "${tools.pingTool}" with sessionIdPrefix=<id> and a message to nudge or hand off. ` +
         `Prefer these over JWT+curl. Shell fallbacks: hapi inspect-peer <id> / hapi ping-peer <id> <message>.`
-    )
+    if (tools.listPeersTool) {
+        text +=
+            ` To discover peers without a citation, call "${tools.listPeersTool}" ` +
+            `(same hub/namespace; works from runner-spawned sessions). ` +
+            `Shell fallback: hapi ping-peer --list.`
+    }
+    return text
 }

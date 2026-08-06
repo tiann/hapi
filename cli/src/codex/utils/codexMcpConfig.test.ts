@@ -120,7 +120,7 @@ describe('codexMcpConfig', () => {
             expect(args[0]).toBe('-c');
             expect(args[1]).toContain('hooks.SessionStart=[');
             expect(args[1]).toContain('type = "command"');
-            expect(args[1]).toContain('hook-forwarder --port 4312 --token secret-token');
+            expect(args[1]).toContain('hook-forwarder --flavor codex --port 4312 --token secret-token');
             expect(args[2]).toBe('-c');
             expect(args[3]).toContain('hooks.PreToolUse=[');
             expect(args[3]).toContain('matcher = "*"');

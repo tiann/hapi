@@ -727,3 +727,45 @@ describe('ApiMachineClient list-directory handler', () => {
         }
     })
 })
+
+describe('ApiMachineClient connect runner-state advertisement', () => {
+    beforeEach(() => {
+        ioMock.mockReset()
+    })
+
+    it('advertises piExistingSessionResume with the running state on connect', async () => {
+        const machine = makeMachine('capability-machine')
+        let connectHandler: () => void = () => {}
+        const emitWithAck = vi.fn().mockResolvedValue({
+            result: 'success',
+            version: 2,
+            runnerState: { status: 'running', capabilities: { piExistingSessionResume: true } }
+        })
+        const socket = {
+            on: vi.fn((event: string, handler: () => void) => {
+                if (event === 'connect') connectHandler = handler
+            }),
+            emit: vi.fn(),
+            emitWithAck,
+            close: vi.fn()
+        }
+        ioMock.mockReturnValue(socket)
+
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            client.connect()
+            connectHandler()
+            await vi.waitFor(() => {
+                expect(emitWithAck).toHaveBeenCalled()
+            })
+            expect(emitWithAck).toHaveBeenCalledWith('machine-update-state', expect.objectContaining({
+                runnerState: expect.objectContaining({
+                    status: 'running',
+                    capabilities: { piExistingSessionResume: true }
+                })
+            }))
+        } finally {
+            client.shutdown()
+        }
+    })
+})

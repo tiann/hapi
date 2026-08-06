@@ -285,6 +285,32 @@ With the runner running:
 - You can spawn sessions remotely from the web app
 - Sessions persist even when the terminal is closed
 
+#### Split hub + remote runner (peer discovery)
+
+When the hub runs on one host and the runner on another, agents inside runner-spawned sessions should discover peers via MCP **`list_peers`** (same hub credentials as the session CLI). Prefer that over shelling `hapi ping-peer --list`.
+
+```
+[Hub host]  hapi hub          ← sessions DB + /api/sessions
+     ▲
+     │ HAPI_API_URL + CLI_API_TOKEN
+     │
+[Runner host]  hapi runner start  → spawns session CLIs
+                     │
+                     ▼
+              agent session  → MCP list_peers / inspect_peer / ping_peer
+```
+
+On the runner host, configure the **same** hub URL and token the hub uses:
+
+```bash
+export HAPI_API_URL="http://your-hub:3006"   # or Tailscale / public URL
+export CLI_API_TOKEN="your-token-here"
+# or: hapi auth login   # saves the token; still set HAPI_API_URL for a remote hub
+hapi runner start
+```
+
+Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or settings) into child env so shell helpers hit the same remote hub. It does **not** mirror `CLI_API_TOKEN` into wrapped agents (settings/prompt-backed secrets stay out of agent env; a fresh `hapi` re-reads `~/.hapi/settings.json`, and systemd/env tokens already inherit). Prefer MCP `list_peers` inside a session. Web terminal PTYs still strip hub secrets. If `--list` fails with an auth/URL error, the message points at `hapi auth login` and the configured hub URL.
+
 Additional runner commands:
 
 ```bash

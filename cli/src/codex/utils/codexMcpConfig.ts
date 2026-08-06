@@ -105,6 +105,8 @@ function sessionFlagsHookStateKey(stateName: string): string {
 export function buildCodexHookConfigArgs(port: number, token: string): string[] {
     const { command, args } = getHappyCliCommand([
         'hook-forwarder',
+        '--flavor',
+        'codex',
         '--port',
         String(port),
         '--token',

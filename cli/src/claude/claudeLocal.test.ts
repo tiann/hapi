@@ -25,7 +25,7 @@ vi.mock('./utils/mcpConfig', () => ({
 }))
 
 vi.mock('./utils/systemPrompt', () => ({
-    systemPrompt: 'HAPI system prompt'
+    getSystemPrompt: () => 'HAPI system prompt'
 }))
 
 vi.mock('@/utils/bunRuntime', () => ({

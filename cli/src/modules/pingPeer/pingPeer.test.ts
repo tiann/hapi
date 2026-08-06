@@ -14,7 +14,7 @@ type MockResponse = {
 
 function createHttpMock(handlers: {
     post?: (url: string, body?: unknown) => MockResponse | Promise<MockResponse>
-    get?: (url: string) => MockResponse | Promise<MockResponse>
+    get?: (url: string, config?: { params?: Record<string, unknown> }) => MockResponse | Promise<MockResponse>
 }) {
     return {
         post: vi.fn(async (url: string, body?: unknown) => {
@@ -23,11 +23,11 @@ function createHttpMock(handlers: {
             }
             return handlers.post(url, body)
         }),
-        get: vi.fn(async (url: string) => {
+        get: vi.fn(async (url: string, config?: { params?: Record<string, unknown> }) => {
             if (!handlers.get) {
                 throw new Error(`unexpected GET ${url}`)
             }
-            return handlers.get(url)
+            return handlers.get(url, config)
         })
     }
 }
@@ -395,5 +395,280 @@ describe('pingPeer', () => {
         expect(exitCodeForPingPeerError(new PingPeerError('resume_failed', 'x'))).toBe(3)
         expect(exitCodeForPingPeerError(new PingPeerError('timeout', 'x'))).toBe(4)
         expect(exitCodeForPingPeerError(new PingPeerError('send_failed', 'x'))).toBe(4)
+    })
+})
+
+describe('formatPeerSessionsList', () => {
+    it('formats newest-first peer rows with id prefix and metadata', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 100,
+                metadata: { name: 'Old', flavor: 'claude' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 200,
+                metadata: { name: 'Fresh', flavor: 'cursor' }
+            }
+        ])
+        const lines = text.split('\n')
+        expect(lines[0]).toContain('bbbbbbbb-2222-2222-2222-222222222222')
+        expect(lines[0]).toContain('active=true')
+        expect(lines[0]).toContain('flavor=cursor')
+        expect(lines[0]).toContain('Fresh')
+        expect(lines[1]).toContain('aaaaaaaa-1111-1111-1111-111111111111')
+    })
+
+    it('emits full session ids so colliding 8-char prefixes stay resolvable', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 2,
+                metadata: { name: 'A', flavor: 'claude' }
+            },
+            {
+                id: 'aaaaaaaa-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 1,
+                metadata: { name: 'B', flavor: 'cursor' }
+            }
+        ])
+        expect(text).toContain('aaaaaaaa-1111-1111-1111-111111111111')
+        expect(text).toContain('aaaaaaaa-2222-2222-2222-222222222222')
+        expect(text.split('\n')).toHaveLength(2)
+    })
+
+    it('uses summary.text when name is unset and collapses multiline titles', async () => {
+        const { formatPeerSessionsList, resolvePeerSessionLabel } = await import('./pingPeer')
+        const session = {
+            id: 'dddddddd-4444-4444-4444-444444444444',
+            active: true,
+            updatedAt: 50,
+            metadata: {
+                flavor: 'codex',
+                summary: { text: 'Peer\nwith\ttabs' },
+                path: '/home/user/projects/widget'
+            }
+        }
+        expect(resolvePeerSessionLabel(session)).toBe('Peer with tabs')
+        const text = formatPeerSessionsList([session])
+        expect(text).toContain('Peer with tabs')
+        expect(text.split('\n')).toHaveLength(1)
+        expect(text).not.toContain('(unnamed)')
+    })
+
+    it('falls back to path basename then id prefix', async () => {
+        const { resolvePeerSessionLabel } = await import('./pingPeer')
+        expect(resolvePeerSessionLabel({
+            id: 'eeeeeeee-5555-5555-5555-555555555555',
+            active: true,
+            metadata: { path: '/tmp/my-worktree' }
+        })).toBe('my-worktree')
+        expect(resolvePeerSessionLabel({
+            id: 'ffffffff-6666-6666-6666-666666666666',
+            active: true,
+            metadata: null
+        })).toBe('ffffffff')
+        expect(resolvePeerSessionLabel({
+            id: 'aaaaaaaa-7777-7777-7777-777777777777',
+            active: true,
+            metadata: { path: 'C:\\Users\\me\\repo' }
+        })).toBe('repo')
+    })
+
+    it('respects maxRows and empty list', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        expect(formatPeerSessionsList([])).toContain('No peer sessions')
+        const many = Array.from({ length: 5 }, (_, i) => ({
+            id: `${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`,
+            active: true,
+            updatedAt: i,
+            metadata: { name: `S${i}`, flavor: 'pi' as string | null }
+        }))
+        const text = formatPeerSessionsList(many, { maxRows: 2 })
+        expect(text.split('\n').filter((l) => l.includes('active='))).toHaveLength(2)
+    })
+
+    it('omits the calling session even when it is newest', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const selfId = 'cccccccc-3333-3333-3333-333333333333'
+        const text = formatPeerSessionsList([
+            {
+                id: selfId,
+                active: true,
+                updatedAt: 300,
+                metadata: { name: 'Self', flavor: 'cursor' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 200,
+                metadata: { name: 'Peer', flavor: 'claude' }
+            }
+        ], { excludeSessionId: selfId })
+        expect(text).not.toContain('cccccccc-3333-3333-3333-333333333333')
+        expect(text).not.toContain('Self')
+        expect(text).toContain('bbbbbbbb-2222-2222-2222-222222222222')
+        expect(text).toContain('Peer')
+    })
+
+    it('hasMore marks overflow without requiring an exact omitted count', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 1,
+                metadata: { name: 'Only', flavor: 'claude' }
+            }
+        ], { maxRows: 1, hasMore: true })
+        expect(text).toContain('Only')
+        expect(text).toMatch(/more sessions available/)
+    })
+
+    it('peerListFetchLimit pads for caller exclusion and overflow probe', async () => {
+        const { peerListFetchLimit } = await import('./pingPeer')
+        expect(peerListFetchLimit(100, { excludeCaller: true })).toBe(102)
+        expect(peerListFetchLimit(100)).toBe(101)
+        expect(peerListFetchLimit(499, { excludeCaller: true })).toBe(500)
+    })
+})
+
+describe('listPeerSessions auth failures', () => {
+    it('hints at auth login and hub URL when JWT exchange fails', async () => {
+        const { listPeerSessions, PingPeerError } = await import('./pingPeer')
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 401, data: { error: 'invalid token' } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            }
+        })
+
+        let caught: unknown
+        try {
+            await listPeerSessions({
+                accessToken: 'bad',
+                apiUrl: 'http://remote-hub:3006',
+                http: http as never
+            })
+        } catch (error) {
+            caught = error
+        }
+        expect(caught).toBeInstanceOf(PingPeerError)
+        const message = (caught as InstanceType<typeof PingPeerError>).message
+        expect(message).toMatch(/auth login|CLI_API_TOKEN/i)
+        expect(message).toContain('http://remote-hub:3006')
+        expect(message).toMatch(/list_peers|MCP/i)
+    })
+
+    it('hints when CLI_API_TOKEN is missing', async () => {
+        const { listPeerSessions, PingPeerError } = await import('./pingPeer')
+        const { configuration } = await import('@/configuration')
+        const previous = configuration.cliApiToken
+        configuration._setCliApiToken('')
+        let caught: unknown
+        try {
+            await listPeerSessions({
+                apiUrl: 'http://hub.test',
+                accessToken: '   '
+            })
+        } catch (error) {
+            caught = error
+        } finally {
+            configuration._setCliApiToken(previous)
+        }
+        expect(caught).toBeInstanceOf(PingPeerError)
+        const message = (caught as InstanceType<typeof PingPeerError>).message
+        expect(message).toMatch(/auth login/i)
+        expect(message).toMatch(/HAPI_API_URL/)
+        expect(message).toMatch(/CLI_API_TOKEN|auth login/i)
+    })
+})
+
+describe('listSessions query params', () => {
+    it('listPeerSessions sends limit + order=updatedAt; pingPeer omits limit', async () => {
+        const { listPeerSessions, pingPeer } = await import('./pingPeer')
+        const listParams: Array<Record<string, unknown> | undefined> = []
+        const pingParams: Array<Record<string, unknown> | undefined> = []
+        const sessionId = 'zzzzzzzz-9999-9999-9999-999999999999'
+
+        const listHttp = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url, config) => {
+                if (url.endsWith('/api/sessions')) {
+                    listParams.push(config?.params)
+                    return {
+                        status: 200,
+                        data: { sessions: [{ id: sessionId, active: true, updatedAt: 1, metadata: { name: 'Z' } }] }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+        await listPeerSessions({
+            apiUrl: 'http://hub.test',
+            accessToken: 'tok',
+            http: listHttp as never,
+            limit: 40
+        })
+        expect(listParams[0]).toEqual({ limit: 40, order: 'updatedAt' })
+
+        const pingHttp = createHttpMock({
+            post: (url, body) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    expect(body).toMatchObject({ text: 'hi' })
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url, config) => {
+                if (url.endsWith('/api/sessions') && !url.includes(sessionId)) {
+                    pingParams.push(config?.params)
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: Array.from({ length: 501 }, (_, i) => ({
+                                id: i === 500 ? sessionId : `${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`,
+                                active: true,
+                                updatedAt: i,
+                                metadata: { name: `S${i}` }
+                            }))
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    return {
+                        status: 200,
+                        data: { session: { id: sessionId, active: true, metadata: { name: 'Target' } } }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+        const result = await pingPeer({
+            sessionIdPrefix: sessionId,
+            message: 'hi',
+            apiUrl: 'http://hub.test',
+            accessToken: 'tok',
+            http: pingHttp as never
+        })
+        expect(result.sessionId).toBe(sessionId)
+        expect(pingParams[0]).toBeUndefined()
     })
 })

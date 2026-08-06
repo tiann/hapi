@@ -8,6 +8,7 @@
 import { trimIdent } from '@/utils/trimIdent';
 import { buildSessionCitationSteerInstruction } from '@hapi/protocol/sessionCitation';
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
+import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
  * Title instruction for OpenCode to call the hapi MCP tool.
@@ -18,9 +19,14 @@ export const TITLE_INSTRUCTION = trimIdent(`
     ${buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
+        listPeersTool: 'hapi_list_peers',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
+
+export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): string {
+    return withSessionSummaryInstruction(TITLE_INSTRUCTION, env)
+}
 
 /**
  * Tool instructions for native ACP sessions. Title updates come from ACP, so
@@ -31,9 +37,14 @@ export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
     ${buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
+        listPeersTool: 'hapi_list_peers',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
+
+export function getOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv = process.env): string {
+    return withSessionSummaryInstruction(OPENCODE_NATIVE_TOOL_INSTRUCTION, env)
+}
 
 /**
  * The system prompt to inject for OpenCode sessions.

@@ -212,6 +212,31 @@ describe('runSessionHookForwarder — PreToolUse routing', () => {
     });
 });
 
+describe('runSessionHookForwarder — codex flavor', () => {
+    it('forwards PreToolUse as a lifecycle event without writing a permission decision', async () => {
+        let hitPath = '';
+        const port = await startStub((path) => {
+            hitPath = path;
+            return { status: 200, body: 'ok' };
+        });
+
+        const out = captureStdout();
+        try {
+            await withStdin(
+                JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'exec-1' }),
+                () => runSessionHookForwarder([
+                    '--port', String(port), '--token', 'tok', '--flavor', 'codex'
+                ])
+            );
+        } finally {
+            out.restore();
+        }
+
+        expect(hitPath).toBe('/hook/session-start');
+        expect(out.get()).toBe('');
+    });
+});
+
 describe('runSessionHookForwarder — agy flavor', () => {
     it('reads the agy hook endpoint from env without embedding secrets in hooks.json', async () => {
         const port = await startStub(() => ({ status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) }));

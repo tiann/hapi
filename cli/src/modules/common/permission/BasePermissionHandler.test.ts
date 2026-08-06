@@ -81,3 +81,23 @@ describe('resolveToolAutoApprovalDecision inspect_peer', () => {
         expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision list_peers', () => {
+    it.each([
+        'list_peers',
+        'hapi_list_peers',
+        'happy__list_peers',
+        'mcp__hapi__list_peers',
+        'List Peer Sessions'
+    ])('auto-approves the exact discovery tool name %s', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBe('approved')
+    })
+
+    it('does not approve another tool whose name only contains list_peers', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'list_peers_and_write',
+            'call-1'
+        )).toBeNull()
+    })
+})

@@ -4,7 +4,9 @@ import { initializeToken } from '@/ui/tokenInit'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
+    formatPeerSessionsList,
     listPeerSessions,
+    peerListFetchLimit,
     pingPeer
 } from '@/modules/pingPeer/pingPeer'
 import type { CommandDefinition } from './types'
@@ -29,11 +31,13 @@ ${chalk.bold('Usage:')}
   hapi ping-peer --list
 
 ${chalk.bold('Notes:')}
-  Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer.
+  Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
   Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
   Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
   When a user cites [title](/sessions/<id>) or Copy-reference
   See session "…" (/sessions/<id>) for context, pass that <id> here.
+  On a remote runner, --list needs HAPI_API_URL set to the runner hub, plus
+  CLI_API_TOKEN or \`hapi auth login\` for the token. Inside a session prefer MCP list_peers.
 
 ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
@@ -136,13 +140,14 @@ function envWaitActiveSecs(): number | undefined {
 }
 
 async function handleList(): Promise<void> {
-    const sessions = await listPeerSessions()
-    const sorted = [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-    for (const session of sorted.slice(0, 30)) {
-        const flavor = session.metadata?.flavor ?? '?'
-        const name = session.metadata?.name ?? '(unnamed)'
-        console.log(`  ${session.id.slice(0, 8)}  active=${session.active}  flavor=${flavor}  ${name}`)
-    }
+    const maxRows = 30
+    const sessions = await listPeerSessions({
+        limit: peerListFetchLimit(maxRows)
+    })
+    console.log(formatPeerSessionsList(sessions, {
+        maxRows,
+        hasMore: sessions.length > maxRows
+    }))
 }
 
 export async function handlePingPeerCommand(args: string[]): Promise<void> {

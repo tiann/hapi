@@ -56,6 +56,17 @@ describe('local Pi sessions', () => {
             'pi:pi-session-1:custom-1:custom_message',
             'pi:pi-session-1:compact-1:compaction'
         ])
+        expect(sessions[0]?.messages.find((message) => message.localId.endsWith(':usage'))).toMatchObject({
+            content: {
+                content: {
+                    data: {
+                        type: 'token_count',
+                        usageSchema: 'hapi.usage.v1',
+                        inputTokenSemantics: 'includes-cache'
+                    }
+                }
+            }
+        })
         expect(sessions[0]?.messages[0]).toMatchObject({
             entryId: 'user-1',
             parentEntryId: null,

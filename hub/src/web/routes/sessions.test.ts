@@ -1343,4 +1343,66 @@ describe('sessions routes', () => {
         expect(response.status).toBe(400)
     })
 
+    it('honors optional limit on GET /sessions after sort', async () => {
+        const sessions = [
+            createSession({ id: 'older-active', active: true, updatedAt: 10 }),
+            createSession({ id: 'newer-active', active: true, updatedAt: 20 }),
+            createSession({ id: 'inactive', active: false, updatedAt: 30 })
+        ]
+        const scheduledIds: string[][] = []
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => {
+                scheduledIds.push(ids)
+                return new Map(ids.map((id) => [id, 0]))
+            },
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const limited = await app.request('/api/sessions?limit=2')
+        expect(limited.status).toBe(200)
+        const limitedBody = await limited.json() as { sessions: Array<{ id: string }> }
+        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['newer-active', 'older-active'])
+        expect(scheduledIds.at(-1)).toEqual(['newer-active', 'older-active'])
+
+        const unlimited = await app.request('/api/sessions')
+        expect(unlimited.status).toBe(200)
+        const unlimitedBody = await unlimited.json() as { sessions: Array<{ id: string }> }
+        expect(unlimitedBody.sessions).toHaveLength(3)
+    })
+
+    it('order=updatedAt truncates newest-first including inactive peers', async () => {
+        const sessions = [
+            createSession({ id: 'old-active', active: true, updatedAt: 10 }),
+            createSession({ id: 'new-inactive', active: false, updatedAt: 50 }),
+            createSession({ id: 'mid-active', active: true, updatedAt: 20 })
+        ]
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions?limit=1&order=updatedAt')
+        expect(response.status).toBe(200)
+        const body = await response.json() as { sessions: Array<{ id: string }> }
+        expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
+    })
+
 })

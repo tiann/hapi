@@ -50,3 +50,85 @@ describe('mergeMachineMetadata', () => {
         expect(mergeMachineMetadata({ host: 'a' }, { host: 'a' })).toBeUndefined()
     })
 })
+
+describe('runner capabilities backfill', () => {
+    it('merges registration-time capabilities into an existing machine', () => {
+        const store = new Store(':memory:')
+        const created = store.machines.getOrCreateMachine('machine-1', null, { status: 'offline', pid: 1 }, 'ns')
+        expect(created.runnerState).toEqual({ status: 'offline', pid: 1 })
+
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            null,
+            { status: 'offline', pid: 2, capabilities: { piExistingSessionResume: true } },
+            'ns'
+        )
+
+        expect(refreshed.runnerState).toEqual({
+            status: 'offline',
+            pid: 1,
+            capabilities: { piExistingSessionResume: true }
+        })
+        expect(refreshed.runnerStateVersion).toBe(created.runnerStateVersion + 1)
+    })
+
+    it('keeps live runner-state fields socket-owned on registration', () => {
+        const store = new Store(':memory:')
+        store.machines.getOrCreateMachine('machine-1', null, { status: 'running', pid: 99 }, 'ns')
+
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            null,
+            { status: 'offline', pid: 100, startedAt: 1, capabilities: { piExistingSessionResume: true } },
+            'ns'
+        )
+
+        expect(refreshed.runnerState).toEqual({
+            status: 'running',
+            pid: 99,
+            capabilities: { piExistingSessionResume: true }
+        })
+    })
+
+    it('does not write when capabilities are unchanged or absent', () => {
+        const store = new Store(':memory:')
+        const created = store.machines.getOrCreateMachine(
+            'machine-1',
+            null,
+            { status: 'running', capabilities: { piExistingSessionResume: true } },
+            'ns'
+        )
+
+        const unchanged = store.machines.getOrCreateMachine(
+            'machine-1',
+            null,
+            { status: 'offline', capabilities: { piExistingSessionResume: true } },
+            'ns'
+        )
+        expect(unchanged.runnerStateVersion).toBe(created.runnerStateVersion)
+
+        const noCaps = store.machines.getOrCreateMachine('machine-1', null, { status: 'offline' }, 'ns')
+        expect(noCaps.runnerStateVersion).toBe(created.runnerStateVersion)
+    })
+
+    it('merges capabilities even when metadata also changes in the same call', () => {
+        const store = new Store(':memory:')
+        const created = store.machines.getOrCreateMachine('machine-1', { host: 'old-host' }, { status: 'offline', pid: 1 }, 'ns')
+
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'new-host', happyCliVersion: '0.28.0' },
+            { status: 'offline', pid: 2, capabilities: { piExistingSessionResume: true } },
+            'ns'
+        )
+
+        expect(refreshed.metadata).toEqual({ host: 'new-host', happyCliVersion: '0.28.0' })
+        expect(refreshed.metadataVersion).toBe(created.metadataVersion + 1)
+        expect(refreshed.runnerState).toEqual({
+            status: 'offline',
+            pid: 1,
+            capabilities: { piExistingSessionResume: true }
+        })
+        expect(refreshed.runnerStateVersion).toBe(created.runnerStateVersion + 1)
+    })
+})

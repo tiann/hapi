@@ -138,7 +138,7 @@ function parsePort(value: string | undefined): number | null {
 function parseArgs(args: string[]): {
     port: number | null;
     token: string | null;
-    flavor: 'claude' | 'agy';
+    flavor: 'claude' | 'codex' | 'agy';
     event: 'pre-tool-use' | 'pre-invocation';
     /**
      * The raw --event value as given, or undefined if the flag was omitted
@@ -151,7 +151,7 @@ function parseArgs(args: string[]): {
 } {
     let port: number | null = null;
     let token: string | null = null;
-    let flavor: 'claude' | 'agy' = 'claude';
+    let flavor: 'claude' | 'codex' | 'agy' = 'claude';
     let eventRaw: string | undefined;
     let fromEnv = false;
 
@@ -190,14 +190,14 @@ function parseArgs(args: string[]): {
 
         if (arg === '--flavor') {
             const next = args[i + 1];
-            if (next === 'agy') flavor = 'agy';
+            if (next === 'codex' || next === 'agy') flavor = next;
             i += 1;
             continue;
         }
 
         if (arg.startsWith('--flavor=')) {
             const val = arg.slice('--flavor='.length);
-            if (val === 'agy') flavor = 'agy';
+            if (val === 'codex' || val === 'agy') flavor = val;
             continue;
         }
 
@@ -276,6 +276,28 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
         }
 
         const body = Buffer.concat(chunks);
+
+        // Codex hooks are lifecycle observers here, not permission gates. An
+        // empty stdout means proceed; emitting Claude's permissionDecision
+        // "allow" is explicitly unsupported by Codex. Route every Codex event
+        // through the generic lifecycle endpoint so PreToolUse reaches the
+        // same onSessionHook callback as PostToolUse and SessionStart.
+        if (flavor === 'codex') {
+            const response = await postHook(
+                port,
+                token,
+                '/hook/session-start',
+                body,
+                SESSION_HOOK_FORWARD_TIMEOUT_MS
+            );
+            if (response.error || (response.statusCode && response.statusCode >= 400)) {
+                if (response.statusCode && response.statusCode >= 400) {
+                    logError(`Hook server responded with status ${response.statusCode}`);
+                }
+                process.exitCode = 1;
+            }
+            return;
+        }
 
         // agy PreInvocation: discovery-ONLY bridge, fail-OPEN. Unlike
         // PreToolUse (a permission gate that must fail-closed), a dead or

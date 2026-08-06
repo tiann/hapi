@@ -45,6 +45,7 @@ export type PingPeerSessionSummary = {
         path?: string | null
         lifecycleState?: string | null
         piSessionId?: string
+        summary?: { text?: string } | null
     } | null
 }
 
@@ -71,6 +72,8 @@ export type ListPeerSessionsOptions = {
     accessToken?: string
     http?: AxiosInstance
     limit?: number
+    /** Hub sort before limit truncation. Peer discovery defaults to newest updatedAt. */
+    order?: 'updatedAt'
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -81,10 +84,18 @@ function defaultSleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+const AUTH_RECOVERY_HINT =
+    'On a remote runner, set HAPI_API_URL to the runner hub, and set CLI_API_TOKEN ' +
+    'or run `hapi auth login` to save the token. Inside a HAPI session prefer MCP ' +
+    '`list_peers` / `ping_peer` / `inspect_peer`, which use the session CLI credentials.'
+
 function resolveApiUrl(apiUrl?: string): string {
     const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
     if (!raw) {
-        throw new PingPeerError('bad_args', 'HAPI API URL is empty')
+        throw new PingPeerError(
+            'bad_args',
+            `HAPI API URL is empty. ${AUTH_RECOVERY_HINT}`
+        )
     }
     // Peer messaging only targets the configured hub - never accept host overrides
     // from MCP tool args (security: same hub/token/namespace only).
@@ -92,11 +103,23 @@ function resolveApiUrl(apiUrl?: string): string {
 }
 
 function resolveAccessToken(accessToken?: string): string {
-    const token = (accessToken ?? getAuthToken()).trim()
+    let token = ''
+    try {
+        token = (accessToken ?? getAuthToken()).trim()
+    } catch {
+        token = (accessToken ?? '').trim()
+    }
     if (!token) {
-        throw new PingPeerError('bad_args', 'CLI_API_TOKEN is required (run `hapi auth login`)')
+        throw new PingPeerError(
+            'bad_args',
+            `CLI_API_TOKEN is required (run \`hapi auth login\`). ${AUTH_RECOVERY_HINT}`
+        )
     }
     return token
+}
+
+function authFailedMessage(apiUrl: string, detail: string): string {
+    return `failed to exchange access token for JWT (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
 }
 
 async function exchangeJwt(
@@ -119,7 +142,7 @@ async function exchangeJwt(
             const detail = typeof response.data?.error === 'string'
                 ? response.data.error
                 : `HTTP ${response.status}`
-            throw new PingPeerError('auth_failed', `failed to exchange access token for JWT (${detail})`)
+            throw new PingPeerError('auth_failed', authFailedMessage(apiUrl, detail))
         }
         return token
     } catch (error) {
@@ -128,7 +151,7 @@ async function exchangeJwt(
         }
         throw new PingPeerError(
             'auth_failed',
-            `failed to exchange access token for JWT (${error instanceof Error ? error.message : String(error)})`
+            authFailedMessage(apiUrl, error instanceof Error ? error.message : String(error))
         )
     }
 }
@@ -172,13 +195,21 @@ async function listSessions(
     apiUrl: string,
     jwt: string,
     http: AxiosInstance,
-    limit = 500
+    options: { limit?: number; order?: 'updatedAt' } = {}
 ): Promise<PingPeerSessionSummary[]> {
+    const params: Record<string, string | number> = {}
+    if (options.limit !== undefined) {
+        params.limit = options.limit
+    }
+    if (options.order !== undefined) {
+        params.order = options.order
+    }
     const response = await http.get(
         `${apiUrl}/api/sessions`,
         {
             headers: authHeaders(jwt),
-            params: { limit },
+            // Omit params when unbounded so ping/inspect keep full-namespace resolution.
+            ...(Object.keys(params).length > 0 ? { params } : {}),
             timeout: 15_000,
             validateStatus: () => true
         }
@@ -187,7 +218,10 @@ async function listSessions(
         const detail = typeof response.data?.error === 'string'
             ? response.data.error
             : `HTTP ${response.status}`
-        throw new PingPeerError('auth_failed', `failed to list sessions (${detail})`)
+        throw new PingPeerError(
+            'auth_failed',
+            `failed to list sessions (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
+        )
     }
     const body = response.data
     const sessions = Array.isArray(body?.sessions)
@@ -340,7 +374,85 @@ export async function listPeerSessions(
     const accessToken = resolveAccessToken(options.accessToken)
     const http = options.http ?? axios
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    return listSessions(apiUrl, jwt, http, options.limit ?? 200)
+    return listSessions(apiUrl, jwt, http, {
+        limit: options.limit ?? 200,
+        order: options.order ?? 'updatedAt'
+    })
+}
+
+export type FormatPeerSessionsListOptions = {
+    /** Max rows to print (default 30). */
+    maxRows?: number
+    /** Omit this session id (the caller) from the shortlist. */
+    excludeSessionId?: string
+    /**
+     * When the fetch was intentionally bounded, signal overflow without claiming
+     * an exact omitted count from the sample.
+     */
+    hasMore?: boolean
+}
+
+const MAX_PEER_LABEL_CHARS = 255
+
+/**
+ * Hub fetch size for peer discovery: enough rows for the requested page, plus
+ * padding for caller exclusion and an overflow probe. Caps at hub max (500).
+ */
+export function peerListFetchLimit(requestedLimit: number, options?: { excludeCaller?: boolean }): number {
+    const limit = Math.max(1, Math.floor(requestedLimit))
+    const pad = options?.excludeCaller ? 2 : 1
+    return Math.min(500, limit + pad)
+}
+
+/**
+ * Web-parity title for peer shortlists: name → summary.text → basename(path) → id prefix.
+ * Collapses whitespace so agent-readable rows stay one line each.
+ */
+export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string {
+    const meta = session.metadata
+    const pathLabel = meta?.path?.split(/[\\/]/).filter(Boolean).pop()?.trim()
+    const raw = meta?.name?.trim()
+        || meta?.summary?.text?.trim()
+        || pathLabel
+        || session.id.slice(0, 8)
+    const collapsed = raw.replace(/\s+/g, ' ').trim()
+    if (!collapsed) {
+        return session.id.slice(0, 8)
+    }
+    return collapsed.length > MAX_PEER_LABEL_CHARS
+        ? collapsed.slice(0, MAX_PEER_LABEL_CHARS)
+        : collapsed
+}
+
+/**
+ * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
+ * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
+ */
+export function formatPeerSessionsList(
+    sessions: PingPeerSessionSummary[],
+    options: FormatPeerSessionsListOptions = {}
+): string {
+    const maxRows = options.maxRows ?? 30
+    const excludeId = options.excludeSessionId?.trim() ?? ''
+    const filtered = excludeId
+        ? sessions.filter((session) => session.id !== excludeId)
+        : sessions
+    if (filtered.length === 0) {
+        return 'No peer sessions found on this hub/namespace.'
+    }
+    const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
+        const flavor = session.metadata?.flavor ?? '?'
+        const name = resolvePeerSessionLabel(session)
+        return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
+    })
+    const omitted = sorted.length - rows.length
+    if (options.hasMore) {
+        rows.push('  … more sessions available (narrow with inspect_peer / ping_peer by id)')
+    } else if (omitted > 0) {
+        rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
+    }
+    return rows.join('\n')
 }
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
@@ -368,7 +480,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sessions = await listSessions(apiUrl, jwt, http)
     const matched = resolveSessionByPrefix(sessions, prefix)
-    const name = matched.metadata?.name ?? '(unnamed)'
+    const name = resolvePeerSessionLabel(matched)
     onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
 
     let resumed = false
@@ -569,7 +681,7 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
 
     return {
         sessionId: matched.id,
-        name: meta?.name ?? '(unnamed)',
+        name: resolvePeerSessionLabel({ ...matched, metadata: meta ?? matched.metadata ?? null }),
         active: live.active,
         thinking: Boolean(live.thinking),
         flavor: typeof meta?.flavor === 'string' ? meta.flavor : null,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER, type InclusiveInputTokenUsageMarker } from '@hapi/protocol/usage';
 import { z } from 'zod';
 import { logger } from '@/ui/logger';
 
@@ -30,6 +31,8 @@ export type CodexMessage = {
     type: 'token_count';
     info: Record<string, unknown>;
     id: string;
+    usageSchema: InclusiveInputTokenUsageMarker['usageSchema'];
+    inputTokenSemantics: InclusiveInputTokenUsageMarker['inputTokenSemantics'];
 } | {
     type: 'tool-call';
     name: string;
@@ -214,6 +217,7 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
             return {
                 messages: [{
                     type: 'token_count',
+                    ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER,
                     info,
                     id: randomUUID()
                 }]

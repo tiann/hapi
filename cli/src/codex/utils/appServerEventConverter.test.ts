@@ -643,6 +643,8 @@ describe('AppServerEventConverter', () => {
         });
         expect(tokenEvents).toEqual([{
             type: 'token_count',
+            usageSchema: 'hapi.usage.v1',
+            inputTokenSemantics: 'includes-cache',
             thread_id: 'child-thread',
             turn_id: 'child-turn',
             info: {
