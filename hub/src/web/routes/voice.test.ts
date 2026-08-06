@@ -721,6 +721,8 @@ describe('transcription credentials onboarding', () => {
         expect(putBody.openai.source).toBe('settings')
         expect(putBody.openai.hint).toBe('••••cret')
         expect(JSON.stringify(putBody)).not.toContain('sk-live-onboard-secret')
+        // Settings-backed secrets must stay out of process.env (tunnel/ACP/Codex inherit it).
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
 
         const providers = await app.request('/api/voice/transcription/providers', { headers })
         expect(await providers.json()).toEqual({

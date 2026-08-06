@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     applyProviderCredentialsFromSettings,
+    getProviderEnvironment,
     getTranscriptionCredentialStatus,
     maskSecret,
     resetProviderCredentialEnvLocksForTests,
@@ -58,7 +59,7 @@ describe('providerCredentials', () => {
         expect(maskSecret('ab')).toBe('••••')
     })
 
-    it('applies settings-backed keys into process.env when env is unset', async () => {
+    it('exposes settings-backed keys via getProviderEnvironment without mutating process.env', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({
             providerCredentials: {
@@ -70,9 +71,12 @@ describe('providerCredentials', () => {
 
         await applyProviderCredentialsFromSettings(dir)
 
-        expect(process.env.OPENAI_API_KEY).toBe('settings-openai-key')
-        expect(process.env.TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:8000/v1')
-        expect(process.env.TRANSCRIPTION_MODEL).toBe('local-whisper')
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBe('settings-openai-key')
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        expect(getProviderEnvironment().TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:8000/v1')
+        expect(getProviderEnvironment().TRANSCRIPTION_MODEL).toBe('local-whisper')
+        expect(process.env.TRANSCRIPTION_BASE_URL).toBeUndefined()
+        expect(process.env.TRANSCRIPTION_MODEL).toBeUndefined()
     })
 
     it('does not override env-provided keys with settings values', async () => {
@@ -115,8 +119,10 @@ describe('providerCredentials', () => {
         expect(status.openaiCompatible.baseUrl).toBe('http://127.0.0.1:9000/v1')
         expect(status.openaiCompatible.model).toBe('whisper-large')
         expect(status.openaiCompatible.apiKey.configured).toBe(true)
-        expect(process.env.OPENAI_API_KEY).toBe('ui-openai-secret')
-        expect(process.env.TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:9000/v1')
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBe('ui-openai-secret')
+        expect(getProviderEnvironment().TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:9000/v1')
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        expect(process.env.TRANSCRIPTION_BASE_URL).toBeUndefined()
 
         const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
             providerCredentials: Record<string, string>
@@ -134,6 +140,7 @@ describe('providerCredentials', () => {
         await applyProviderCredentialsFromSettings(dir)
 
         await updateTranscriptionCredentials(dir, { openai: null })
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBeUndefined()
         expect(process.env.OPENAI_API_KEY).toBeUndefined()
 
         await expect(updateTranscriptionCredentials(dir, { elevenlabs: null })).rejects.toThrow(
@@ -159,8 +166,10 @@ describe('providerCredentials', () => {
             editable: true,
         })
         expect(status.voiceBackends.qwenRealtime.configured).toBe(true)
-        expect(process.env.GEMINI_API_KEY).toBe('gemini-ui-key')
-        expect(process.env.DASHSCOPE_API_KEY).toBe('dashscope-ui-key')
+        expect(getProviderEnvironment().GEMINI_API_KEY).toBe('gemini-ui-key')
+        expect(getProviderEnvironment().DASHSCOPE_API_KEY).toBe('dashscope-ui-key')
+        expect(process.env.GEMINI_API_KEY).toBeUndefined()
+        expect(process.env.DASHSCOPE_API_KEY).toBeUndefined()
         expect(process.env.GOOGLE_API_KEY).toBeUndefined()
         expect(process.env.QWEN_API_KEY).toBeUndefined()
     })
@@ -188,6 +197,8 @@ describe('providerCredentials', () => {
 
         expect(process.env.GOOGLE_API_KEY).toBe('env-google')
         expect(process.env.GEMINI_API_KEY).toBeUndefined()
+        expect(getProviderEnvironment().GEMINI_API_KEY).toBeUndefined()
+        expect(getProviderEnvironment().GOOGLE_API_KEY).toBe('env-google')
         const status = await getTranscriptionCredentialStatus(dir)
         expect(status.voiceBackends.geminiLive).toEqual({
             configured: true,
@@ -208,6 +219,8 @@ describe('providerCredentials', () => {
 
         expect(process.env.DASHSCOPE_API_KEY).toBe('env-dashscope')
         expect(process.env.QWEN_API_KEY).toBeUndefined()
+        expect(getProviderEnvironment().QWEN_API_KEY).toBeUndefined()
+        expect(getProviderEnvironment().DASHSCOPE_API_KEY).toBe('env-dashscope')
     })
 
     it('omits undefined credential fields instead of clearing them', async () => {
@@ -232,10 +245,12 @@ describe('providerCredentials', () => {
             },
         })
 
-        expect(process.env.OPENAI_API_KEY).toBe('keep-me-secret')
-        expect(process.env.TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:8000/v1')
-        expect(process.env.TRANSCRIPTION_MODEL).toBe('whisper-large')
-        expect(process.env.TRANSCRIPTION_API_KEY).toBe('rotated-token')
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBe('keep-me-secret')
+        expect(getProviderEnvironment().TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:8000/v1')
+        expect(getProviderEnvironment().TRANSCRIPTION_MODEL).toBe('whisper-large')
+        expect(getProviderEnvironment().TRANSCRIPTION_API_KEY).toBe('rotated-token')
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        expect(process.env.TRANSCRIPTION_API_KEY).toBeUndefined()
     })
 
     it('leaves process.env unchanged when a later field in the same update is env-locked', async () => {
@@ -249,6 +264,7 @@ describe('providerCredentials', () => {
             elevenlabs: 'also-blocked',
         })).rejects.toThrow(/environment variable/)
 
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBeUndefined()
         expect(process.env.OPENAI_API_KEY).toBeUndefined()
         expect(process.env.ELEVENLABS_API_KEY).toBe('env-eleven')
     })
@@ -257,11 +273,12 @@ describe('providerCredentials', () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
         await applyProviderCredentialsFromSettings(dir)
-        // Occupy the atomic temp path so writeFile fails (EISDIR) before env sync.
+        // Occupy the atomic temp path so writeFile fails (EISDIR) before overlay sync.
         const { mkdirSync } = await import('node:fs')
         mkdirSync(join(dir, 'settings.json.tmp'))
         await expect(updateTranscriptionCredentials(dir, { openai: 'disk-full-secret' })).rejects.toThrow()
         expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBeUndefined()
     })
 
     it('reports OpenAI-compatible fields independently editable under mixed env locks', async () => {
@@ -290,8 +307,10 @@ describe('providerCredentials', () => {
             updateTranscriptionCredentials(dir, { groq: 'concurrent-groq' }),
         ])
 
-        expect(process.env.OPENAI_API_KEY).toBe('concurrent-openai')
-        expect(process.env.GROQ_API_KEY).toBe('concurrent-groq')
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBe('concurrent-openai')
+        expect(getProviderEnvironment().GROQ_API_KEY).toBe('concurrent-groq')
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
+        expect(process.env.GROQ_API_KEY).toBeUndefined()
         const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
             providerCredentials: Record<string, string>
         }
@@ -320,7 +339,8 @@ describe('providerCredentials', () => {
         }
         expect(saved.providerCredentials?.OPENAI_API_KEY).toBe('race-openai')
         expect(saved.relayAuthKey).toBe('race-relay')
-        expect(process.env.OPENAI_API_KEY).toBe('race-openai')
+        expect(getProviderEnvironment().OPENAI_API_KEY).toBe('race-openai')
+        expect(process.env.OPENAI_API_KEY).toBeUndefined()
     })
 
     it('preserves hub credentials when raced with CLI-style settings lock writer', async () => {

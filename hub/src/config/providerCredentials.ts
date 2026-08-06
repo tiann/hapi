@@ -3,8 +3,8 @@
  *
  * Priority: process env (ops bootstrap) > settings.json providerCredentials.
  * Env-locked keys cannot be overwritten or cleared from the Settings UI.
- * Settings-backed values are applied into process.env so existing discovery
- * helpers keep working without restart.
+ * Settings-backed values live in an in-memory overlay exposed via
+ * `getProviderEnvironment()` — they are never copied into `process.env`.
  */
 
 import { getSettingsFile, readSettings, updateSettings, type Settings } from './settings'
@@ -81,12 +81,36 @@ let envLockedKeys = new Set<ProviderCredentialEnvKey>()
 
 export function resetProviderCredentialEnvLocksForTests(): void {
     envLockedKeys = new Set()
+    settingsBackedCredentials = {}
 }
 
 export function maskSecret(value: string): string {
     const trimmed = value.trim()
     if (trimmed.length <= 4) return '••••'
     return `••••${trimmed.slice(-4)}`
+}
+
+let settingsBackedCredentials: ProviderCredentialsMap = {}
+
+function setSettingsBackedCredentials(stored: ProviderCredentialsMap): void {
+    const next: ProviderCredentialsMap = {}
+    for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
+        if (isLogicallyEnvLocked(key)) continue
+        const value = stored[key]
+        if (value) next[key] = value
+    }
+    settingsBackedCredentials = next
+}
+
+/**
+ * Effective provider credential environment for voice/dictation paths only.
+ * Settings-backed secrets stay out of `process.env` so unrelated child processes
+ * (tunnel, Cursor ACP, Codex helpers) do not inherit them.
+ */
+export function getProviderEnvironment(
+    env: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+    return { ...env, ...settingsBackedCredentials }
 }
 
 function snapshotEnvLocks(env: NodeJS.ProcessEnv = process.env): void {
@@ -194,14 +218,11 @@ function compatibleSource(
 export async function applyProviderCredentialsFromSettings(dataDir: string): Promise<void> {
     snapshotEnvLocks()
     const settings = await readSettings(getSettingsFile(dataDir))
-    if (settings === null) return
-    const stored = readProviderCredentials(settings)
-    for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
-        if (isLogicallyEnvLocked(key)) continue
-        const value = stored[key]
-        if (value) process.env[key] = value
-        else delete process.env[key]
+    if (settings === null) {
+        setSettingsBackedCredentials({})
+        return
     }
+    setSettingsBackedCredentials(readProviderCredentials(settings))
 }
 
 function buildStatus(stored: ProviderCredentialsMap): TranscriptionCredentialStatus {
@@ -212,8 +233,9 @@ function buildStatus(stored: ProviderCredentialsMap): TranscriptionCredentialSta
     const baseUrl = statusForKey('TRANSCRIPTION_BASE_URL', stored)
     const model = statusForKey('TRANSCRIPTION_MODEL', stored)
     const apiKey = statusForKey('TRANSCRIPTION_API_KEY', stored)
-    const baseUrlValue = process.env.TRANSCRIPTION_BASE_URL?.trim() || null
-    const modelValue = process.env.TRANSCRIPTION_MODEL?.trim() || null
+    const env = getProviderEnvironment()
+    const baseUrlValue = env.TRANSCRIPTION_BASE_URL?.trim() || null
+    const modelValue = env.TRANSCRIPTION_MODEL?.trim() || null
     const geminiLive = statusForAliasPair('GEMINI_API_KEY', 'GOOGLE_API_KEY', stored)
     const qwenRealtime = statusForAliasPair('DASHSCOPE_API_KEY', 'QWEN_API_KEY', stored)
     return {
@@ -291,14 +313,9 @@ function applyAliasPairPatch(
     delete stored[secondary]
 }
 
-/** Apply unlocked settings-backed credentials into process.env after a successful persist. */
-function syncSettingsCredentialsToEnv(stored: ProviderCredentialsMap): void {
-    for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
-        if (isLogicallyEnvLocked(key)) continue
-        const value = stored[key]
-        if (value) process.env[key] = value
-        else delete process.env[key]
-    }
+/** Refresh the in-memory overlay after a successful persist (never touches process.env). */
+function syncSettingsCredentialsOverlay(stored: ProviderCredentialsMap): void {
+    setSettingsBackedCredentials(stored)
 }
 
 export async function updateTranscriptionCredentials(
@@ -349,7 +366,7 @@ export async function updateTranscriptionCredentials(
             settings: { ...settings, providerCredentials: nextStored },
             result: nextStored,
             afterCommit: () => {
-                syncSettingsCredentialsToEnv(nextStored)
+                syncSettingsCredentialsOverlay(nextStored)
             },
         }
     }).then((nextStored) => buildStatus(nextStored))
