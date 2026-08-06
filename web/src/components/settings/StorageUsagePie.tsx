@@ -47,10 +47,15 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
         return slices.find((slice) => slice.key === activeKey) ?? slices[0] ?? null
     }, [activeKey, slices])
 
+    const totalLabel = formatFileSize(totalBytes) ?? '0 B'
+
     if (slices.length === 0) {
         return (
-            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-4 text-sm text-[var(--app-hint)]">
-                {labels.empty}
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-4 shadow-sm">
+                <h3 className="mb-3 text-sm font-medium text-[var(--app-fg)]">{labels.title}</h3>
+                <div className="text-sm text-[var(--app-hint)]">{labels.empty}</div>
+                <TotalFooter label={labels.total} value={totalLabel} className="mt-3" />
+                <PathFooter label={labels.path} path={path} />
             </div>
         )
     }
@@ -61,7 +66,6 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
     const innerRadius = 58
     const outerRadius = 88
     const activeOuterRadius = 96
-    const totalLabel = formatFileSize(totalBytes) ?? '0 B'
 
     const onLegendKeyDown = (event: KeyboardEvent<HTMLButtonElement>, key: StorageUsageSliceKey) => {
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
@@ -126,55 +130,70 @@ export function StorageUsagePie(props: StorageUsagePieProps) {
                     {active ? <CenterReadout slice={active} labels={labels} /> : null}
                 </div>
 
-                <div className="flex w-full max-w-xs flex-col gap-1" role="listbox" aria-label={labels.title} aria-activedescendant={active ? `${chartId}-${active.key}` : undefined}>
-                    {slices.map((slice) => {
-                        const isActive = active?.key === slice.key
-                        const sizeLabel = formatFileSize(slice.bytes) ?? '0 B'
-                        return (
-                            <button
-                                key={slice.key}
-                                id={`${chartId}-${slice.key}`}
-                                type="button"
-                                role="option"
-                                aria-selected={isActive}
-                                data-slice-key={slice.key}
-                                data-testid={`storage-pie-legend-${slice.key}`}
-                                onClick={() => setActiveKey(slice.key)}
-                                onPointerEnter={() => setActiveKey(slice.key)}
-                                onFocus={() => setActiveKey(slice.key)}
-                                onKeyDown={(event) => onLegendKeyDown(event, slice.key)}
-                                className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors ${
-                                    isActive
-                                        ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
-                                        : 'text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)]/60 hover:text-[var(--app-fg)]'
-                                }`}
-                            >
-                                <span
-                                    className="h-2.5 w-2.5 shrink-0 rounded-full"
-                                    style={{ background: SLICE_FILL[slice.key] }}
-                                    aria-hidden="true"
-                                />
-                                <span className="min-w-0 flex-1 truncate font-medium">{labelFor(slice.key, labels)}</span>
-                                <span className="shrink-0 tabular-nums">{sizeLabel}</span>
-                                <span className="w-12 shrink-0 text-right tabular-nums">{formatStoragePercent(slice.percent)}</span>
-                            </button>
-                        )
-                    })}
-                    <div
-                        className="mt-1 flex items-center justify-between gap-2 border-t border-[var(--app-divider)] px-2 pt-2 text-sm"
-                        data-testid="storage-pie-total"
-                    >
-                        <span className="font-medium text-[var(--app-fg)]">{labels.total}</span>
-                        <span className="tabular-nums font-medium text-[var(--app-fg)]">{totalLabel}</span>
+                <div className="flex w-full max-w-xs flex-col gap-1">
+                    <div className="flex flex-col gap-1" role="listbox" aria-label={labels.title}>
+                        {slices.map((slice) => {
+                            const isActive = active?.key === slice.key
+                            const sizeLabel = formatFileSize(slice.bytes) ?? '0 B'
+                            return (
+                                <button
+                                    key={slice.key}
+                                    id={`${chartId}-${slice.key}`}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={isActive}
+                                    tabIndex={isActive ? 0 : -1}
+                                    data-slice-key={slice.key}
+                                    data-testid={`storage-pie-legend-${slice.key}`}
+                                    onClick={() => setActiveKey(slice.key)}
+                                    onPointerEnter={() => setActiveKey(slice.key)}
+                                    onFocus={() => setActiveKey(slice.key)}
+                                    onKeyDown={(event) => onLegendKeyDown(event, slice.key)}
+                                    className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors ${
+                                        isActive
+                                            ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                            : 'text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)]/60 hover:text-[var(--app-fg)]'
+                                    }`}
+                                >
+                                    <span
+                                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                        style={{ background: SLICE_FILL[slice.key] }}
+                                        aria-hidden="true"
+                                    />
+                                    <span className="min-w-0 flex-1 truncate font-medium">{labelFor(slice.key, labels)}</span>
+                                    <span className="shrink-0 tabular-nums">{sizeLabel}</span>
+                                    <span className="w-12 shrink-0 text-right tabular-nums">{formatStoragePercent(slice.percent)}</span>
+                                </button>
+                            )
+                        })}
                     </div>
+                    <TotalFooter label={labels.total} value={totalLabel} className="mt-1 border-t border-[var(--app-divider)] pt-2" />
                 </div>
             </div>
-            <div className="mt-3 border-t border-[var(--app-divider)] pt-3" data-testid="storage-pie-path">
-                <div className="text-xs font-medium text-[var(--app-hint)]">{labels.path}</div>
-                <code className="mt-0.5 block truncate text-xs text-[var(--app-hint)]" title={path}>
-                    {path}
-                </code>
-            </div>
+            <PathFooter label={labels.path} path={path} />
+        </div>
+    )
+}
+
+function TotalFooter(props: { label: string; value: string; className?: string }) {
+    return (
+        <div
+            className={`flex items-center justify-between gap-2 px-2 text-sm ${props.className ?? ''}`}
+            data-testid="storage-pie-total"
+        >
+            <span className="font-medium text-[var(--app-fg)]">{props.label}</span>
+            <span className="tabular-nums font-medium text-[var(--app-fg)]">{props.value}</span>
+        </div>
+    )
+}
+
+function PathFooter(props: { label: string; path: string }) {
+    return (
+        <div className="mt-3 border-t border-[var(--app-divider)] pt-3" data-testid="storage-pie-path">
+            <div className="text-xs font-medium text-[var(--app-hint)]">{props.label}</div>
+            <code className="mt-0.5 block truncate text-xs text-[var(--app-hint)]" title={props.path}>
+                {props.path}
+            </code>
         </div>
     )
 }
