@@ -8,11 +8,12 @@ import { VoiceRespondsControls } from '@/components/settings/VoiceAdvancedContro
 import { TranscriptionProviderOnboard } from '@/components/settings/TranscriptionProviderOnboard'
 import { SettingsChoiceGroup, SettingsLinkRow, SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
 import { SelectControl } from '@/components/ui/select-control'
+import { getNamespaceFromToken } from '@/components/settings/SettingsNav'
 import { useVoiceSettings } from './useVoiceSettings'
 
 export default function SettingsVoicePage() {
     const { t } = useTranslation()
-    const { api } = useAppContext()
+    const { api, token } = useAppContext()
     const navigate = useNavigate()
     const voice = useVoiceSettings()
     const [opening, setOpening] = useState<'greet' | 'brief'>(() => localStorage.getItem('hapi-voice-proactive') === 'true' ? 'brief' : 'greet')
@@ -20,9 +21,10 @@ export default function SettingsVoicePage() {
     const selectedLanguage = voice.voiceLanguages.find((language) => language.code === voice.voiceLanguage)
     const selectedVoice = voice.voices.find((option) => option.id === voice.voiceId)
     const hubProviders = voice.providers.filter((provider) => provider.id !== 'browser-local')
+    const canManageCredentials = getNamespaceFromToken(token) === 'default'
     const needsDictationOnboard = voice.voiceMode === 'dictation' && hubProviders.length === 0
     const needsAssistantOnboard = voice.voiceMode === 'assistant' && voice.configuredBackends.length === 0
-    const credentialsOpen = showCredentials || needsDictationOnboard || needsAssistantOnboard
+    const credentialsOpen = canManageCredentials && (showCredentials || needsDictationOnboard || needsAssistantOnboard)
 
     const setVoiceOpening = (value: 'greet' | 'brief') => {
         setOpening(value)
@@ -93,7 +95,7 @@ export default function SettingsVoicePage() {
                         onChange={voice.setTranscriptionMode}
                     />
                 ) : null}
-                {api ? (
+                {api && canManageCredentials ? (
                     <>
                         {!credentialsOpen ? (
                             <SettingsLinkRow
