@@ -95,6 +95,17 @@ function snapshotEnvLocks(env: NodeJS.ProcessEnv = process.env): void {
     )
 }
 
+/** Alias pairs share one logical lock so a saved GEMINI cannot shadow env GOOGLE (and vice versa). */
+function isLogicallyEnvLocked(key: ProviderCredentialEnvKey): boolean {
+    if (key === 'GEMINI_API_KEY' || key === 'GOOGLE_API_KEY') {
+        return envLockedKeys.has('GEMINI_API_KEY') || envLockedKeys.has('GOOGLE_API_KEY')
+    }
+    if (key === 'DASHSCOPE_API_KEY' || key === 'QWEN_API_KEY') {
+        return envLockedKeys.has('DASHSCOPE_API_KEY') || envLockedKeys.has('QWEN_API_KEY')
+    }
+    return envLockedKeys.has(key)
+}
+
 function readProviderCredentials(settings: Settings | null): ProviderCredentialsMap {
     const raw = settings?.providerCredentials
     if (!raw || typeof raw !== 'object') return {}
@@ -186,7 +197,7 @@ export async function applyProviderCredentialsFromSettings(dataDir: string): Pro
     if (settings === null) return
     const stored = readProviderCredentials(settings)
     for (const key of PROVIDER_CREDENTIAL_ENV_KEYS) {
-        if (envLockedKeys.has(key)) continue
+        if (isLogicallyEnvLocked(key)) continue
         const value = stored[key]
         if (value) process.env[key] = value
         else delete process.env[key]
@@ -248,7 +259,7 @@ function applyPatchToStored(
     value: string | null | undefined
 ): void {
     if (value === undefined) return
-    if (envLockedKeys.has(key)) {
+    if (isLogicallyEnvLocked(key)) {
         throw new Error(`${key} is set by an environment variable and cannot be changed from Settings`)
     }
     if (value === null) {

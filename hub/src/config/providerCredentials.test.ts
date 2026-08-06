@@ -176,4 +176,77 @@ describe('providerCredentials', () => {
         )
         expect(process.env.GOOGLE_API_KEY).toBe('env-google')
     })
+
+    it('does not let settings GEMINI_API_KEY shadow env GOOGLE_API_KEY on apply', async () => {
+        dir = makeTempDir()
+        process.env.GOOGLE_API_KEY = 'env-google'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            providerCredentials: { GEMINI_API_KEY: 'settings-gemini' }
+        }))
+
+        await applyProviderCredentialsFromSettings(dir)
+
+        expect(process.env.GOOGLE_API_KEY).toBe('env-google')
+        expect(process.env.GEMINI_API_KEY).toBeUndefined()
+        const status = await getTranscriptionCredentialStatus(dir)
+        expect(status.voiceBackends.geminiLive).toEqual({
+            configured: true,
+            source: 'env',
+            hint: '••••ogle',
+            editable: false,
+        })
+    })
+
+    it('does not let settings QWEN_API_KEY shadow env DASHSCOPE_API_KEY on apply', async () => {
+        dir = makeTempDir()
+        process.env.DASHSCOPE_API_KEY = 'env-dashscope'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            providerCredentials: { QWEN_API_KEY: 'settings-qwen' }
+        }))
+
+        await applyProviderCredentialsFromSettings(dir)
+
+        expect(process.env.DASHSCOPE_API_KEY).toBe('env-dashscope')
+        expect(process.env.QWEN_API_KEY).toBeUndefined()
+    })
+
+    it('omits undefined credential fields instead of clearing them', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+        await updateTranscriptionCredentials(dir, {
+            openai: 'keep-me-secret',
+            openaiCompatible: {
+                baseUrl: 'http://127.0.0.1:8000/v1',
+                model: 'whisper-large',
+                apiKey: 'local-token',
+            },
+        })
+
+        await updateTranscriptionCredentials(dir, {
+            openai: undefined,
+            openaiCompatible: {
+                baseUrl: undefined,
+                model: undefined,
+                apiKey: 'rotated-token',
+            },
+        })
+
+        expect(process.env.OPENAI_API_KEY).toBe('keep-me-secret')
+        expect(process.env.TRANSCRIPTION_BASE_URL).toBe('http://127.0.0.1:8000/v1')
+        expect(process.env.TRANSCRIPTION_MODEL).toBe('whisper-large')
+        expect(process.env.TRANSCRIPTION_API_KEY).toBe('rotated-token')
+    })
+
+    it('writes settings.json with owner-only permissions on POSIX', async () => {
+        if (process.platform === 'win32') return
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}), { mode: 0o644 })
+        await applyProviderCredentialsFromSettings(dir)
+        await updateTranscriptionCredentials(dir, { openai: 'perm-secret' })
+
+        const { statSync } = await import('node:fs')
+        const mode = statSync(join(dir, 'settings.json')).mode & 0o777
+        expect(mode).toBe(0o600)
+    })
 })

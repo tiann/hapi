@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
@@ -67,18 +67,25 @@ export async function readSettingsOrThrow(settingsFile: string): Promise<Setting
     return settings
 }
 
+/**
+ * Write settings to file atomically (unique temp file + rename).
+ * Owner-only modes: settings may hold provider API keys and bot tokens.
+ */
 async function writeSettingsAtomic(settingsFile: string, settings: Settings): Promise<void> {
     const dir = dirname(settingsFile)
     if (!existsSync(dir)) {
         await mkdir(dir, { recursive: true, mode: 0o700 })
     }
+    await chmod(dir, 0o700).catch(() => {})
 
     // Unique temp path so concurrent writers cannot clobber each other's
     // staging file before rename (Codex #1376 Major).
     const tmpFile = join(dir, `.settings.${randomUUID()}.tmp`)
     try {
-        await writeFile(tmpFile, JSON.stringify(settings, null, 2))
+        await writeFile(tmpFile, JSON.stringify(settings, null, 2), { mode: 0o600 })
+        await chmod(tmpFile, 0o600).catch(() => {})
         await rename(tmpFile, settingsFile)
+        await chmod(settingsFile, 0o600).catch(() => {})
     } catch (error) {
         await unlink(tmpFile).catch(() => {})
         throw error

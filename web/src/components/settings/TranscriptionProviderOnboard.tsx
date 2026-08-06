@@ -101,6 +101,13 @@ export function TranscriptionProviderOnboard(props: {
         try {
             const next = await props.api.fetchTranscriptionCredentials()
             setStatus(next)
+            // Seed editable endpoint fields so Save does not treat blanks as Clear.
+            if (next.openaiCompatible.baseUrlEditable && next.openaiCompatible.baseUrl) {
+                setBaseUrl(next.openaiCompatible.baseUrl)
+            }
+            if (next.openaiCompatible.modelEditable && next.openaiCompatible.model) {
+                setModel(next.openaiCompatible.model)
+            }
         } catch {
             setStatus(null)
         }
@@ -113,14 +120,15 @@ export function TranscriptionProviderOnboard(props: {
     const selected = statusForProvider(status, provider)
 
     const buildUpdate = (clear: boolean): TranscriptionCredentialsUpdate => {
-        const value = clear ? null : (apiKey.trim() || null)
+        // Empty password/fields mean "leave unchanged" (undefined). Only Clear sends null.
+        const value = clear ? null : (apiKey.trim() || undefined)
         if (provider === 'openai-compatible') {
             return {
                 openaiCompatible: clear
                     ? { baseUrl: null, model: null, apiKey: null }
                     : {
-                        baseUrl: baseUrl.trim() || null,
-                        model: model.trim() || null,
+                        baseUrl: baseUrl.trim() || undefined,
+                        model: model.trim() || undefined,
                         apiKey: value,
                     },
             }
