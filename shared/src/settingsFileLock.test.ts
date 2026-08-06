@@ -1,18 +1,20 @@
 import { describe, expect, test, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     setSettingsLockMaxAttemptsForTests,
+    setSettingsLockWriteOwnerForTests,
     withSettingsFileLock,
 } from './settingsFileLock'
 
 describe('withSettingsFileLock', () => {
     afterEach(() => {
         setSettingsLockMaxAttemptsForTests(undefined)
+        setSettingsLockWriteOwnerForTests(undefined)
     })
 
-    test('reclaims a lock whose recorded PID is dead', async () => {
+    test('reclaims a lock whose recorded PID is dead via rename', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-'))
         const settingsFile = join(dir, 'settings.json')
         const lockFile = `${settingsFile}.lock`
@@ -21,6 +23,7 @@ describe('withSettingsFileLock', () => {
         const result = await withSettingsFileLock(settingsFile, async () => 'ok')
         expect(result).toBe('ok')
         expect(existsSync(lockFile)).toBe(false)
+        expect(readdirSync(dir).some((name) => name.includes('.break.'))).toBe(false)
     })
 
     test('does not reclaim an ownerless sidecar on sight (publication window)', async () => {
@@ -37,6 +40,24 @@ describe('withSettingsFileLock', () => {
         expect(readFileSync(lockFile, 'utf8')).toBe('')
     })
 
+    test('removes the sidecar when owner publication fails', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-writefail-'))
+        const settingsFile = join(dir, 'settings.json')
+        const lockFile = `${settingsFile}.lock`
+        setSettingsLockWriteOwnerForTests(() => {
+            throw new Error('injected short-write')
+        })
+
+        await expect(
+            withSettingsFileLock(settingsFile, async () => 'nope')
+        ).rejects.toThrow(/injected short-write/)
+        expect(existsSync(lockFile)).toBe(false)
+
+        setSettingsLockWriteOwnerForTests(undefined)
+        const result = await withSettingsFileLock(settingsFile, async () => 'recovered')
+        expect(result).toBe('recovered')
+    })
+
     test('does not unlink a successor lock on release', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-succ-'))
         const settingsFile = join(dir, 'settings.json')
@@ -48,7 +69,6 @@ describe('withSettingsFileLock', () => {
         })
 
         const first = withSettingsFileLock(settingsFile, async () => {
-            // Token-gated release must leave a successor's lock file alone.
             writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'successor' }))
             await firstHeld
             return 'first'
@@ -83,5 +103,31 @@ describe('withSettingsFileLock', () => {
         const saved = JSON.parse(readFileSync(settingsFile, 'utf8')) as { n: number }
         expect(saved.n).toBe(8)
         expect(existsSync(`${settingsFile}.lock`)).toBe(false)
+    })
+
+    test('only one contender reclaims a shared dead owner', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-settings-lock-reclaim-race-'))
+        const settingsFile = join(dir, 'settings.json')
+        const lockFile = `${settingsFile}.lock`
+        writeFileSync(lockFile, JSON.stringify({ pid: 2_147_483_645, token: 'shared-dead' }))
+
+        let inCritical = 0
+        let maxInCritical = 0
+        const bump = async () => {
+            inCritical++
+            maxInCritical = Math.max(maxInCritical, inCritical)
+            await new Promise((r) => setTimeout(r, 30))
+            inCritical--
+            return 'ok'
+        }
+
+        const results = await Promise.all([
+            withSettingsFileLock(settingsFile, bump),
+            withSettingsFileLock(settingsFile, bump),
+            withSettingsFileLock(settingsFile, bump),
+        ])
+        expect(results).toEqual(['ok', 'ok', 'ok'])
+        expect(maxInCritical).toBe(1)
+        expect(existsSync(lockFile)).toBe(false)
     })
 })
