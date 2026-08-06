@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { readSettingsOrThrow, writeSettings, type Settings } from './settings'
+import { updateSettings, type Settings, type SettingsUpdateOutcome } from './settings'
 
 export type GetOrCreateResult<T> = {
     value: T
@@ -19,19 +19,23 @@ export async function getOrCreateSettingsValue<T>(options: {
     writeValue: (settings: Settings, value: T) => void
     generate: () => T
 }): Promise<GetOrCreateResult<T>> {
-    const settings = await readSettingsOrThrow(options.settingsFile)
-    const existing = options.readValue(settings)
-    if (existing) {
-        if (existing.writeBack) {
-            await writeSettings(options.settingsFile, settings)
+    return updateSettings(options.settingsFile, (settings): SettingsUpdateOutcome<GetOrCreateResult<T>> => {
+        const existing = options.readValue(settings)
+        if (existing) {
+            return {
+                settings,
+                result: { value: existing.value, created: false },
+                write: Boolean(existing.writeBack),
+            }
         }
-        return { value: existing.value, created: false }
-    }
 
-    const generated = options.generate()
-    options.writeValue(settings, generated)
-    await writeSettings(options.settingsFile, settings)
-    return { value: generated, created: true }
+        const generated = options.generate()
+        options.writeValue(settings, generated)
+        return {
+            settings,
+            result: { value: generated, created: true },
+        }
+    })
 }
 
 export async function getOrCreateJsonFile<T>(options: {

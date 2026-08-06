@@ -7,7 +7,7 @@
  * helpers keep working without restart.
  */
 
-import { getSettingsFile, readSettings, withSettingsLock, writeSettings, type Settings } from './settings'
+import { getSettingsFile, readSettings, updateSettings, type Settings } from './settings'
 
 export const PROVIDER_CREDENTIAL_ENV_KEYS = [
     'OPENAI_API_KEY',
@@ -306,13 +306,7 @@ export async function updateTranscriptionCredentials(
     update: TranscriptionCredentialsUpdate
 ): Promise<TranscriptionCredentialStatus> {
     const settingsFile = getSettingsFile(dataDir)
-    return withSettingsLock(settingsFile, async () => {
-        const settings = await readSettings(settingsFile)
-        if (settings === null) {
-            throw new Error(`Cannot read ${settingsFile}. Please fix or remove the file and retry.`)
-        }
-
-        // Stage all mutations in a copy; only touch process.env after writeSettings succeeds.
+    return updateSettings(settingsFile, async (settings) => {
         const nextStored: ProviderCredentialsMap = { ...readProviderCredentials(settings) }
 
         applyPatchToStored(nextStored, 'OPENAI_API_KEY', normalizeOptionalSecret(update.openai))
@@ -351,9 +345,12 @@ export async function updateTranscriptionCredentials(
             normalizeOptionalSecret(update.qwenRealtime)
         )
 
-        settings.providerCredentials = nextStored
-        await writeSettings(settingsFile, settings)
-        syncSettingsCredentialsToEnv(nextStored)
-        return buildStatus(nextStored)
-    })
+        return {
+            settings: { ...settings, providerCredentials: nextStored },
+            result: nextStored,
+            afterCommit: () => {
+                syncSettingsCredentialsToEnv(nextStored)
+            },
+        }
+    }).then((nextStored) => buildStatus(nextStored))
 }

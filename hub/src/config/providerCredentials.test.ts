@@ -299,6 +299,30 @@ describe('providerCredentials', () => {
         expect(saved.providerCredentials.GROQ_API_KEY).toBe('concurrent-groq')
     })
 
+    it('preserves credentials when raced with relay-key persistence', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+        await applyProviderCredentialsFromSettings(dir)
+        const { updateSettings, getSettingsFile } = await import('./settings')
+        const settingsFile = getSettingsFile(dir)
+
+        await Promise.all([
+            updateTranscriptionCredentials(dir, { openai: 'race-openai' }),
+            updateSettings(settingsFile, (settings) => ({
+                settings: { ...settings, relayAuthKey: 'race-relay' },
+                result: undefined,
+            })),
+        ])
+
+        const saved = JSON.parse(readFileSync(settingsFile, 'utf8')) as {
+            providerCredentials?: Record<string, string>
+            relayAuthKey?: string
+        }
+        expect(saved.providerCredentials?.OPENAI_API_KEY).toBe('race-openai')
+        expect(saved.relayAuthKey).toBe('race-relay')
+        expect(process.env.OPENAI_API_KEY).toBe('race-openai')
+    })
+
     it('keeps partial OpenAI-compatible values queryable for clear UX', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))

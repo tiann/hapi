@@ -155,6 +155,16 @@ export function TranscriptionProviderOnboard(props: {
         return { groq: value }
     }
 
+    const syncCompatibleFields = (next: TranscriptionCredentialStatus) => {
+        setApiKey('')
+        if (next.openaiCompatible.baseUrlEditable) {
+            setBaseUrl(next.openaiCompatible.baseUrl ?? '')
+        }
+        if (next.openaiCompatible.modelEditable) {
+            setModel(next.openaiCompatible.model ?? '')
+        }
+    }
+
     const save = async () => {
         setBusy(true)
         setError(null)
@@ -162,7 +172,7 @@ export function TranscriptionProviderOnboard(props: {
         try {
             const next = await props.api.updateTranscriptionCredentials(buildUpdate(false))
             setStatus(next)
-            setApiKey('')
+            syncCompatibleFields(next)
             setMessage(t('settings.voice.credentials.saved'))
             props.onConfigured()
         } catch (err) {
@@ -180,6 +190,7 @@ export function TranscriptionProviderOnboard(props: {
         try {
             const next = await props.api.updateTranscriptionCredentials(buildUpdate(true))
             setStatus(next)
+            syncCompatibleFields(next)
             setMessage(t('settings.voice.credentials.cleared'))
             props.onConfigured()
         } catch (err) {
