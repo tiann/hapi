@@ -4,6 +4,7 @@ import {
     aggregateResponseGroups,
     assignThreadMessageIds,
     assignThreadMessageIdsWithStableWrappers,
+    findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
     getResponseGroupTimestamps
 } from './assistant-runtime'
@@ -132,6 +133,85 @@ describe('assignThreadMessageIds', () => {
         expect(second[0]).toBe(first[0])
         expect(second[0].threadMessageId).toBe('agent-text:a')
         expect(second[1].threadMessageId).toBe('user-text:u')
+    })
+})
+
+describe('findLatestCompletedBoundaryId', () => {
+    it('keeps the fork boundary before the active turn while streaming blocks change', () => {
+        const completedUser = userText('u1', { invokedAt: 10 })
+        const completedAssistant = agentText('a1')
+        const activeUser = userText('u2', { invokedAt: 20 })
+
+        const firstStreamingShape: VisibleChatBlock[] = [
+            completedUser,
+            completedAssistant,
+            activeUser,
+            agentText('thinking')
+        ]
+        const laterStreamingShape: VisibleChatBlock[] = [
+            completedUser,
+            completedAssistant,
+            activeUser,
+            agentText('thinking'),
+            agentEvent('progress', { type: 'message', message: 'Working' }),
+            agentText('answer')
+        ]
+
+        expect(findLatestCompletedBoundaryId(firstStreamingShape, true, 20)).toBe('agent-text:a1')
+        expect(findLatestCompletedBoundaryId(laterStreamingShape, true, 20)).toBe('agent-text:a1')
+    })
+
+    it('keeps the completed boundary while the active prompt is still queued', () => {
+        const blocks: VisibleChatBlock[] = [
+            userText('u1', { createdAt: 10, invokedAt: 10 }),
+            agentText('a1', { createdAt: 11 })
+        ]
+
+        expect(findLatestCompletedBoundaryId(blocks, true, 20)).toBe('agent-text:a1')
+    })
+
+    it('keeps the boundary before the first user message when a running Pi turn is steered', () => {
+        const blocks: VisibleChatBlock[] = [
+            userText('u1', { invokedAt: 10 }),
+            agentText('a1'),
+            userText('u2', { invokedAt: 20 }),
+            agentText('streaming'),
+            userText('steer', { invokedAt: 30 }),
+            agentText('after-steer')
+        ]
+
+        expect(findLatestCompletedBoundaryId(blocks, true, 20)).toBe('agent-text:a1')
+    })
+
+    it('cuts off active output when the active user row is outside the tail window', () => {
+        const withCompletedHistory: VisibleChatBlock[] = [
+            userText('u1', { invokedAt: 10 }),
+            agentText('a1', { createdAt: 11 }),
+            agentText('streaming', { createdAt: 30 })
+        ]
+        const activeOnly: VisibleChatBlock[] = [
+            agentText('streaming', { createdAt: 30 })
+        ]
+
+        expect(findLatestCompletedBoundaryId(withCompletedHistory, true, 20)).toBe('agent-text:a1')
+        expect(findLatestCompletedBoundaryId(activeOnly, true, 20)).toBeNull()
+    })
+
+    it('promotes the final assistant boundary after the active turn completes', () => {
+        const blocks: VisibleChatBlock[] = [
+            userText('u1', { invokedAt: 10 }),
+            agentText('a1'),
+            userText('u2', { invokedAt: 20 }),
+            agentText('thinking'),
+            agentEvent('progress', { type: 'message', message: 'Working' }),
+            agentText('answer')
+        ]
+
+        expect(findLatestCompletedBoundaryId(blocks, false, null)).toBe('agent-text:answer')
+    })
+
+    it('does not expose a transient boundary when a running tail has no invoked user marker', () => {
+        expect(findLatestCompletedBoundaryId([agentText('streaming')], true, null)).toBeNull()
     })
 })
 

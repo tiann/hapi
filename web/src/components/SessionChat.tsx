@@ -20,7 +20,7 @@ import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
-import { buildVisibleChatBlocks, isToolGroupBlock, visibleBlockRole, type ToolGroupBlock } from '@/chat/toolGroups'
+import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
@@ -45,7 +45,7 @@ import { classifySessionAttention, getSessionAttentionLabelKey } from '@/lib/ses
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
-import { assignThreadMessageIds, useHappyRuntime } from '@/lib/assistant-runtime'
+import { findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
 import {
     getRestoredComposerSendIntent,
     resolveMessageDeliveryMode,
@@ -1294,20 +1294,12 @@ function SessionChatInner(props: SessionChatProps) {
     // and adjacent assistant blocks join under the first block's id.
     const latestCompletedBoundaryId = useMemo(() => {
         if (props.viewMode !== 'tail') return null
-        let candidate: string | null = null
-        let previousRole: ReturnType<typeof visibleBlockRole> | null = null
-        for (const { block, threadMessageId } of assignThreadMessageIds(visibleBlocks)) {
-            const role = visibleBlockRole(block)
-            if (
-                (role === 'user' && block.invokedAt != null)
-                || (role === 'assistant' && previousRole !== 'assistant')
-            ) {
-                candidate = threadMessageId
-            }
-            previousRole = role
-        }
-        return candidate
-    }, [props.viewMode, visibleBlocks])
+        return findLatestCompletedBoundaryId(
+            visibleBlocks,
+            props.session.thinking,
+            props.session.activeTurnStartedAt ?? null
+        )
+    }, [props.viewMode, props.session.activeTurnStartedAt, props.session.thinking, visibleBlocks])
 
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId

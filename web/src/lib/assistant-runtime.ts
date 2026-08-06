@@ -367,6 +367,59 @@ export function assignThreadMessageIds(
     return assignThreadMessageIdsWithStableWrappers(blocks, new WeakMap())
 }
 
+/**
+ * Finds the latest conversation-history boundary that is safe to fork.
+ * While the main agent is running, every block from the latest invoked user
+ * message onward belongs to the active turn and must not become a transient
+ * "completed" boundary as streaming events reshape the visible block list.
+ */
+export function findLatestCompletedBoundaryId(
+    blocks: readonly VisibleChatBlock[],
+    isRunning: boolean,
+    activeTurnStartedAt: number | null
+): string | null {
+    const assigned = assignThreadMessageIds(blocks)
+    let limit = assigned.length
+
+    if (isRunning) {
+        const activeTurnStart = activeTurnStartedAt === null
+            ? assigned.findLastIndex(({ block }) => (
+                visibleBlockRole(block) === 'user' && block.invokedAt != null
+            ))
+            : assigned.findIndex(({ block }) => (
+                visibleBlockRole(block) === 'user'
+                && (block.invokedAt ?? block.createdAt) >= activeTurnStartedAt
+            ))
+        if (activeTurnStart >= 0) {
+            limit = activeTurnStart
+        } else if (activeTurnStartedAt === null) {
+            return null
+        } else {
+            const firstActiveBlock = assigned.findIndex(({ block }) => (
+                (block.invokedAt ?? block.createdAt) >= activeTurnStartedAt
+            ))
+            if (firstActiveBlock >= 0) {
+                limit = firstActiveBlock
+            }
+        }
+    }
+
+    let candidate: string | null = null
+    let previousRole: ReturnType<typeof visibleBlockRole> | null = null
+    for (let index = 0; index < limit; index += 1) {
+        const { block, threadMessageId } = assigned[index]
+        const role = visibleBlockRole(block)
+        if (
+            (role === 'user' && block.invokedAt != null)
+            || (role === 'assistant' && previousRole !== 'assistant')
+        ) {
+            candidate = threadMessageId
+        }
+        previousRole = role
+    }
+    return candidate
+}
+
 function toThreadMessageLike(
     block: VisibleChatBlock,
     threadMessageId: string,
