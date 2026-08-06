@@ -1,12 +1,16 @@
 /**
  * Cross-process exclusive lock for settings.json (and similar).
- * Shared by hub and CLI. Breaks only locks whose recorded PID is dead
- * (or legacy/unparseable sidecars with no owner); release deletes the
- * sidecar only when it still contains our owner token.
+ * Shared by hub and CLI. Breaks only locks whose recorded PID is dead;
+ * release deletes the sidecar only when it still contains our owner token.
+ *
+ * Never reclaim an unreadable/empty sidecar on sight — `wx` makes the path
+ * visible before the owner JSON is published, and unlinking that window lets
+ * two writers into the critical section (fixed `.tmp` collisions / lost fields).
  */
 
 import { randomUUID } from 'node:crypto'
-import { open, readFile, unlink } from 'node:fs/promises'
+import { closeSync, openSync, writeSync } from 'node:fs'
+import { readFile, unlink } from 'node:fs/promises'
 
 const LOCK_RETRY_INTERVAL_MS = 100
 const MAX_LOCK_ATTEMPTS = 50
@@ -14,6 +18,13 @@ const MAX_LOCK_ATTEMPTS = 50
 type LockOwner = {
     pid: number
     token: string
+}
+
+let maxLockAttemptsForTests: number | undefined
+
+/** @internal test-only: shorten acquire retries for fail-closed empty-lock coverage */
+export function setSettingsLockMaxAttemptsForTests(value: number | undefined): void {
+    maxLockAttemptsForTests = value
 }
 
 function isPidAlive(pid: number): boolean {
@@ -47,14 +58,21 @@ export async function withSettingsFileLock<T>(
     const lockFile = `${settingsFile}.lock`
     const owner: LockOwner = { pid: process.pid, token: randomUUID() }
     const ownerPayload = JSON.stringify(owner)
-    let fileHandle: Awaited<ReturnType<typeof open>> | undefined
+    const maxAttempts = maxLockAttemptsForTests ?? MAX_LOCK_ATTEMPTS
+    let acquired = false
     let attempts = 0
 
-    while (attempts < MAX_LOCK_ATTEMPTS) {
+    while (attempts < maxAttempts) {
         try {
-            // 'wx' = create exclusively, fail if exists (cross-platform compatible)
-            fileHandle = await open(lockFile, 'wx', 0o600)
-            await fileHandle.writeFile(ownerPayload, 'utf8')
+            // Sync exclusive create + write so we publish the owner before yielding
+            // back to the event loop (async open→write left a reclaimable empty window).
+            const fd = openSync(lockFile, 'wx', 0o600)
+            try {
+                writeSync(fd, ownerPayload)
+            } finally {
+                closeSync(fd)
+            }
+            acquired = true
             break
         } catch (err: unknown) {
             const code = err && typeof err === 'object' && 'code' in err
@@ -63,9 +81,9 @@ export async function withSettingsFileLock<T>(
             if (code === 'EEXIST') {
                 attempts++
                 const existing = await readLockOwner(lockFile)
-                // Reclaim dead holders and legacy empty/unparseable locks (pre-owner format).
-                // Never reclaim solely by file age — a live holder may be paused across suspend.
-                if (!existing || !isPidAlive(existing.pid)) {
+                // Only reclaim a parsed owner whose PID is confirmed dead.
+                // null may mean the winning writer has not published its payload yet.
+                if (existing && !isPidAlive(existing.pid)) {
                     await unlink(lockFile).catch(() => {})
                     continue
                 }
@@ -76,16 +94,15 @@ export async function withSettingsFileLock<T>(
         }
     }
 
-    if (!fileHandle) {
+    if (!acquired) {
         throw new Error(
-            `Failed to acquire settings lock after ${(MAX_LOCK_ATTEMPTS * LOCK_RETRY_INTERVAL_MS) / 1000} seconds`
+            `Failed to acquire settings lock after ${(maxAttempts * LOCK_RETRY_INTERVAL_MS) / 1000} seconds`
         )
     }
 
     try {
         return await work()
     } finally {
-        await fileHandle.close().catch(() => {})
         const current = await readFile(lockFile, 'utf8').catch(() => null)
         if (current === ownerPayload) {
             await unlink(lockFile).catch(() => {})
