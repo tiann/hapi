@@ -20,14 +20,19 @@ If the operator would reopen the chat only to ask "how's it doing?", it belongs 
 
 ## Agent contract (specification)
 
-HAPI does **not** write your batch scripts. You (the agent) create the process **and** feed the meter.
+HAPI does **not** write your batch scripts for you - but prefer the supervisor so heartbeats are not your problem:
 
-1. **Register** with a stable `job-key` (1–128 chars: alnum / `.` `_` `-`).
-2. **Heartbeat** at least every ~10 minutes while running (UI amber after ~15 minutes quiet).
-3. **Report progress honestly** — see tiers below. Never invent a bare percent.
-4. **Finish cleanly** — `--status completed|failed` or `hapi job clear`.
+```bash
+hapi job run "$HAPI_SESSION_ID" beets \
+  --label 'beets import' \
+  --remaining 150 --done 1637 --total 1787 --unit units \
+  --detail 'album: …' \
+  -- ./beets-import.sh
+```
 
-Session id: prefer `"$HAPI_SESSION_ID"` (exported into every HAPI-wrapped agent). Prefix match also works.
+`hapi job run` registers the job, heartbeats on a timer while the child runs, then marks `completed`/`failed` from the exit code. An idle agent **cannot** heartbeat - set-once + manual update decays to amber.
+
+Manual path (only if you already have a self-heartbeating wrapper):
 
 ```bash
 hapi job set "$HAPI_SESSION_ID" beets \

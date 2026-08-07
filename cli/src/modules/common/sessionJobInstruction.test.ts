@@ -5,10 +5,10 @@ import {
 } from './sessionJobInstruction'
 
 describe('sessionJobInstruction', () => {
-    it('mentions set, update, heartbeat, and no fake percent', () => {
-        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job set')
+    it('prefers job run supervisor and forbids fake percent', () => {
+        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job run')
         expect(SESSION_JOB_INSTRUCTION).toContain('hapi job update')
-        expect(SESSION_JOB_INSTRUCTION).toContain('~10 minutes')
+        expect(SESSION_JOB_INSTRUCTION).toContain('idle agent cannot')
         expect(SESSION_JOB_INSTRUCTION).toContain('Never invent a fake percent')
         expect(SESSION_JOB_INSTRUCTION).toContain('HAPI_SESSION_ID')
     })

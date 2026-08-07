@@ -176,12 +176,12 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 
 When an agent starts process-shaped work that will keep running after the agent goes idle (`nohup`, batch imports, long scripts, external daemons), attach it with `hapi job` so the session list stays truthful while `active: false`. This is **not** thinking progress / todos / in-agent background tools.
 
-Agent contract (HAPI does not write the batch script for you):
+Agent contract (prefer the supervisor — idle agents cannot heartbeat):
 
-1. `hapi job set "$HAPI_SESSION_ID" <key> --label …` when the process starts
-2. `hapi job update` heartbeat at least every ~10 minutes (UI amber after ~15m quiet)
-3. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown (`running` + indeterminate bar) — never invent a percent
-4. `--status completed|failed` or `hapi job clear` when finished
+1. Prefer `hapi job run "$HAPI_SESSION_ID" <key> --label … -- <cmd>` (auto-heartbeat + exit status)
+2. Manual path only with a self-heartbeating wrapper: `set` / `update` ≥~10m / clear
+3. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent
+4. Elapsed wall clock is always shown from `startedAt` (not an ETA)
 
 Full guide: `docs/guide/session-jobs.md`. CLI: `hapi job --help`.
 

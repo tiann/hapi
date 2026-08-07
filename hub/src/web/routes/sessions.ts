@@ -1254,12 +1254,42 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
     // tiann/hapi#1404 — session-attached long-running jobs (works while agent idle).
     const JOB_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
+    function resolveJobOwnerSession(
+        c: Context<WebAppEnv>,
+        engine: SyncEngine
+    ): { sessionId: string; session: Session } | Response {
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            // Session may already be deleted after merge — still try acceptor redirect.
+            const rawId = c.req.param('id') ?? ''
+            const namespace = c.get('namespace')
+            const redirected = engine.resolveAttachedJobSessionId(rawId, namespace)
+            if (redirected !== rawId) {
+                const access = engine.resolveSessionAccess(redirected, namespace)
+                if (access.ok) {
+                    return { sessionId: access.sessionId, session: access.session }
+                }
+            }
+            return sessionResult
+        }
+        const namespace = c.get('namespace')
+        const ownerId = engine.resolveAttachedJobSessionId(sessionResult.sessionId, namespace)
+        if (ownerId === sessionResult.sessionId) {
+            return sessionResult
+        }
+        const access = engine.resolveSessionAccess(ownerId, namespace)
+        if (!access.ok) {
+            return sessionResult
+        }
+        return { sessionId: access.sessionId, session: access.session }
+    }
+
     app.get('/sessions/:id/jobs', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = resolveJobOwnerSession(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -1274,7 +1304,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = resolveJobOwnerSession(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -1299,7 +1329,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = resolveJobOwnerSession(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -1324,7 +1354,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = resolveJobOwnerSession(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }

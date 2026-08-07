@@ -9,11 +9,12 @@ import {
     setSessionJob,
     updateSessionJob
 } from '@/modules/sessionJob/sessionJob'
+import { runSessionJob } from '@/modules/sessionJob/runSessionJob'
 import type { CommandDefinition } from './types'
 
-type ParsedJobArgs = {
+export type ParsedJobArgs = {
     help: boolean
-    action?: 'set' | 'update' | 'clear' | 'list'
+    action?: 'set' | 'update' | 'clear' | 'list' | 'run'
     sessionIdPrefix?: string
     jobKey?: string
     label?: string
@@ -23,6 +24,8 @@ type ParsedJobArgs = {
     remaining?: number
     unit?: string
     detail?: string
+    heartbeatSec?: number
+    command?: string[]
 }
 
 function showHelp(): void {
@@ -30,21 +33,21 @@ function showHelp(): void {
 ${chalk.bold('hapi job')} - Attach long-running work to a HAPI session (tiann/hapi#1404)
 
 ${chalk.bold('When to use:')}
-  Work that outlives the agent (nohup / batch / long scripts / external daemons)
+  Work that outlives the agent (batch / long scripts / external daemons)
   while the session may be idle. Not thinking progress or in-agent background tools.
 
 ${chalk.bold('Agent contract:')}
-  1. set before (or as) the process starts
-  2. update / heartbeat at least every ~10 minutes while running
-  3. prefer honest --remaining or --done/--total; omit counts if unknown
-  4. never invent a fake percent
-  5. clear or --status completed|failed when finished
+  Prefer ${chalk.bold('hapi job run')} — it heartbeats for you and marks completed/failed on exit.
+  An idle agent cannot heartbeat; set-once jobs go amber after ~15m.
+  Prefer honest --remaining or --done/--total; omit counts if unknown.
+  Never invent a fake percent.
 
 ${chalk.bold('Usage:')}
-  hapi job set <session-id-or-prefix> <job-key> --label <text> [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
-  hapi job update <session-id-or-prefix> <job-key> [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
-  hapi job clear <session-id-or-prefix> <job-key>
-  hapi job list <session-id-or-prefix>
+  hapi job run <session> <job-key> --label <text> [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]
+  hapi job set <session> <job-key> --label <text> [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
+  hapi job update <session> <job-key> [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
+  hapi job clear <session> <job-key>
+  hapi job list <session>
 
 ${chalk.bold('Progress UI:')}
   remaining           → "N units left · 2h"
@@ -55,6 +58,7 @@ ${chalk.bold('Progress UI:')}
 ${chalk.bold('Notes:')}
   Hub-persisted. Prefer "$HAPI_SESSION_ID" for this chat.
   Job key: 1-128 chars, alnum / . _ -
+  Session lookup prefers exact id; prefix scan is the 500 most-recently-updated sessions.
   Docs: docs/guide/session-jobs.md
 
 ${chalk.bold('Env:')}
@@ -75,15 +79,20 @@ function parseOptionalNumber(flag: string, value: string | undefined): number {
 
 export function parseJobArgs(args: string[]): ParsedJobArgs {
     const result: ParsedJobArgs = { help: false }
+    const dashDash = args.indexOf('--')
+    const flagArgs = dashDash >= 0 ? args.slice(0, dashDash) : args
+    if (dashDash >= 0) {
+        result.command = args.slice(dashDash + 1)
+    }
 
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i]!
+    for (let i = 0; i < flagArgs.length; i++) {
+        const arg = flagArgs[i]!
         if (arg === '--help' || arg === '-h') {
             result.help = true
             continue
         }
         if (arg === '--label') {
-            result.label = args[++i]
+            result.label = flagArgs[++i]
             if (!result.label) throw new SessionJobError('bad_args', '--label requires a value')
             continue
         }
@@ -92,7 +101,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             continue
         }
         if (arg === '--status') {
-            const value = args[++i]
+            const value = flagArgs[++i]
             if (value !== 'running' && value !== 'completed' && value !== 'failed') {
                 throw new SessionJobError('bad_args', '--status must be running|completed|failed')
             }
@@ -108,7 +117,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             continue
         }
         if (arg === '--done') {
-            result.done = parseOptionalNumber('--done', args[++i])
+            result.done = parseOptionalNumber('--done', flagArgs[++i])
             continue
         }
         if (arg.startsWith('--done=')) {
@@ -116,7 +125,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             continue
         }
         if (arg === '--total') {
-            result.total = parseOptionalNumber('--total', args[++i])
+            result.total = parseOptionalNumber('--total', flagArgs[++i])
             continue
         }
         if (arg.startsWith('--total=')) {
@@ -124,7 +133,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             continue
         }
         if (arg === '--remaining') {
-            result.remaining = parseOptionalNumber('--remaining', args[++i])
+            result.remaining = parseOptionalNumber('--remaining', flagArgs[++i])
             continue
         }
         if (arg.startsWith('--remaining=')) {
@@ -132,7 +141,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             continue
         }
         if (arg === '--unit') {
-            result.unit = args[++i]
+            result.unit = flagArgs[++i]
             if (!result.unit) throw new SessionJobError('bad_args', '--unit requires a value')
             continue
         }
@@ -141,7 +150,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             continue
         }
         if (arg === '--detail') {
-            result.detail = args[++i]
+            result.detail = flagArgs[++i]
             if (result.detail === undefined) throw new SessionJobError('bad_args', '--detail requires a value')
             continue
         }
@@ -149,12 +158,26 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             result.detail = arg.slice('--detail='.length)
             continue
         }
+        if (arg === '--heartbeat-sec') {
+            result.heartbeatSec = parseOptionalNumber('--heartbeat-sec', flagArgs[++i])
+            continue
+        }
+        if (arg.startsWith('--heartbeat-sec=')) {
+            result.heartbeatSec = parseOptionalNumber('--heartbeat-sec', arg.slice('--heartbeat-sec='.length))
+            continue
+        }
         if (arg.startsWith('-')) {
             throw new SessionJobError('bad_args', `unexpected flag: ${arg}`)
         }
         if (!result.action) {
-            if (arg !== 'set' && arg !== 'update' && arg !== 'clear' && arg !== 'list') {
-                throw new SessionJobError('bad_args', `unknown action '${arg}' (set|update|clear|list)`)
+            if (
+                arg !== 'set'
+                && arg !== 'update'
+                && arg !== 'clear'
+                && arg !== 'list'
+                && arg !== 'run'
+            ) {
+                throw new SessionJobError('bad_args', `unknown action '${arg}' (set|update|clear|list|run)`)
             }
             result.action = arg
             continue
@@ -216,7 +239,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
     if (parsed.help || !parsed.action) {
         showHelp()
         if (!parsed.action && !parsed.help) {
-            throw new SessionJobError('bad_args', 'missing action; usage: hapi job set|update|clear|list ...')
+            throw new SessionJobError('bad_args', 'missing action; usage: hapi job set|update|clear|list|run ...')
         }
         return
     }
@@ -274,6 +297,34 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             body
         })
         console.log(`set ${formatJobLine(result.job)}`)
+        return
+    }
+
+    if (parsed.action === 'run') {
+        if (!parsed.label) {
+            throw new SessionJobError('bad_args', 'run requires --label')
+        }
+        if (!parsed.command || parsed.command.length === 0) {
+            throw new SessionJobError('bad_args', 'run requires a command after --')
+        }
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: parsed.sessionIdPrefix,
+            jobKey: parsed.jobKey,
+            label: parsed.label,
+            command: parsed.command,
+            ...(parsed.heartbeatSec !== undefined
+                ? { heartbeatMs: Math.max(5, parsed.heartbeatSec) * 1000 }
+                : {}),
+            ...(parsed.done !== undefined ? { done: parsed.done } : {}),
+            ...(parsed.total !== undefined ? { total: parsed.total } : {}),
+            ...(parsed.remaining !== undefined ? { remaining: parsed.remaining } : {}),
+            ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
+            ...(parsed.detail !== undefined ? { detail: parsed.detail } : {})
+        })
+        if (exitCode !== 0) {
+            process.exitCode = exitCode
+        }
+        console.log(`run finished exit=${exitCode} job=${parsed.jobKey}`)
         return
     }
 

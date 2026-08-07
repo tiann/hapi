@@ -1161,6 +1161,12 @@ export class SessionCache {
         const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
         const movedJobs = this.store.sessionJobs.transfer(oldSessionId, newSessionId)
         if (movedJobs.moved > 0 || movedJobs.collided > 0) {
+            // Agents keep addressing $HAPI_SESSION_ID from the pre-merge row.
+            // Record redirects so job REST routes can follow the live job owner.
+            this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
+            if (!options.deleteOldSession) {
+                this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
+            }
             this.emitAttachedJobChanged(
                 newSessionId,
                 this.store.sessionJobs.getPrimaryRunning(newSessionId)
@@ -1361,6 +1367,116 @@ export class SessionCache {
         if (refreshed) {
             this.publisher.emit({ type: 'session-updated', sessionId: newSessionId, data: refreshed })
         }
+    }
+
+    /**
+     * Target session remembers it absorbed jobs from `fromSessionId` so job
+     * REST routes can follow `$HAPI_SESSION_ID` after the source row is deleted.
+     */
+    private recordJobsAcceptedFromSession(
+        toSessionId: string,
+        fromSessionId: string,
+        namespace: string
+    ): void {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
+            if (!latest) return
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            const prev = Array.isArray(meta.jobsAcceptedFromSessionIds)
+                ? meta.jobsAcceptedFromSessionIds.filter((id): id is string => typeof id === 'string')
+                : []
+            if (prev.includes(fromSessionId)) return
+            meta.jobsAcceptedFromSessionIds = [...prev, fromSessionId]
+            const result = this.store.sessions.updateSessionMetadata(
+                toSessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.refreshSession(toSessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
+    /** Source session (kept alive) points job APIs at the post-merge owner. */
+    private recordJobsTransferredToSession(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string
+    ): void {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(fromSessionId, namespace)
+            if (!latest) return
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            if (meta.jobsTransferredToSessionId === toSessionId) return
+            meta.jobsTransferredToSessionId = toSessionId
+            const result = this.store.sessions.updateSessionMetadata(
+                fromSessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.refreshSession(fromSessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
+    /**
+     * Follow job-owner redirects after session merge/dedup so agents that still
+     * hold the pre-merge `$HAPI_SESSION_ID` can heartbeat.
+     */
+    resolveAttachedJobSessionId(sessionId: string, namespace: string): string {
+        let current = sessionId
+        for (let hop = 0; hop < 5; hop += 1) {
+            const access = this.resolveSessionAccess(current, namespace)
+            if (access.ok) {
+                const meta = access.session.metadata as Record<string, unknown> | null | undefined
+                const next =
+                    (typeof meta?.jobsTransferredToSessionId === 'string'
+                        && meta.jobsTransferredToSessionId.trim())
+                    || (typeof meta?.supersededBySessionId === 'string'
+                        && meta.supersededBySessionId.trim())
+                    || ''
+                if (next && next !== current) {
+                    current = next
+                    continue
+                }
+                return current
+            }
+            // Source row may already be deleted — find who accepted its jobs.
+            const acceptor = this.findSessionThatAcceptedJobsFrom(current, namespace)
+            if (acceptor && acceptor !== current) {
+                current = acceptor
+                continue
+            }
+            return current
+        }
+        return current
+    }
+
+    private findSessionThatAcceptedJobsFrom(fromSessionId: string, namespace: string): string | null {
+        for (const session of this.getSessions()) {
+            if (session.namespace !== namespace) continue
+            const meta = session.metadata as Record<string, unknown> | null | undefined
+            const accepted = meta?.jobsAcceptedFromSessionIds
+            if (!Array.isArray(accepted)) continue
+            if (accepted.some((id) => id === fromSessionId)) {
+                return session.id
+            }
+        }
+        return null
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {

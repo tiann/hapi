@@ -98,7 +98,7 @@ function authHeaders(jwt: string): Record<string, string> {
 
 type SessionListItem = { id: string }
 
-function resolveSessionByPrefix(sessions: SessionListItem[], prefix: string): SessionListItem {
+export function resolveSessionByPrefix(sessions: SessionListItem[], prefix: string): SessionListItem {
     const trimmed = prefix.trim()
     if (!trimmed) {
         throw new SessionJobError('bad_args', 'session id prefix is required')

@@ -35,6 +35,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
 
         const engine = {
             resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
+            resolveAttachedJobSessionId: (id: string) => id,
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: () => new Map(),
             getNextScheduledAtBySessionIds: () => new Map(),
