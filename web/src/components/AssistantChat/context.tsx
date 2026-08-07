@@ -12,6 +12,7 @@ export type HappyChatContextValue = {
     metadata: SessionMetadataSummary | null
     terminalToolDisplayMode: TerminalToolDisplayMode
     disabled: boolean
+    controlledByUser?: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean

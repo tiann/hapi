@@ -441,6 +441,7 @@ export function HappyThread(props: {
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
+    controlledByUser?: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
@@ -1571,6 +1572,7 @@ export function HappyThread(props: {
             metadata: props.metadata,
             terminalToolDisplayMode,
             disabled: props.disabled,
+            controlledByUser: props.controlledByUser === true,
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
