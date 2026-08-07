@@ -17,6 +17,12 @@ import {
     resolveHubVoiceBackend
 } from '@hapi/protocol/voice'
 import type { TranscriptionProvider, VoiceBackendType } from '@hapi/protocol/voice'
+import {
+    getProviderEnvironment,
+    getTranscriptionCredentialStatus,
+    updateTranscriptionCredentials,
+} from '../../config/providerCredentials'
+import { getConfiguration } from '../../configuration'
 
 function buildVoiceWsUrl(base: string, pathname: string): string {
     const url = new URL(base)
@@ -77,21 +83,22 @@ function getTranscriptionConfig(provider: TranscriptionProvider): {
     baseUrl: string
     model: string
 } | null {
-    if (!listConfiguredTranscriptionProviders(process.env).some((candidate) => candidate.id === provider)) return null
+    const env = getProviderEnvironment()
+    if (!listConfiguredTranscriptionProviders(env).some((candidate) => candidate.id === provider)) return null
     switch (provider) {
         case 'openai':
-            return { apiKey: process.env.OPENAI_API_KEY!.trim(), baseUrl: 'https://api.openai.com/v1', model: OPENAI_TRANSCRIPTION_MODEL }
+            return { apiKey: env.OPENAI_API_KEY!.trim(), baseUrl: 'https://api.openai.com/v1', model: OPENAI_TRANSCRIPTION_MODEL }
         case 'elevenlabs':
-            return { apiKey: process.env.ELEVENLABS_API_KEY!.trim(), baseUrl: ELEVENLABS_API_BASE, model: ELEVENLABS_TRANSCRIPTION_MODEL }
+            return { apiKey: env.ELEVENLABS_API_KEY!.trim(), baseUrl: ELEVENLABS_API_BASE, model: ELEVENLABS_TRANSCRIPTION_MODEL }
         case 'deepgram':
-            return { apiKey: process.env.DEEPGRAM_API_KEY!.trim(), baseUrl: 'https://api.deepgram.com/v1', model: DEEPGRAM_TRANSCRIPTION_MODEL }
+            return { apiKey: env.DEEPGRAM_API_KEY!.trim(), baseUrl: 'https://api.deepgram.com/v1', model: DEEPGRAM_TRANSCRIPTION_MODEL }
         case 'groq':
-            return { apiKey: process.env.GROQ_API_KEY!.trim(), baseUrl: 'https://api.groq.com/openai/v1', model: GROQ_TRANSCRIPTION_MODEL }
+            return { apiKey: env.GROQ_API_KEY!.trim(), baseUrl: 'https://api.groq.com/openai/v1', model: GROQ_TRANSCRIPTION_MODEL }
         case 'openai-compatible': {
-            const baseUrl = process.env.TRANSCRIPTION_BASE_URL?.trim()
-            const model = process.env.TRANSCRIPTION_MODEL?.trim()
+            const baseUrl = env.TRANSCRIPTION_BASE_URL?.trim()
+            const model = env.TRANSCRIPTION_MODEL?.trim()
             return baseUrl && model
-                ? { apiKey: process.env.TRANSCRIPTION_API_KEY?.trim(), baseUrl: trimTrailingSlash(baseUrl), model }
+                ? { apiKey: env.TRANSCRIPTION_API_KEY?.trim(), baseUrl: trimTrailingSlash(baseUrl), model }
                 : null
         }
         case 'browser-local':
@@ -449,18 +456,62 @@ async function getOrCreateAgentIdForVoice(apiKey: string, voiceId?: string): Pro
     return agentId
 }
 
-export function createVoiceRoutes(): Hono<WebAppEnv> {
+const transcriptionCredentialsUpdateSchema = z.object({
+    openai: z.string().nullable().optional(),
+    elevenlabs: z.string().nullable().optional(),
+    deepgram: z.string().nullable().optional(),
+    groq: z.string().nullable().optional(),
+    openaiCompatible: z.object({
+        baseUrl: z.string().nullable().optional(),
+        model: z.string().nullable().optional(),
+        apiKey: z.string().nullable().optional(),
+    }).optional(),
+    geminiLive: z.string().nullable().optional(),
+    qwenRealtime: z.string().nullable().optional(),
+}).strict()
+
+export function createVoiceRoutes(options: { dataDir?: string } = {}): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const resolveDataDir = () => options.dataDir ?? getConfiguration().dataDir
 
     // Hub default backend + all backends with credentials configured
     app.get('/voice/backend', (c) => {
-        const backends = listConfiguredVoiceBackends(process.env)
-        const backend = resolveHubVoiceBackend(process.env)
+        const env = getProviderEnvironment()
+        const backends = listConfiguredVoiceBackends(env)
+        const backend = resolveHubVoiceBackend(env)
         return c.json({ backend, backends })
     })
 
     app.get('/voice/transcription/providers', (c) => {
-        return c.json({ providers: listConfiguredTranscriptionProviders(process.env) })
+        return c.json({ providers: listConfiguredTranscriptionProviders(getProviderEnvironment()) })
+    })
+
+    app.get('/voice/transcription/credentials', async (c) => {
+        if (c.get('namespace') !== 'default') {
+            return c.json({ error: 'Provider credentials are only available to the hub owner' }, 403)
+        }
+        return c.json(await getTranscriptionCredentialStatus(resolveDataDir()))
+    })
+
+    app.put('/voice/transcription/credentials', async (c) => {
+        if (c.get('namespace') !== 'default') {
+            return c.json({ error: 'Provider credentials are only available to the hub owner' }, 403)
+        }
+        const json = await c.req.json().catch(() => null)
+        const parsed = transcriptionCredentialsUpdateSchema.safeParse(json)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid transcription credentials payload' }, 400)
+        }
+        try {
+            const status = await updateTranscriptionCredentials(resolveDataDir(), parsed.data)
+            return c.json(status)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to update credentials'
+            if (message.includes('environment variable')) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
     })
 
     app.post('/voice/transcription', bodyLimit({
@@ -508,7 +559,8 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
     // Gemini Live API does not support ephemeral tokens, so we proxy the key.
     // The key is short-lived in the browser session and never persisted client-side.
     app.post('/voice/gemini-token', async (c) => {
-        const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+        const env = getProviderEnvironment()
+        const apiKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY
         if (!apiKey) {
             return c.json({
                 allowed: false,
@@ -535,7 +587,8 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
     // Check Qwen (DashScope) availability for Qwen Realtime voice sessions
     // The actual API key is never sent to the browser — it stays server-side in the WS proxy.
     app.post('/voice/qwen-token', async (c) => {
-        const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
+        const env = getProviderEnvironment()
+        const apiKey = env.DASHSCOPE_API_KEY || env.QWEN_API_KEY
         if (!apiKey) {
             return c.json({
                 allowed: false,
@@ -566,7 +619,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
         const { customAgentId, customApiKey, voiceId } = parsed.data
 
         // Use custom credentials if provided, otherwise fall back to env vars
-        const apiKey = customApiKey || process.env.ELEVENLABS_API_KEY
+        const apiKey = customApiKey || getProviderEnvironment().ELEVENLABS_API_KEY
         const voiceAgentMap = parseVoiceAgentMap()
         const mappedAgentId = voiceId ? voiceAgentMap[voiceId] : undefined
         let agentId = customAgentId || mappedAgentId
@@ -680,7 +733,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
     // Get available ElevenLabs voices (includes user's voice clones)
     app.get('/voice/voices', async (c) => {
         const requestId = crypto.randomUUID()
-        const apiKey = process.env.ELEVENLABS_API_KEY
+        const apiKey = getProviderEnvironment().ELEVENLABS_API_KEY
         if (!apiKey) {
             console.warn('[Voice][Voices] Missing API key, returning empty voices list', { requestId })
             return c.json({ voices: [] })

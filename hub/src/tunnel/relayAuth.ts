@@ -9,14 +9,14 @@
  * tunnel — there is no shared-key fallback.
  */
 
-import { readSettings, updateSettings, type Settings } from '../config/settings'
+import { readSettings, updateSettings, type Settings, type SettingsUpdateOutcome } from '../config/settings'
 
 type FetchRelayAuth = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
 async function issueRelayAuthKey(
     apiDomain: string,
     settingsFile: string,
-    settings: Settings | null,
+    settingsReadable: boolean,
     fetchRelayAuth: FetchRelayAuth
 ): Promise<string> {
     const resp = await fetchRelayAuth(`https://${apiDomain}/issue`, {
@@ -41,11 +41,11 @@ async function issueRelayAuthKey(
     if (typeof data.key !== 'string' || !data.key) {
         throw new Error(`Relay at ${apiDomain} returned an invalid key response.`)
     }
-    // settings === null means the file exists but is unparseable; don't clobber it
-    if (settings !== null) {
+    // settingsReadable === false means the file exists but is unparseable; don't clobber it
+    if (settingsReadable) {
         await updateSettings(settingsFile, (current) => ({
-            ...current,
-            relayAuthKey: data.key
+            settings: { ...current, relayAuthKey: data.key },
+            result: undefined,
         }))
     }
     console.log('[Tunnel] Obtained per-hub relay auth key')
@@ -67,7 +67,7 @@ export async function resolveRelayAuthKey(
         return settings.relayAuthKey
     }
 
-    return issueRelayAuthKey(apiDomain, settingsFile, settings, fetchRelayAuth)
+    return issueRelayAuthKey(apiDomain, settingsFile, settings !== null, fetchRelayAuth)
 }
 
 export async function refreshRejectedRelayAuthKey(
@@ -83,19 +83,26 @@ export async function refreshRejectedRelayAuthKey(
         )
     }
 
-    const settings = await readSettings(settingsFile)
-    if (settings === null) {
-        throw new Error(`Cannot refresh relay auth while ${settingsFile} is unreadable.`)
-    }
-    if (settings.relayAuthKey && settings.relayAuthKey !== rejectedKey) {
-        return settings.relayAuthKey
-    }
-
-    const cleared = await updateSettings(settingsFile, (current) => {
-        const next = { ...current }
-        delete next.relayAuthKey
-        return next
+    const keptOrCleared = await updateSettings(settingsFile, (settings): SettingsUpdateOutcome<
+        { kind: 'keep'; key: string } | { kind: 'cleared' }
+    > => {
+        if (settings.relayAuthKey && settings.relayAuthKey !== rejectedKey) {
+            return {
+                settings,
+                result: { kind: 'keep', key: settings.relayAuthKey },
+                write: false,
+            }
+        }
+        const clearedSettings: Settings = { ...settings }
+        delete clearedSettings.relayAuthKey
+        return {
+            settings: clearedSettings,
+            result: { kind: 'cleared' },
+        }
     })
+    if (keptOrCleared.kind === 'keep') {
+        return keptOrCleared.key
+    }
     console.warn('[Tunnel] Relay auth key rejected; requesting a replacement')
-    return issueRelayAuthKey(apiDomain, settingsFile, cleared, fetchRelayAuth)
+    return issueRelayAuthKey(apiDomain, settingsFile, true, fetchRelayAuth)
 }

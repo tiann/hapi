@@ -8,7 +8,7 @@
  * it will be saved to settings.json for future use
  */
 
-import { getSettingsFile, readSettings, writeSettings } from './settings'
+import { getSettingsFile, updateSettings } from './settings'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -91,162 +91,155 @@ function rejectOldSettingsFields(settings: object, settingsFile: string): void {
  */
 export async function loadServerSettings(dataDir: string): Promise<ServerSettingsResult> {
     const settingsFile = getSettingsFile(dataDir)
-    const settings = await readSettings(settingsFile)
+    return updateSettings(settingsFile, (settings) => {
+        rejectOldSettingsFields(settings, settingsFile)
 
-    // If settings file exists but couldn't be parsed, fail fast
-    if (settings === null) {
-        throw new Error(
-            `Cannot read ${settingsFile}. Please fix or remove the file and restart.`
-        )
-    }
-    rejectOldSettingsFields(settings, settingsFile)
-
-    let needsSave = false
-    const sources: ServerSettingsResult['sources'] = {
-        telegramBotToken: 'default',
-        telegramNotification: 'default',
-        serverChanSendKey: 'default',
-        serverChanNotification: 'default',
-        listenHost: 'default',
-        listenPort: 'default',
-        publicUrl: 'default',
-        corsOrigins: 'default',
-    }
-    // telegramBotToken: env > file > null
-    let telegramBotToken: string | null = null
-    if (process.env.TELEGRAM_BOT_TOKEN) {
-        telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
-        sources.telegramBotToken = 'env'
-        if (settings.telegramBotToken === undefined) {
-            settings.telegramBotToken = telegramBotToken
-            needsSave = true
+        let needsSave = false
+        const sources: ServerSettingsResult['sources'] = {
+            telegramBotToken: 'default',
+            telegramNotification: 'default',
+            serverChanSendKey: 'default',
+            serverChanNotification: 'default',
+            listenHost: 'default',
+            listenPort: 'default',
+            publicUrl: 'default',
+            corsOrigins: 'default',
         }
-    } else if (settings.telegramBotToken !== undefined) {
-        telegramBotToken = settings.telegramBotToken
-        sources.telegramBotToken = 'file'
-    }
-
-    // telegramNotification: env > file > true
-    let telegramNotification = true
-    if (process.env.TELEGRAM_NOTIFICATION !== undefined) {
-        telegramNotification = process.env.TELEGRAM_NOTIFICATION === 'true'
-        sources.telegramNotification = 'env'
-        if (settings.telegramNotification === undefined) {
-            settings.telegramNotification = telegramNotification
-            needsSave = true
+        // telegramBotToken: env > file > null
+        let telegramBotToken: string | null = null
+        if (process.env.TELEGRAM_BOT_TOKEN) {
+            telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
+            sources.telegramBotToken = 'env'
+            if (settings.telegramBotToken === undefined) {
+                settings.telegramBotToken = telegramBotToken
+                needsSave = true
+            }
+        } else if (settings.telegramBotToken !== undefined) {
+            telegramBotToken = settings.telegramBotToken
+            sources.telegramBotToken = 'file'
         }
-    } else if (settings.telegramNotification !== undefined) {
-        telegramNotification = settings.telegramNotification
-        sources.telegramNotification = 'file'
-    }
 
-    // serverChanSendKey: env > file > null
-    let serverChanSendKey: string | null = null
-    if (process.env.SERVERCHAN_SENDKEY) {
-        serverChanSendKey = process.env.SERVERCHAN_SENDKEY
-        sources.serverChanSendKey = 'env'
-        if (settings.serverChanSendKey === undefined) {
-            settings.serverChanSendKey = serverChanSendKey
-            needsSave = true
+        // telegramNotification: env > file > true
+        let telegramNotification = true
+        if (process.env.TELEGRAM_NOTIFICATION !== undefined) {
+            telegramNotification = process.env.TELEGRAM_NOTIFICATION === 'true'
+            sources.telegramNotification = 'env'
+            if (settings.telegramNotification === undefined) {
+                settings.telegramNotification = telegramNotification
+                needsSave = true
+            }
+        } else if (settings.telegramNotification !== undefined) {
+            telegramNotification = settings.telegramNotification
+            sources.telegramNotification = 'file'
         }
-    } else if (settings.serverChanSendKey !== undefined) {
-        serverChanSendKey = settings.serverChanSendKey
-        sources.serverChanSendKey = 'file'
-    }
 
-    // serverChanNotification: env > file > true
-    let serverChanNotification = true
-    if (process.env.SERVERCHAN_NOTIFICATION !== undefined) {
-        serverChanNotification = process.env.SERVERCHAN_NOTIFICATION === 'true'
-        sources.serverChanNotification = 'env'
-        if (settings.serverChanNotification === undefined) {
-            settings.serverChanNotification = serverChanNotification
-            needsSave = true
+        // serverChanSendKey: env > file > null
+        let serverChanSendKey: string | null = null
+        if (process.env.SERVERCHAN_SENDKEY) {
+            serverChanSendKey = process.env.SERVERCHAN_SENDKEY
+            sources.serverChanSendKey = 'env'
+            if (settings.serverChanSendKey === undefined) {
+                settings.serverChanSendKey = serverChanSendKey
+                needsSave = true
+            }
+        } else if (settings.serverChanSendKey !== undefined) {
+            serverChanSendKey = settings.serverChanSendKey
+            sources.serverChanSendKey = 'file'
         }
-    } else if (settings.serverChanNotification !== undefined) {
-        serverChanNotification = settings.serverChanNotification
-        sources.serverChanNotification = 'file'
-    }
 
-    // listenHost: env > file > default
-    let listenHost = '127.0.0.1'
-    if (process.env.HAPI_LISTEN_HOST) {
-        listenHost = process.env.HAPI_LISTEN_HOST
-        sources.listenHost = 'env'
-        if (settings.listenHost === undefined) {
-            settings.listenHost = listenHost
-            needsSave = true
+        // serverChanNotification: env > file > true
+        let serverChanNotification = true
+        if (process.env.SERVERCHAN_NOTIFICATION !== undefined) {
+            serverChanNotification = process.env.SERVERCHAN_NOTIFICATION === 'true'
+            sources.serverChanNotification = 'env'
+            if (settings.serverChanNotification === undefined) {
+                settings.serverChanNotification = serverChanNotification
+                needsSave = true
+            }
+        } else if (settings.serverChanNotification !== undefined) {
+            serverChanNotification = settings.serverChanNotification
+            sources.serverChanNotification = 'file'
         }
-    } else if (settings.listenHost !== undefined) {
-        listenHost = settings.listenHost
-        sources.listenHost = 'file'
-    }
 
-    // listenPort: env > file > default
-    let listenPort = 3006
-    if (process.env.HAPI_LISTEN_PORT) {
-        const parsed = parseInt(process.env.HAPI_LISTEN_PORT, 10)
-        if (!Number.isFinite(parsed) || parsed <= 0) {
-            throw new Error('HAPI_LISTEN_PORT must be a valid port number')
+        // listenHost: env > file > default
+        let listenHost = '127.0.0.1'
+        if (process.env.HAPI_LISTEN_HOST) {
+            listenHost = process.env.HAPI_LISTEN_HOST
+            sources.listenHost = 'env'
+            if (settings.listenHost === undefined) {
+                settings.listenHost = listenHost
+                needsSave = true
+            }
+        } else if (settings.listenHost !== undefined) {
+            listenHost = settings.listenHost
+            sources.listenHost = 'file'
         }
-        listenPort = parsed
-        sources.listenPort = 'env'
-        if (settings.listenPort === undefined) {
-            settings.listenPort = listenPort
-            needsSave = true
+
+        // listenPort: env > file > default
+        let listenPort = 3006
+        if (process.env.HAPI_LISTEN_PORT) {
+            const parsed = parseInt(process.env.HAPI_LISTEN_PORT, 10)
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+                throw new Error('HAPI_LISTEN_PORT must be a valid port number')
+            }
+            listenPort = parsed
+            sources.listenPort = 'env'
+            if (settings.listenPort === undefined) {
+                settings.listenPort = listenPort
+                needsSave = true
+            }
+        } else if (settings.listenPort !== undefined) {
+            listenPort = settings.listenPort
+            sources.listenPort = 'file'
         }
-    } else if (settings.listenPort !== undefined) {
-        listenPort = settings.listenPort
-        sources.listenPort = 'file'
-    }
 
-    // publicUrl: env > file > default
-    let publicUrl = `http://localhost:${listenPort}`
-    if (process.env.HAPI_PUBLIC_URL) {
-        publicUrl = process.env.HAPI_PUBLIC_URL
-        sources.publicUrl = 'env'
-        if (settings.publicUrl === undefined) {
-            settings.publicUrl = publicUrl
-            needsSave = true
+        // publicUrl: env > file > default
+        let publicUrl = `http://localhost:${listenPort}`
+        if (process.env.HAPI_PUBLIC_URL) {
+            publicUrl = process.env.HAPI_PUBLIC_URL
+            sources.publicUrl = 'env'
+            if (settings.publicUrl === undefined) {
+                settings.publicUrl = publicUrl
+                needsSave = true
+            }
+        } else if (settings.publicUrl !== undefined) {
+            publicUrl = settings.publicUrl
+            sources.publicUrl = 'file'
         }
-    } else if (settings.publicUrl !== undefined) {
-        publicUrl = settings.publicUrl
-        sources.publicUrl = 'file'
-    }
 
-    // corsOrigins: env > file > derived from publicUrl
-    let corsOrigins: string[]
-    if (process.env.CORS_ORIGINS) {
-        corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS)
-        sources.corsOrigins = 'env'
-        if (settings.corsOrigins === undefined) {
-            settings.corsOrigins = corsOrigins
-            needsSave = true
+        // corsOrigins: env > file > derived from publicUrl
+        let corsOrigins: string[]
+        if (process.env.CORS_ORIGINS) {
+            corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS)
+            sources.corsOrigins = 'env'
+            if (settings.corsOrigins === undefined) {
+                settings.corsOrigins = corsOrigins
+                needsSave = true
+            }
+        } else if (settings.corsOrigins !== undefined) {
+            corsOrigins = settings.corsOrigins
+            sources.corsOrigins = 'file'
+        } else {
+            corsOrigins = deriveCorsOrigins(publicUrl)
         }
-    } else if (settings.corsOrigins !== undefined) {
-        corsOrigins = settings.corsOrigins
-        sources.corsOrigins = 'file'
-    } else {
-        corsOrigins = deriveCorsOrigins(publicUrl)
-    }
 
-    // Save settings if any new values were added
-    if (needsSave) {
-        await writeSettings(settingsFile, settings)
-    }
-
-    return {
-        settings: {
-            telegramBotToken,
-            telegramNotification,
-            serverChanSendKey,
-            serverChanNotification,
-            listenHost,
-            listenPort,
-            publicUrl,
-            corsOrigins,
-        },
-        sources,
-        savedToFile: needsSave,
-    }
+        return {
+            settings,
+            write: needsSave,
+            result: {
+                settings: {
+                    telegramBotToken,
+                    telegramNotification,
+                    serverChanSendKey,
+                    serverChanNotification,
+                    listenHost,
+                    listenPort,
+                    publicUrl,
+                    corsOrigins,
+                },
+                sources,
+                savedToFile: needsSave,
+            },
+        }
+    })
 }

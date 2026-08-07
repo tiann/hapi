@@ -5,6 +5,8 @@ import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     filterActiveSessionsOnly,
+    filterUnreadSessionsOnly,
+    UNKNOWN_MACHINE_ID,
     getSessionTimeRange,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
@@ -449,6 +451,62 @@ describe('filterActiveSessionsOnly', () => {
             makeSession({ id: 'c', active: true, metadata: { path: '/p' } })
         ]
         expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['a', 'c'])
+    })
+})
+
+describe('filterUnreadSessionsOnly', () => {
+    const lastSeen = (id: string): number => {
+        if (id === 'unread') return 1000
+        return 10_000
+    }
+
+    it('keeps only sessions newer than lastSeen; drops seen and selected-only quiet rows stay when selected', () => {
+        const sessions = [
+            makeSession({ id: 'unread', updatedAt: 5000, metadata: { path: '/p' } }),
+            makeSession({ id: 'seen', updatedAt: 1000, metadata: { path: '/p' } }),
+            makeSession({
+                id: 'permission-but-seen',
+                pendingRequestKinds: ['permission'],
+                pendingRequestsCount: 1,
+                updatedAt: 1000,
+                metadata: { path: '/p' },
+            }),
+        ]
+        expect(filterUnreadSessionsOnly(sessions, null, lastSeen).map(s => s.id))
+            .toEqual(['unread'])
+    })
+
+    it('keeps the selected session visible even when it would otherwise filter out', () => {
+        const sessions = [
+            makeSession({ id: 'unread', updatedAt: 5000, metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-quiet', updatedAt: 1000, metadata: { path: '/p' } }),
+        ]
+        expect(filterUnreadSessionsOnly(sessions, 'selected-quiet', lastSeen).map(s => s.id))
+            .toEqual(['unread', 'selected-quiet'])
+    })
+
+    it('composes with machine filter as empty intersection (unread after machine scope stays selected)', () => {
+        // Mirrors SessionList pipeline: unread on visibleSessions, then machine filter.
+        // Machine B selected + only machine A unread → empty list, not "all unread".
+        const sessions = [
+            makeSession({
+                id: 'unread-a',
+                updatedAt: 5000,
+                metadata: { path: '/a', machineId: 'machine-a' },
+            }),
+            makeSession({
+                id: 'seen-b',
+                updatedAt: 1000,
+                metadata: { path: '/b', machineId: 'machine-b' },
+            }),
+        ]
+        const lastSeenById = (id: string) => (id === 'unread-a' ? 0 : 10_000)
+        const unreadFiltered = filterUnreadSessionsOnly(sessions, null, lastSeenById)
+        const machineB = unreadFiltered.filter(
+            session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === 'machine-b'
+        )
+        expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
+        expect(machineB).toEqual([])
     })
 })
 

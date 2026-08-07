@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { StorageUsagePie } from '@/components/settings/StorageUsagePie'
 import { SettingsPageContent, SettingsRow, SettingsSection } from '@/components/settings/SettingsPrimitives'
 import { useAppContext } from '@/lib/app-context'
 import { formatFileSize } from '@/lib/file-metadata'
@@ -23,23 +24,37 @@ export default function SettingsStoragePage() {
 
     return (
         <SettingsPageContent description={t('settings.storage.description')}>
-            <SettingsSection>
-                {query.isLoading ? <SettingsRow label={t('settings.storage.loading')} /> : null}
-                {query.error ? <SettingsRow label={t('settings.storage.error')} description={query.error instanceof Error ? query.error.message : undefined} /> : null}
-                {query.data ? (
-                    <>
-                        <SettingsRow label={t('settings.storage.total')} trailing={<span className="font-medium text-[var(--app-fg)]">{formatFileSize(query.data.totalBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.database')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.databaseBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.wal')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.walBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.shm')} trailing={<span className="text-[var(--app-hint)]">{formatFileSize(query.data.shmBytes)}</span>} />
-                        <SettingsRow label={t('settings.storage.path')} trailing={
-                            <code className="block max-w-[min(20rem,55vw)] truncate text-xs text-[var(--app-hint)]" title={query.data.path}>
-                                {query.data.path}
-                            </code>
-                        } />
-                    </>
-                ) : null}
-            </SettingsSection>
+            {query.isLoading || query.error ? (
+                <SettingsSection>
+                    {query.isLoading ? <SettingsRow label={t('settings.storage.loading')} /> : null}
+                    {query.error ? (
+                        <SettingsRow
+                            label={t('settings.storage.error')}
+                            description={query.error instanceof Error ? query.error.message : undefined}
+                        />
+                    ) : null}
+                </SettingsSection>
+            ) : null}
+            {query.data ? (
+                <StorageUsagePie
+                    usage={{
+                        databaseBytes: query.data.databaseBytes,
+                        walBytes: query.data.walBytes,
+                        shmBytes: query.data.shmBytes,
+                    }}
+                    totalBytes={query.data.totalBytes}
+                    path={query.data.path}
+                    labels={{
+                        title: t('settings.storage.chartTitle'),
+                        empty: t('settings.storage.chartEmpty'),
+                        database: t('settings.storage.database'),
+                        wal: t('settings.storage.wal'),
+                        shm: t('settings.storage.shm'),
+                        total: t('settings.storage.total'),
+                        path: t('settings.storage.path'),
+                    }}
+                />
+            ) : null}
             <button
                 type="button"
                 onClick={() => void query.refetch()}

@@ -92,6 +92,13 @@
     "runnerAutoStartWhenRunningHappy": {
       "type": "boolean",
       "description": "Auto-start runner when running hapi command."
+    },
+    "providerCredentials": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Hub-managed voice and dictation provider credentials; process environment variables win over settings-backed values."
     }
   },
   "additionalProperties": false

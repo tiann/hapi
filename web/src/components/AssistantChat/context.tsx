@@ -26,6 +26,7 @@ export type HappyChatContextValue = {
     hasMoreMessages: boolean
     isSyncingTail: boolean
     isLoadingMoreMessages: boolean
+    onNestedScrollFollowChange?: (followLatest: boolean) => void
     loadOlderMessagesPreservingScroll: () => Promise<OlderHistoryLoadResult>
 }
 

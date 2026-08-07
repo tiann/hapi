@@ -27,6 +27,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
+import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
 import { getSettingsFile } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
 
@@ -154,6 +155,10 @@ class Configuration {
         if (settingsResult.savedToFile) {
             console.log(`[Hub] Configuration saved to ${getSettingsFile(dataDir)}`)
         }
+
+        // 3b. Apply Settings-managed provider credentials into process.env
+        // (env vars set at process start still win; no restart needed for UI saves)
+        await applyProviderCredentialsFromSettings(dataDir)
 
         // 4. Create configuration instance
         const config = new Configuration(

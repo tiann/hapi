@@ -15,8 +15,8 @@ import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/u
 import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
-import { classifySessionAttention } from '@/lib/sessionAttention'
-import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
+import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
+import { getSessionLastSeenAt, getSessionLastSeenSnapshot } from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
@@ -234,6 +234,19 @@ export function prepareSidebarSessions(sessions: SessionSummary[], selectedSessi
 // selected session out from under them.
 export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
     return sessions.filter(session => session.active || session.id === selectedSessionId)
+}
+
+// Transient unread lens: hide sessions the operator has already seen.
+// Keep the open session visible. Not Overseer / "needs attention" — just unread.
+export function filterUnreadSessionsOnly(
+    sessions: SessionSummary[],
+    selectedSessionId: string | null | undefined,
+    getLastSeenAt: (sessionId: string) => number
+): SessionSummary[] {
+    return sessions.filter(session =>
+        session.id === selectedSessionId
+        || sessionIsUnread(session, { lastSeenAt: getLastSeenAt(session.id) })
+    )
 }
 
 // Paginated session previews move one batch at a time in either direction.
@@ -1066,6 +1079,8 @@ export function SessionList(props: {
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
+    // Transient unread lens — not a Settings preference. Cleared on reload; rows drop as they're seen.
+    const [showUnreadOnly, setShowUnreadOnly] = useState(false)
     const { pinInProgressSessions } = usePinInProgressSessions()
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
@@ -1098,7 +1113,9 @@ export function SessionList(props: {
     const allSessions = useMemo(
         () => {
             const prepared = prepareSidebarSessions(props.sessions, selectedSessionId)
-            return showActiveSessionsOnly ? filterActiveSessionsOnly(prepared, selectedSessionId) : prepared
+            return showActiveSessionsOnly
+                ? filterActiveSessionsOnly(prepared, selectedSessionId)
+                : prepared
         },
         [props.sessions, selectedSessionId, showActiveSessionsOnly]
     )
@@ -1149,11 +1166,25 @@ export function SessionList(props: {
         && machineFilters.some(mg => (mg.machineId ?? UNKNOWN_MACHINE_ID) === machineFilter)
         ? machineFilter
         : null
+    // Unread after search/time, before machine scope — so machineFilters (from allSessions)
+    // stay stable. Filtering unread into allSessions would drop machines with zero unread
+    // and clear a persisted machine selection (showing other machines' unread instead).
+    const unreadFilteredSessions = useMemo(() => {
+        if (!showUnreadOnly) return visibleSessions
+        const lastSeenById = getSessionLastSeenSnapshot()
+        return filterUnreadSessionsOnly(
+            visibleSessions,
+            selectedSessionId,
+            id => lastSeenById[id] ?? 0
+        )
+    }, [visibleSessions, selectedSessionId, showUnreadOnly])
     const machineFilteredSessions = useMemo(
         () => activeMachineFilter === null
-            ? visibleSessions
-            : visibleSessions.filter(session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter),
-        [visibleSessions, activeMachineFilter]
+            ? unreadFilteredSessions
+            : unreadFilteredSessions.filter(session =>
+                (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
+            ),
+        [unreadFilteredSessions, activeMachineFilter]
     )
     const runningSessions = useMemo(() => {
         const buckets: Record<'working' | 'pending', SessionSummary[]> = {
@@ -1471,6 +1502,30 @@ export function SessionList(props: {
                                     onChange={setMachineFilter}
                                 />
                             ) : null}
+                            <button
+                                type="button"
+                                onClick={() => setShowUnreadOnly(!showUnreadOnly)}
+                                aria-pressed={showUnreadOnly}
+                                title={t('sessions.unreadFilter.toggle')}
+                                aria-label={t('sessions.unreadFilter.toggle')}
+                                className={cn(
+                                    'flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                                    showUnreadOnly
+                                        ? 'bg-[var(--app-subtle-bg)]'
+                                        : 'hover:bg-[var(--app-subtle-bg)]'
+                                )}
+                            >
+                                {/* Same shape/color language as session-row unread dots (SessionAttentionIndicator). */}
+                                <span
+                                    aria-hidden
+                                    className={cn(
+                                        'inline-flex h-2.5 w-2.5 shrink-0 rounded-full',
+                                        showUnreadOnly
+                                            ? 'bg-[var(--app-link)]'
+                                            : 'bg-[var(--app-hint)]'
+                                    )}
+                                />
+                            </button>
                             {renderHeader ? (
                                 <button
                                     type="button"
@@ -1527,7 +1582,7 @@ export function SessionList(props: {
                     />
                 ) : null}
 
-                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null) && groups.length === 0 && runningSessionTotal === 0 ? (
+                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null || showUnreadOnly) && groups.length === 0 && runningSessionTotal === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.search.noResults')}
                     </div>

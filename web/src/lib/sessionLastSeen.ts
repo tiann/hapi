@@ -51,6 +51,11 @@ export function getSessionLastSeenAt(sessionId: string): number {
     return readStore()[sessionId] ?? 0
 }
 
+/** One localStorage read/parse for bulk filters (e.g. unread-only lens). */
+export function getSessionLastSeenSnapshot(): Readonly<Record<string, number>> {
+    return readStore()
+}
+
 export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id: string; updatedAt: number }>): void {
     const storage = getLocalStorage()
     if (!storage) {

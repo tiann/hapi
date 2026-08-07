@@ -23,6 +23,15 @@ type SendMessageInput = {
     deliveryMode: MessageDeliveryMode
 }
 
+export type SendMessageAcceptance = {
+    attemptId: string
+}
+
+export type SendMessageSettlement = {
+    attemptId: string
+    status: 'success' | 'error'
+}
+
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
 
 /**
@@ -159,7 +168,7 @@ export function useSendMessage(
     sessionId: string | null,
     options?: UseSendMessageOptions
 ): {
-    // Resolves true when a mutation was actually started, false when the call was
+    // Returns the started mutation's attempt id, or false when the call was
     // rejected pre-mutation (no-api / no-session / pending) OR the async
     // resolveSessionId step threw. Async is required because inactive-session
     // resume happens before mutation.mutate(), and a sync `true` would let the
@@ -170,12 +179,14 @@ export function useSendMessage(
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
-    ) => Promise<boolean>
+    ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
+    sendSettlement: SendMessageSettlement | null
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
+    const [sendSettlement, setSendSettlement] = useState<SendMessageSettlement | null>(null)
     const resolveGuardRef = useRef(false)
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
@@ -200,6 +211,7 @@ export function useSendMessage(
             return { successStatus }
         },
         onSuccess: (_, input, context) => {
+            setSendSettlement({ attemptId: input.localId, status: 'success' })
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
@@ -209,6 +221,7 @@ export function useSendMessage(
             options?.onSuccess?.(input.sessionId)
         },
         onError: (error, input) => {
+            setSendSettlement({ attemptId: input.localId, status: 'error' })
             // Attachment sends keep the legacy failed-bubble UX: the
             // composer-restore path can only re-seat text + scheduledAt,
             // not the uploaded attachment metadata.  Removing the row
@@ -246,7 +259,7 @@ export function useSendMessage(
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode: MessageDeliveryMode = 'queue',
-    ): Promise<boolean> => {
+    ): Promise<SendMessageAcceptance | false> => {
         if (!api) {
             options?.onBlocked?.('no-api')
             haptic.notification('error')
@@ -309,7 +322,7 @@ export function useSendMessage(
             scheduledAt,
             deliveryMode,
         })
-        return true
+        return { attemptId: localId }
     }
 
     const retryMessage = (localId: string): boolean => {
@@ -349,5 +362,6 @@ export function useSendMessage(
         sendMessage,
         retryMessage,
         isSending: mutation.isPending || isResolving,
+        sendSettlement,
     }
 }

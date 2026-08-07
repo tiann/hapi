@@ -53,8 +53,11 @@ describe('sessionSummaryContract setting', () => {
         const results = await Promise.all([
             writeSessionSummaryContractEnabled(dataDir, true),
             updateSettings(settingsFile, (current) => ({
-                ...current,
-                publicUrl: 'https://example.test'
+                settings: {
+                    ...current,
+                    publicUrl: 'https://example.test'
+                },
+                result: undefined
             })),
             writeSessionSummaryContractEnabled(dataDir, true)
         ])

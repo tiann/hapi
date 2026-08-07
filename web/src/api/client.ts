@@ -63,6 +63,50 @@ import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
+export type ProviderCredentialSource = 'env' | 'settings' | 'none'
+
+export interface MaskedCredentialStatus {
+    configured: boolean
+    source: ProviderCredentialSource
+    hint: string | null
+    editable: boolean
+}
+
+export interface TranscriptionCredentialStatus {
+    openai: MaskedCredentialStatus
+    elevenlabs: MaskedCredentialStatus
+    deepgram: MaskedCredentialStatus
+    groq: MaskedCredentialStatus
+    openaiCompatible: {
+        configured: boolean
+        source: ProviderCredentialSource
+        baseUrl: string | null
+        model: string | null
+        baseUrlEditable: boolean
+        modelEditable: boolean
+        apiKey: MaskedCredentialStatus
+    }
+    voiceBackends: {
+        elevenlabs: MaskedCredentialStatus
+        geminiLive: MaskedCredentialStatus
+        qwenRealtime: MaskedCredentialStatus
+    }
+}
+
+export interface TranscriptionCredentialsUpdate {
+    openai?: string | null
+    elevenlabs?: string | null
+    deepgram?: string | null
+    groq?: string | null
+    openaiCompatible?: {
+        baseUrl?: string | null
+        model?: string | null
+        apiKey?: string | null
+    }
+    geminiLive?: string | null
+    qwenRealtime?: string | null
+}
+
 type ApiClientOptions = {
     baseUrl?: string
     getToken?: () => string | null
@@ -1079,6 +1123,19 @@ export class ApiClient {
 
     async fetchTranscriptionProviders(): Promise<{ providers: TranscriptionProviderInfo[] }> {
         return await this.request('/api/voice/transcription/providers')
+    }
+
+    async fetchTranscriptionCredentials(): Promise<TranscriptionCredentialStatus> {
+        return await this.request('/api/voice/transcription/credentials')
+    }
+
+    async updateTranscriptionCredentials(
+        update: TranscriptionCredentialsUpdate
+    ): Promise<TranscriptionCredentialStatus> {
+        return await this.request('/api/voice/transcription/credentials', {
+            method: 'PUT',
+            body: JSON.stringify(update),
+        })
     }
 
     async transcribeVoice(options: {

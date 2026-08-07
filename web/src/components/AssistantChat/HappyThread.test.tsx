@@ -9,6 +9,7 @@ import {
     getPullToLoadState,
     getScrollIntent,
     hasAppliedHistoryVersion,
+    isNestedScrollEvent,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
     restoreScrollAnchor,
@@ -33,6 +34,28 @@ const outlineItems: ConversationOutlineItem[] = [
         createdAt: 2000
     }
 ]
+
+describe('nested scroll event ownership', () => {
+    it('recognizes events from a nested scroll viewport and its descendants', () => {
+        const nested = document.createElement('div')
+        nested.dataset.hapiNestedScroll = 'true'
+        const child = document.createElement('span')
+        child.textContent = 'reasoning'
+        nested.append(child)
+        document.body.append(nested)
+
+        const nestedEvent = new Event('wheel')
+        Object.defineProperty(nestedEvent, 'target', { value: nested })
+        const childEvent = new Event('keydown')
+        Object.defineProperty(childEvent, 'target', { value: child })
+
+        expect(isNestedScrollEvent(new WheelEvent('wheel'))).toBe(false)
+        expect(isNestedScrollEvent(nestedEvent)).toBe(true)
+        expect(isNestedScrollEvent(childEvent)).toBe(true)
+
+        nested.remove()
+    })
+})
 
 function rect(values: Pick<DOMRect, 'top' | 'bottom'> & Partial<DOMRect>): DOMRect {
     return {
@@ -170,8 +193,21 @@ describe('scroll anchor helpers', () => {
             clientHeight: 530
         })).toMatchObject({
             distanceFromBottom: 12,
-            isNearBottom: true,
+            isNearBottom: false,
             isScrollingUp: true
+        })
+    })
+
+    it('does not resume tail-following merely because downward reading is close to the bottom', () => {
+        expect(getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 590,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })).toMatchObject({
+            distanceFromBottom: 92,
+            isNearBottom: false,
+            isScrollingUp: false
         })
     })
 

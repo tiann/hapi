@@ -21,13 +21,18 @@
         "./voice": "./src/voice.ts",
         "./voicePickerCatalog": "./src/voicePickerCatalog.ts",
         "./voice-personality": "./src/voicePersonality.ts",
-        "./usage": "./src/usage.ts"
+        "./usage": "./src/usage.ts",
+        "./settingsFileLock": "./src/settingsFileLock.ts"
     },
     "sideEffects": false,
     "scripts": {
         "test": "bun test"
     },
     "dependencies": {
+        "proper-lockfile": "^4.1.2",
         "zod": "^4.2.1"
+    },
+    "devDependencies": {
+        "@types/proper-lockfile": "^4.1.4"
     }
 }

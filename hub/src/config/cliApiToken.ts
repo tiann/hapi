@@ -7,7 +7,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { getOrCreateSettingsValue } from './generators'
-import { getSettingsFile, readSettings, writeSettings } from './settings'
+import { getSettingsFile, readSettings, updateSettings } from './settings'
 
 export interface CliApiTokenResult {
     token: string
@@ -71,8 +71,15 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
         // Persist env token to file if not already saved (prevents token loss on env var issues)
         const settings = await readSettings(settingsFile)
         if (settings !== null && !settings.cliApiToken) {
-            settings.cliApiToken = token
-            await writeSettings(settingsFile, settings)
+            await updateSettings(settingsFile, (current) => {
+                if (current.cliApiToken) {
+                    return { settings: current, result: undefined, write: false }
+                }
+                return {
+                    settings: { ...current, cliApiToken: token },
+                    result: undefined,
+                }
+            })
         }
 
         return { token, source: 'env', isNew: false, filePath: settingsFile }

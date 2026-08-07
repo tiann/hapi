@@ -49,22 +49,32 @@ export function useVoiceInputPreferences(api: ApiClient | null) {
         if (!api) return
         let cancelled = false
         const browserLocal = hasBrowserLocalSpeechSupport()
-        api.fetchTranscriptionProviders().then(({ providers: configured }) => {
-            if (cancelled) return
-            const available = browserLocal
-                ? [...configured, BROWSER_LOCAL_TRANSCRIPTION_PROVIDER]
-                : configured
-            setProviders(available)
-            const selectedProvider = resolveProvider(available, localStorage.getItem(TRANSCRIPTION_PROVIDER_KEY))
-            setProviderState(selectedProvider)
-            setTranscriptionModeState(resolveMode(available, selectedProvider, localStorage.getItem(TRANSCRIPTION_MODE_KEY)))
-        }).catch(() => {
-            if (!cancelled) setProviders([])
-        })
+        const load = () => {
+            api.fetchTranscriptionProviders().then(({ providers: configured }) => {
+                if (cancelled) return
+                const available = browserLocal
+                    ? [...configured, BROWSER_LOCAL_TRANSCRIPTION_PROVIDER]
+                    : configured
+                setProviders(available)
+                const selectedProvider = resolveProvider(available, localStorage.getItem(TRANSCRIPTION_PROVIDER_KEY))
+                setProviderState(selectedProvider)
+                setTranscriptionModeState(resolveMode(available, selectedProvider, localStorage.getItem(TRANSCRIPTION_MODE_KEY)))
+            }).catch(() => {
+                if (!cancelled) setProviders([])
+            })
+        }
+        load()
+        const onRefresh = () => load()
+        window.addEventListener('hapi-transcription-providers-refresh', onRefresh)
         return () => {
             cancelled = true
+            window.removeEventListener('hapi-transcription-providers-refresh', onRefresh)
         }
     }, [api])
+
+    const refreshProviders = useCallback(() => {
+        window.dispatchEvent(new Event('hapi-transcription-providers-refresh'))
+    }, [])
 
     useEffect(() => {
         const sync = () => {
@@ -111,6 +121,7 @@ export function useVoiceInputPreferences(api: ApiClient | null) {
         setProvider,
         transcriptionMode,
         setTranscriptionMode,
+        refreshProviders,
         modes: providers.find((candidate) => candidate.id === provider)?.modes ?? ['standard']
     }
 }

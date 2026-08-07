@@ -4,7 +4,7 @@ Control your AI coding agent with your voice. The built-in voice assistant suppo
 
 For speech-to-text without a spoken assistant, open **Settings → Voice**, choose **Dictation**, then select a configured provider. Dictation records until you tap the microphone again, inserts the transcript into the composer, and never sends it automatically. Standard mode is the default. Realtime mode shows a live transcript while you speak and inserts the final result when you stop.
 
-Provider credentials are read only from the hub's startup environment:
+Dictation and voice-assistant provider credentials can be added in **Settings → Voice** (saved on the hub, masked in the UI). Environment variables still win when set at process start, and remain the preferred ops/bootstrap path:
 
 ```bash
 # Voice assistant backends (any of these enables the assistant)
@@ -27,7 +27,7 @@ export TRANSCRIPTION_MODEL="Systran/faster-whisper-large-v3"
 export TRANSCRIPTION_API_KEY="..."    # optional
 ```
 
-Restart the hub after changing credentials. API keys are not entered or stored in the web app.
+Settings-managed keys apply immediately (no hub restart). Restart is only required when you change process environment variables outside the UI. API keys are never returned in full to the browser.
 Realtime OpenAI, ElevenLabs, and Deepgram dictation sessions receive only short-lived credentials minted by the hub. Gemini Live and Qwen Realtime assistant sessions connect through hub-side WebSocket proxies, so those API keys never reach the browser either. Eligible desktop browsers with the on-device `SpeechRecognition` API expose **Browser on-device** as a realtime-only dictation provider. HAPI checks the selected language pack when dictation starts and never falls back from that option to browser-hosted recognition. Mobile and unknown browser environments fail closed because this API is experimental and some Android WebViews expose unsafe partial implementations.
 
 ## Overview

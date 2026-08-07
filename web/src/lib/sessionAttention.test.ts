@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
-import { classifySessionAttention } from './sessionAttention'
+import {
+    classifySessionAttention,
+    sessionIsUnread,
+} from './sessionAttention'
 
 function makeSummary(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -94,5 +97,42 @@ describe('classifySessionAttention', () => {
             { selected: false, lastSeenAt: 1000 }
         )
         expect(attention).toEqual({ kind: 'unread' })
+    })
+})
+
+describe('sessionIsUnread', () => {
+    it('is true when updatedAt is newer than lastSeenAt', () => {
+        expect(sessionIsUnread(
+            makeSummary({ id: 'u', updatedAt: 5000 }),
+            { lastSeenAt: 1000 }
+        )).toBe(true)
+    })
+
+    it('is false when the operator has already seen this update', () => {
+        expect(sessionIsUnread(
+            makeSummary({ id: 'seen', updatedAt: 1000 }),
+            { lastSeenAt: 5000 }
+        )).toBe(false)
+    })
+
+    it('does not care about permission / background fields — only the watermark', () => {
+        expect(sessionIsUnread(
+            makeSummary({
+                id: 'p',
+                pendingRequestKinds: ['permission'],
+                pendingRequestsCount: 1,
+                updatedAt: 1000,
+            }),
+            { lastSeenAt: 1000 }
+        )).toBe(false)
+
+        expect(sessionIsUnread(
+            makeSummary({
+                id: 'bg',
+                backgroundTaskCount: 3,
+                updatedAt: 9000,
+            }),
+            { lastSeenAt: 1000 }
+        )).toBe(true)
     })
 })

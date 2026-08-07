@@ -1,5 +1,10 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { getSessionLastSeenAt, initializeSessionLastSeen, markSessionSeen } from './sessionLastSeen'
+import {
+    getSessionLastSeenAt,
+    getSessionLastSeenSnapshot,
+    initializeSessionLastSeen,
+    markSessionSeen,
+} from './sessionLastSeen'
 
 describe('sessionLastSeen', () => {
     beforeEach(() => {
@@ -10,6 +15,15 @@ describe('sessionLastSeen', () => {
         markSessionSeen('session-a', 1000)
         markSessionSeen('session-a', 2500)
         expect(getSessionLastSeenAt('session-a')).toBe(2500)
+    })
+
+    it('snapshots the store once for bulk unread filtering', () => {
+        markSessionSeen('session-a', 1000)
+        markSessionSeen('session-b', 2500)
+        expect(getSessionLastSeenSnapshot()).toEqual({
+            'session-a': 1000,
+            'session-b': 2500,
+        })
     })
 
     it('does not move the watermark backwards', () => {

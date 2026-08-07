@@ -5,8 +5,9 @@
  */
 
 import { FileHandle } from 'node:fs/promises'
-import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, open, unlink, rename, chmod } from 'node:fs/promises'
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 import { configuration } from '@/configuration'
 import { isProcessAlive } from '@/utils/process';
 
@@ -78,12 +79,32 @@ export async function readSettings(): Promise<Settings> {
   }
 }
 
+/** Strict read for locked updates — never treat corrupt/unreadable files as empty. */
+async function readSettingsForUpdate(): Promise<Settings> {
+  if (!existsSync(configuration.settingsFile)) {
+    return { ...defaultSettings }
+  }
+  const content = await readFile(configuration.settingsFile, 'utf8')
+  const parsed: unknown = JSON.parse(content)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Invalid settings file: ${configuration.settingsFile}`)
+  }
+  return parsed as Settings
+}
+
 export async function writeSettings(settings: Settings): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: 0o700 })
   }
+  await chmod(configuration.happyHomeDir, 0o700).catch(() => {})
 
-  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2))
+  await withSettingsFileLock(configuration.settingsFile, async () => {
+    const tmpFile = configuration.settingsFile + '.tmp'
+    await writeFile(tmpFile, JSON.stringify(settings, null, 2), { mode: 0o600 })
+    await chmod(tmpFile, 0o600).catch(() => {})
+    await rename(tmpFile, configuration.settingsFile)
+    await chmod(configuration.settingsFile, 0o600).catch(() => {})
+  })
 }
 
 /**
@@ -94,66 +115,21 @@ export async function writeSettings(settings: Settings): Promise<void> {
 export async function updateSettings(
   updater: (current: Settings) => Settings | Promise<Settings>
 ): Promise<Settings> {
-  // Timing constants
-  const LOCK_RETRY_INTERVAL_MS = 100;  // How long to wait between lock attempts
-  const MAX_LOCK_ATTEMPTS = 50;        // Maximum number of attempts (5 seconds total)
-  const STALE_LOCK_TIMEOUT_MS = 10000; // Consider lock stale after 10 seconds
-
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true });
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: 0o700 })
   }
+  await chmod(configuration.happyHomeDir, 0o700).catch(() => {})
 
-  const lockFile = configuration.settingsFile + '.lock';
-  const tmpFile = configuration.settingsFile + '.tmp';
-  let fileHandle;
-  let attempts = 0;
-
-  // Acquire exclusive lock with retries
-  while (attempts < MAX_LOCK_ATTEMPTS) {
-    try {
-      // 'wx' = create exclusively, fail if exists (cross-platform compatible)
-      fileHandle = await open(lockFile, 'wx');
-      break;
-    } catch (err: any) {
-      if (err.code === 'EEXIST') {
-        // Lock file exists, wait and retry
-        attempts++;
-        await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS));
-
-        // Check for stale lock
-        try {
-          const stats = await stat(lockFile);
-          if (Date.now() - stats.mtimeMs > STALE_LOCK_TIMEOUT_MS) {
-            await unlink(lockFile).catch(() => { });
-          }
-        } catch { }
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  if (!fileHandle) {
-    throw new Error(`Failed to acquire settings lock after ${MAX_LOCK_ATTEMPTS * LOCK_RETRY_INTERVAL_MS / 1000} seconds`);
-  }
-
-  try {
-    // Read current settings with defaults
-    const current = await readSettings() || { ...defaultSettings };
-
-    // Apply update
-    const updated = await updater(current);
-
-    // Write atomically using rename
-    await writeFile(tmpFile, JSON.stringify(updated, null, 2));
-    await rename(tmpFile, configuration.settingsFile); // Atomic on POSIX
-
-    return updated;
-  } finally {
-    // Release lock
-    await fileHandle.close();
-    await unlink(lockFile).catch(() => { }); // Remove lock file
-  }
+  return withSettingsFileLock(configuration.settingsFile, async () => {
+    const current = await readSettingsForUpdate()
+    const updated = await updater(current)
+    const tmpFile = configuration.settingsFile + '.tmp'
+    await writeFile(tmpFile, JSON.stringify(updated, null, 2), { mode: 0o600 })
+    await chmod(tmpFile, 0o600).catch(() => {})
+    await rename(tmpFile, configuration.settingsFile)
+    await chmod(configuration.settingsFile, 0o600).catch(() => {})
+    return updated
+  })
 }
 
 //
