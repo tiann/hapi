@@ -29,16 +29,33 @@ function showHelp(): void {
     console.log(`
 ${chalk.bold('hapi job')} - Attach long-running work to a HAPI session (tiann/hapi#1404)
 
+${chalk.bold('When to use:')}
+  Work that outlives the agent (nohup / batch / long scripts / external daemons)
+  while the session may be idle. Not thinking progress or in-agent background tools.
+
+${chalk.bold('Agent contract:')}
+  1. set before (or as) the process starts
+  2. update / heartbeat at least every ~10 minutes while running
+  3. prefer honest --remaining or --done/--total; omit counts if unknown
+  4. never invent a fake percent
+  5. clear or --status completed|failed when finished
+
 ${chalk.bold('Usage:')}
   hapi job set <session-id-or-prefix> <job-key> --label <text> [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
   hapi job update <session-id-or-prefix> <job-key> [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
   hapi job clear <session-id-or-prefix> <job-key>
   hapi job list <session-id-or-prefix>
 
+${chalk.bold('Progress UI:')}
+  remaining           → "N units left · 2h"
+  done + total        → "P% · done/total · 2h"
+  label/detail only   → "running · 2h" + indeterminate bar
+  elapsed always from startedAt (wall clock) — never an ETA / time-remaining field
+
 ${chalk.bold('Notes:')}
-  Hub-persisted. Works while the agent is idle/offline — not thinking progress.
-  Prefer honest remaining/done+total; never invent a fake percent.
+  Hub-persisted. Prefer "$HAPI_SESSION_ID" for this chat.
   Job key: 1-128 chars, alnum / . _ -
+  Docs: docs/guide/session-jobs.md
 
 ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
@@ -166,12 +183,27 @@ function formatJobLine(job: {
     unit?: string
     detail?: string
     heartbeatAt: number
+    startedAt: number
 }): string {
     const parts = [`${job.key}`, job.label, job.status]
     if (job.remaining !== undefined) {
         parts.push(`${job.remaining}${job.unit ? ` ${job.unit}` : ''} left`)
     } else if (job.done !== undefined && job.total !== undefined) {
         parts.push(`${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''}`)
+    }
+    const elapsedSec = Math.max(0, Math.round((Date.now() - job.startedAt) / 1000))
+    if (elapsedSec < 60) {
+        parts.push(`elapsed ${elapsedSec}s`)
+    } else if (elapsedSec < 3600) {
+        parts.push(`elapsed ${Math.floor(elapsedSec / 60)}m`)
+    } else if (elapsedSec < 86400) {
+        const h = Math.floor(elapsedSec / 3600)
+        const m = Math.floor((elapsedSec % 3600) / 60)
+        parts.push(m > 0 ? `elapsed ${h}h ${m}m` : `elapsed ${h}h`)
+    } else {
+        const d = Math.floor(elapsedSec / 86400)
+        const h = Math.floor((elapsedSec % 86400) / 3600)
+        parts.push(h > 0 ? `elapsed ${d}d ${h}h` : `elapsed ${d}d`)
     }
     if (job.detail) parts.push(job.detail)
     const ageSec = Math.max(0, Math.round((Date.now() - job.heartbeatAt) / 1000))

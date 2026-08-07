@@ -162,6 +162,7 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 | Modify message handling | `hub/src/sync/messageService.ts` |
 | Add notification type | `hub/src/notifications/` |
 | Add shared type | `shared/src/types.ts`, `shared/src/schemas.ts` |
+| Attach outliving job | `cli/src/commands/job.ts`, `docs/guide/session-jobs.md` |
 
 ## Important patterns
 
@@ -170,6 +171,19 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 - **Session modes**: `local` (terminal) vs `remote` (web-controlled); switchable mid-session
 - **Permission modes**: `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`
 - **Namespaces**: Multi-user isolation via `CLI_API_TOKEN:<namespace>` suffix
+
+## Session-attached jobs (outliving work)
+
+When an agent starts process-shaped work that will keep running after the agent goes idle (`nohup`, batch imports, long scripts, external daemons), attach it with `hapi job` so the session list stays truthful while `active: false`. This is **not** thinking progress / todos / in-agent background tools.
+
+Agent contract (HAPI does not write the batch script for you):
+
+1. `hapi job set "$HAPI_SESSION_ID" <key> --label …` when the process starts
+2. `hapi job update` heartbeat at least every ~10 minutes (UI amber after ~15m quiet)
+3. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown (`running` + indeterminate bar) — never invent a percent
+4. `--status completed|failed` or `hapi job clear` when finished
+
+Full guide: `docs/guide/session-jobs.md`. CLI: `hapi job --help`.
 
 ## Adding new web features — consider an FUE
 

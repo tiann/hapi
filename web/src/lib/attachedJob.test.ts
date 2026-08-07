@@ -3,7 +3,9 @@ import type { AttachedJob } from '@hapi/protocol'
 import {
     ATTACHED_JOB_STALE_MS,
     attachedJobFraction,
+    formatAttachedJobElapsed,
     formatAttachedJobProgress,
+    formatCompactElapsed,
     isAttachedJobStale
 } from './attachedJob'
 
@@ -20,18 +22,35 @@ function job(overrides: Partial<AttachedJob> = {}): AttachedJob {
 }
 
 describe('attachedJob helpers', () => {
-    it('formats remaining count without inventing percent', () => {
-        expect(formatAttachedJobProgress(job({ remaining: 120, unit: 'tracks' }))).toBe('120 tracks left')
+    it('formats compact elapsed without inventing ETA', () => {
+        expect(formatCompactElapsed(0)).toBe('0s')
+        expect(formatCompactElapsed(45_000)).toBe('45s')
+        expect(formatCompactElapsed(5 * 60_000)).toBe('5m')
+        expect(formatCompactElapsed(3 * 60 * 60_000 + 12 * 60_000)).toBe('3h 12m')
+        expect(formatCompactElapsed(3 * 60 * 60_000)).toBe('3h')
+        expect(formatCompactElapsed(2 * 24 * 60 * 60_000 + 4 * 60 * 60_000)).toBe('2d 4h')
+        expect(formatCompactElapsed(2 * 24 * 60 * 60_000)).toBe('2d')
+        expect(formatCompactElapsed(-1)).toBe('0s')
     })
 
-    it('formats done/total with derived percent', () => {
-        expect(formatAttachedJobProgress(job({ done: 800, total: 900, unit: 'tracks' }))).toBe(
-            '89% · 800/900 tracks'
+    it('formats remaining count with elapsed', () => {
+        const now = 1_000 + 2 * 60 * 60_000
+        expect(formatAttachedJobProgress(job({ remaining: 120, unit: 'tracks' }), now)).toBe(
+            '120 tracks left · 2h'
         )
     })
 
-    it('falls back to running when only heartbeat', () => {
-        expect(formatAttachedJobProgress(job())).toBe('running')
+    it('formats done/total with derived percent and elapsed', () => {
+        const now = 1_000 + 45 * 60_000
+        expect(formatAttachedJobProgress(job({ done: 800, total: 900, unit: 'tracks' }), now)).toBe(
+            '89% · 800/900 tracks · 45m'
+        )
+    })
+
+    it('falls back to running + elapsed when only heartbeat', () => {
+        const now = 1_000 + 90_000
+        expect(formatAttachedJobProgress(job(), now)).toBe('running · 1m')
+        expect(formatAttachedJobElapsed(job(), now)).toBe('1m')
     })
 
     it('computes fraction from remaining+total', () => {

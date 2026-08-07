@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureOpencodeConfig } from './opencodeConfig'
-import { TITLE_INSTRUCTION } from './systemPrompt'
+import { TITLE_INSTRUCTION, getTitleInstruction } from './systemPrompt'
 
 describe('OpenCode local HAPI instructions', () => {
     let configDirectory: string | null = null
@@ -20,11 +20,13 @@ describe('OpenCode local HAPI instructions', () => {
         const { instructionsPath } = ensureOpencodeConfig(
             configDirectory,
             { command: 'hapi', args: ['mcp'] },
-            TITLE_INSTRUCTION
+            getTitleInstruction({})
         )
 
         const instructions = await readFile(instructionsPath, 'utf8')
         expect(instructions).toContain('$name')
         expect(instructions).toContain('skill_lookup')
+        expect(instructions).toContain('hapi job set')
+        expect(instructions).toContain(TITLE_INSTRUCTION.trim())
     })
 })

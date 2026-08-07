@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { ScheduleIcon } from '@/components/icons'
@@ -17,7 +17,6 @@ import {
     formatAttachedJobProgress,
     isAttachedJobStale
 } from '@/lib/attachedJob'
-
 function LoaderIcon(props: { className?: string }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
@@ -168,9 +167,17 @@ export function SessionRowSummary(props: {
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
     const timeLabel = getSessionTimeLabel(s, t)
     const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
-    const jobStale = attachedJob ? isAttachedJobStale(attachedJob) : false
+    // Tick once a minute so elapsed wall-time advances without waiting for a heartbeat SSE.
+    const [nowMs, setNowMs] = useState(() => Date.now())
+    useEffect(() => {
+        if (!attachedJob) return
+        setNowMs(Date.now())
+        const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+        return () => window.clearInterval(id)
+    }, [attachedJob?.key, attachedJob?.startedAt])
+    const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
     const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
-    const jobProgressLabel = attachedJob ? formatAttachedJobProgress(attachedJob) : null
+    const jobProgressLabel = attachedJob ? formatAttachedJobProgress(attachedJob, nowMs) : null
 
     return (
         <div className={`flex w-full min-w-0 flex-col gap-1 ${className ?? ''}`}>

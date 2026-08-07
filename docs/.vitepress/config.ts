@@ -30,6 +30,7 @@ export default defineConfig({
         text: 'Guide',
         items: [
           { text: 'How it Works', link: '/guide/how-it-works' },
+          { text: 'Session-attached jobs', link: '/guide/session-jobs' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
           { text: 'FAQ', link: '/guide/faq' }
