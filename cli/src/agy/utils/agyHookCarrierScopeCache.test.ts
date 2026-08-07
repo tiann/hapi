@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-    __resetCarrierScopeCacheForTests,
+    _resetCarrierScopeCacheForTests,
     cleanupAgyHookCarrier,
     computeLocalCarrierScope,
     prepareAgyHookCarrier,
@@ -23,11 +23,11 @@ import {
  */
 describe('carrier scope cache (Phase 2-B infrastructure)', () => {
     beforeEach(() => {
-        __resetCarrierScopeCacheForTests();
+        _resetCarrierScopeCacheForTests();
     });
 
     afterEach(() => {
-        __resetCarrierScopeCacheForTests();
+        _resetCarrierScopeCacheForTests();
     });
 
     it('computes the scope only once across repeated warm calls with the same probe', async () => {

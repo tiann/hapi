@@ -567,6 +567,35 @@ describe('sweepAgyHookCarriers', () => {
             expect(existsSync(carrierDir)).toBe(true);
         });
 
+        it('reads the directory listing before resolving the local scope — not just an outcome, the actual call order', async () => {
+            // hostile-review round 1 finding ③: the test above only proves
+            // "a carrier created after the snapshot is invisible", which a
+            // reversed implementation (resolve scope, THEN readdir) could
+            // also satisfy by coincidence in a synchronous mock. This
+            // asserts the call order directly so reversing the two
+            // statements in sweepAgyHookCarriers fails this test even if it
+            // doesn't happen to break the outcome-based one above.
+            makeCarrierDir('baseline-existing');
+            const callOrder: string[] = [];
+
+            vi.mocked(readdir).mockImplementationOnce((async (path: string) => {
+                callOrder.push('readdir');
+                return readdirSync(path);
+            }) as typeof readdir);
+            const probe: ScopeProbe = {
+                readBootId: () => { callOrder.push('scope-probe'); return 'boot-id'; },
+                readPidNamespaceId: () => '1',
+                hostname: () => 'irrelevant',
+            };
+
+            await sweepAgyHookCarriers(probe);
+
+            // Fails (mutation check: swap the readdir()/resolveLocalCarrierScope()
+            // statements in sweepAgyHookCarriers) if the scope probe ever
+            // runs before the directory snapshot is taken.
+            expect(callOrder).toEqual(['readdir', 'scope-probe']);
+        });
+
         it('preserves this session\'s own real carrier if prepareAgyHookCarrier() creates it while an in-flight sweep has already snapshotted the directory', async () => {
             // See the previous test: a carrier must already exist so
             // agy-carriers/ itself exists by the time sweep's readdir() runs.

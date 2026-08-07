@@ -16,7 +16,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { AgyPermissionHandler } from './utils/agyPermissionHandler';
 import { buildAgyHooksJson } from '@/modules/common/hooks/generateHookSettings';
-import { prepareAgyHookCarrier, cleanupAgyHookCarrier, sweepAgyHookCarriers } from './utils/agyHookCarrier';
+import { prepareAgyHookCarrier, cleanupAgyHookCarrier, sweepAgyHookCarriers, warmCarrierScope } from './utils/agyHookCarrier';
 import type { AgyMcpServerEntry } from './utils/agyHookCarrier';
 import { shellJoin } from '@/modules/common/shellQuote';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
@@ -157,6 +157,24 @@ export async function runAgy(opts: {
             logger.debug('[agy] sweep failed unexpectedly (fire-and-forget, non-fatal)', error);
         });
 
+        // Fired here (without await) so the macOS probe cost (two child
+        // processes: ioreg, sysctl) overlaps with the hook server startup
+        // and MCP bridge setup below instead of adding to session startup
+        // latency. Awaited just before prepareAgyHookCarrier() so that
+        // call's synchronous writeOwnerMetadata reads a warm cache instead
+        // of falling back to the (Linux-only) synchronous path. See
+        // warmCarrierScope's docstring for the respawn-path (agyPtyLauncher.ts)
+        // rationale -- it needs no equivalent wiring since it always runs in
+        // this same, by-then-already-warm process. Same fire-and-forget
+        // contract as sweepAgyHookCarriers just above (never throws/rejects
+        // on its own -- see warmCarrierScope's docstring); the .catch here
+        // is the same defense-in-depth, kept symmetric with the sweep call
+        // above rather than trusting that contract alone (both feed into
+        // the same runnerLifecycle unhandledRejection -> markCrash path).
+        void warmCarrierScope().catch((error) => {
+            logger.debug('[agy] warmCarrierScope failed unexpectedly (fire-and-forget, non-fatal)', error);
+        });
+
         hookServer = await startHookServer({
             onSessionHook: () => {
                 // agy does not fire a SessionStart hook; this callback is a
@@ -228,6 +246,9 @@ export async function runAgy(opts: {
             });
             const { command: mcpCommand, args: mcpArgs } = hapiMcpBridge.mcpServers.hapi;
             hookMcpServer = { command: mcpCommand, args: mcpArgs };
+            // warmCarrierScope() never rejects (see its docstring), so this
+            // await cannot itself trigger the catch below.
+            await warmCarrierScope();
             carrierResult = prepareAgyHookCarrier(hooksJsonWithPreInvocation, hookMcpServer);
         } catch (error) {
             throw new Error('agy PTY session aborted: could not prepare the session-local HAPI MCP bridge.', { cause: error });
