@@ -84,7 +84,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 vi.mock('./utils/agyHookCarrier', () => ({
     prepareAgyHookCarrier: vi.fn(() => h.failAt === 'carrier' ? null : { carrierDir: '/tmp/carrier' }),
     cleanupAgyHookCarrier: h.carrierCleanup,
-    sweepAgyHookCarriers: vi.fn(),
+    sweepAgyHookCarriers: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('./utils/agyPermissionHandler', () => ({
     AgyPermissionHandler: class {
@@ -113,6 +113,7 @@ vi.mock('@/modules/common/hooks/generateHookSettings', () => ({
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn() } }))
 
 import { runAgy } from './runAgy'
+import { prepareAgyHookCarrier, sweepAgyHookCarriers } from './utils/agyHookCarrier'
 
 describe('runAgy post-bootstrap setup lifecycle', () => {
     beforeEach(() => {
@@ -173,6 +174,20 @@ describe('runAgy post-bootstrap setup lifecycle', () => {
         }
         const withoutInvocation = h.buildAgyHooksJsonCalls.filter((call) => call.preInvocationCommand === undefined)
         expect(withoutInvocation.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('never awaits sweepAgyHookCarriers before continuing session setup (Phase 2-A: fire-and-forget)', async () => {
+        // A promise that intentionally never settles. If runAgy() awaited
+        // sweepAgyHookCarriers() before continuing (the pre-Phase-2-A
+        // behavior), this test would hang until the suite's timeout instead
+        // of completing -- there is no other way for it to finish.
+        const neverResolves = new Promise<void>(() => {})
+        vi.mocked(sweepAgyHookCarriers).mockReturnValueOnce(neverResolves)
+
+        await runAgy({ startingMode: 'pty', workingDirectory: '/tmp/project' })
+
+        expect(sweepAgyHookCarriers).toHaveBeenCalled()
+        expect(prepareAgyHookCarrier).toHaveBeenCalled()
     })
 })
 

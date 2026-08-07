@@ -142,10 +142,20 @@ export async function runAgy(opts: {
         if (isPtyMode) {
         // Best-effort: reclaim carriers left behind by sessions whose
         // owning process has since died (crash, kill -9 — anything that
-        // skips onAfterClose's cleanupAgyHookCarrier). Never throws; see
-        // sweepAgyHookCarriers's docstring for why over-preservation is the
-        // only safe failure mode here.
-        await sweepAgyHookCarriers();
+        // skips onAfterClose's cleanupAgyHookCarrier). Fired without await:
+        // sweep is a backup path for teardown that normally already
+        // happened via cleanupAgyHookCarrier (see that function and this
+        // one's docstring), so it must never delay THIS session's own
+        // startup (hook server, carrier prep, PTY spawn) -- there is no
+        // urgency requirement on it. It runs concurrently with this
+        // session's own prepareAgyHookCarrier() call below; see
+        // agyHookCarrier.test.ts's "racing safety" suite for why that is
+        // safe. Never throws/rejects; the .catch below is defense in depth
+        // only (sweepAgyHookCarriers's own docstring documents why it
+        // should never reach here).
+        void sweepAgyHookCarriers().catch((error) => {
+            logger.debug('[agy] sweep failed unexpectedly (fire-and-forget, non-fatal)', error);
+        });
 
         hookServer = await startHookServer({
             onSessionHook: () => {
