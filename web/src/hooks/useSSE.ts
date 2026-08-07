@@ -158,6 +158,16 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.thinking === next.thinking
         && current.updatedAt === next.updatedAt
         && current.backgroundTaskCount === next.backgroundTaskCount
+        && current.attachedJob?.key === next.attachedJob?.key
+        && current.attachedJob?.label === next.attachedJob?.label
+        && current.attachedJob?.status === next.attachedJob?.status
+        && current.attachedJob?.done === next.attachedJob?.done
+        && current.attachedJob?.total === next.attachedJob?.total
+        && current.attachedJob?.remaining === next.attachedJob?.remaining
+        && current.attachedJob?.unit === next.attachedJob?.unit
+        && current.attachedJob?.detail === next.attachedJob?.detail
+        && current.attachedJob?.heartbeatAt === next.attachedJob?.heartbeatAt
+        && (current.attachedJob == null) === (next.attachedJob == null)
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort
         && current.effort === next.effort
@@ -486,6 +496,7 @@ export function useSSE(options: {
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
                 const summary = {
                     ...toSessionSummary(session),
+                    attachedJob: existing?.attachedJob ?? null,
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
                     nextScheduledAt: existing?.nextScheduledAt ?? null
                 }
@@ -531,6 +542,9 @@ export function useSSE(options: {
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
+                    attachedJob: Object.prototype.hasOwnProperty.call(patch, 'attachedJob')
+                        ? patch.attachedJob ?? null
+                        : current.attachedJob ?? null,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
                     modelReasoningEffort: Object.prototype.hasOwnProperty.call(patch, 'modelReasoningEffort')
                         ? patch.modelReasoningEffort ?? null

@@ -1,4 +1,6 @@
 import {
+    AttachedJobPatchSchema,
+    AttachedJobUpsertSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
@@ -116,8 +118,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
+        const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionRecords.map((session) => session.id))
         const sessions = sessionRecords.map((session) => {
-            const summary = toSessionSummary(session)
+            const summary = toSessionSummary(session, {
+                attachedJob: attachedJobs.get(session.id) ?? null
+            })
             return {
                 ...summary,
                 futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
@@ -1242,6 +1247,94 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const removed = engine.deleteScratchlistEntry(sessionResult.sessionId, entryId)
         if (!removed) {
             return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ ok: true })
+    })
+
+    // tiann/hapi#1404 — session-attached long-running jobs (works while agent idle).
+    const JOB_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+    app.get('/sessions/:id/jobs', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        return c.json({
+            jobs: engine.listSessionJobs(sessionResult.sessionId),
+            primary: engine.getPrimaryAttachedJob(sessionResult.sessionId)
+        })
+    })
+
+    app.put('/sessions/:id/jobs/:jobKey', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const jobKey = c.req.param('jobKey')
+        if (!jobKey || !JOB_KEY_RE.test(jobKey)) {
+            return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
+        }
+        const body = await c.req.json().catch(() => null)
+        const parsed = AttachedJobUpsertSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+        const result = engine.upsertSessionJob(sessionResult.sessionId, jobKey, parsed.data)
+        if (result.outcome === 'session-not-found') {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+        return c.json({ job: result.job })
+    })
+
+    app.patch('/sessions/:id/jobs/:jobKey', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const jobKey = c.req.param('jobKey')
+        if (!jobKey || !JOB_KEY_RE.test(jobKey)) {
+            return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
+        }
+        const body = await c.req.json().catch(() => null)
+        const parsed = AttachedJobPatchSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+        const job = engine.patchSessionJob(sessionResult.sessionId, jobKey, parsed.data)
+        if (!job) {
+            return c.json({ error: 'Job not found' }, 404)
+        }
+        return c.json({ job })
+    })
+
+    app.delete('/sessions/:id/jobs/:jobKey', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const jobKey = c.req.param('jobKey')
+        if (!jobKey || !JOB_KEY_RE.test(jobKey)) {
+            return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
+        }
+        const removed = engine.deleteSessionJob(sessionResult.sessionId, jobKey)
+        if (!removed) {
+            return c.json({ error: 'Job not found' }, 404)
         }
         return c.json({ ok: true })
     })

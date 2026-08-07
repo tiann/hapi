@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SessionPatchSchema } from './schemas';
+import { AttachedJobSchema, SessionPatchSchema } from './schemas';
 
 // Guard the contract for the second-half-of-#884 fix. The web client routes
 // `session-updated` events to the structured-patch path only when the event's
@@ -100,5 +100,34 @@ describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => 
             thinkingAt: 0
         };
         expect(SessionPatchSchema.safeParse(fullSession).success).toBe(false);
+    });
+
+    it('accepts attachedJob payload or null (tiann/hapi#1404)', () => {
+        const job = AttachedJobSchema.parse({
+            key: 'beets',
+            label: 'beets import',
+            status: 'running',
+            done: 800,
+            total: 900,
+            unit: 'tracks',
+            heartbeatAt: 2_000,
+            startedAt: 1_000,
+            updatedAt: 2_000
+        })
+        expect(SessionPatchSchema.safeParse({ attachedJob: job }).success).toBe(true)
+        expect(SessionPatchSchema.safeParse({ attachedJob: null }).success).toBe(true)
+    });
+
+    it('rejects fake percent-only attached jobs without counters', () => {
+        // Progress is explicit counts — no bare percent field on the wire.
+        expect(AttachedJobSchema.safeParse({
+            key: 'x',
+            label: 'x',
+            status: 'running',
+            percent: 91,
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        }).success).toBe(false)
     });
 });

@@ -317,6 +317,25 @@ describe('summary derivation helpers', () => {
         expect(computePendingRequestsCount(undefined)).toBe(0)
     })
 
+    it('includes attachedJob when provided via extras', () => {
+        const job = {
+            key: 'beets',
+            label: 'beets import',
+            status: 'running' as const,
+            remaining: 120,
+            unit: 'tracks',
+            heartbeatAt: 9_000,
+            startedAt: 1_000,
+            updatedAt: 9_000
+        }
+        const summary = toSessionSummary(makeSession(), { attachedJob: job })
+        expect(summary.attachedJob).toEqual(job)
+    })
+
+    it('defaults attachedJob to null', () => {
+        expect(toSessionSummary(makeSession()).attachedJob).toBeNull()
+    })
+
     it('toSessionSummaryMetadata returns null for null metadata', () => {
         expect(toSessionSummaryMetadata(null)).toBeNull()
         expect(toSessionSummaryMetadata(undefined)).toBeNull()

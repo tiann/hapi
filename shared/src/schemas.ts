@@ -376,6 +376,53 @@ const VersionedTeamStatePatchSchema = z.object({
     value: TeamStateSchema.nullable()
 })
 
+/** Opt-in long-running work owned by a session (tiann/hapi#1404). */
+export const AttachedJobStatusSchema = z.enum(['running', 'completed', 'failed'])
+
+export const AttachedJobSchema = z.object({
+    key: z.string().min(1).max(128),
+    label: z.string().min(1).max(200),
+    status: AttachedJobStatusSchema,
+    done: z.number().nonnegative().optional(),
+    total: z.number().positive().optional(),
+    remaining: z.number().nonnegative().optional(),
+    unit: z.string().min(1).max(64).optional(),
+    detail: z.string().max(500).optional(),
+    heartbeatAt: z.number(),
+    startedAt: z.number(),
+    updatedAt: z.number()
+}).strict()
+
+export type AttachedJob = z.infer<typeof AttachedJobSchema>
+export type AttachedJobStatus = z.infer<typeof AttachedJobStatusSchema>
+
+export const AttachedJobUpsertSchema = z.object({
+    label: z.string().min(1).max(200),
+    status: AttachedJobStatusSchema.optional().default('running'),
+    done: z.number().nonnegative().optional(),
+    total: z.number().positive().optional(),
+    remaining: z.number().nonnegative().optional(),
+    unit: z.string().min(1).max(64).optional(),
+    detail: z.string().max(500).optional(),
+    heartbeatAt: z.number().optional(),
+    startedAt: z.number().optional()
+}).strict()
+
+export type AttachedJobUpsert = z.infer<typeof AttachedJobUpsertSchema>
+
+export const AttachedJobPatchSchema = z.object({
+    label: z.string().min(1).max(200).optional(),
+    status: AttachedJobStatusSchema.optional(),
+    done: z.number().nonnegative().nullable().optional(),
+    total: z.number().positive().nullable().optional(),
+    remaining: z.number().nonnegative().nullable().optional(),
+    unit: z.string().min(1).max(64).nullable().optional(),
+    detail: z.string().max(500).nullable().optional(),
+    heartbeatAt: z.number().optional()
+}).strict()
+
+export type AttachedJobPatch = z.infer<typeof AttachedJobPatchSchema>
+
 export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
@@ -408,7 +455,12 @@ export const SessionPatchSchema = z.object({
     // signal, not the payload. Keep this minimal: per the operator's 80/20
     // ruling, scratchlist mutations are rare relative to keep-alive
     // patches, so a fresh event type would be overkill.
-    scratchlistUpdatedAt: z.number().optional()
+    scratchlistUpdatedAt: z.number().optional(),
+    // tiann/hapi#1404 — session-attached long-running jobs. Unlike
+    // scratchlist (watermark → refetch), the list row needs the progress
+    // payload inline, so patches carry the primary running job (or null
+    // when cleared / none remain).
+    attachedJob: AttachedJobSchema.nullable().optional()
 }).strict()
 
 export type SessionPatch = z.infer<typeof SessionPatchSchema>

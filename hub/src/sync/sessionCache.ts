@@ -599,6 +599,26 @@ export class SessionCache {
         })
     }
 
+    /**
+     * tiann/hapi#1404 — emit primary attached job (or null) so session-list
+     * caches update inline without a dedicated refetch.
+     */
+    emitAttachedJobChanged(
+        sessionId: string,
+        attachedJob: import('@hapi/protocol').AttachedJob | null
+    ): void {
+        const cached = this.sessions.get(sessionId)
+        const namespace = cached?.namespace
+            ?? this.store.sessions.getSession(sessionId)?.namespace
+        if (!namespace) return
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace,
+            data: { attachedJob } satisfies SessionPatch
+        })
+    }
+
     handleSessionEnd(payload: { sid: string; time: number }): void {
         const t = clampAliveTime(payload.time) ?? Date.now()
 
@@ -1139,6 +1159,19 @@ export class SessionCache {
         // the operator's per-session notes, contradicting the v2.0
         // promise that scratchlist survives reloads.
         const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
+        const movedJobs = this.store.sessionJobs.transfer(oldSessionId, newSessionId)
+        if (movedJobs.moved > 0 || movedJobs.collided > 0) {
+            this.emitAttachedJobChanged(
+                newSessionId,
+                this.store.sessionJobs.getPrimaryRunning(newSessionId)
+            )
+            if (!options.deleteOldSession) {
+                this.emitAttachedJobChanged(
+                    oldSessionId,
+                    this.store.sessionJobs.getPrimaryRunning(oldSessionId)
+                )
+            }
+        }
         if (movedScratchlist.moved > 0) {
             // Attachment hub paths embed the old session id. Re-key files +
             // metadata so quota/resolve stay correct on the consolidated id.
