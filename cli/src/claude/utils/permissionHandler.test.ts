@@ -28,6 +28,81 @@ function createFakeSession() {
     return { session, queueItems };
 }
 
+async function waitForPendingRequest(handler: PermissionHandler, timeout = 2000): Promise<void> {
+    const start = Date.now();
+    while (handler['pendingRequests'].size === 0) {
+        if (Date.now() - start > timeout) throw new Error('Timed out waiting for pending request');
+        await new Promise(r => setTimeout(r, 10));
+    }
+}
+
+function getRpcHandler(session: ReturnType<typeof createFakeSession>['session']) {
+    const calls = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls;
+    return calls.find((call: string[]) => call[0] === 'permission')![1];
+}
+
+describe('PermissionHandler — ExitPlanMode preserves current mode', () => {
+    it('preserves default mode when ExitPlanMode approved in default mode', async () => {
+        const { session, queueItems } = createFakeSession();
+        const handler = new PermissionHandler(session);
+        handler.handleModeChange('default');
+
+        handler.onMessage({
+            type: 'assistant',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'tool_use', id: 'tc-plan3', name: 'ExitPlanMode', input: {} }],
+            },
+        } as any);
+
+        const toolCallPromise = handler.handleToolCall(
+            'ExitPlanMode',
+            {},
+            { permissionMode: 'default' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        await waitForPendingRequest(handler);
+        await getRpcHandler(session)({ id: 'tc-plan3', approved: true });
+
+        const result = await toolCallPromise;
+        expect(result.behavior).toBe('deny');
+
+        expect(queueItems).toHaveLength(1);
+        expect(queueItems[0].mode).toEqual({ permissionMode: 'default' });
+    });
+
+    it('falls back to default mode when ExitPlanMode approved while in plan mode', async () => {
+        const { session, queueItems } = createFakeSession();
+        const handler = new PermissionHandler(session);
+        handler.handleModeChange('plan');
+
+        handler.onMessage({
+            type: 'assistant',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'tool_use', id: 'tc-plan4', name: 'ExitPlanMode', input: {} }],
+            },
+        } as any);
+
+        const toolCallPromise = handler.handleToolCall(
+            'ExitPlanMode',
+            {},
+            { permissionMode: 'plan' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        await waitForPendingRequest(handler);
+        await getRpcHandler(session)({ id: 'tc-plan4', approved: true });
+
+        const result = await toolCallPromise;
+        expect(result.behavior).toBe('deny');
+
+        expect(queueItems).toHaveLength(1);
+        expect(queueItems[0].mode).toEqual({ permissionMode: 'default' });
+    });
+});
+
 describe('PermissionHandler — YOLO plan mode', () => {
     it('injects PLAN_FAKE_RESTART and denies exit_plan_mode in bypassPermissions', async () => {
         const { session, queueItems } = createFakeSession();
