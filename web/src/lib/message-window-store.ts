@@ -40,6 +40,10 @@ export const VISIBLE_WINDOW_SIZE = 400
 export const HISTORY_WINDOW_SIZE = 600
 const AGENT_RUN_WINDOW_SIZE = 800
 const OLDER_LOAD_WINDOW_SIZE = 800
+// Subagent transcripts get their own budget: they fold into a single Task card,
+// so they must not consume the top-level budget that decides how far back the
+// user can scroll. Sized to hold several full runs while still bounding memory.
+export const SIDECHAIN_WINDOW_SIZE = 4000
 const PAGE_SIZE = 200
 
 type MessagePosition = {
@@ -53,6 +57,9 @@ type InternalState = MessageWindowState & {
     newestPositionAt: number | null
     newestPositionSeq: number | null
     requiresLatestReset: boolean
+    // A subagent transcript overflowed its budget while the reader was in
+    // history mode. Deferred rather than acted on: see mergeIntoWindow.
+    sidechainOverflowed: boolean
     syncGeneration: number
     olderGeneration: number
 }
@@ -237,6 +244,7 @@ function createState(sessionId: string): InternalState {
         newestPositionAt: null,
         newestPositionSeq: null,
         requiresLatestReset: false,
+        sidechainOverflowed: false,
         syncGeneration: 0,
         olderGeneration: 0
     }
@@ -386,6 +394,7 @@ function buildState(
         | 'newestPositionAt'
         | 'newestPositionSeq'
         | 'requiresLatestReset'
+        | 'sidechainOverflowed'
         | 'syncGeneration'
         | 'olderGeneration'
         | 'historyVersion'
@@ -421,19 +430,64 @@ function sliceForTrim<T>(
         : { kept: items.slice(items.length - limit), dropped: items.slice(0, items.length - limit) }
 }
 
-function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
+function agentPayload(message: DecryptedMessage): { type?: unknown; data?: unknown } | null {
     const outer = message.content
     if (!outer || typeof outer !== 'object' || (outer as { role?: unknown }).role !== 'agent') {
-        return false
+        return null
     }
     const content = (outer as { content?: unknown }).content
-    if (!content || typeof content !== 'object') return false
-    const payload = content as { type?: unknown; data?: unknown }
+    if (!content || typeof content !== 'object') return null
+    return content as { type?: unknown; data?: unknown }
+}
+
+function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
+    const payload = agentPayload(message)
+    if (!payload) return false
     if (payload.type !== 'codex' || !payload.data || typeof payload.data !== 'object') {
         return false
     }
     const type = (payload.data as { type?: unknown }).type
     return type === 'agent-run-start' || type === 'agent-run-update' || type === 'agent-run-trace'
+}
+
+/**
+ * A subagent's own transcript. The SDK emits one message per step, but the
+ * timeline folds the whole run into a single Task card (tracer.ts groups them
+ * by `parentToolUseId`), so these cost the reader nothing to keep and nothing
+ * to drop — yet under a single budget they crowd out the top-level messages
+ * that actually render as rows.
+ *
+ * Read straight off the stored payload, the same field `normalizeAgent` reads.
+ * This is deliberately a per-message property and not the reducer's grouping:
+ * the reducer is stateful (a sidechain message only resolves to a Task once its
+ * `tool_use` has been seen), which the store cannot and should not reproduce.
+ */
+function isSidechainMessage(message: DecryptedMessage): boolean {
+    const payload = agentPayload(message)
+    if (!payload || !payload.data || typeof payload.data !== 'object') return false
+    return (payload.data as { isSidechain?: unknown }).isSidechain === true
+}
+
+function oldestSeqOf(messages: DecryptedMessage[]): number | null {
+    let oldest: number | null = null
+    for (const message of messages) {
+        if (typeof message.seq !== 'number') continue
+        if (oldest === null || message.seq < oldest) {
+            oldest = message.seq
+        }
+    }
+    return oldest
+}
+
+function newestSeqOf(messages: DecryptedMessage[]): number | null {
+    let newest: number | null = null
+    for (const message of messages) {
+        if (typeof message.seq !== 'number') continue
+        if (newest === null || message.seq > newest) {
+            newest = message.seq
+        }
+    }
+    return newest
 }
 
 function trimPreservingQueued(
@@ -445,13 +499,65 @@ function trimPreservingQueued(
     const queuedIds = new Set(queued.map((message) => message.id))
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
     const agentRuns = nonQueued.filter(isCodexAgentRunMessage)
-    const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
+    const rest = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
+    const sidechain = rest.filter(isSidechainMessage)
+    const regular = rest.filter((message) => !isSidechainMessage(message))
     const regularTrim = sliceForTrim(regular, Math.max(0, regularLimit - queued.length), mode)
     const agentRunTrim = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, mode)
+    const sidechainTrim = trimSidechain(sidechain, regularTrim, mode)
     return {
-        kept: mergeMessages([...regularTrim.kept, ...agentRunTrim.kept], queued),
-        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped]
+        kept: mergeMessages(
+            [...regularTrim.kept, ...agentRunTrim.kept, ...sidechainTrim.kept],
+            queued
+        ),
+        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped, ...sidechainTrim.dropped]
     }
+}
+
+/**
+ * Subagent messages are capped separately so a long run cannot evict top-level
+ * history, but they must not outlive the Task card that owns them: `tracer.ts`
+ * falls back to rendering a sidechain message at the top level when it cannot
+ * resolve a parent, so a subagent transcript whose `tool_use` was trimmed away
+ * would spill into the timeline as loose rows.
+ *
+ * The surviving top-level rows define the span a parent can still live in, and
+ * both of its edges matter. The old edge always does. The new edge only does
+ * under `prepend`, which drops the *newest* top-level rows — a subagent that
+ * started after the last surviving row has lost its parent. Applying that edge
+ * under `append` would be wrong in the opposite direction: a subagent running
+ * right now legitimately sits past every top-level row, and cutting there would
+ * empty the live Task card.
+ *
+ * Both edges are conservative — a sidechain message past the new edge may still
+ * have a parent inside the window — but over-trimming a folded card while the
+ * reader is looking at older history costs nothing they can see, and
+ * `sidechainOverflowed` restores the full transcript when they return to the tail.
+ */
+function trimSidechain(
+    sidechain: DecryptedMessage[],
+    regularTrim: { kept: DecryptedMessage[]; dropped: DecryptedMessage[] },
+    mode: 'append' | 'prepend'
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    const low = oldestSeqOf(regularTrim.kept)
+    const high = mode === 'prepend' && regularTrim.dropped.length > 0
+        ? newestSeqOf(regularTrim.kept)
+        : null
+    const orphaned: DecryptedMessage[] = []
+    const inSpan = sidechain.filter((message) => {
+        if (typeof message.seq !== 'number') return true
+        if (low !== null && message.seq < low) {
+            orphaned.push(message)
+            return false
+        }
+        if (high !== null && message.seq > high) {
+            orphaned.push(message)
+            return false
+        }
+        return true
+    })
+    const trimmed = sliceForTrim(inSpan, SIDECHAIN_WINDOW_SIZE, mode)
+    return { kept: trimmed.kept, dropped: [...orphaned, ...trimmed.dropped] }
 }
 
 function optimisticMessage(message: DecryptedMessage): boolean {
@@ -513,7 +619,21 @@ function mergeIntoWindow(
             oldestPositionSeq: oldest?.seq ?? next.oldestPositionSeq
         })
     }
+    // Prepend means the window overflowed at the tail, so the newest messages
+    // are the ones that left, and the window can no longer answer "what is the
+    // session doing now" — hence the reset.
+    //
+    // Subagent rows are the exception. They fold into a Task card rather than
+    // rendering as the live tail, and trimming them against their own budget
+    // always drops the newest of *them*. Resetting there would refetch the
+    // latest page and yank the reader back to the tail they deliberately
+    // scrolled away from. But the window really is incomplete afterwards, so
+    // the need for a refetch is recorded and deferred to `enterTailMode`,
+    // which runs once the reader has chosen to come back.
     const newest = derivePosition(kept, 'newest')
+    if (!dropped.some((message) => !isSidechainMessage(message))) {
+        return buildState(next, { sidechainOverflowed: true })
+    }
     next = buildState(next, {
         requiresLatestReset: true,
         newestPositionAt: newest?.at ?? null,
@@ -741,7 +861,11 @@ async function waitForTailSyncDrain(
 
 function enterTailMode(previous: InternalState): InternalState {
     const { kept, dropped } = trimPreservingQueued(previous.messages, VISIBLE_WINDOW_SIZE, 'append')
-    const forceLatest = previous.requiresLatestReset
+    // A subagent that overflowed while the reader was in history mode left the
+    // window short of its transcript. Refetching was deferred to avoid pulling
+    // them out of the history they were reading; coming back to the tail is
+    // that moment, so the deferred reset is redeemed here.
+    const forceLatest = previous.requiresLatestReset || previous.sidechainOverflowed
     const oldest = dropped.length > 0
         ? derivePosition(kept, 'oldest')
         : readPosition(previous.oldestPositionAt, previous.oldestPositionSeq)
@@ -750,6 +874,8 @@ function enterTailMode(previous: InternalState): InternalState {
         hasMore: previous.hasMore || dropped.length > 0,
         viewMode: 'tail',
         epoch: forceLatest ? null : previous.epoch,
+        requiresLatestReset: forceLatest,
+        sidechainOverflowed: false,
         oldestPositionAt: oldest?.at ?? null,
         oldestPositionSeq: oldest?.seq ?? null,
         newestPositionAt: forceLatest ? null : previous.newestPositionAt,
@@ -760,7 +886,7 @@ function enterTailMode(previous: InternalState): InternalState {
 export function activateMessageWindow(sessionId: string): void {
     updateState(sessionId, (previous) => {
         const { kept } = trimPreservingQueued(previous.messages, VISIBLE_WINDOW_SIZE, 'append')
-        const forceLatest = previous.requiresLatestReset
+        const forceLatest = previous.requiresLatestReset || previous.sidechainOverflowed
         if (
             previous.viewMode === 'tail'
             && kept.length === previous.messages.length

@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
 import {
     HISTORY_WINDOW_SIZE,
+    SIDECHAIN_WINDOW_SIZE,
     VISIBLE_WINDOW_SIZE,
     activateMessageWindow,
     appendOptimisticMessage,
@@ -106,6 +107,29 @@ function makeAgentRunMessage(id: string, seq: number, at: number): DecryptedMess
                     agentId: 'agent-1',
                     status: 'running',
                     activity: id
+                }
+            }
+        },
+        createdAt: at,
+        invokedAt: at
+    } as DecryptedMessage
+}
+
+function makeSidechainMessage(id: string, seq: number, at: number): DecryptedMessage {
+    return {
+        id,
+        seq,
+        localId: null,
+        content: {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    isSidechain: true,
+                    uuid: id,
+                    parentToolUseId: 'task-tool-1',
+                    message: { content: [{ type: 'text', text: id }] }
                 }
             }
         },
@@ -1065,6 +1089,134 @@ describe('history view and older pagination', () => {
         ])
 
         expect(getMessageWindowState(id).messages.some((message) => message.id === 'root')).toBe(true)
+    })
+
+    it('protects top-level rows from a subagent flood', () => {
+        const id = sessionId('sidechain-budget')
+        const topLevel = Array.from({ length: 20 }, (_, index) =>
+            makeUserMessage({ id: `top-${index}`, seq: index + 1, invokedAt: index + 1, createdAt: index + 1 })
+        )
+        // One subagent run is far larger than the whole top-level budget, but it
+        // folds into a single Task card, so it must not evict any of it.
+        const sidechain = Array.from({ length: VISIBLE_WINDOW_SIZE + 100 }, (_, index) =>
+            makeSidechainMessage(`side-${index}`, index + 100, index + 100)
+        )
+        ingestIncomingMessages(id, [...topLevel, ...sidechain])
+
+        const kept = getMessageWindowState(id).messages
+        for (const message of topLevel) {
+            expect(kept.some((candidate) => candidate.id === message.id)).toBe(true)
+        }
+    })
+
+    it('drops subagent messages that fall behind the oldest surviving top-level row', () => {
+        const id = sessionId('sidechain-orphan')
+        // Sidechain rows sit at seq 1..50, below every top-level row that will
+        // survive the trim. Their Task card is gone, and tracer.ts renders a
+        // parentless sidechain message at the top level, so keeping them would
+        // spill a subagent transcript into the timeline as loose rows.
+        const stranded = Array.from({ length: 50 }, (_, index) =>
+            makeSidechainMessage(`stranded-${index}`, index + 1, index + 1)
+        )
+        const topLevel = Array.from({ length: VISIBLE_WINDOW_SIZE + 10 }, (_, index) =>
+            makeUserMessage({
+                id: `top-${index}`,
+                seq: index + 1_000,
+                invokedAt: index + 1_000,
+                createdAt: index + 1_000
+            })
+        )
+        ingestIncomingMessages(id, [...stranded, ...topLevel])
+
+        const kept = getMessageWindowState(id).messages
+        expect(kept.some((message) => message.id.startsWith('stranded-'))).toBe(false)
+    })
+
+    it('does not force a latest reset when only subagent messages overflow', async () => {
+        const id = sessionId('sidechain-no-reset')
+        const history = Array.from({ length: 10 }, (_, index) =>
+            makeAgentMessage({ id: `top-${index}`, seq: index + 1, at: index + 1 })
+        )
+        ingestIncomingMessages(id, history)
+        setMessageViewMode(id, 'history')
+        // A subagent run overflows its own budget, dropping its newest rows.
+        // Treating that as "the tail left the window" would arm requiresLatestReset,
+        // and the next tail sync would replace the window with the latest page —
+        // discarding the history the reader had scrolled back to.
+        ingestIncomingMessages(id, Array.from({ length: SIDECHAIN_WINDOW_SIZE + 50 }, (_, index) =>
+            makeSidechainMessage(`side-${index}`, index + 100, index + 100)
+        ))
+
+        const getMessages = vi.fn(async () => latestResponse(
+            [makeAgentMessage({ id: 'newest', seq: 9_000, at: 9_000 })],
+            { epoch: 0, hasMore: true }
+        )) as unknown as ApiClient['getMessages']
+        await syncTailMessages(createApi(getMessages), id)
+
+        const kept = getMessageWindowState(id).messages
+        expect(kept.some((message) => message.id === 'top-0')).toBe(true)
+        expect(kept.some((message) => message.id === 'top-9')).toBe(true)
+    })
+
+    it('refetches the latest page when returning to the tail after a subagent overflow', async () => {
+        const id = sessionId('sidechain-recovery')
+        const getMessages = vi.fn(async () => latestResponse(
+            [makeAgentMessage({ id: 'top-0', seq: 1, at: 1 })],
+            { epoch: 7 }
+        )) as unknown as ApiClient['getMessages']
+        await syncTailMessages(createApi(getMessages), id)
+        expect(getMessageWindowState(id).epoch).toBe(7)
+
+        setMessageViewMode(id, 'history')
+        ingestIncomingMessages(id, Array.from({ length: SIDECHAIN_WINDOW_SIZE + 50 }, (_, index) =>
+            makeSidechainMessage(`side-${index}`, index + 100, index + 100)
+        ))
+        // Suppressing the reset while reading history leaves the window short of
+        // the transcript. Without redeeming that debt on the way back, the Task
+        // card would stay permanently incomplete.
+        expect(getMessageWindowState(id).epoch).toBe(7)
+
+        setMessageViewMode(id, 'tail')
+
+        expect(getMessageWindowState(id).epoch).toBe(null)
+    })
+
+    it('drops subagent messages left past the newest surviving top-level row', () => {
+        const id = sessionId('sidechain-orphan-tail')
+        ingestIncomingMessages(id, [makeAgentMessage({ id: 'anchor', seq: 1, at: 1 })])
+        setMessageViewMode(id, 'history')
+        // Prepend keeps the oldest top-level rows and drops the newest, so any
+        // subagent that started after the last survivor has lost its Task card.
+        // tracer.ts would render those parentless rows at the top level.
+        ingestIncomingMessages(id, [
+            ...Array.from({ length: HISTORY_WINDOW_SIZE + 20 }, (_, index) =>
+                makeAgentMessage({ id: `top-${index}`, seq: index + 2, at: index + 2 })
+            ),
+            ...Array.from({ length: 30 }, (_, index) =>
+                makeSidechainMessage(`late-side-${index}`, index + 5_000, index + 5_000)
+            )
+        ])
+
+        const kept = getMessageWindowState(id).messages
+        const keptTopSeq = kept
+            .filter((message) => !message.id.startsWith('late-side-'))
+            .map((message) => message.seq ?? 0)
+        expect(Math.max(...keptTopSeq)).toBeLessThan(5_000)
+        expect(kept.some((message) => message.id.startsWith('late-side-'))).toBe(false)
+    })
+
+    it('handles a window that holds nothing but subagent messages', () => {
+        const id = sessionId('sidechain-only')
+        setMessageViewMode(id, 'history')
+        ingestIncomingMessages(id, Array.from({ length: SIDECHAIN_WINDOW_SIZE + 50 }, (_, index) =>
+            makeSidechainMessage(`side-${index}`, index + 1, index + 1)
+        ))
+
+        const state = getMessageWindowState(id)
+        // No top-level row exists to anchor the span, so the budget alone applies
+        // and the reset stays deferred rather than firing on every overflow.
+        expect(state.messages).toHaveLength(SIDECHAIN_WINDOW_SIZE)
+        expect(state.viewMode).toBe('history')
     })
 })
 
