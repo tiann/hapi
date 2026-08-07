@@ -6,7 +6,8 @@ import {
     assignThreadMessageIdsWithStableWrappers,
     findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
-    getResponseGroupTimestamps
+    getResponseGroupTimestamps,
+    buildAssistantReplyTargets
 } from './assistant-runtime'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
@@ -285,6 +286,46 @@ describe('message presentation timestamps', () => {
 
         expect(getBlockPresentationTimestamp(group)).toBe(300)
         expect(getResponseGroupTimestamps([group]).get(group)).toBe(300)
+    })
+})
+
+describe('buildAssistantReplyTargets', () => {
+    it('maps each assistant response to the latest real user message across system events', () => {
+        const blocks = assignThreadMessageIds([
+            userText('first'),
+            agentText('answer-1'),
+            agentEvent('ready', { type: 'ready' }),
+            agentText('answer-2'),
+            userText('second'),
+            toolCall('tool'),
+            agentText('answer-3')
+        ])
+
+        expect([...buildAssistantReplyTargets(blocks)]).toEqual([
+            ['agent-text:answer-1', 'user-text:first'],
+            ['agent-text:answer-2', 'user-text:first'],
+            ['tool-call:tool', 'user-text:second'],
+            ['agent-text:answer-3', 'user-text:second']
+        ])
+    })
+
+    it('does not invent a target when loaded history starts with an assistant response', () => {
+        const blocks = assignThreadMessageIds([agentText('answer')])
+        expect(buildAssistantReplyTargets(blocks).size).toBe(0)
+    })
+
+    it('uses user-role CLI output as the next assistant response target', () => {
+        const blocks = assignThreadMessageIds([
+            userText('prompt'),
+            agentText('answer'),
+            cliOutput('command', 'user'),
+            cliOutput('command-output', 'assistant')
+        ])
+
+        expect([...buildAssistantReplyTargets(blocks)]).toContainEqual([
+            'cli-output:command-output',
+            'cli-output:command'
+        ])
     })
 })
 
