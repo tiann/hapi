@@ -122,23 +122,108 @@ const defaultScopeProbe: ScopeProbe = {
  * Computes this process's carrier scope: an opaque string identifying
  * "carriers this process could plausibly own", used to gate sweepAgyHookCarriers.
  *
- * Only the Linux boot-id+PID-namespace pair qualifies. There is deliberately
- * no hostname fallback: hostname is not an identity. Two machines or
- * containers that share a HAPI_HOME and happen to share a hostname would
- * compute the same scope, and a pid that is live on the owning system reads
- * as ESRCH here — deleting a carrier out from under a running agy, which is
- * spawned with --dangerously-skip-permissions and depends on that carrier's
- * hooks.json for its PreToolUse approval bridge.
+ * Synchronous and Linux-only. There is deliberately no hostname fallback:
+ * hostname is not an identity. Two machines or containers that share a
+ * HAPI_HOME and happen to share a hostname would compute the same scope, and
+ * a pid that is live on the owning system reads as ESRCH here — deleting a
+ * carrier out from under a running agy, which is spawned with
+ * --dangerously-skip-permissions and depends on that carrier's hooks.json
+ * for its PreToolUse approval bridge.
  *
- * Returning undefined makes sweepAgyHookCarriers preserve everything. That
- * costs orphaned carriers on platforms without a strong identity (macOS, a
- * restricted /proc), which is the cheaper failure: normal teardown still
- * removes carriers via cleanupAgyHookCarrier, so only crash leftovers
- * accumulate. Add a platform-specific boot/namespace identity here before
- * re-enabling sweeping there.
+ * Returning undefined makes sweepAgyHookCarriers preserve everything. On
+ * this (sync, Linux-only) path that costs orphaned carriers on platforms
+ * without a working /proc, which is the cheaper failure: normal teardown
+ * still removes carriers via cleanupAgyHookCarrier, so only crash leftovers
+ * accumulate. macOS/Windows identity is computed asynchronously instead (see
+ * warmCarrierScope below) and is not reachable from this function — this one
+ * stays the synchronous fallback writeOwnerMetadata uses when nothing has
+ * warmed the cache yet.
  */
 export function computeLocalCarrierScope(probe: ScopeProbe = defaultScopeProbe): string | undefined {
     return readLinuxBootAndNamespaceScope(probe);
+}
+
+/**
+ * Async counterpart of computeLocalCarrierScope, dispatching on
+ * process.platform. Only the 'linux' branch is implemented as of this
+ * commit (delegating to the exact same synchronous read as
+ * computeLocalCarrierScope, so this changes no OBSERVABLE behavior on any
+ * platform yet — macOS/Windows still resolve to undefined here exactly as
+ * they did via the old code path's failed /proc reads). Platform-specific
+ * probes are added in a follow-up commit; this function's shape exists now
+ * so the cache/warm-up plumbing below has something real to sit on top of.
+ */
+async function computeLocalCarrierScopeAsync(probe: ScopeProbe): Promise<string | undefined> {
+    if (process.platform === 'linux') return readLinuxBootAndNamespaceScope(probe);
+    return undefined;
+}
+
+// Process-lifetime cache for the async scope computation. boot/machine
+// identity is invariant for the life of this process, so computing it once
+// and reusing the result is always correct — there is no staleness window
+// to worry about (contrast with e.g. a TTL cache). `undefined` is a valid,
+// deliberately-cached outcome (see warmCarrierScope's docstring): a failed
+// probe is not retried on a later call, matching computeLocalCarrierScope's
+// existing "no retry, just report the failure" contract.
+let scopeCache: { value: string | undefined } | undefined;
+// The in-flight computation, so a second warmCarrierScope() call issued
+// before the first has settled awaits the SAME probe run instead of
+// launching a duplicate one (relevant once the macOS/Windows probes spawn
+// child processes — a duplicate run would double that cost for no benefit).
+let scopeWarmupPromise: Promise<void> | undefined;
+
+/**
+ * Populates the module-level scope cache by running computeLocalCarrierScopeAsync
+ * once and memoizing the result (success OR failure — both are cached, never
+ * retried). Safe to call from a hot path without awaiting it (fire-and-forget):
+ * it never throws or leaves an unhandled rejection.
+ *
+ * Callers: runAgy.ts fires this without awaiting it early in PTY session
+ * setup (so the (eventually async, cross-process) probe cost overlaps with
+ * hook-server startup instead of adding to it), then awaits it immediately
+ * before prepareAgyHookCarrier() so writeOwnerMetadata (synchronous, see
+ * below) reads a warm cache instead of falling back to the Linux-only sync
+ * path. A respawn (agyPtyLauncher.ts's syncPreInvocationHookForLaunch) is
+ * always in the same process, so its prepareAgyHookCarrier() call always
+ * finds an already-warm cache with no extra wiring needed there.
+ */
+export function warmCarrierScope(probe: ScopeProbe = defaultScopeProbe): Promise<void> {
+    if (!scopeWarmupPromise) {
+        scopeWarmupPromise = computeLocalCarrierScopeAsync(probe)
+            .then((value) => { scopeCache = { value }; })
+            .catch(() => { scopeCache = { value: undefined }; });
+    }
+    return scopeWarmupPromise;
+}
+
+/**
+ * Test-only reset for the module-level scope cache — vitest gives each test
+ * FILE its own module registry (so this never leaks across files), but
+ * multiple `it()`s within the same file share this module's state, and
+ * several tests deliberately warm the cache with a fabricated probe result.
+ * Not for production use.
+ */
+export function __resetCarrierScopeCacheForTests(): void {
+    scopeCache = undefined;
+    scopeWarmupPromise = undefined;
+}
+
+/**
+ * Scope resolution used by sweepAgyHookCarriers. The DEFAULT probe (the real
+ * one, used in production) goes through the warm cache — see warmCarrierScope.
+ * Any OTHER probe object (identity-compared) bypasses the cache and computes
+ * fresh on every call: a custom probe exists specifically so a test can force
+ * a particular scenario for THAT call, and sharing the cache across differing
+ * probes would let an earlier call's cached result leak into a later call
+ * that intended a different, injected outcome (this file's test suites pass
+ * many different custom probes to sweepAgyHookCarriers across many tests).
+ */
+async function resolveLocalCarrierScope(probe: ScopeProbe): Promise<string | undefined> {
+    if (probe !== defaultScopeProbe) {
+        return computeLocalCarrierScopeAsync(probe);
+    }
+    await warmCarrierScope(probe);
+    return scopeCache?.value;
 }
 
 /**
@@ -202,7 +287,20 @@ function writeOwnerMetadata(carrierDir: string): void {
     // requires a non-empty scope, so this carrier falls into the
     // "unreadable owner" bucket below and is preserved indefinitely rather
     // than risk being matched against a wrong or guessed scope later.
-    const scope = computeLocalCarrierScope();
+    //
+    // This function is synchronous (prepareAgyHookCarrier's respawn-time
+    // caller, agyPtyLauncher.ts's syncPreInvocationHookForLaunch, must stay
+    // synchronous — see that function's fail-closed-contract docstring), so
+    // it cannot await an async probe. It reads the warm cache (populated by
+    // warmCarrierScope — see runAgy.ts, which awaits it before the FIRST
+    // prepareAgyHookCarrier() call of a session) if one is available, and
+    // otherwise falls back to the synchronous Linux-only computation — the
+    // same computation this function used before the cache existed. A cache
+    // miss on macOS/Windows (warmCarrierScope not yet awaited anywhere in
+    // this process) therefore still yields undefined/empty scope, same as
+    // always: this fallback trades nothing away, it only adds a faster path
+    // when a cache is available.
+    const scope = scopeCache !== undefined ? scopeCache.value : computeLocalCarrierScope();
     const owner: AgyHookCarrierOwner = { pid: process.pid, scope: scope ?? '' };
     writeFileSync(join(carrierDir, OWNER_FILE_NAME), JSON.stringify(owner), { mode: 0o600 });
 }
@@ -305,7 +403,7 @@ export async function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScope
         return;
     }
 
-    const localScope = computeLocalCarrierScope(scopeProbe);
+    const localScope = await resolveLocalCarrierScope(scopeProbe);
     if (!localScope) {
         // Cannot identify which carriers this process could even plausibly
         // own — comparing anything against an unknown scope is meaningless,
