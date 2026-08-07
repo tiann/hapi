@@ -145,7 +145,7 @@ export async function runAgy(opts: {
         // skips onAfterClose's cleanupAgyHookCarrier). Never throws; see
         // sweepAgyHookCarriers's docstring for why over-preservation is the
         // only safe failure mode here.
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
 
         hookServer = await startHookServer({
             onSessionHook: () => {

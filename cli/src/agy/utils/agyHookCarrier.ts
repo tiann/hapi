@@ -11,6 +11,7 @@ import {
     unlinkSync,
     writeFileSync
 } from 'node:fs';
+import { lstat, readFile, readdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -206,9 +207,9 @@ function writeOwnerMetadata(carrierDir: string): void {
     writeFileSync(join(carrierDir, OWNER_FILE_NAME), JSON.stringify(owner), { mode: 0o600 });
 }
 
-function readOwnerMetadata(carrierDir: string): AgyHookCarrierOwner | undefined {
+async function readOwnerMetadata(carrierDir: string): Promise<AgyHookCarrierOwner | undefined> {
     try {
-        const parsed = JSON.parse(readFileSync(join(carrierDir, OWNER_FILE_NAME), 'utf8')) as Partial<AgyHookCarrierOwner>;
+        const parsed = JSON.parse(await readFile(join(carrierDir, OWNER_FILE_NAME), 'utf8')) as Partial<AgyHookCarrierOwner>;
         if (typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) && parsed.pid > 0 && typeof parsed.scope === 'string' && parsed.scope.length > 0) {
             return { pid: parsed.pid, scope: parsed.scope };
         }
@@ -293,11 +294,11 @@ function checkProcessLiveness(pid: number): 'alive' | 'dead' | 'unknown' {
  * or a single entry this process can't stat/read, is skipped rather than
  * thrown — a broken sweep must never abort session startup.
  */
-export function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe): void {
+export async function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe): Promise<void> {
     const carriersRoot = agyCarriersRootDir();
     let entries: string[];
     try {
-        entries = readdirSync(carriersRoot);
+        entries = await readdir(carriersRoot);
     } catch {
         // Root doesn't exist yet (first-ever session under this HAPI_HOME)
         // or isn't readable — nothing to sweep either way.
@@ -314,6 +315,10 @@ export function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe)
         return;
     }
 
+    // Sequential, not Promise.all: this is a backup path with no latency
+    // requirement (see the module docstring), and processing one entry at a
+    // time keeps each entry's error handling isolated without adding
+    // concurrency-ordering complexity to a destructive operation.
     for (const entry of entries) {
         // Fix N3: only ever consider entries this module itself could have
         // created. A misconfigured/reused HAPI_HOME can put anything under
@@ -323,18 +328,25 @@ export function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe)
         const carrierDir = join(carriersRoot, entry);
         try {
             // Fix N4: lstat, not stat — judge the directory entry itself,
-            // never whatever a symlink might point at. rmSync only ever
-            // unlinks a symlink (never recurses through it), so there is no
+            // never whatever a symlink might point at. rm only ever unlinks
+            // a symlink (never recurses through it), so there is no
             // data-loss path either way, but liveness/scope decisions must
             // still be about this entry, not its target.
-            const stats = lstatSync(carrierDir);
+            const stats = await lstat(carrierDir);
             if (!stats.isDirectory()) continue;
 
-            const owner = readOwnerMetadata(carrierDir);
+            const owner = await readOwnerMetadata(carrierDir);
             if (!owner) {
                 // Fix 2a: no age-based fallback anymore — see the docstring
                 // above for why an unreadable owner is no longer evidence of
-                // staleness.
+                // staleness. This also covers a carrier whose directory this
+                // readdir() snapshot caught mid-creation (mkdtemp landed,
+                // owner.json has not been written yet by a concurrent
+                // prepareAgyHookCarrier — see this function's own docstring
+                // on why sweeping is no longer on the session-boot critical
+                // path and can race a fresh carrier's creation): an
+                // unreadable owner is preserved unconditionally, the same as
+                // a genuinely-never-written one.
                 continue;
             }
             if (owner.scope !== localScope) {
@@ -344,7 +356,7 @@ export function sweepAgyHookCarriers(scopeProbe: ScopeProbe = defaultScopeProbe)
                 continue;
             }
             if (checkProcessLiveness(owner.pid) === 'dead') {
-                rmSync(carrierDir, { recursive: true, force: true });
+                await rm(carrierDir, { recursive: true, force: true });
                 logger.debug(`[agyHookCarrier] swept orphaned carrier ${carrierDir} (owner pid ${owner.pid}, scope matched, confirmed dead)`);
             }
         } catch (error) {
