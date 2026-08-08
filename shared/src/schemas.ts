@@ -427,10 +427,30 @@ export const MachineMetadataSchema = z.object({
     platform: z.string(),
     happyCliVersion: z.string(),
     displayName: z.string().optional(),
+    /** process.arch when the runner last registered (x64, arm64, …). */
+    arch: z.string().optional(),
     homeDir: z.string().optional(),
     happyHomeDir: z.string().optional(),
     happyLibDir: z.string().optional(),
-    workspaceRoots: z.array(z.string()).optional()
+    workspaceRoots: z.array(z.string()).optional(),
+    /** Machine-scoped RPC capability ids this runner registers (see runnerCapabilities). */
+    capabilities: z.array(z.string()).optional(),
+    /** True when this runner process started with HAPI_DISABLE_VERSION_HANDOFF=1. */
+    versionHandoffDisabled: z.boolean().optional(),
+    /**
+     * True when an external supervisor owns restart (systemd/pm2/etc.).
+     * Set only via HAPI_RUNNER_SUPERVISED=1 — never inferred from versionHandoffDisabled.
+     */
+    supervisedRestart: z.boolean().optional(),
+    /** CLI binary/package mtime when this runner process started. */
+    startedCliMtimeMs: z.number().optional(),
+    /** Current on-disk CLI binary/package mtime (may differ after upgrade). */
+    installedCliMtimeMs: z.number().optional(),
+    /**
+     * Hub-artifact build generation this runner last applied (source fingerprint).
+     * Used to detect same-semver soup rebuilds that still need fleet upgrade.
+     */
+    cliArtifactGeneration: z.string().optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>

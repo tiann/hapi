@@ -25,12 +25,13 @@
  * the appropriate command and arguments.
  */
 
-import { spawn, SpawnOptions, type ChildProcess } from 'child_process';
-import { join, isAbsolute, resolve, win32 } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { isBunCompiled, projectPath } from '@/projectPath';
-import { logger } from '@/ui/logger';
-import { existsSync } from 'node:fs';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process'
+import crossSpawn from 'cross-spawn'
+import { join, isAbsolute, resolve, win32 } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { isBunCompiled, projectPath } from '@/projectPath'
+import { logger } from '@/ui/logger'
+import { existsSync } from 'node:fs'
 
 const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
 
@@ -185,6 +186,13 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   }
   if (process.platform === 'win32' && options.detached) {
     finalOptions.windowsHide = true;
+  }
+  // Windows npm shims (.cmd/.bat) need CreateProcess via cmd.exe with escaped
+  // argv — never shell:true (metacharacters in model/worktreeName). cross-spawn
+  // handles that; plain spawn does not.
+  const isWindowsShim = process.platform === 'win32' && /\.(cmd|bat)$/i.test(spawnCommand)
+  if (isWindowsShim) {
+    return crossSpawn(spawnCommand, spawnArgs, finalOptions) as ChildProcess
   }
   return spawn(spawnCommand, spawnArgs, finalOptions);
 }

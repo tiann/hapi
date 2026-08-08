@@ -21,12 +21,17 @@ import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 
 import { cleanupRunnerState, getInstalledCliMtimeMs, isRunnerRunningCurrentlyInstalledHappyVersion, stopRunner, waitForRunnerHandoff } from './controlClient';
+import { createRunnerHandoffLockHooks, registerRunnerHandoffLockHooks, FAILED_HANDOFF_LOCK_DELAY_INCREMENT_MS, FAILED_HANDOFF_LOCK_MAX_ATTEMPTS } from './handoffLock';
 import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { validateWorkspaceDirectory } from './validateWorkspaceDirectory';
 import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
+import {
+    isRunnerSelfUpgradeInFlight,
+    shouldAttemptInstalledCliMtimeHandoff,
+} from '@/upgrade/selfUpgrade'
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
@@ -254,7 +259,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
   // re-acquire it. After the null guard above, the initial handle is
   // non-null; the heartbeat path's failure branches either reassign to a
   // re-acquired handle or process.exit() before any subsequent release.
-  let runnerLockHandle = initialLockHandle;
+  let runnerLockHandle: typeof initialLockHandle | null = initialLockHandle;
+
+  registerRunnerHandoffLockHooks(createRunnerHandoffLockHooks(
+    () => runnerLockHandle,
+    (handle) => { runnerLockHandle = handle },
+  ));
 
   // At this point we should be safe to startup the runner:
   // 1. Not have a stale runner state
@@ -1121,7 +1131,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const machine = await withRetry(
       () => api.getOrCreateMachine({
         machineId,
-        metadata: buildMachineMetadata({ workspaceRoots }),
+        metadata: buildMachineMetadata({ workspaceRoots, startedCliMtimeMs: startedWithCliMtimeMs }),
         runnerState: initialRunnerState
       }),
       {
@@ -1147,8 +1157,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       requestShutdown: () => requestShutdown('hapi-app')
     });
 
-    // Connect to server
-    apiMachine.connect();
+    // Connect and wait for Socket.IO auth + RPC registration before advertising
+    // hubReadyAt. connect() alone returns before the async 'connect' event.
+    await apiMachine.connectUntilReady();
+    fileState.hubReadyAt = Date.now();
+    writeRunnerState({
+      ...fileState,
+    });
     scheduleCursorModelsPrewarm();
 
     // Visible startup banner. Use console.log so it always appears on stdout,
@@ -1273,10 +1288,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       } else {
         const installedCliMtimeMs = getInstalledCliMtimeMs();
-        if (typeof installedCliMtimeMs === 'number' &&
-            typeof startedWithCliMtimeMs === 'number' &&
-            installedCliMtimeMs !== startedWithCliMtimeMs &&
-            Date.now() >= nextHandoffAttemptAt) {
+        if (shouldAttemptInstalledCliMtimeHandoff({
+            disableVersionHandoff: false,
+            selfUpgradeInFlight: isRunnerSelfUpgradeInFlight(),
+            installedCliMtimeMs,
+            startedWithCliMtimeMs,
+            now: Date.now(),
+            nextHandoffAttemptAt,
+        })) {
           logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version');
 
           // Hand off to a fresh runner that inherits our original argv (workspace
@@ -1342,7 +1361,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // success) until it holds the lock, and the lock is ours until
           // we release.
           try {
-            await releaseRunnerLock(runnerLockHandle);
+            if (runnerLockHandle) {
+              await releaseRunnerLock(runnerLockHandle);
+              runnerLockHandle = null;
+            }
           } catch (error) {
             logger.debug('[RUNNER RUN] Failed to release lock for child handoff; continuing wait anyway', error);
           }
@@ -1352,10 +1374,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           const handoffOk = await waitForRunnerHandoff(process.pid, { timeoutMs: 30_000 });
           if (!handoffOk) {
             logger.debug(`[RUNNER RUN] Replacement runner did not register within 30s; attempting to re-acquire lock and stay alive to avoid leaving the machine offline.`);
-            // Re-acquire the lock with a long window (the child has likely
-            // either succeeded and we're seeing a stale state, or it gave
-            // up - in either case the lock should be available shortly).
-            const reacquired = await acquireRunnerLock(60, 500);
+            // Bound reclaim to FAILED_HANDOFF_LOCK_* (~27.5s backoff). The old
+            // (60, 500) window (~885s) left the parent unlocked long enough for a
+            // late-connecting child to create dual machine sockets.
+            const reacquired = await acquireRunnerLock(
+              FAILED_HANDOFF_LOCK_MAX_ATTEMPTS,
+              FAILED_HANDOFF_LOCK_DELAY_INCREMENT_MS,
+            );
             if (!reacquired) {
               // Lock is held by someone else (third-party runner, or a
               // child that succeeded but state file hasn't reflected the
@@ -1370,6 +1395,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               return;
             }
             runnerLockHandle = reacquired;
+            // Child may have written state then died; reclaim ownership so the
+            // next heartbeat does not see a foreign dead PID as confusing noise.
+            try {
+              writeRunnerState({
+                ...fileState,
+                pid: process.pid,
+                httpPort: controlPort,
+                startedWithCliVersion: packageJson.version,
+                startedWithCliMtimeMs,
+                startedWithArgv,
+                startedWithVersionHandoffDisabled,
+                lastHeartbeat: new Date().toLocaleString(),
+              });
+            } catch (error) {
+              logger.debug('[RUNNER RUN] Failed to reclaim runner.state.json after failed handoff', error);
+            }
             deferHandoffRetry();
             return;
           }
@@ -1384,8 +1425,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Race condition is possible, but thats okay for the time being :D
       const runnerState = await readRunnerState();
       if (runnerState && runnerState.pid !== process.pid) {
-        logger.debug('[RUNNER RUN] Somehow a different runner was started without killing us. We should kill ourselves.')
-        requestShutdown('exception', 'A different runner was started without killing us. We should kill ourselves.')
+        // Only yield if the other PID is actually alive. During RPC/mtime handoff
+        // a child can write state then die; treating that as ownership transfer
+        // would suicide the parent and leave the machine offline.
+        if (isProcessAlive(runnerState.pid)) {
+          logger.debug('[RUNNER RUN] Somehow a different runner was started without killing us. We should kill ourselves.')
+          requestShutdown('exception', 'A different runner was started without killing us. We should kill ourselves.')
+          heartbeatRunning = false;
+          return;
+        }
+        logger.debug(`[RUNNER RUN] runner.state.json points at dead PID ${runnerState.pid}; reclaiming with heartbeat`)
       }
 
       // Heartbeat
@@ -1402,6 +1451,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           startedWithExtraHeadersHash: fileState.startedWithExtraHeadersHash,
           startedWithArgv,
           startedWithVersionHandoffDisabled,
+          hubReadyAt: fileState.hubReadyAt,
           lastHeartbeat: new Date().toLocaleString(),
           runnerLogPath: fileState.runnerLogPath
         };
@@ -1439,8 +1489,25 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       apiMachine.shutdown();
       await stopControlServer();
-      await cleanupRunnerState();
-      await releaseRunnerLock(runnerLockHandle);
+      // After a successful handoff the replacement owns runner.state.json / lock.
+      // Deleting them here would strand the child — same Major Codex flagged on
+      // self-upgrade requestShutdown. Only clean up when we still own the state.
+      const localState = await readRunnerState();
+      const replacementOwnsState = Boolean(
+        localState
+        && localState.pid !== process.pid
+        && isProcessAlive(localState.pid),
+      );
+      registerRunnerHandoffLockHooks(null);
+      if (replacementOwnsState) {
+        logger.debug('[RUNNER RUN] Replacement owns runner.state.json; skipping state/lock cleanup');
+      } else {
+        await cleanupRunnerState();
+        if (runnerLockHandle) {
+          await releaseRunnerLock(runnerLockHandle);
+          runnerLockHandle = null;
+        }
+      }
 
       logger.debug('[RUNNER RUN] Cleanup completed, exiting process');
       process.exit(0);

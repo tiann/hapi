@@ -4,7 +4,14 @@ import { usePwaUpdateContext } from '@/lib/pwa-update-context'
 import { useTranslation } from '@/lib/use-translation'
 import { useVoiceOptional } from '@/lib/voice-context'
 
-export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}) {
+export function PwaUpdateBanner({
+    topClassName,
+    stacked = false,
+}: {
+    topClassName?: string
+    /** When true, parent owns fixed positioning (share a vertical stack). */
+    stacked?: boolean
+} = {}) {
     const { t } = useTranslation()
     const { needRefresh, reload } = usePwaUpdateContext()
     const isOnline = useOnlineStatus()
@@ -17,11 +24,14 @@ export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}
     const topClass = topClassName ?? (isOnline
         ? 'top-[calc(env(safe-area-inset-top)+0.5rem)]'
         : 'top-[calc(env(safe-area-inset-top)+2.5rem)]')
+    const positionClass = stacked
+        ? 'relative w-full'
+        : `fixed left-4 right-4 ${topClass}`
 
     return (
         <div
             data-testid="pwa-update-banner"
-            className={`fixed left-4 right-4 bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg z-50 ${topClass}`}
+            className={`${positionClass} bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg z-50`}
         >
             <div className="flex items-center justify-between gap-3">
                 <div className="flex-1 min-w-0">

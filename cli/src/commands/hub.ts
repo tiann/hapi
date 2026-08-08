@@ -1,5 +1,6 @@
 import chalk from 'chalk'
 import type { CommandDefinition, CommandContext } from './types'
+import packageJson from '../../package.json'
 
 function parseHubArgs(args: string[]): { host?: string; port?: string } {
     const result: { host?: string; port?: string } = {}
@@ -34,7 +35,10 @@ export const hubCommand: CommandDefinition = {
                 process.env.HAPI_LISTEN_PORT = port
             }
             const { startHub } = await import('hapi-hub/startHub')
-            const hub = await startHub({ args: context.commandArgs })
+            const hub = await startHub({
+                args: context.commandArgs,
+                cliVersion: packageJson.version,
+            })
             let shuttingDown = false
             const shutdown = async () => {
                 if (shuttingDown) {

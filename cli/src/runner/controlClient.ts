@@ -242,21 +242,37 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
  * Used by the self-restart handoff in run.ts so the dying runner does not exit
  * until its replacement has actually come up and written its own state.
  *
- * Returns true when runner.state.json shows a different (and live) PID than
- * `oldPid`, false on timeout.
+ * Requires `hubReadyAt` so a child that dies after claiming the PID (but
+ * before hub registration/RPC connect) cannot be treated as a successful handoff.
+ *
+ * Returns true when runner.state.json shows a different live PID with hubReadyAt,
+ * false on timeout.
  */
 export async function waitForRunnerHandoff(
   oldPid: number,
-  options: { timeoutMs?: number; pollIntervalMs?: number } = {}
+  options: {
+    timeoutMs?: number
+    pollIntervalMs?: number
+    readState?: () => Promise<Awaited<ReturnType<typeof readRunnerState>>>
+    isAlive?: (pid: number) => boolean
+  } = {}
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const readState = options.readState ?? readRunnerState;
+  const isAlive = options.isAlive ?? isProcessAlive;
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     try {
-      const state = await readRunnerState();
-      if (state && state.pid !== oldPid && isProcessAlive(state.pid)) {
+      const state = await readState();
+      if (
+        state
+        && state.pid !== oldPid
+        && typeof state.hubReadyAt === 'number'
+        && state.hubReadyAt > 0
+        && isAlive(state.pid)
+      ) {
         logger.debug(`[RUNNER CONTROL] Handoff confirmed: new runner PID ${state.pid} replaced ${oldPid}`);
         return true;
       }

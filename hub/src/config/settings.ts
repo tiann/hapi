@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
+import type { FleetUpgradePolicy } from '@hapi/protocol/upgradeChannel'
 
 export interface Settings {
     machineId?: string
@@ -34,6 +35,8 @@ export interface Settings {
      * Env vars still win when set at process start (ops override).
      */
     providerCredentials?: Partial<Record<string, string>>
+    // Operator fleet-upgrade policy (no alert / alert / auto-upgrade)
+    fleetUpgradePolicy?: FleetUpgradePolicy
 }
 
 export function getSettingsFile(dataDir: string): string {
@@ -149,4 +152,39 @@ export async function updateSettings<T>(
         outcome.afterCommit?.()
         return outcome.result
     })
+}
+
+/** Process-wide queue so concurrent RMW writers share one settings.json + .tmp. */
+let settingsWriteTail: Promise<void> = Promise.resolve()
+
+/**
+ * Read-modify-write settings under a process-wide serial queue **and** the
+ * shared `${settingsFile}.lock` used by the CLI. The in-process queue alone
+ * does not serialize against concurrent `hapi auth login` / other CLI RMW on
+ * the same ~/.hapi/settings.json.
+ */
+export async function updateSettingsFile(
+    settingsFile: string,
+    mutate: (settings: Settings) => void,
+): Promise<Settings> {
+    const task = settingsWriteTail.then(() =>
+        updateSettings(settingsFile, (settings) => {
+            mutate(settings)
+            return {
+                settings,
+                result: settings,
+            }
+        }),
+    )
+    // Keep the chain alive after failures so later writers still serialize.
+    settingsWriteTail = task.then(
+        () => undefined,
+        () => undefined,
+    )
+    return task
+}
+
+/** Test-only: reset the settings write queue between suites. */
+export function resetSettingsWriteQueueForTests(): void {
+    settingsWriteTail = Promise.resolve()
 }

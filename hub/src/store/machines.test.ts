@@ -2,40 +2,90 @@ import { describe, expect, it } from 'bun:test'
 import { Store } from './index'
 import { mergeMachineMetadata } from './machines'
 
+const runnerAlive = { status: 'running' as const }
+
 describe('machine metadata backfill', () => {
-    it('merges incoming metadata over stored fields on re-registration', () => {
+    it('merges incoming metadata over stored fields on runner re-registration', () => {
         const store = new Store(':memory:')
-        const created = store.machines.getOrCreateMachine('machine-1', null, null, 'ns')
+        const created = store.machines.getOrCreateMachine('machine-1', null, runnerAlive, 'ns')
         expect(created.metadata).toBeNull()
 
         const refreshed = store.machines.getOrCreateMachine(
             'machine-1',
             { host: 'MacBook Pro', platform: 'darwin' },
-            null,
+            runnerAlive,
             'ns'
         )
 
-        expect(refreshed.metadata).toEqual({ host: 'MacBook Pro', platform: 'darwin' })
+        expect(refreshed.metadata).toEqual({
+            host: 'MacBook Pro',
+            platform: 'darwin',
+            capabilities: [],
+        })
         expect(refreshed.metadataVersion).toBe(created.metadataVersion + 1)
     })
 
     it('preserves hub-side fields the CLI never sends', () => {
         const store = new Store(':memory:')
-        store.machines.getOrCreateMachine('machine-1', { displayName: 'Workstation', host: 'old-host' }, null, 'ns')
+        store.machines.getOrCreateMachine(
+            'machine-1',
+            { displayName: 'Workstation', host: 'old-host' },
+            runnerAlive,
+            'ns'
+        )
 
-        const refreshed = store.machines.getOrCreateMachine('machine-1', { host: 'new-host' }, null, 'ns')
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'new-host' },
+            runnerAlive,
+            'ns'
+        )
 
-        expect(refreshed.metadata).toEqual({ displayName: 'Workstation', host: 'new-host' })
+        expect(refreshed.metadata).toEqual({
+            displayName: 'Workstation',
+            host: 'new-host',
+            capabilities: [],
+        })
     })
 
     it('does not write when the merge changes nothing', () => {
         const store = new Store(':memory:')
-        const created = store.machines.getOrCreateMachine('machine-1', { host: 'alpha' }, null, 'ns')
+        const created = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'alpha' },
+            runnerAlive,
+            'ns'
+        )
 
-        const again = store.machines.getOrCreateMachine('machine-1', { host: 'alpha' }, null, 'ns')
+        const again = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'alpha' },
+            runnerAlive,
+            'ns'
+        )
 
         expect(again.metadataVersion).toBe(created.metadataVersion)
         expect(again.updatedAt).toBe(created.updatedAt)
+    })
+
+    it('ignores terminal bootstrap metadata when runnerState is null', () => {
+        const store = new Store(':memory:')
+        const created = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'alpha', happyCliVersion: '0.20.2' },
+            runnerAlive,
+            'ns'
+        )
+
+        const again = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'beta', happyCliVersion: '0.23.4' },
+            null,
+            'ns'
+        )
+
+        expect(again.metadata).toEqual(created.metadata)
+        expect(again.metadataVersion).toBe(created.metadataVersion)
     })
 })
 
@@ -122,7 +172,14 @@ describe('runner capabilities backfill', () => {
             'ns'
         )
 
-        expect(refreshed.metadata).toEqual({ host: 'new-host', happyCliVersion: '0.28.0' })
+        // Identity refresh normalizes omitted metadata.capabilities to [] so a
+        // downgraded runner cannot keep stale RPC ads; runner-state object caps
+        // (piExistingSessionResume) still merge on the same call.
+        expect(refreshed.metadata).toEqual({
+            host: 'new-host',
+            happyCliVersion: '0.28.0',
+            capabilities: [],
+        })
         expect(refreshed.metadataVersion).toBe(created.metadataVersion + 1)
         expect(refreshed.runnerState).toEqual({
             status: 'offline',

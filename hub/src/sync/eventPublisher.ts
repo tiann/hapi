@@ -31,4 +31,20 @@ export class EventPublisher {
 
         this.sseManager.broadcast(enrichedEvent)
     }
+
+    /** Namespace-scoped toast (fleet upgrade outcomes, etc.). */
+    sendToast(namespace: string, title: string, body: string): void {
+        if (typeof this.sseManager.sendToast !== 'function') {
+            return
+        }
+        void this.sseManager.sendToast(namespace, {
+            type: 'toast',
+            data: {
+                title,
+                body,
+                sessionId: '',
+                url: '/',
+            },
+        })
+    }
 }

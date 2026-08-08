@@ -14,22 +14,23 @@ import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
-import { queryKeys } from '@/lib/query-keys'
-import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
 import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib/appSseSubscriptions'
 import { reconcileQueuedStateAfterConnect } from '@/lib/queued-state-reconciliation'
+import { AppContextProvider } from '@/lib/app-context'
+import { clearMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { getSseReconnectQueryKeys } from '@/lib/sse-reconnect-queries'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
-import { PwaUpdateBanner, PwaUpdateBannerWithStatusOffset } from '@/components/PwaUpdateBanner'
+import { PwaUpdateBanner } from '@/components/PwaUpdateBanner'
 import { SyncingBanner } from '@/components/SyncingBanner'
 import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
+import { TopFleetBanners } from '@/components/TopFleetBanners'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
@@ -231,15 +232,9 @@ function AppInner() {
         } else {
             startSync()
         }
-        const invalidations = [
-            queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-            // Invalidate ALL cached session-detail entries on reconnect, not just
-            // the selected one.  With `SESSION_DETAIL_STALE_TIME_MS` extending the
-            // freshness window on `useSession`, a previously-viewed session that
-            // received updates during the SSE gap would otherwise serve stale
-            // cached data on remount.  See tiann/hapi#884.
-            queryClient.invalidateQueries({ queryKey: ['session'] })
-        ]
+        const invalidations = getSseReconnectQueryKeys().map((queryKey) => (
+            queryClient.invalidateQueries({ queryKey: [...queryKey] })
+        ))
         const refreshMessages = (selectedSessionId && api)
             ? syncTailMessages(api, selectedSessionId)
             : Promise.resolve()
@@ -325,6 +320,33 @@ function AppInner() {
             return {
                 title: t('toast.task.failed'),
                 body: normalizedBody
+            }
+        }
+
+        if (normalizedTitle === 'Runner upgraded') {
+            const host = normalizedBody.replace(/\s+is now on the hub version$/i, '').trim()
+            return {
+                title: t('toast.runnerUpgrade.success.title'),
+                body: host
+                    ? t('toast.runnerUpgrade.success.body', { host })
+                    : normalizedBody,
+            }
+        }
+
+        if (normalizedTitle === 'Runner upgrade failed') {
+            const match = normalizedBody.match(/^(.+?):\s*(.+)$/)
+            if (match) {
+                return {
+                    title: t('toast.runnerUpgrade.failed.title'),
+                    body: t('toast.runnerUpgrade.failed.body', {
+                        host: match[1]?.trim() ?? '',
+                        message: match[2]?.trim() ?? '',
+                    }),
+                }
+            }
+            return {
+                title: t('toast.runnerUpgrade.failed.title'),
+                body: normalizedBody,
             }
         }
 
@@ -464,7 +486,7 @@ function AppInner() {
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
             <VoiceProvider>
-                <PwaUpdateBannerWithStatusOffset
+                <TopFleetBanners
                     isSyncing={isSyncing}
                     isReconnecting={showReconnectingBanner}
                 />

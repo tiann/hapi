@@ -19,6 +19,10 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { findMonorepoRoot, defaultHubPackageRoot, resolveUpgradeOffer, setConfiguredUpgradeTargetVersion } from './upgrade/resolveUpgradeOffer'
+import { ensureCliArtifact, isTransientArtifactBuildFailure, resolveArtifactSourceFingerprint, retainArtifactOffer } from './upgrade/cliArtifact'
+import { readSettings } from './config/settings'
+import { getFleetUpgradePolicy, initFleetUpgradePolicy } from './upgrade/fleetUpgradePolicy'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -98,6 +102,8 @@ export interface HubInstance {
 
 export interface StartHubOptions {
     args?: string[]
+    /** CLI package version (e.g. from `@twsxtd/hapi` package.json) for fleet upgrade offers. */
+    cliVersion?: string
 }
 
 export async function startHub(options: StartHubOptions = {}): Promise<HubInstance> {
@@ -111,11 +117,45 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     let notificationHub: NotificationHub | null = null
     let tunnelManager: TunnelManager | null = null
 
+    let cachedUpgradeOffer: { at: number; offer: ReturnType<typeof resolveUpgradeOffer> } | null = null
+    const UPGRADE_OFFER_TTL_MS = 30_000
+    const resolveCurrentUpgradeOffer = () => {
+        const now = Date.now()
+        if (cachedUpgradeOffer && now - cachedUpgradeOffer.at < UPGRADE_OFFER_TTL_MS) {
+            return cachedUpgradeOffer.offer
+        }
+        const offer = resolveUpgradeOffer({
+            hubPackageRoot: defaultHubPackageRoot(),
+            execPath: process.execPath,
+            targetVersion: options.cliVersion,
+        })
+        if (offer.channel === 'hub-artifact' && !offer.targetGeneration) {
+            const monorepoRoot = findMonorepoRoot(defaultHubPackageRoot())
+            if (monorepoRoot) {
+                try {
+                    offer.targetGeneration = resolveArtifactSourceFingerprint(monorepoRoot)
+                } catch (error) {
+                    if (!isTransientArtifactBuildFailure(error)) {
+                        throw error
+                    }
+                    console.warn('[fleet-upgrade] source is changing; deferring generation fingerprint')
+                }
+            }
+        }
+        cachedUpgradeOffer = { at: now, offer }
+        return offer
+    }
+    const rememberUpgradeOffer = (offer: ReturnType<typeof resolveUpgradeOffer>): void => {
+        cachedUpgradeOffer = { at: Date.now(), offer }
+    }
+    setConfiguredUpgradeTargetVersion(options.cliVersion)
     // Load configuration (async - loads from env/file with persistence)
     const relayApiDomain = process.env.HAPI_RELAY_API || 'relay.hapi.run'
     const relayFlag = resolveRelayFlag(options.args ?? process.argv)
     const officialWebUrl = process.env.HAPI_OFFICIAL_WEB_URL || 'https://app.hapi.run'
     const config = await createConfiguration()
+    const persistedSettings = await readSettings(config.settingsFile)
+    initFleetUpgradePolicy({ dataDir: config.dataDir, persisted: persistedSettings?.fleetUpgradePolicy })
     const baseCorsOrigins = normalizeOrigins(config.corsOrigins)
     const relayCorsOrigin = normalizeOrigin(officialWebUrl)
     const corsOrigins = relayFlag.enabled
@@ -143,6 +183,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     console.log(`[Hub] HAPI_LISTEN_HOST: ${config.listenHost} (${formatSource(config.sources.listenHost)})`)
     console.log(`[Hub] HAPI_LISTEN_PORT: ${config.listenPort} (${formatSource(config.sources.listenPort)})`)
     console.log(`[Hub] HAPI_PUBLIC_URL: ${config.publicUrl} (${formatSource(config.sources.publicUrl)})`)
+    console.log(`[Hub] Fleet upgrade policy: ${getFleetUpgradePolicy()}`)
 
     if (!config.telegramEnabled) {
         console.log('[Hub] Telegram: disabled (no TELEGRAM_BOT_TOKEN)')
@@ -198,7 +239,40 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         onMessagesConsumed: (sessionId) => syncEngine?.clearQueuedThinkingGrace(sessionId)
     })
 
-    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
+    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager, {
+        getUpgradeOffer: () => resolveCurrentUpgradeOffer(),
+        getFleetUpgradePolicy: () => getFleetUpgradePolicy(),
+        prepareArtifactOffer: async (offer, platform, arch) => {
+            const meta = await ensureCliArtifact({
+                version: offer.targetVersion,
+                platform,
+                arch,
+                dataDir: config.dataDir,
+                hubPackageRoot: defaultHubPackageRoot(),
+            })
+            retainArtifactOffer(meta.sha256)
+            const prepared = {
+                ...offer,
+                // Always advertise the fingerprint of the artifact that was
+                // actually built/cached — tunwg pin refresh can change inputs
+                // after the pre-build offer fingerprint.
+                targetGeneration: meta.sourceFingerprint,
+                artifact: {
+                    url: `/cli/upgrade/cli-artifact?sha256=${encodeURIComponent(meta.sha256)}`,
+                    sha256: meta.sha256,
+                    platform: meta.platform,
+                    arch: meta.arch,
+                    sizeBytes: meta.sizeBytes,
+                },
+            }
+            rememberUpgradeOffer(prepared)
+            return prepared
+        },
+    })
+    {
+        const offer = resolveCurrentUpgradeOffer()
+        console.log(`[Hub] fleet upgrade channel=${offer.channel} target=${offer.targetVersion}`)
+    }
 
     const fcmConfig = resolveFcmConfig()
 

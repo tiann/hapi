@@ -64,6 +64,12 @@ export interface RunnerLocallyPersistedState {
    * mid-rebuild stop. Persisting this fixes that.
    */
   startedWithVersionHandoffDisabled?: boolean;
+  /**
+   * Set after machine registration + RPC handlers + socket connect.
+   * Parent handoff waits require this so a child that dies between
+   * writeRunnerState and hub readiness cannot become the durable target.
+   */
+  hubReadyAt?: number;
 }
 
 export async function readSettings(): Promise<Settings> {

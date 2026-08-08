@@ -1,6 +1,8 @@
 import type { Machine, MachinePatch } from '@hapi/protocol/types'
+import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { MachineHealthSchema, MachineMetadataSchema, RunnerStateSchema } from '@hapi/protocol/schemas'
 import type { Store } from '../store'
+import type { RpcRegistry } from '../socket/rpcRegistry'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 
@@ -45,20 +47,24 @@ export class MachineCache {
 
     constructor(
         private readonly store: Store,
-        private readonly publisher: EventPublisher
+        private readonly publisher: EventPublisher,
+        private readonly rpcRegistry?: RpcRegistry,
     ) {
     }
 
     getMachines(): Machine[] {
-        return Array.from(this.machines.values())
+        return this.mapLive(Array.from(this.machines.values()))
     }
 
     getMachinesByNamespace(namespace: string): Machine[] {
-        return this.getMachines().filter((machine) => machine.namespace === namespace)
+        return this.mapLive(
+            Array.from(this.machines.values()).filter((machine) => machine.namespace === namespace)
+        )
     }
 
     getMachine(machineId: string): Machine | undefined {
-        return this.machines.get(machineId)
+        const machine = this.machines.get(machineId)
+        return machine ? this.withLiveCapabilities(machine) : undefined
     }
 
     getMachineByNamespace(machineId: string, namespace: string): Machine | undefined {
@@ -66,15 +72,21 @@ export class MachineCache {
         if (!machine || machine.namespace !== namespace) {
             return undefined
         }
-        return machine
+        return this.withLiveCapabilities(machine)
     }
 
     getOnlineMachines(): Machine[] {
-        return this.getMachines().filter((machine) => machine.active)
+        return this.mapLive(
+            Array.from(this.machines.values()).filter((machine) => machine.active)
+        )
     }
 
     getOnlineMachinesByNamespace(namespace: string): Machine[] {
-        return this.getMachinesByNamespace(namespace).filter((machine) => machine.active)
+        return this.mapLive(
+            Array.from(this.machines.values()).filter(
+                (machine) => machine.namespace === namespace && machine.active
+            )
+        )
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
@@ -184,8 +196,44 @@ export class MachineCache {
         }
 
         this.machines.set(machineId, machine)
-        this.publisher.emit({ type: 'machine-updated', machineId, data: machine })
-        return machine
+        const withLive = this.withLiveCapabilities(machine)
+        this.publisher.emit({ type: 'machine-updated', machineId, data: withLive })
+        // Return the live overlay: callers that fall back to refreshMachine
+        // (cold cache on upgrade/restart) must see RPC-registered capabilities,
+        // not only persisted metadata.
+        return withLive
+    }
+
+    /** Overlay live RPC registrations onto advertised metadata capabilities for API/SSE consumers. */
+    private withLiveCapabilities(machine: Machine): Machine {
+        if (!machine.metadata || !this.rpcRegistry) {
+            return machine
+        }
+        const advertised = machine.metadata.capabilities ?? []
+        const live = CURRENT_MACHINE_CAPABILITIES.filter((cap) => (
+            this.rpcRegistry!.hasMethod(`${machine.id}:${cap}`)
+        ))
+        if (live.length === 0) {
+            return machine
+        }
+        const merged = Array.from(new Set([...advertised, ...live]))
+        if (
+            merged.length === advertised.length
+            && merged.every((cap) => advertised.includes(cap))
+        ) {
+            return machine
+        }
+        return {
+            ...machine,
+            metadata: {
+                ...machine.metadata,
+                capabilities: merged,
+            },
+        }
+    }
+
+    private mapLive(machines: Machine[]): Machine[] {
+        return machines.map((machine) => this.withLiveCapabilities(machine))
     }
 
     reloadAll(): void {
@@ -220,7 +268,11 @@ export class MachineCache {
             || (now - lastBroadcastAt > 10_000)
         if (shouldBroadcast) {
             this.lastBroadcastAtByMachineId.set(machine.id, now)
-            this.publisher.emit({ type: 'machine-updated', machineId: machine.id, data: machine })
+            this.publisher.emit({
+                type: 'machine-updated',
+                machineId: machine.id,
+                data: this.withLiveCapabilities(machine),
+            })
         }
     }
 

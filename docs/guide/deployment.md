@@ -259,6 +259,8 @@ After=network.target hapi-hub.service
 [Service]
 Type=simple
 KillMode=process
+# Advertise that systemd will relaunch after hub "Restart" (stop-runner).
+Environment=HAPI_RUNNER_SUPERVISED=1
 ExecStart=/usr/local/bin/hapi runner start-sync
 Restart=always
 RestartSec=5

@@ -44,6 +44,7 @@ export const RPC_METHODS = {
     ListAgyModels: 'listAgyModels',
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
+    RunnerSelfUpgrade: 'runner-self-upgrade',
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

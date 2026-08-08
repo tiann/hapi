@@ -492,6 +492,7 @@ type SessionChatProps = {
     session: Session
     cursorChatOnDisk?: boolean
     reopenDisabledReason?: string
+    reopenHint?: string
     messages: DecryptedMessage[]
     messagesWarning: string | null
     hasMoreMessages: boolean
@@ -1684,6 +1685,7 @@ function SessionChatInner(props: SessionChatProps) {
                 api={props.api}
                 canReopen={inactiveCanResume}
                 reopenDisabledReason={props.reopenDisabledReason}
+                reopenHint={props.reopenHint}
                 onSessionDeleted={props.onBack}
                 onSessionReopened={async (newSessionId) => {
                     await transferComposerDraftThenNavigate(

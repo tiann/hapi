@@ -67,7 +67,14 @@ describe('MachineCache.renameMachine', () => {
         cache.reloadAll()
 
         await cache.renameMachine('machine-1', 'Workstation')
-        store.machines.getOrCreateMachine('machine-1', { ...BASE_METADATA, host: 'renamed-host' }, null, 'ns')
+        // Non-null runnerState marks a runner registration. Terminal bootstrap
+        // uses null and must not refresh identity (masks a still-old live runner).
+        store.machines.getOrCreateMachine(
+            'machine-1',
+            { ...BASE_METADATA, host: 'renamed-host' },
+            { status: 'running' },
+            'ns',
+        )
 
         const metadata = store.machines.getMachine('machine-1')?.metadata as Record<string, unknown>
         expect(metadata.displayName).toBe('Workstation')

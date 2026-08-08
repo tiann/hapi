@@ -51,5 +51,10 @@ export class RpcRegistry {
     getSocketIdForMethod(method: string): string | null {
         return this.methodToSocketId.get(method) ?? null
     }
+
+    /** True when a fully-prefixed RPC method (e.g. `Teemo:cursor-chat-store-status`) is live. */
+    hasMethod(method: string): boolean {
+        return this.methodToSocketId.has(method)
+    }
 }
 
