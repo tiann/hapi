@@ -83,13 +83,13 @@ export function getSessionJob(
     return row ? toStored(row) : null
 }
 
-/** Newest `running` job for a session, or null. */
+/** Earliest-started `running` job for a session, or null (stable list chrome). */
 export function getPrimaryRunningJob(db: Database, sessionId: string): StoredSessionJob | null {
     const row = db.prepare(
         `SELECT ${JOB_COLUMNS}
          FROM session_jobs
          WHERE session_id = ? AND status = 'running'
-         ORDER BY updated_at DESC, job_key ASC
+         ORDER BY started_at ASC, job_key ASC
          LIMIT 1`
     ).get(sessionId) as DbJobRow | undefined
     return row ? toStored(row) : null
@@ -111,10 +111,11 @@ export function getPrimaryRunningJobsBySessionIds(
         `SELECT ${JOB_COLUMNS}
          FROM session_jobs
          WHERE status = 'running' AND session_id IN (${placeholders})
-         ORDER BY updated_at DESC, job_key ASC`
+         ORDER BY started_at ASC, job_key ASC`
     ).all(...sessionIds) as DbJobRow[]
 
     for (const row of rows) {
+        // First row per session wins — earliest started_at (stable primary).
         if (result.has(row.session_id)) continue
         result.set(row.session_id, toAttachedJob(toStored(row)))
     }

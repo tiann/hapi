@@ -167,6 +167,7 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.attachedJob?.unit === next.attachedJob?.unit
         && current.attachedJob?.detail === next.attachedJob?.detail
         && current.attachedJob?.heartbeatAt === next.attachedJob?.heartbeatAt
+        && current.attachedJob?.startedAt === next.attachedJob?.startedAt
         && (current.attachedJob == null) === (next.attachedJob == null)
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort

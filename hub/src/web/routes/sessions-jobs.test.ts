@@ -127,4 +127,86 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         expect(listed.jobs).toEqual([])
         expect(listed.primary).toBeNull()
     })
+
+    it('follows jobsAccepted redirect when the pre-merge session id 404s', async () => {
+        const owner = createSession({ id: '22222222-2222-2222-2222-222222222222' })
+        const deletedId = '11111111-1111-1111-1111-111111111111'
+        const jobs = new Map<string, AttachedJob>()
+        jobs.set('beets', {
+            key: 'beets',
+            label: 'beets import',
+            status: 'running',
+            remaining: 3,
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        })
+
+        const engine = {
+            resolveSessionAccess: (id: string) => {
+                if (id === owner.id) {
+                    return { ok: true as const, sessionId: owner.id, session: owner }
+                }
+                return { ok: false as const, reason: 'not-found' as const }
+            },
+            resolveAttachedJobSessionId: (id: string) => (id === deletedId ? owner.id : id),
+            listSessionJobs: (sid: string) => (sid === owner.id ? [...jobs.values()] : []),
+            getPrimaryAttachedJob: (sid: string) => (sid === owner.id ? jobs.get('beets')! : null),
+            upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
+            patchSessionJob: () => null,
+            deleteSessionJob: () => false
+        } as unknown as SyncEngine
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine))
+
+        const res = await app.request(`http://localhost/api/sessions/${deletedId}/jobs`)
+        expect(res.status).toBe(200)
+        const body = await res.json() as { primary: AttachedJob | null }
+        expect(body.primary?.key).toBe('beets')
+    })
+
+    it('rejects invalid jobKey and invalid upsert body with 400', async () => {
+        const session = createSession()
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
+            resolveAttachedJobSessionId: (id: string) => id,
+            listSessionJobs: () => [],
+            getPrimaryAttachedJob: () => null,
+            upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
+            patchSessionJob: () => null,
+            deleteSessionJob: () => false
+        } as unknown as SyncEngine
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine))
+
+        const badKey = await app.request(
+            `http://localhost/api/sessions/${session.id}/jobs/bad key!`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label: 'x' })
+            }
+        )
+        expect(badKey.status).toBe(400)
+
+        const badBody = await app.request(
+            `http://localhost/api/sessions/${session.id}/jobs/ok-key`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ remaining: 1 })
+            }
+        )
+        expect(badBody.status).toBe(400)
+    })
 })

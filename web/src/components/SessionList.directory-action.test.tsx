@@ -585,6 +585,7 @@ describe('SessionList collapse behavior', () => {
         render(renderSessionList(sessions, null))
 
         expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/Jobs \(1\)/)).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Music drain/ })).toBeInTheDocument()
         // Thinking agent is not a long-running job — stays in directory under jobs mode.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()

@@ -178,6 +178,7 @@ export default {
   'session.item.thinking': '思考中',
   'session.item.running': '运行中',
   'session.item.active': '活跃',
+  'session.item.attachedJob': '长时间任务',
   'session.item.permission': '需要权限',
   'session.item.needsInput': '需要输入',
   'session.item.background': '后台任务运行中',

@@ -2,14 +2,18 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { runSessionJob } from './runSessionJob'
 
-function fakeChild(exitCode: number) {
+function fakeChild(exitCode: number, deferExit = false) {
     const child = new EventEmitter() as EventEmitter & {
         pid: number
         killed: boolean
+        exit: () => void
     }
     child.pid = 4242
     child.killed = false
-    queueMicrotask(() => child.emit('exit', exitCode, null))
+    child.exit = () => child.emit('exit', exitCode, null)
+    if (!deferExit) {
+        queueMicrotask(() => child.exit())
+    }
     return child
 }
 
@@ -50,7 +54,8 @@ describe('runSessionJob', () => {
         }
 
         const timers: Array<() => void> = []
-        const exitCode = await runSessionJob({
+        const child = fakeChild(0, true)
+        const running = runSessionJob({
             sessionIdPrefix: 'aaaa',
             jobKey: 'drain',
             label: 'drain',
@@ -59,7 +64,7 @@ describe('runSessionJob', () => {
             accessToken: 'token',
             apiUrl: 'http://127.0.0.1:3006',
             http: http as never,
-            spawnImpl: (() => fakeChild(0)) as never,
+            spawnImpl: (() => child) as never,
             setIntervalImpl: ((fn: () => void) => {
                 timers.push(fn)
                 return 1 as unknown as NodeJS.Timeout
@@ -67,11 +72,24 @@ describe('runSessionJob', () => {
             clearIntervalImpl: (() => undefined) as never
         })
 
+        await vi.waitFor(() => expect(http.put).toHaveBeenCalled())
+        expect(http.post).toHaveBeenCalledTimes(1)
+        expect(http.get).toHaveBeenCalledTimes(1)
+
+        // Heartbeat ticks reuse resolved client (no extra auth).
+        expect(timers.length).toBe(1)
+        timers[0]!()
+        await vi.waitFor(() => expect(http.patch).toHaveBeenCalled())
+        expect(http.post).toHaveBeenCalledTimes(1)
+        expect(http.get).toHaveBeenCalledTimes(1)
+
+        child.exit()
+        const exitCode = await running
         expect(exitCode).toBe(0)
-        expect(http.put).toHaveBeenCalled()
-        expect(http.patch).toHaveBeenCalled()
         const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
         expect(lastPatch.status).toBe('completed')
+        expect(http.post).toHaveBeenCalledTimes(1)
+        expect(http.get).toHaveBeenCalledTimes(1)
     })
 
     it('marks failed on non-zero exit', async () => {

@@ -166,23 +166,46 @@ async function resolveSessionId(
     return resolveSessionIdForJobCli(sessions, sessionIdPrefix)
 }
 
+export type SessionJobResolvedClient = {
+    apiUrl: string
+    jwt: string
+    sessionId: string
+}
+
 export type SessionJobClientOptions = {
     sessionIdPrefix: string
     apiUrl?: string
     accessToken?: string
     http?: AxiosInstance
+    /**
+     * When set (e.g. after {@link resolveSessionJobClient}), skip JWT exchange
+     * and session-list resolve — required for days-long `job run` heartbeats.
+     */
+    resolved?: SessionJobResolvedClient
 }
 
-async function withClient<T>(
-    options: SessionJobClientOptions,
-    fn: (ctx: { apiUrl: string; jwt: string; sessionId: string; http: AxiosInstance }) => Promise<T>
-): Promise<T> {
+/** One JWT + session id for the life of a supervised job. */
+export async function resolveSessionJobClient(
+    options: SessionJobClientOptions
+): Promise<SessionJobResolvedClient> {
+    if (options.resolved) {
+        return options.resolved
+    }
     const http = options.http ?? axios
     const apiUrl = resolveApiUrl(options.apiUrl)
     const accessToken = resolveAccessToken(options.accessToken)
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sessionId = await resolveSessionId(apiUrl, jwt, http, options.sessionIdPrefix)
-    return fn({ apiUrl, jwt, sessionId, http })
+    return { apiUrl, jwt, sessionId }
+}
+
+async function withClient<T>(
+    options: SessionJobClientOptions,
+    fn: (ctx: SessionJobResolvedClient & { http: AxiosInstance }) => Promise<T>
+): Promise<T> {
+    const http = options.http ?? axios
+    const resolved = await resolveSessionJobClient(options)
+    return fn({ ...resolved, http })
 }
 
 export async function listSessionJobs(
