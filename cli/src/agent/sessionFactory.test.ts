@@ -234,6 +234,82 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('preserves externalRefs when bootstrap rebuild omits them', async () => {
+        const session = createSession()
+        const existingMetadata = session.metadata
+        if (!existingMetadata) throw new Error('expected test session metadata')
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary' as const
+        }]
+        session.metadata = {
+            ...existingMetadata,
+            externalRefs
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.metadata.externalRefs).toEqual(externalRefs)
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata).externalRefs).toEqual(externalRefs)
+    })
+
+    it('lets metadataOverrides replace or clear externalRefs on bootstrap', async () => {
+        const session = createSession()
+        const existingMetadata = session.metadata
+        if (!existingMetadata) throw new Error('expected test session metadata')
+        session.metadata = {
+            ...existingMetadata,
+            externalRefs: [{
+                kind: 'github_pr',
+                repo: 'tiann/hapi',
+                number: 1160,
+                url: 'https://github.com/tiann/hapi/pull/1160',
+                role: 'primary'
+            }]
+        }
+        const replacement = [{
+            kind: 'github_pr' as const,
+            repo: 'owner/other',
+            number: 9,
+            url: 'https://github.com/owner/other/pull/9',
+            role: 'primary' as const
+        }]
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const replaced = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project',
+            metadataOverrides: { externalRefs: replacement }
+        })
+        expect(replaced.metadata.externalRefs).toEqual(replacement)
+
+        const cleared = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project',
+            metadataOverrides: { externalRefs: [] }
+        })
+        expect(cleared.metadata.externalRefs).toEqual([])
+    })
+
     it('advertises remote terminal capability in session metadata', () => {
         const metadata = buildSessionMetadata({
             flavor: 'codex',

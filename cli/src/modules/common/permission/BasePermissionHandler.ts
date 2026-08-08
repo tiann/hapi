@@ -21,6 +21,12 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
     'change_title',
     'happy__change_title',
     'hapi_change_title',  // OpenCode MCP tool pattern
+    'link_pr',
+    'happy__link_pr',
+    'hapi_link_pr',
+    'hapi__link_pr',
+    'mcp__hapi__link_pr',
+    'mcp__happy__link_pr',
     'geminireasoning',
     'codexreasoning',
     'think',
@@ -44,7 +50,7 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
 // modes must still gate them. Treat both as write-like in read-only so ACP
 // titles such as "Ping Peer Session" / "Inspect Peer Session" also require
 // approval. list_peers is discovery-only and is auto-approved above.
-const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
+const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'link_pr', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',
     'ping peer',

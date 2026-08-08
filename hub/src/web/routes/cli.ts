@@ -5,7 +5,8 @@ import {
     CreateOrLoadSessionRequestSchema,
     ClearOpencodeSessionCallbackRequestSchema,
     CursorMigrateToAcpRequestSchema,
-    PROTOCOL_VERSION
+    PROTOCOL_VERSION,
+    SetExternalRefsRequestSchema
 } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
@@ -283,6 +284,45 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             now: Date.now()
         })
         return c.json({ messages })
+    })
+
+    app.put('/sessions/:id/external-refs', async (c) => {
+        const configuration = getConfiguration()
+        if (!configuration.githubPrAwareness) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const sessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, sessionId, namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetExternalRefsRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: externalRefs is required' }, 400)
+        }
+
+        try {
+            await engine.setSessionExternalRefs(resolved.sessionId, parsed.data.externalRefs)
+            return c.json({ ok: true, externalRefs: parsed.data.externalRefs })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to update external refs'
+            if (message.includes('concurrently') || message.includes('version')) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
     })
 
     app.post('/sessions/:id/migrate-to-acp', async (c) => {

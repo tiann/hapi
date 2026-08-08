@@ -21,6 +21,7 @@ export interface ServerSettings {
     listenPort: number
     publicUrl: string
     corsOrigins: string[]
+    githubPrAwareness: boolean
 }
 
 export interface ServerSettingsResult {
@@ -34,6 +35,7 @@ export interface ServerSettingsResult {
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
+        githubPrAwareness: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
 }
@@ -104,6 +106,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             listenPort: 'default',
             publicUrl: 'default',
             corsOrigins: 'default',
+            githubPrAwareness: 'default',
         }
         // telegramBotToken: env > file > null
         let telegramBotToken: string | null = null
@@ -223,6 +226,21 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             corsOrigins = deriveCorsOrigins(publicUrl)
         }
 
+        // githubPrAwareness: env > file > false (opt-in). tiann/hapi#1162.
+        let githubPrAwareness = false
+        if (process.env.HAPI_GITHUB_PR_AWARENESS !== undefined) {
+            const raw = process.env.HAPI_GITHUB_PR_AWARENESS.trim().toLowerCase()
+            githubPrAwareness = raw === '1' || raw === 'true' || raw === 'yes'
+            sources.githubPrAwareness = 'env'
+            if (settings.githubPrAwareness === undefined) {
+                settings.githubPrAwareness = githubPrAwareness
+                needsSave = true
+            }
+        } else if (settings.githubPrAwareness !== undefined) {
+            githubPrAwareness = Boolean(settings.githubPrAwareness)
+            sources.githubPrAwareness = 'file'
+        }
+
         return {
             settings,
             write: needsSave,
@@ -236,6 +254,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     listenPort,
                     publicUrl,
                     corsOrigins,
+                    githubPrAwareness,
                 },
                 sources,
                 savedToFile: needsSave,

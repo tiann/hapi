@@ -7,6 +7,7 @@ import { sessionModelMutationKey, useSessionActions } from '@/hooks/mutations/us
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useScratchlistCount } from '@/lib/use-scratchlist-count'
 import { formatReopenError } from '@/lib/reopenError'
@@ -19,6 +20,13 @@ import { getSessionTitle } from '@/lib/sessionTitle'
 import { useToast } from '@/lib/toast-context'
 import { queryKeys } from '@/lib/query-keys'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
+import { useFeatures } from '@/hooks/queries/useFeatures'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
@@ -214,13 +222,30 @@ export function SessionHeader(props: {
     const menuId = useId()
     const menuAnchorRef = useRef<HTMLButtonElement | null>(null)
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [isSyncingCodex, setIsSyncingCodex] = useState(false)
     const [isSyncingPi, setIsSyncingPi] = useState(false)
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
+    const primaryPrRef = getPrimaryGithubPrRef(session.metadata?.externalRefs)
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        const nowMs = Date.now()
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, nowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, t])
 
-    const { archiveSession, reopenSession, renameSession, setPinMode, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, setExternalRefs, setPinMode, deleteSession, isPending } = useSessionActions(
         api,
         session.id,
         session.metadata?.flavor ?? null
@@ -515,6 +540,8 @@ export function SessionHeader(props: {
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId ? handleSyncCodex : undefined}
@@ -546,6 +573,15 @@ export function SessionHeader(props: {
                 onClose={() => setRenameOpen(false)}
                 currentName={title}
                 onRename={renameSession}
+                isPending={isPending}
+            />
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onLink={setExternalRefs}
+                onUnlink={primaryPrRef ? () => setExternalRefs([]) : undefined}
                 isPending={isPending}
             />
 

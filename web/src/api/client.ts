@@ -916,6 +916,33 @@ export class ApiClient {
         })
     }
 
+    async getFeatures(): Promise<{
+        githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+        prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+    }> {
+        return await this.request('/api/features')
+    }
+
+    async patchFeatures(patch: { githubPrAwareness?: boolean }): Promise<{
+        githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+        prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+    }> {
+        return await this.request('/api/features', {
+            method: 'PATCH',
+            body: JSON.stringify(patch)
+        })
+    }
+
+    async setSessionExternalRefs(
+        sessionId: string,
+        externalRefs: import('@/types/api').ExternalRef[]
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs`, {
+            method: 'PUT',
+            body: JSON.stringify({ externalRefs })
+        })
+    }
+
     async setSessionPinMode(sessionId: string, mode: 'none' | 'project' | 'global'): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
             method: 'PUT',

@@ -28,7 +28,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
-import { getSettingsFile } from './config/settings'
+import { getSettingsFile, readSettingsOrThrow, writeSettings } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
 
 export type ConfigSource = 'env' | 'file' | 'default'
@@ -42,6 +42,7 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
+    githubPrAwareness: ConfigSource
     cliApiToken: 'env' | 'file' | 'generated'
 }
 
@@ -91,6 +92,12 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
+    /**
+     * Opt-in GitHub PR awareness (session↔PR attach + chip). Mutable via PATCH /api/features
+     * unless pinned by HAPI_GITHUB_PR_AWARENESS. tiann/hapi#1162.
+     */
+    public githubPrAwareness: boolean
+
     /** Sources of each configuration value */
     public readonly sources: ConfigSources
 
@@ -115,6 +122,7 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.githubPrAwareness = serverSettings.githubPrAwareness
 
         // CLI API token - will be set by _setCliApiToken() before create() returns
         this.cliApiToken = ''
@@ -181,6 +189,21 @@ class Configuration {
         this.cliApiTokenSource = source
         this.cliApiTokenIsNew = isNew
         ;(this.sources as { cliApiToken: string }).cliApiToken = source
+    }
+
+    /**
+     * Persist githubPrAwareness to settings.json and update in-memory state.
+     * Refuses when the value is pinned by HAPI_GITHUB_PR_AWARENESS.
+     */
+    async setGithubPrAwareness(enabled: boolean): Promise<void> {
+        if (this.sources.githubPrAwareness === 'env') {
+            throw new Error('githubPrAwareness is pinned by HAPI_GITHUB_PR_AWARENESS')
+        }
+        const settings = await readSettingsOrThrow(this.settingsFile)
+        settings.githubPrAwareness = enabled
+        await writeSettings(this.settingsFile, settings)
+        this.githubPrAwareness = enabled
+        ;(this.sources as { githubPrAwareness: ConfigSource }).githubPrAwareness = 'file'
     }
 }
 

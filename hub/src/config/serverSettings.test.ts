@@ -28,4 +28,28 @@ describe('loadServerSettings', () => {
 
         await expect(loadServerSettings(dir)).rejects.toThrow('Unsupported old settings field')
     })
+
+    it('defaults githubPrAwareness to false', async () => {
+        dir = makeTempDir()
+        const result = await loadServerSettings(dir)
+        expect(result.settings.githubPrAwareness).toBe(false)
+        expect(result.sources.githubPrAwareness).toBe('default')
+    })
+
+    it('honors HAPI_GITHUB_PR_AWARENESS env override', async () => {
+        dir = makeTempDir()
+        const previous = process.env.HAPI_GITHUB_PR_AWARENESS
+        process.env.HAPI_GITHUB_PR_AWARENESS = '1'
+        try {
+            const result = await loadServerSettings(dir)
+            expect(result.settings.githubPrAwareness).toBe(true)
+            expect(result.sources.githubPrAwareness).toBe('env')
+        } finally {
+            if (previous === undefined) {
+                delete process.env.HAPI_GITHUB_PR_AWARENESS
+            } else {
+                process.env.HAPI_GITHUB_PR_AWARENESS = previous
+            }
+        }
+    })
 })

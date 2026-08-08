@@ -7,6 +7,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 
@@ -37,7 +38,14 @@ import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineFilterMenu } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { useFeatures } from '@/hooks/queries/useFeatures'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
@@ -883,9 +891,13 @@ function SessionItem(props: {
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -903,7 +915,7 @@ function SessionItem(props: {
                 : t('session.action.reopenCursorChecking')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, setExternalRefs, deleteSession, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -956,6 +968,19 @@ function SessionItem(props: {
     })
 
     const sessionName = getSessionTitle(s)
+    const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        const nowMs = Date.now()
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, nowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, t])
     const attention = useMemo(
         () => showDetailedStatus
             ? classifySessionAttention(s, {
@@ -988,6 +1013,8 @@ function SessionItem(props: {
                     nestedTooltips
                     attentionTooltipId={attentionId}
                     scheduleTooltipId={scheduleId}
+                    githubPrAwarenessEnabled={githubPrAwarenessEnabled}
+                    prChipDisplay={prChipDisplay}
                     inRunningSection={inRunningSection}
                     projectLabel={projectLabel}
                     machineLabel={machineLabel}
@@ -1004,6 +1031,8 @@ function SessionItem(props: {
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
@@ -1035,6 +1064,15 @@ function SessionItem(props: {
                     isPending={isPending}
                 />
             ) : null}
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onLink={setExternalRefs}
+                onUnlink={primaryPrRef ? () => setExternalRefs([]) : undefined}
+                isPending={isPending}
+            />
 
             {exportOpen ? (
                 <SessionExportDialog

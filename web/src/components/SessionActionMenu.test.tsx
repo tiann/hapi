@@ -222,3 +222,29 @@ describe('SessionActionMenu - Copy reference action', () => {
         })
     })
 })
+
+describe('SessionActionMenu - Linked PR header', () => {
+    it('shows linked PR detail above More actions when linkedPr is set', () => {
+        renderMenu({
+            linkedPr: {
+                glyph: '⚠️',
+                detail: 'tiann/hapi#1163 · ready to merge',
+                href: 'https://github.com/tiann/hapi/pull/1163',
+            },
+        })
+
+        const block = screen.getByTestId('session-action-menu-linked-pr')
+        expect(block).toHaveTextContent('Linked pull request')
+        expect(block).toHaveTextContent('⚠️')
+        expect(block).toHaveTextContent('tiann/hapi#1163 · ready to merge')
+        expect(screen.getByRole('link', { name: /tiann\/hapi#1163/ })).toHaveAttribute(
+            'href',
+            'https://github.com/tiann/hapi/pull/1163'
+        )
+    })
+
+    it('omits the linked PR block when linkedPr is absent', () => {
+        renderMenu()
+        expect(screen.queryByTestId('session-action-menu-linked-pr')).not.toBeInTheDocument()
+    })
+})

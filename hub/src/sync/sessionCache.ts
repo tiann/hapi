@@ -1,5 +1,5 @@
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
@@ -13,6 +13,73 @@ const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+
+/**
+ * Metadata merge used when consolidating an old session row into a replacement
+ * (resume/reopen). Carry forward display/contribution fields the new row omitted.
+ * Explicit keys on `newMetadata` always win — including empty `externalRefs: []`.
+ * tiann/hapi#1160 / PR #1161.
+ */
+export function mergeSessionMetadataForSessionMerge(
+    oldMetadata: unknown | null,
+    newMetadata: unknown | null
+): unknown | null {
+    if (!oldMetadata || typeof oldMetadata !== 'object') {
+        return newMetadata
+    }
+    if (!newMetadata || typeof newMetadata !== 'object') {
+        return oldMetadata
+    }
+
+    const oldObj = oldMetadata as Record<string, unknown>
+    const newObj = newMetadata as Record<string, unknown>
+    const merged: Record<string, unknown> = { ...newObj }
+    let changed = false
+
+    if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
+        merged.name = oldObj.name
+        changed = true
+    }
+
+    const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
+    const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
+    const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
+    const newUpdatedAt = typeof newSummary?.updatedAt === 'number' ? newSummary.updatedAt : null
+    if (oldUpdatedAt !== null && (newUpdatedAt === null || oldUpdatedAt > newUpdatedAt)) {
+        merged.summary = oldSummary
+        changed = true
+    }
+
+    if (oldObj.worktree && !newObj.worktree) {
+        merged.worktree = oldObj.worktree
+        changed = true
+    }
+
+    if (typeof oldObj.path === 'string' && typeof newObj.path !== 'string') {
+        merged.path = oldObj.path
+        changed = true
+    }
+    if (typeof oldObj.host === 'string' && typeof newObj.host !== 'string') {
+        merged.host = oldObj.host
+        changed = true
+    }
+    if (typeof oldObj.preferredPermissionMode === 'string' && typeof newObj.preferredPermissionMode !== 'string') {
+        merged.preferredPermissionMode = oldObj.preferredPermissionMode
+        changed = true
+    }
+    if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
+        merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
+        changed = true
+    }
+
+    // Preserve structured PR links when the replacement row never set them.
+    if (Array.isArray(oldObj.externalRefs) && !Object.prototype.hasOwnProperty.call(newObj, 'externalRefs')) {
+        merged.externalRefs = oldObj.externalRefs
+        changed = true
+    }
+
+    return changed ? merged : newMetadata
+}
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -862,6 +929,40 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
+    async setSessionExternalRefs(sessionId: string, externalRefs: ExternalRef[]): Promise<void> {
+        // tiann/hapi#1162: same metadata-version retry contract as renameSession.
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
+            }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const newMetadata = { ...currentMetadata, externalRefs }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                newMetadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
     /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
@@ -1284,55 +1385,7 @@ export class SessionCache {
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        if (!oldMetadata || typeof oldMetadata !== 'object') {
-            return newMetadata
-        }
-        if (!newMetadata || typeof newMetadata !== 'object') {
-            return oldMetadata
-        }
-
-        const oldObj = oldMetadata as Record<string, unknown>
-        const newObj = newMetadata as Record<string, unknown>
-        const merged: Record<string, unknown> = { ...newObj }
-        let changed = false
-
-        if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
-            merged.name = oldObj.name
-            changed = true
-        }
-
-        const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
-        const newUpdatedAt = typeof newSummary?.updatedAt === 'number' ? newSummary.updatedAt : null
-        if (oldUpdatedAt !== null && (newUpdatedAt === null || oldUpdatedAt > newUpdatedAt)) {
-            merged.summary = oldSummary
-            changed = true
-        }
-
-        if (oldObj.worktree && !newObj.worktree) {
-            merged.worktree = oldObj.worktree
-            changed = true
-        }
-
-        if (typeof oldObj.path === 'string' && typeof newObj.path !== 'string') {
-            merged.path = oldObj.path
-            changed = true
-        }
-        if (typeof oldObj.host === 'string' && typeof newObj.host !== 'string') {
-            merged.host = oldObj.host
-            changed = true
-        }
-        if (typeof oldObj.preferredPermissionMode === 'string' && typeof newObj.preferredPermissionMode !== 'string') {
-            merged.preferredPermissionMode = oldObj.preferredPermissionMode
-            changed = true
-        }
-        if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
-            merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
-            changed = true
-        }
-
-        return changed ? merged : newMetadata
+        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata)
     }
 
     private persistPreferredPermissionMode(session: Session, permissionMode: PermissionMode): void {
