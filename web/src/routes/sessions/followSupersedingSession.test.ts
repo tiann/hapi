@@ -1,5 +1,17 @@
-import { describe, expect, it } from 'vitest'
-import { getSupersedingSessionId, shouldFollowSupersedingSession } from './followSupersedingSession'
+import { describe, expect, it, afterEach } from 'vitest'
+import {
+    getSupersedingSessionId,
+    prepareFollowSupersedingSession,
+    shouldFollowSupersedingSession,
+} from './followSupersedingSession'
+import {
+    consumeSharePendingTransfer,
+    setSharePendingTransfer,
+} from '@/lib/sharePendingState'
+
+afterEach(() => {
+    try { window.sessionStorage.clear() } catch { /* noop */ }
+})
 
 describe('getSupersedingSessionId', () => {
     it('follows a different persisted replacement identity', () => {
@@ -39,5 +51,23 @@ describe('shouldFollowSupersedingSession', () => {
         }, 'source', {
             supersededBySessionId: 'fresh'
         })).toBe(false)
+    })
+})
+
+describe('prepareFollowSupersedingSession', () => {
+    it('retargets a pending share transfer before the automatic A→B navigation', () => {
+        setSharePendingTransfer('xfer-share', 'source')
+        const shouldFollow = shouldFollowSupersedingSession({
+            sessionId: 'source',
+            supersedingSessionId: null,
+        }, 'source', {
+            supersededBySessionId: 'fresh',
+        })
+        expect(shouldFollow).toBe(true)
+
+        prepareFollowSupersedingSession('source', 'fresh')
+
+        expect(consumeSharePendingTransfer('source')).toBeNull()
+        expect(consumeSharePendingTransfer('fresh')).toBe('xfer-share')
     })
 })

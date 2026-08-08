@@ -1099,4 +1099,7 @@ export default {
   'session.status.subagent.running': 'Running',
   'session.status.subagent.waiting': 'Waiting',
   'session.status.subagent.error': 'Error',
+  'share.searchResults': 'Matching sessions',
+  'share.noSearchResults': 'No sessions match your search.',
+  'share.searchForMore': '{n} more active sessions — search to find them.',
 } as const

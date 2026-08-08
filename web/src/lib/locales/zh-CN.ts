@@ -1098,4 +1098,7 @@ export default {
   'session.status.subagent.running': '运行中',
   'session.status.subagent.waiting': '等待中',
   'session.status.subagent.error': '错误',
+  'share.searchResults': '匹配的会话',
+  'share.noSearchResults': '没有匹配的会话。',
+  'share.searchForMore': '还有 {n} 个活跃会话 — 搜索以查找。',
 } as const

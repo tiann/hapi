@@ -15,6 +15,14 @@ vi.mock('@/hooks/queries/useSessions', () => ({
     useSessions: () => ({ sessions: [], isLoading: false }),
 }))
 
+vi.mock('@/hooks/queries/useMachines', () => ({
+    useMachines: () => ({ machines: [] }),
+}))
+
+vi.mock('@/hooks/useMachineLabels', () => ({
+    useMachineLabels: () => ({}),
+}))
+
 vi.mock('@/lib/use-translation', () => ({
     useTranslation: () => ({ t: (key: string) => key }),
 }))

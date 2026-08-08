@@ -1,3 +1,5 @@
+import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
+
 export function getSupersedingSessionId(
     currentSessionId: string,
     metadata: { supersededBySessionId?: string } | null | undefined
@@ -17,4 +19,16 @@ export function shouldFollowSupersedingSession(
     return previous?.sessionId === currentSessionId
         && previous.supersedingSessionId === null
         && getSupersedingSessionId(currentSessionId, metadata) !== null
+}
+
+/**
+ * Side effects that must run before navigating A → B on automatic
+ * supersession. Keeps a share-target pending transfer bound to the live
+ * session id so ShareSeedConsumer on B can still claim it.
+ */
+export function prepareFollowSupersedingSession(
+    fromSessionId: string,
+    toSessionId: string,
+): void {
+    retargetSharePendingTransfer(fromSessionId, toSessionId)
 }
