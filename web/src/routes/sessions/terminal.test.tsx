@@ -77,12 +77,6 @@ vi.mock('@/hooks/useTerminalSocket', () => ({
     }
 }))
 
-vi.mock('@/hooks/useLongPress', () => ({
-    useLongPress: ({ onClick }: { onClick: () => void }) => ({
-        onClick
-    })
-}))
-
 vi.mock('@/components/Terminal/TerminalView', () => ({
     TerminalView: () => <div data-testid="terminal-view" />
 }))
@@ -217,6 +211,17 @@ describe('TerminalPage compact command input', () => {
         expect(input).toHaveValue('你好')
     })
 
+    it('keeps WebKit IME confirmation from submitting when keyCode is 229', () => {
+        renderWithProviders()
+        const input = screen.getByRole('textbox', { name: 'Command input' })
+
+        fireEvent.change(input, { target: { value: '你好' } })
+        fireEvent.keyDown(input, { key: 'Enter', isComposing: false, keyCode: 229 })
+
+        expect(writeMock).not.toHaveBeenCalled()
+        expect(input).toHaveValue('你好')
+    })
+
     it('inserts a basic command for review before running it', () => {
         renderWithProviders()
         const input = screen.getByRole('textbox', { name: 'Command input' })
@@ -251,6 +256,26 @@ describe('TerminalPage compact command input', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Space' }))
         expect(writeMock).toHaveBeenCalledWith(' ')
+    })
+
+    it('supports keyboard and assistive activation through native button clicks', () => {
+        renderWithProviders()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Interrupt process' }), { detail: 0 })
+
+        expect(writeMock).toHaveBeenCalledWith('\u0003')
+    })
+
+    it('sends a compact terminal key once for a touch tap', () => {
+        renderWithProviders()
+        const button = screen.getByRole('button', { name: 'Interrupt process' })
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
+        fireEvent.click(button, { detail: 1 })
+
+        expect(writeMock).toHaveBeenCalledOnce()
+        expect(writeMock).toHaveBeenCalledWith('\u0003')
     })
 
     it('shows direct terminal keys in paged multi-row grids', () => {

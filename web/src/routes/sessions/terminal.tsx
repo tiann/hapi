@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useParams } from '@tanstack/react-router'
 import type { Terminal } from '@xterm/xterm'
 import { useAppContext } from '@/lib/app-context'
@@ -213,8 +213,6 @@ function QuickKeyButton(props: {
     const popupSequence = input.popup?.sequence
     const popupDescription = input.popup?.description
     const hasPopup = Boolean(popupSequence)
-    const longPressDisabled = disabled || Boolean(modifier) || !hasPopup
-
     const handleClick = useCallback(() => {
         if (modifier) {
             onToggleModifier(modifier)
@@ -223,12 +221,6 @@ function QuickKeyButton(props: {
         onPress(input.sequence ?? '')
     }, [modifier, onToggleModifier, onPress, input.sequence])
 
-    const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
-        if (event.pointerType === 'touch') {
-            event.preventDefault()
-        }
-    }, [])
-
     const longPressHandlers = useLongPress({
         onLongPress: () => {
             if (popupSequence && !modifier) {
@@ -236,14 +228,15 @@ function QuickKeyButton(props: {
             }
         },
         onClick: handleClick,
-        disabled: longPressDisabled,
+        disabled,
+        interaction: 'touch-only-native-click',
+        longPressEnabled: !modifier && hasPopup,
     })
 
     return (
         <button
             type="button"
             {...longPressHandlers}
-            onPointerDown={handlePointerDown}
             disabled={disabled}
             aria-pressed={modifier ? isActive : undefined}
             className={`${compact ? 'h-9 min-w-0 w-full rounded-md border border-[var(--app-border)]' : 'flex-1 border-l border-[var(--app-border)] first:border-l-0'} px-2 py-1.5 text-xs font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent active:bg-[var(--app-subtle-bg)] sm:px-3 sm:text-sm ${
@@ -507,7 +500,9 @@ export default function TerminalPage() {
 
     const handleCommandKeyDown = useCallback(
         (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-            if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+            const nativeEvent = event.nativeEvent
+            const isImeEvent = nativeEvent.isComposing || nativeEvent.keyCode === 229
+            if (event.key !== 'Enter' || event.shiftKey || isImeEvent) {
                 return
             }
             event.preventDefault()
