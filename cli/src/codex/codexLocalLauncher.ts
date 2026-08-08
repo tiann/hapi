@@ -260,7 +260,14 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         const effectiveScopeRole = isChildUsage ? 'child' : scopeRole;
                         const managedThreadId = messageThreadId ?? primarySessionId;
                         const scopedUsage = context.replayedHistory
-                            ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' as const }
+                            ? {
+                                ...message,
+                                ...(effectiveScopeRole
+                                    ? { scopeRole: effectiveScopeRole, scope_role: effectiveScopeRole }
+                                    : {}),
+                                model: transcriptModel,
+                                hapiUsageScope: 'imported-history' as const
+                            }
                             : {
                                 ...message,
                                 model: transcriptModel,

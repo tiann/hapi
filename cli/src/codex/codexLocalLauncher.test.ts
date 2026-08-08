@@ -562,6 +562,70 @@ describe('codexLocalLauncher', () => {
         }));
     });
 
+    it('stamps scope_role on imported-history foreign-thread token_count', async () => {
+        const transcriptPath = join(tempDir, 'codex-import-child-thread-id.jsonl');
+        const { session, agentMessages, usagePayloads } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-parent' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    thread_id: 'codex-thread-child',
+                    payload: {
+                        type: 'token_count',
+                        info: {
+                            total_token_usage: { total_tokens: 77 },
+                            model_context_window: 128000
+                        }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'token_count',
+                        info: {
+                            total_token_usage: { total_tokens: 42000 },
+                            model_context_window: 128000
+                        }
+                    }
+                })
+            ].join('\n') + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+        harness.sessionHookHandlers[0]?.('codex-thread-parent', {
+            transcript_path: transcriptPath
+        });
+        await wait(300);
+
+        releaseRunBarrier?.();
+        await launcherPromise;
+
+        expect(usagePayloads).toHaveLength(1);
+        expect(usagePayloads[0]).toMatchObject({
+            type: 'token_count',
+            info: { total_token_usage: { total_tokens: 42000 } }
+        });
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            scope_role: 'child',
+            scopeRole: 'child',
+            thread_id: 'codex-thread-child',
+            threadId: 'codex-thread-child',
+            hapiUsageScope: 'imported-history',
+            info: expect.objectContaining({
+                total_token_usage: { total_tokens: 77 }
+            })
+        }));
+    });
+
     it('renders nested Code Mode plans and commands without their covered exec wrapper', async () => {
         const transcriptPath = join(tempDir, 'codex-hook-transcript.jsonl');
         const { session, agentMessages } = createSessionStub('default');
