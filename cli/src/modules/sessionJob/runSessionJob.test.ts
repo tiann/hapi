@@ -144,4 +144,90 @@ describe('runSessionJob', () => {
         const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
         expect(lastPatch.status).toBe('failed')
     })
+
+    it('re-exchanges JWT on heartbeat 401 and still marks completed (hub 4h expiry)', async () => {
+        let jwtIssue = 0
+        let patchCalls = 0
+        const http = {
+            post: vi.fn(async () => {
+                jwtIssue += 1
+                return { status: 200, data: { token: `jwt-${jwtIssue}` } }
+            }),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async (_url: string, body: { status?: string }, cfg?: { headers?: Record<string, string> }) => {
+                patchCalls += 1
+                const auth = cfg?.headers?.Authorization ?? ''
+                // First heartbeat still carries jwt-1 after hub expiry → 401.
+                if (patchCalls === 1 && auth.includes('jwt-1')) {
+                    return { status: 401, data: { error: 'expired' } }
+                }
+                return {
+                    status: 200,
+                    data: {
+                        job: {
+                            key: 'drain',
+                            label: 'drain',
+                            status: body.status ?? 'running',
+                            heartbeatAt: 2,
+                            startedAt: 1,
+                            updatedAt: 2
+                        }
+                    }
+                }
+            })
+        }
+
+        const timers: Array<() => void> = []
+        const child = fakeChild(0, true)
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+        const running = runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            heartbeatMs: 10,
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => child) as never,
+            setIntervalImpl: ((fn: () => void) => {
+                timers.push(fn)
+                return 1 as unknown as NodeJS.Timeout
+            }) as never,
+            clearIntervalImpl: (() => undefined) as never
+        })
+
+        await vi.waitFor(() => expect(http.put).toHaveBeenCalled())
+        expect(http.post).toHaveBeenCalledTimes(1)
+        expect(http.get).toHaveBeenCalledTimes(1)
+
+        timers[0]!()
+        await vi.waitFor(() => expect(http.post).toHaveBeenCalledTimes(2))
+        await vi.waitFor(() => expect(http.patch.mock.calls.length).toBeGreaterThanOrEqual(2))
+        // Session list not re-fetched — only JWT refresh.
+        expect(http.get).toHaveBeenCalledTimes(1)
+
+        child.exit()
+        const exitCode = await running
+        expect(exitCode).toBe(0)
+        const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
+        expect(lastPatch.status).toBe('completed')
+        errSpy.mockRestore()
+    })
 })

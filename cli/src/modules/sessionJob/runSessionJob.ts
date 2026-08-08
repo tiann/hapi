@@ -47,11 +47,14 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         ...(options.detail !== undefined ? { detail: options.detail } : {})
     }
 
-    // Resolve once — heartbeats must not re-list sessions / re-exchange JWT.
+    // Cache sessionId for the run. JWT is refreshed in-place before hub's 4h
+    // expiry and on 401 (see sessionJob.withAuthedRequest) — do not skip refresh.
     const resolved: SessionJobResolvedClient = await resolveSessionJobClient(options)
     const clientOpts = {
         sessionIdPrefix: options.sessionIdPrefix,
         resolved,
+        accessToken: options.accessToken,
+        apiUrl: options.apiUrl,
         http: options.http
     }
 
@@ -71,6 +74,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         env: process.env
     })
 
+    let loggedHeartbeatFailure = false
     const heartbeat = setIntervalFn(() => {
         void updateSessionJob({
             ...clientOpts,
@@ -79,8 +83,14 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
                 detail: options.detail,
                 status: 'running'
             }
-        }).catch(() => {
-            // Best-effort — exit path still marks terminal status.
+        }).catch((error: unknown) => {
+            // Best-effort — exit path still marks terminal status. Log once so
+            // a broken supervisor is visible (stuck chip with dead PID is worse).
+            if (!loggedHeartbeatFailure) {
+                loggedHeartbeatFailure = true
+                const message = error instanceof Error ? error.message : String(error)
+                console.error(`[hapi job run] heartbeat failed (will keep trying): ${message}`)
+            }
         })
     }, heartbeatMs)
     // Don't keep the event loop alive solely for heartbeats if child already exited.
@@ -134,8 +144,9 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
             jobKey: options.jobKey,
             body: { status: terminalStatus }
         })
-    } catch {
-        // Job may already be cleared; still return child exit code.
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`[hapi job run] failed to mark job ${terminalStatus}: ${message}`)
     }
 
     return exitCode

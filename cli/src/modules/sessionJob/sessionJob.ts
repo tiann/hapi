@@ -166,10 +166,16 @@ async function resolveSessionId(
     return resolveSessionIdForJobCli(sessions, sessionIdPrefix)
 }
 
+/**
+ * Mutable client handle for supervised runs.
+ * Cache `sessionId` for the life of the process (list is expensive); refresh
+ * `jwt` proactively before hub's 4h expiry and on 401.
+ */
 export type SessionJobResolvedClient = {
     apiUrl: string
     jwt: string
     sessionId: string
+    jwtIssuedAtMs: number
 }
 
 export type SessionJobClientOptions = {
@@ -178,13 +184,16 @@ export type SessionJobClientOptions = {
     accessToken?: string
     http?: AxiosInstance
     /**
-     * When set (e.g. after {@link resolveSessionJobClient}), skip JWT exchange
-     * and session-list resolve — required for days-long `job run` heartbeats.
+     * When set (e.g. after {@link resolveSessionJobClient}), skip session-list
+     * resolve. JWT is still refreshed in-place for days-long `job run`.
      */
     resolved?: SessionJobResolvedClient
 }
 
-/** One JWT + session id for the life of a supervised job. */
+/** Hub JWT expires at 4h — refresh a bit early so heartbeats never 401. */
+export const SESSION_JOB_JWT_REFRESH_AFTER_MS = 3 * 60 * 60 * 1000
+
+/** Resolve session id once; JWT may be refreshed later via the same object. */
 export async function resolveSessionJobClient(
     options: SessionJobClientOptions
 ): Promise<SessionJobResolvedClient> {
@@ -196,43 +205,89 @@ export async function resolveSessionJobClient(
     const accessToken = resolveAccessToken(options.accessToken)
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sessionId = await resolveSessionId(apiUrl, jwt, http, options.sessionIdPrefix)
-    return { apiUrl, jwt, sessionId }
+    return { apiUrl, jwt, sessionId, jwtIssuedAtMs: Date.now() }
 }
 
-async function withClient<T>(
+async function refreshSessionJobJwt(
+    resolved: SessionJobResolvedClient,
+    options: SessionJobClientOptions
+): Promise<void> {
+    const http = options.http ?? axios
+    const accessToken = resolveAccessToken(options.accessToken)
+    resolved.jwt = await exchangeJwt(resolved.apiUrl, accessToken, http)
+    resolved.jwtIssuedAtMs = Date.now()
+}
+
+async function ensureFreshJwt(
+    resolved: SessionJobResolvedClient,
     options: SessionJobClientOptions,
-    fn: (ctx: SessionJobResolvedClient & { http: AxiosInstance }) => Promise<T>
+    force = false
+): Promise<void> {
+    const age = Date.now() - resolved.jwtIssuedAtMs
+    if (force || age >= SESSION_JOB_JWT_REFRESH_AFTER_MS) {
+        await refreshSessionJobJwt(resolved, options)
+    }
+}
+
+type AuthedResponse = { status: number; data?: unknown }
+
+/**
+ * Run an authed request; on 401 re-exchange JWT (keep cached sessionId) and retry once.
+ */
+async function withAuthedRequest<T>(
+    options: SessionJobClientOptions,
+    request: (ctx: { apiUrl: string; jwt: string; sessionId: string; http: AxiosInstance }) => Promise<AuthedResponse>,
+    handle: (response: AuthedResponse, sessionId: string) => T
 ): Promise<T> {
     const http = options.http ?? axios
     const resolved = await resolveSessionJobClient(options)
-    return fn({ ...resolved, http })
+    await ensureFreshJwt(resolved, options)
+
+    const run = async () => request({
+        apiUrl: resolved.apiUrl,
+        jwt: resolved.jwt,
+        sessionId: resolved.sessionId,
+        http
+    })
+
+    let response = await run()
+    if (response.status === 401) {
+        await ensureFreshJwt(resolved, options, true)
+        response = await run()
+    }
+    return handle(response, resolved.sessionId)
 }
 
 export async function listSessionJobs(
     options: SessionJobClientOptions
 ): Promise<{ sessionId: string; jobs: AttachedJob[]; primary: AttachedJob | null }> {
-    return withClient(options, async ({ apiUrl, jwt, sessionId, http }) => {
-        const response = await http.get(`${apiUrl}/api/sessions/${sessionId}/jobs`, {
+    return withAuthedRequest(
+        options,
+        ({ apiUrl, jwt, sessionId, http }) => http.get(`${apiUrl}/api/sessions/${sessionId}/jobs`, {
             headers: authHeaders(jwt),
             timeout: 15_000,
             validateStatus: () => true
-        })
-        if (response.status < 200 || response.status >= 300) {
-            throw new SessionJobError('request_failed', `list jobs failed: HTTP ${response.status}`)
+        }),
+        (response, sessionId) => {
+            if (response.status < 200 || response.status >= 300) {
+                throw new SessionJobError('request_failed', `list jobs failed: HTTP ${response.status}`)
+            }
+            const data = response.data as { jobs?: AttachedJob[]; primary?: AttachedJob | null } | undefined
+            return {
+                sessionId,
+                jobs: Array.isArray(data?.jobs) ? data.jobs : [],
+                primary: data?.primary ?? null
+            }
         }
-        return {
-            sessionId,
-            jobs: Array.isArray(response.data?.jobs) ? response.data.jobs : [],
-            primary: response.data?.primary ?? null
-        }
-    })
+    )
 }
 
 export async function setSessionJob(
     options: SessionJobClientOptions & { jobKey: string; body: AttachedJobUpsert }
 ): Promise<{ sessionId: string; job: AttachedJob }> {
-    return withClient(options, async ({ apiUrl, jwt, sessionId, http }) => {
-        const response = await http.put(
+    return withAuthedRequest(
+        options,
+        ({ apiUrl, jwt, sessionId, http }) => http.put(
             `${apiUrl}/api/sessions/${sessionId}/jobs/${encodeURIComponent(options.jobKey)}`,
             options.body,
             {
@@ -240,25 +295,29 @@ export async function setSessionJob(
                 timeout: 15_000,
                 validateStatus: () => true
             }
-        )
-        if (response.status === 404) {
-            throw new SessionJobError('not_found', 'session or job not found')
+        ),
+        (response, sessionId) => {
+            if (response.status === 404) {
+                throw new SessionJobError('not_found', 'session or job not found')
+            }
+            const data = response.data as { job?: AttachedJob; error?: string } | undefined
+            if (response.status < 200 || response.status >= 300 || !data?.job) {
+                const detail = typeof data?.error === 'string'
+                    ? data.error
+                    : `HTTP ${response.status}`
+                throw new SessionJobError('request_failed', `set job failed: ${detail}`)
+            }
+            return { sessionId, job: data.job }
         }
-        if (response.status < 200 || response.status >= 300 || !response.data?.job) {
-            const detail = typeof response.data?.error === 'string'
-                ? response.data.error
-                : `HTTP ${response.status}`
-            throw new SessionJobError('request_failed', `set job failed: ${detail}`)
-        }
-        return { sessionId, job: response.data.job as AttachedJob }
-    })
+    )
 }
 
 export async function updateSessionJob(
     options: SessionJobClientOptions & { jobKey: string; body: AttachedJobPatch }
 ): Promise<{ sessionId: string; job: AttachedJob }> {
-    return withClient(options, async ({ apiUrl, jwt, sessionId, http }) => {
-        const response = await http.patch(
+    return withAuthedRequest(
+        options,
+        ({ apiUrl, jwt, sessionId, http }) => http.patch(
             `${apiUrl}/api/sessions/${sessionId}/jobs/${encodeURIComponent(options.jobKey)}`,
             options.body,
             {
@@ -266,40 +325,49 @@ export async function updateSessionJob(
                 timeout: 15_000,
                 validateStatus: () => true
             }
-        )
-        if (response.status === 404) {
-            throw new SessionJobError('not_found', 'job not found')
+        ),
+        (response, sessionId) => {
+            if (response.status === 404) {
+                throw new SessionJobError('not_found', 'job not found')
+            }
+            const data = response.data as { job?: AttachedJob; error?: string } | undefined
+            if (response.status < 200 || response.status >= 300 || !data?.job) {
+                const detail = typeof data?.error === 'string'
+                    ? data.error
+                    : `HTTP ${response.status}`
+                if (response.status === 401) {
+                    throw new SessionJobError('auth_failed', `update job failed: ${detail}`)
+                }
+                throw new SessionJobError('request_failed', `update job failed: ${detail}`)
+            }
+            return { sessionId, job: data.job }
         }
-        if (response.status < 200 || response.status >= 300 || !response.data?.job) {
-            const detail = typeof response.data?.error === 'string'
-                ? response.data.error
-                : `HTTP ${response.status}`
-            throw new SessionJobError('request_failed', `update job failed: ${detail}`)
-        }
-        return { sessionId, job: response.data.job as AttachedJob }
-    })
+    )
 }
 
 export async function clearSessionJob(
     options: SessionJobClientOptions & { jobKey: string }
 ): Promise<{ sessionId: string }> {
-    return withClient(options, async ({ apiUrl, jwt, sessionId, http }) => {
-        const response = await http.delete(
+    return withAuthedRequest(
+        options,
+        ({ apiUrl, jwt, sessionId, http }) => http.delete(
             `${apiUrl}/api/sessions/${sessionId}/jobs/${encodeURIComponent(options.jobKey)}`,
             {
                 headers: authHeaders(jwt),
                 timeout: 15_000,
                 validateStatus: () => true
             }
-        )
-        if (response.status === 404) {
-            throw new SessionJobError('not_found', 'job not found')
+        ),
+        (response, sessionId) => {
+            if (response.status === 404) {
+                throw new SessionJobError('not_found', 'job not found')
+            }
+            if (response.status < 200 || response.status >= 300) {
+                throw new SessionJobError('request_failed', `clear job failed: HTTP ${response.status}`)
+            }
+            return { sessionId }
         }
-        if (response.status < 200 || response.status >= 300) {
-            throw new SessionJobError('request_failed', `clear job failed: HTTP ${response.status}`)
-        }
-        return { sessionId }
-    })
+    )
 }
 
 export function exitCodeForSessionJobError(error: SessionJobError): number {
