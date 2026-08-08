@@ -20,6 +20,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
 import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import type { OlderLoadOutcome } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
@@ -58,7 +59,6 @@ type HistoryLoaderState = {
 type ShareTurnState = {
     id: number
     snapshots: ShareTurnSnapshot[]
-    title: string
     sourceContentWidth: number | null
 } | null
 
@@ -471,6 +471,7 @@ export function HappyThread(props: {
     const machineLabelsById = useMachineLabels(machines)
     const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
     const shareDialogOpen = shareTurn !== null
+    const shareTitle = shareTurn ? getSessionTitle(props.session) : ''
     const shareRelativeTimeTick = useMinuteTick(headerMetadata.lastActive && shareDialogOpen)
     const shareMetadataItems = useMemo(() => {
         const agentFlavor = props.session.metadata?.flavor ?? null
@@ -1515,7 +1516,6 @@ export function HappyThread(props: {
             setShareTurn({
                 id: ++shareTurnIdRef.current,
                 snapshots: fallbackSnapshot ? [fallbackSnapshot] : [],
-                title: props.metadata?.summary?.text ?? props.metadata?.name ?? props.metadata?.path ?? props.sessionId.slice(0, 8),
                 sourceContentWidth: sourceContentWidth > 0 ? sourceContentWidth : null,
             })
             return
@@ -1559,10 +1559,9 @@ export function HappyThread(props: {
         setShareTurn({
             id: ++shareTurnIdRef.current,
             snapshots: completeSnapshots,
-            title: props.metadata?.summary?.text ?? props.metadata?.name ?? props.metadata?.path ?? props.sessionId.slice(0, 8),
             sourceContentWidth: sourceContentWidth > 0 ? sourceContentWidth : null,
         })
-    }, [props.metadata, props.sessionId])
+    }, [props.session])
 
     return (
         <HappyChatProvider value={{
@@ -1666,7 +1665,7 @@ export function HappyThread(props: {
                 <ShareTurnDialog
                     key={shareTurn?.id ?? 'closed'}
                     isOpen={shareTurn !== null}
-                    title={shareTurn?.title ?? ''}
+                    title={shareTitle}
                     metadataItems={shareMetadataItems}
                     sourceSnapshots={shareTurn?.snapshots ?? []}
                     sourceContentWidth={shareTurn?.sourceContentWidth ?? null}

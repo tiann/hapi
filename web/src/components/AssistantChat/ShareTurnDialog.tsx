@@ -607,7 +607,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         return () => {
             cancelled = true
         }
-    }, [props.isOpen, props.sourceSnapshots, props.metadataItems, ready, restoreTick, previewRevision, exportWidth, preserveSourceLayout])
+    }, [props.isOpen, props.title, props.sourceSnapshots, props.metadataItems, ready, restoreTick, previewRevision, exportWidth, preserveSourceLayout])
 
     const handlePreviewClick = (event: ReactMouseEvent<HTMLElement>) => {
         const target = event.target
