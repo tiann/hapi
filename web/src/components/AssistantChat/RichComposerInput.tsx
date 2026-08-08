@@ -990,22 +990,6 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         const mention = parseSessionMentionDrag(e.dataTransfer)
         if (!mention || disabled) return
         e.preventDefault()
-        const root = rootRef.current
-        const position = document.caretPositionFromPoint?.(e.clientX, e.clientY)
-        const range = position
-            ? (() => {
-                const next = document.createRange()
-                next.setStart(position.offsetNode, position.offset)
-                next.collapse(true)
-                return next
-            })()
-            : document.caretRangeFromPoint?.(e.clientX, e.clientY)
-        if (range && root?.contains(range.startContainer)) {
-            root.focus()
-            const selection = window.getSelection()
-            selection?.removeAllRanges()
-            selection?.addRange(range)
-        }
         onSessionMentionDrop?.(mention)
     }, [disabled, onSessionMentionDrop])
 
@@ -1051,8 +1035,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         return () => root.removeEventListener('beforeinput', handleBeforeInput)
     }, [applyBackwardDelete])
 
-    // No onDrop: intercepting without caretRangeFromPoint appends at EOF / no-ops
-    // in-editor moves. Native CE drop + plaintext-only / paste path is enough for #1215.
+    // Session drops use the current editor selection; without one, insertion falls back to EOF.
 
     const placeholderRef = useRef<HTMLDivElement>(null)
 
