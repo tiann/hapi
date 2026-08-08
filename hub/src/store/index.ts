@@ -988,6 +988,8 @@ export class Store {
     }
 
     private migrateFromV23ToV24(): void {
+        // Per-namespace notification preferences. Defaults are all-enabled so
+        // existing namespaces keep the pre-preferences behavior.
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS notification_preferences (
                 namespace TEXT PRIMARY KEY,
