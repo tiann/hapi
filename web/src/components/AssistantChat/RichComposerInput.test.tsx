@@ -322,8 +322,14 @@ describe('RichComposerInput session drops', () => {
             />
         )
 
-        fireEvent.drop(screen.getByRole('textbox'), {
+        const editor = screen.getByRole('textbox')
+        expect(fireEvent.dragOver(editor, {
+            dataTransfer: { types: ['application/x-hapi-session-mention'] },
+        })).toBe(false)
+
+        fireEvent.drop(editor, {
             dataTransfer: {
+                types: ['application/x-hapi-session-mention'],
                 getData: (type: string) => type === 'application/x-hapi-session-mention'
                     ? '{"id":"peer-1","title":"Peer session"}'
                     : '',

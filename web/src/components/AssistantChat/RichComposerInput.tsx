@@ -33,7 +33,7 @@ import {
 } from '@/lib/sessionReference'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import type { SessionSummary } from '@/types/api'
-import { parseSessionMentionDrag } from '@/lib/sessionMentionDrag'
+import { parseSessionMentionDrag, SESSION_MENTION_DRAG_MIME } from '@/lib/sessionMentionDrag'
 
 export type RichComposerInputHandle = {
     focus: () => void
@@ -980,10 +980,24 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         insertPlainClipboardText(e.clipboardData?.getData('text/plain') ?? '')
     }, [insertPlainClipboardText, onPaste])
 
+    const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+        if (disabled || !e.dataTransfer.types.includes(SESSION_MENTION_DRAG_MIME)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+    }, [disabled])
+
     const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
         const mention = parseSessionMentionDrag(e.dataTransfer)
         if (!mention || disabled) return
         e.preventDefault()
+        const root = rootRef.current
+        const range = document.caretRangeFromPoint?.(e.clientX, e.clientY)
+        if (range && root?.contains(range.startContainer)) {
+            root.focus()
+            const selection = window.getSelection()
+            selection?.removeAllRanges()
+            selection?.addRange(range)
+        }
         onSessionMentionDrop?.(mention)
     }, [disabled, onSessionMentionDrop])
 
@@ -1150,6 +1164,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onCopy={(e) => handleCopyOrCut(e, false)}
                 onCut={(e) => handleCopyOrCut(e, true)}
                 onPaste={handlePaste}
+                onDragOver={handleDragOver}
                 onDrop={handleDrop}
                 onCompositionStart={() => {
                     composingRef.current = true
