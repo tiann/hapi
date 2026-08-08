@@ -231,6 +231,20 @@ async function ensureFreshJwt(
 
 type AuthedResponse = { status: number; data?: unknown }
 
+function httpStatusError(
+    action: string,
+    response: AuthedResponse,
+    errorDetail?: string
+): SessionJobError {
+    const detail = typeof errorDetail === 'string' && errorDetail.length > 0
+        ? errorDetail
+        : `HTTP ${response.status}`
+    if (response.status === 401) {
+        return new SessionJobError('auth_failed', `${action} failed: ${detail}`)
+    }
+    return new SessionJobError('request_failed', `${action} failed: ${detail}`)
+}
+
 /**
  * Run an authed request; on 401 re-exchange JWT (keep cached sessionId) and retry once.
  */
@@ -270,7 +284,7 @@ export async function listSessionJobs(
         }),
         (response, sessionId) => {
             if (response.status < 200 || response.status >= 300) {
-                throw new SessionJobError('request_failed', `list jobs failed: HTTP ${response.status}`)
+                throw httpStatusError('list jobs', response)
             }
             const data = response.data as { jobs?: AttachedJob[]; primary?: AttachedJob | null } | undefined
             return {
@@ -302,10 +316,7 @@ export async function setSessionJob(
             }
             const data = response.data as { job?: AttachedJob; error?: string } | undefined
             if (response.status < 200 || response.status >= 300 || !data?.job) {
-                const detail = typeof data?.error === 'string'
-                    ? data.error
-                    : `HTTP ${response.status}`
-                throw new SessionJobError('request_failed', `set job failed: ${detail}`)
+                throw httpStatusError('set job', response, data?.error)
             }
             return { sessionId, job: data.job }
         }
@@ -332,13 +343,7 @@ export async function updateSessionJob(
             }
             const data = response.data as { job?: AttachedJob; error?: string } | undefined
             if (response.status < 200 || response.status >= 300 || !data?.job) {
-                const detail = typeof data?.error === 'string'
-                    ? data.error
-                    : `HTTP ${response.status}`
-                if (response.status === 401) {
-                    throw new SessionJobError('auth_failed', `update job failed: ${detail}`)
-                }
-                throw new SessionJobError('request_failed', `update job failed: ${detail}`)
+                throw httpStatusError('update job', response, data?.error)
             }
             return { sessionId, job: data.job }
         }
@@ -363,7 +368,7 @@ export async function clearSessionJob(
                 throw new SessionJobError('not_found', 'job not found')
             }
             if (response.status < 200 || response.status >= 300) {
-                throw new SessionJobError('request_failed', `clear job failed: HTTP ${response.status}`)
+                throw httpStatusError('clear job', response)
             }
             return { sessionId }
         }

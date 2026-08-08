@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
+import { SESSION_JOB_JWT_REFRESH_AFTER_MS, resolveSessionJobClient, updateSessionJob } from './sessionJob'
 import { runSessionJob } from './runSessionJob'
 
 function fakeChild(exitCode: number, deferExit = false) {
@@ -229,5 +230,85 @@ describe('runSessionJob', () => {
         const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
         expect(lastPatch.status).toBe('completed')
         errSpy.mockRestore()
+    })
+
+    it('proactively re-exchanges JWT after 3h without re-listing sessions', async () => {
+        let jwtIssue = 0
+        const http = {
+            post: vi.fn(async () => {
+                jwtIssue += 1
+                return { status: 200, data: { token: `jwt-${jwtIssue}` } }
+            }),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            patch: vi.fn(async (_url: string, _body: unknown, cfg?: { headers?: Record<string, string> }) => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 2,
+                        startedAt: 1,
+                        updatedAt: 2
+                    },
+                    _auth: cfg?.headers?.Authorization
+                }
+            }))
+        }
+
+        const resolved = await resolveSessionJobClient({
+            sessionIdPrefix: 'aaaa',
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+        expect(http.post).toHaveBeenCalledTimes(1)
+        expect(http.get).toHaveBeenCalledTimes(1)
+
+        // Inside the window: no second exchange.
+        await updateSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            body: { remaining: 9 },
+            resolved,
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+        expect(http.post).toHaveBeenCalledTimes(1)
+
+        // Past proactive refresh threshold: exchange once, keep session id.
+        resolved.jwtIssuedAtMs = Date.now() - SESSION_JOB_JWT_REFRESH_AFTER_MS - 1
+        await updateSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            body: { remaining: 8 },
+            resolved,
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+        expect(http.post).toHaveBeenCalledTimes(2)
+        expect(http.get).toHaveBeenCalledTimes(1)
+        expect(resolved.jwt).toBe('jwt-2')
+        const auth = (http.patch.mock.calls.at(-1)?.[2] as { headers?: Record<string, string> } | undefined)
+            ?.headers?.Authorization
+        expect(auth).toContain('jwt-2')
+
+        // Next tick inside the new window: no exchange storm.
+        await updateSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            body: { remaining: 7 },
+            resolved,
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+        expect(http.post).toHaveBeenCalledTimes(2)
+        expect(http.get).toHaveBeenCalledTimes(1)
     })
 })
