@@ -178,11 +178,10 @@ When an agent starts process-shaped work that will keep running after the agent 
 
 Agent contract (idle agents cannot heartbeat):
 
-1. Prefer MCP `session_job` (`action=set` then `update` ≥~10m) when the HAPI MCP server is attached
-2. Prefer `hapi job run "$HAPI_SESSION_ID" <key> --label … -- <cmd>` for supervised shell children
-3. Manual CLI only with a self-heartbeating wrapper: `set` / `update` / clear
-4. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent
-5. Elapsed wall clock is always shown from `startedAt` (not an ETA); correct late attach with `set --started-at` (or clear+set)
+1. Prefer `hapi job run "$HAPI_SESSION_ID" <key> --label … -- <cmd>` for supervised shell children (auto-heartbeat + exit status)
+2. Manual path only with a self-heartbeating wrapper: MCP `session_job` or CLI `set` / `update` ≥~10m / clear
+3. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent
+4. Elapsed wall clock is always shown from `startedAt` (not an ETA); correct late attach with `set --started-at` (or clear+set)
 
 Full guide: `docs/guide/session-jobs.md`. CLI: `hapi job --help`.
 

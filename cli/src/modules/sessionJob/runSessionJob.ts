@@ -40,6 +40,9 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const body: AttachedJobUpsert = {
         label: options.label,
         status: 'running',
+        // Supervised child: always this run's clock. Omitting startedAt would
+        // sticky-reuse a prior completed/failed row's startedAt on key reuse.
+        startedAt: Date.now(),
         ...(options.done !== undefined ? { done: options.done } : {}),
         ...(options.total !== undefined ? { total: options.total } : {}),
         ...(options.remaining !== undefined ? { remaining: options.remaining } : {}),
@@ -75,8 +78,9 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     })
 
     let loggedHeartbeatFailure = false
+    let inflightHeartbeat: Promise<unknown> = Promise.resolve()
     const heartbeat = setIntervalFn(() => {
-        void updateSessionJob({
+        inflightHeartbeat = updateSessionJob({
             ...clientOpts,
             jobKey: options.jobKey,
             body: {
@@ -113,6 +117,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const exitCode = await new Promise<number>((resolve) => {
         child.on('error', async (error) => {
             clearIntervalFn(heartbeat)
+            await inflightHeartbeat.catch(() => undefined)
             try {
                 await updateSessionJob({
                     ...clientOpts,
@@ -136,6 +141,10 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
 
     process.off('SIGINT', onSigInt)
     process.off('SIGTERM', onSigTerm)
+
+    // Drain any in-flight heartbeat so a late status:running cannot clobber
+    // the terminal completed/failed write.
+    await inflightHeartbeat.catch(() => undefined)
 
     const terminalStatus = exitCode === 0 ? 'completed' : 'failed'
     try {

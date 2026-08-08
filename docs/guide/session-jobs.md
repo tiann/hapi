@@ -37,18 +37,7 @@ If the operator would reopen the chat only to ask "how's it doing?", it belongs 
 
 Treat this like `ping_peer` / `inspect_peer`: it is first-class HAPI tooling, not a docs footnote.
 
-### MCP (preferred for agents)
-
-Tool name: `session_job` (Claude: `mcp__hapi__session_job`; Codex: `functions.hapi__session_job`; OpenCode/ACP: `hapi_session_job`).
-
-```json
-{ "action": "set", "jobKey": "beets", "label": "beets import",
-  "remaining": 150, "done": 1637, "total": 1787, "unit": "units" }
-```
-
-Then `action=update` every ~10 minutes; finish with `status=completed|failed` or `action=clear`. Omit `sessionId` to target this chat.
-
-### CLI supervisor (preferred for shell children)
+### CLI supervisor (preferred for process-shaped work)
 
 ```bash
 hapi job run "$HAPI_SESSION_ID" beets \
@@ -59,6 +48,17 @@ hapi job run "$HAPI_SESSION_ID" beets \
 ```
 
 `hapi job run` registers the job, heartbeats on a timer while the child runs, then marks `completed`/`failed` from the exit code. An idle agent **cannot** heartbeat - set-once + manual update decays to amber.
+
+### MCP (manual path when the child is not CLI-supervised)
+
+Tool name: `session_job` (Claude: `mcp__hapi__session_job`; Codex: `functions.hapi__session_job`; OpenCode/ACP: `hapi_session_job`).
+
+```json
+{ "action": "set", "jobKey": "beets", "label": "beets import",
+  "remaining": 150, "done": 1637, "total": 1787, "unit": "units" }
+```
+
+Then `action=update` every ~10 minutes; finish with `status=completed|failed` or `action=clear`. Omit `sessionId` to target this chat.
 
 ### CLI manual path
 
