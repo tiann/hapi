@@ -446,10 +446,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     session.sendAgentMessage(converted);
                 }
                 messageBuffer.addMessage(message, 'status');
-                // Priority: RPC rejection → deferred stderr → deferred text.
-                const failure = classifyAcpRpcRejection(error)
-                    ?? this.pendingStderrFailure
-                    ?? this.pendingTextFailure;
+                // Specific RPC (canceled / rate_limited / …) still wins. Generic
+                // transport/crash/prompt_failed must not overwrite a stronger
+                // deferred stderr cause (quota/auth/model) with “safe to retry”.
+                const rpcFailure = classifyAcpRpcRejection(error);
+                const genericRpcFailure = rpcFailure !== null && (
+                    rpcFailure.kind === 'transport_closed'
+                    || rpcFailure.kind === 'agent_crashed'
+                    || rpcFailure.kind === 'prompt_failed'
+                );
+                const failure = genericRpcFailure
+                    ? this.pendingStderrFailure ?? rpcFailure ?? this.pendingTextFailure
+                    : rpcFailure ?? this.pendingStderrFailure ?? this.pendingTextFailure;
                 this.pendingStderrFailure = null;
                 this.pendingTextFailure = null;
                 if (failure) {

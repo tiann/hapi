@@ -1141,12 +1141,13 @@ describe('cursorAcpRemoteLauncher', () => {
         )).toBe(false);
     });
 
-    it('prefers RPC rejection over deferred stderr when both fire during prompt', async () => {
-        // Non-transient quota stderr first, then transient transport RPC reject.
+    it('prefers specific deferred stderr over generic transport_closed RPC', async () => {
+        // Strong quota stderr first, then generic transport close — keep the
+        // non-transient cause so retry copy is not “safe to retry”.
         harness.emitStderrOnPrompt = {
             type: 'quota_exceeded',
             message: 'Quota exceeded.',
-            raw: 'resource_exhausted'
+            raw: 'resource exhausted'
         };
         harness.promptReject = new Error('WritableIterable is closed');
 
@@ -1164,8 +1165,8 @@ describe('cursorAcpRemoteLauncher', () => {
             .map((call) => call[0])
             .filter((event) => event?.type === 'modelError');
         expect(modelErrors).toHaveLength(1);
-        expect(modelErrors[0]?.kind).toBe('transport_closed');
-        expect(modelErrors[0]?.transient).toBe(true);
+        expect(modelErrors[0]?.kind).toBe('quota_exhausted');
+        expect(modelErrors[0]?.transient).toBe(false);
     });
 
     it('still records modelError for canceled RPC rejection without user abort', async () => {
