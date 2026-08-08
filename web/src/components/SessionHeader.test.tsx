@@ -1,14 +1,34 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Session } from '@/types/api'
+import type { CodexModelSummary, Session } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { resolveSessionHeaderMachineLabel, SessionHeader } from './SessionHeader'
 
+const mocks = vi.hoisted(() => ({
+    telegramApp: false,
+    useCodexModels: vi.fn((): { models: CodexModelSummary[]; isLoading: boolean; error: string | null } => ({
+        models: [],
+        isLoading: false,
+        error: null
+    }))
+}))
+
+vi.mock('@/hooks/useTelegram', () => ({
+    isTelegramApp: () => mocks.telegramApp
+}))
+
+vi.mock('@/hooks/queries/useCodexModels', () => ({
+    useCodexModels: mocks.useCodexModels
+}))
+
 afterEach(() => {
     cleanup()
     localStorage.clear()
+    mocks.telegramApp = false
+    mocks.useCodexModels.mockClear()
+    mocks.useCodexModels.mockReturnValue({ models: [], isLoading: false, error: null })
 })
 
 function baseSession(overrides: Partial<Session> = {}): Session {
@@ -169,6 +189,65 @@ describe('SessionHeader', () => {
         expect(terminal).toHaveAttribute('aria-pressed', 'true')
         terminal.click()
         expect(onToggleTerminal).toHaveBeenCalledOnce()
+    })
+
+    it('does not request the Codex model catalog in Telegram', () => {
+        mocks.telegramApp = true
+
+        const { container } = renderHeader(baseSession({
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', machineId: 'machine-1' }
+        }))
+
+        expect(container).toBeEmptyDOMElement()
+        expect(mocks.useCodexModels).toHaveBeenCalledWith(expect.objectContaining({
+            enabled: false
+        }))
+    })
+
+    it('does not request the Codex model catalog without a renderable model row', () => {
+        renderHeader(baseSession({
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', machineId: 'machine-1' },
+            model: null
+        }))
+
+        expect(mocks.useCodexModels).toHaveBeenLastCalledWith(expect.objectContaining({
+            enabled: false
+        }))
+
+        cleanup()
+        mocks.useCodexModels.mockClear()
+        localStorage.setItem('hapi-session-header-metadata', JSON.stringify({ model: false }))
+        renderHeader(baseSession({
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', machineId: 'machine-1' },
+            model: 'gpt-5.6-sol'
+        }))
+
+        expect(mocks.useCodexModels).toHaveBeenLastCalledWith(expect.objectContaining({
+            enabled: false
+        }))
+    })
+
+    it('renders the catalog display name for an explicit Codex model', () => {
+        mocks.useCodexModels.mockReturnValue({
+            models: [{
+                id: 'gpt-5.6-sol',
+                displayName: 'GPT-5.6 Sol Catalog',
+                isDefault: true,
+                supportedReasoningEfforts: []
+            }],
+            isLoading: false,
+            error: null
+        })
+
+        renderHeader(baseSession({
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', machineId: 'machine-1' },
+            model: 'gpt-5.6-sol'
+        }))
+
+        expect(mocks.useCodexModels).toHaveBeenLastCalledWith(expect.objectContaining({
+            enabled: true
+        }))
+        expect(screen.getByText(/GPT-5\.6 Sol Catalog/)).toBeInTheDocument()
     })
 
     it('shows an inherited catalog-default Fast tier', () => {
