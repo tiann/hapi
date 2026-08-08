@@ -991,7 +991,15 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         if (!mention || disabled) return
         e.preventDefault()
         const root = rootRef.current
-        const range = document.caretRangeFromPoint?.(e.clientX, e.clientY)
+        const position = document.caretPositionFromPoint?.(e.clientX, e.clientY)
+        const range = position
+            ? (() => {
+                const next = document.createRange()
+                next.setStart(position.offsetNode, position.offset)
+                next.collapse(true)
+                return next
+            })()
+            : document.caretRangeFromPoint?.(e.clientX, e.clientY)
         if (range && root?.contains(range.startContainer)) {
             root.focus()
             const selection = window.getSelection()
