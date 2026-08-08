@@ -41,6 +41,7 @@ import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
+import { SESSION_MENTION_DRAG_MIME } from '@/lib/sessionMentionDrag'
 
 export { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
@@ -975,6 +976,14 @@ function SessionItem(props: {
             <button
                 type="button"
                 {...longPressHandlers}
+                draggable
+                onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'copy'
+                    event.dataTransfer.setData(SESSION_MENTION_DRAG_MIME, JSON.stringify({
+                        id: s.id,
+                        title: sessionName || s.id.slice(0, 8),
+                    }))
+                }}
                 className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                 style={{ WebkitTouchCallout: 'none' }}
                 aria-current={selected ? 'page' : undefined}

@@ -309,3 +309,30 @@ describe('RichComposerInput controlled synchronization', () => {
         expect(serializeComposerSegments(segmentsFromEditor(editor))).toBe('hello')
     })
 })
+
+describe('RichComposerInput session drops', () => {
+    it('forwards a HAPI session drag payload', () => {
+        const onSessionMentionDrop = vi.fn()
+        render(
+            <RichComposerInput
+                value=""
+                onValueChange={() => {}}
+                onMirrorChange={() => {}}
+                onSessionMentionDrop={onSessionMentionDrop}
+            />
+        )
+
+        fireEvent.drop(screen.getByRole('textbox'), {
+            dataTransfer: {
+                getData: (type: string) => type === 'application/x-hapi-session-mention'
+                    ? '{"id":"peer-1","title":"Peer session"}'
+                    : '',
+            },
+        })
+
+        expect(onSessionMentionDrop).toHaveBeenCalledWith({
+            id: 'peer-1',
+            title: 'Peer session',
+        })
+    })
+})

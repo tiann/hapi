@@ -33,6 +33,7 @@ import {
 } from '@/lib/sessionReference'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import type { SessionSummary } from '@/types/api'
+import { parseSessionMentionDrag } from '@/lib/sessionMentionDrag'
 
 export type RichComposerInputHandle = {
     focus: () => void
@@ -75,6 +76,7 @@ type Props = {
     onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void
     onFocus?: (e: ReactFocusEvent<HTMLDivElement>) => void
     onEdit?: () => void
+    onSessionMentionDrop?: (mention: { id: string; title: string }) => void
     /** Live session meta for chip hover / aria-label (from useSessions). */
     resolveSessionMentionTooltip?: ResolveSessionMentionTooltip
 }
@@ -681,6 +683,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         onPaste,
         onFocus,
         onEdit,
+        onSessionMentionDrop,
         resolveSessionMentionTooltip,
     },
     ref
@@ -977,6 +980,13 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         insertPlainClipboardText(e.clipboardData?.getData('text/plain') ?? '')
     }, [insertPlainClipboardText, onPaste])
 
+    const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+        const mention = parseSessionMentionDrag(e.dataTransfer)
+        if (!mention || disabled) return
+        e.preventDefault()
+        onSessionMentionDrop?.(mention)
+    }, [disabled, onSessionMentionDrop])
+
     const applyBackwardDelete = useCallback((
         root: HTMLElement,
         segments: readonly ComposerSegment[],
@@ -1140,6 +1150,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onCopy={(e) => handleCopyOrCut(e, false)}
                 onCut={(e) => handleCopyOrCut(e, true)}
                 onPaste={handlePaste}
+                onDrop={handleDrop}
                 onCompositionStart={() => {
                     composingRef.current = true
                 }}
