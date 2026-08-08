@@ -35,6 +35,7 @@ type UserInputResult = {
 type PermissionResult = ToolPermissionResult | UserInputResult;
 
 type CodexPermissionHandlerOptions = {
+    getCollaborationMode?: () => 'default' | 'plan' | undefined;
     onRequest?: (request: { id: string; toolName: string; input: unknown }) => void;
     onComplete?: (result: {
         id: string;
@@ -110,7 +111,11 @@ export class CodexPermissionHandler extends BasePermissionHandler<PermissionResp
         input: unknown
     ): Promise<ToolPermissionResult> {
         const mode = this.getPermissionMode() ?? 'default';
-        const autoDecision = this.resolveAutoApprovalDecision(mode, toolName, toolCallId);
+        const requiresPlanApproval = this.options?.getCollaborationMode?.() === 'plan'
+            && (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode');
+        const autoDecision = requiresPlanApproval
+            ? null
+            : this.resolveAutoApprovalDecision(mode, toolName, toolCallId);
         if (autoDecision) {
             return Promise.resolve(this.completeAutoApproval(toolCallId, toolName, input, autoDecision));
         }

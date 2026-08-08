@@ -298,13 +298,14 @@ export function buildTurnStartParams(args: {
         if (!model) {
             throw new Error(`Collaboration mode '${collaborationMode}' requires a resolved model`);
         }
-        const { developerInstructions } = resolveInstructions(args);
         params.collaborationMode = {
             mode: collaborationMode,
             settings: {
                 model,
                 ...(modelReasoningEffort !== undefined ? { reasoning_effort: modelReasoningEffort } : {}),
-                developer_instructions: appendCollaborationInstructions(developerInstructions, args.mode?.proactiveMultiAgent)
+                developer_instructions: collaborationMode === 'plan'
+                    ? null
+                    : appendCollaborationInstructions(resolveInstructions(args).developerInstructions, args.mode?.proactiveMultiAgent)
             }
         };
     } else if (model) {

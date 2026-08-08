@@ -72,6 +72,7 @@ const THROTTLED_AGENT_RUN_ACTIVITY_KINDS = new Set(['thinking']);
 const CODEX_SPAWN_AGENT_FULL_HISTORY_ARGUMENT_ERROR =
     'Full-history forked agents inherit the parent agent type, model, and reasoning effort; ' +
     'omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.';
+const PLAN_MODE_NOT_SUPPORTED_MESSAGE = 'Plan mode is not supported by this Codex runtime.';
 
 function formatCodexResumeError(error: unknown): string {
     const info = extractErrorInfo(error);
@@ -577,6 +578,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         const permissionHandler = new CodexPermissionHandler(session.client, getCurrentCodexPermissionMode, {
+            getCollaborationMode: () => session.getCollaborationMode(),
             onRequest: ({ id, toolName, input }) => {
                 if (toolName === 'request_user_input') {
                     session.sendAgentMessage({
@@ -3815,10 +3817,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     mode.collaborationMode === 'plan'
                     && !supportsTurnCollaborationMode
                 ) {
-                    session.sendSessionEvent({
-                        type: 'message',
-                        message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
-                    });
+                    throw new Error(PLAN_MODE_NOT_SUPPORTED_MESSAGE);
                 }
                 let turnResponse: unknown;
                 try {
@@ -3829,10 +3828,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (shouldSendCollaborationMode && shouldRetryWithoutCollaborationMode(error)) {
                         supportsTurnCollaborationMode = false;
                         if (mode.collaborationMode === 'plan') {
-                            session.sendSessionEvent({
-                                type: 'message',
-                                message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
-                            });
+                            throw new Error(PLAN_MODE_NOT_SUPPORTED_MESSAGE);
                         }
                         turnResponse = await appServerClient.startTurn(buildParams(true), {
                             signal: this.abortController.signal
@@ -3878,6 +3874,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (isAbortError) {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                } else if (error instanceof Error && error.message === PLAN_MODE_NOT_SUPPORTED_MESSAGE) {
+                    const message = `Task failed: ${PLAN_MODE_NOT_SUPPORTED_MESSAGE}`;
+                    messageBuffer.addMessage(message, 'status');
+                    session.sendSessionEvent({ type: 'message', message });
                 } else {
                     messageBuffer.addMessage('Process exited unexpectedly', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });

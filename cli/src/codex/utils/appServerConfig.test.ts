@@ -399,13 +399,13 @@ describe('appServerConfig', () => {
         expect(params.collaborationMode).toBeUndefined();
     });
 
-    it('puts collaboration mode in turn params with model settings', () => {
+    it('keeps yolo access while using Codex built-in plan instructions', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',
             message: 'hello',
             cwd: '/workspace/project',
             mode: {
-                permissionMode: 'default',
+                permissionMode: 'yolo',
                 model: 'o3',
                 modelReasoningEffort: 'high',
                 collaborationMode: 'plan'
@@ -417,13 +417,14 @@ describe('appServerConfig', () => {
             settings: {
                 model: 'o3',
                 reasoning_effort: 'high',
-                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
+                developer_instructions: null
             }
         });
+        expect(params.sandboxPolicy).toEqual({ type: 'dangerFullAccess' });
         expect(params.model).toBeUndefined();
     });
 
-    it('carries custom developer instructions into collaboration mode settings', () => {
+    it('does not override Codex built-in plan instructions', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',
             message: 'hello',
@@ -436,7 +437,7 @@ describe('appServerConfig', () => {
             mode: 'plan',
             settings: {
                 model: 'o3',
-                developer_instructions: withCollaborationInstructions(`${codexSystemPrompt}\n\nOnly respond in Chinese.`)
+                developer_instructions: null
             }
         });
         expect(params.collaborationMode?.settings).not.toHaveProperty('reasoning_effort');

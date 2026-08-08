@@ -7,7 +7,10 @@ type FakeAgentState = {
     completedRequests: Record<string, unknown>;
 };
 
-function createHarness(mode: 'default' | 'read-only' | 'safe-yolo' | 'yolo') {
+function createHarness(
+    mode: 'default' | 'read-only' | 'safe-yolo' | 'yolo',
+    collaborationMode?: 'default' | 'plan'
+) {
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -25,7 +28,9 @@ function createHarness(mode: 'default' | 'read-only' | 'safe-yolo' | 'yolo') {
         }
     } as unknown as ApiSessionClient;
 
-    const handler = new CodexPermissionHandler(session, () => mode);
+    const handler = new CodexPermissionHandler(session, () => mode, {
+        getCollaborationMode: () => collaborationMode
+    });
 
     return {
         handler,
@@ -67,6 +72,23 @@ describe('CodexPermissionHandler', () => {
                 decision: 'approved_for_session'
             }
         });
+    });
+
+    it('keeps plan exit pending in yolo until the user approves it', async () => {
+        const { handler, rpcHandlers, getAgentState } = createHarness('yolo', 'plan');
+        const resultPromise = handler.handleToolCall('plan-exit', 'exit_plan_mode', { plan: '1. Implement' });
+
+        expect(getAgentState().requests).toMatchObject({
+            'plan-exit': { tool: 'exit_plan_mode' }
+        });
+
+        await rpcHandlers.get('permission')?.({
+            id: 'plan-exit',
+            approved: true,
+            decision: 'approved'
+        });
+
+        await expect(resultPromise).resolves.toMatchObject({ decision: 'approved' });
     });
 
     it('auto-approves safe-yolo requests once', async () => {
