@@ -531,7 +531,7 @@ describe('rawSnippetForFailure', () => {
             'Error: T: [resource_exhausted] real failure'
         ].join('\n')
         const failure = {
-            kind: 'resource_exhausted' as const,
+            kind: 'quota_exhausted' as const,
             transient: true,
             raw,
             source: 'text' as const
