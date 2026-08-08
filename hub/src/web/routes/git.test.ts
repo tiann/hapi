@@ -58,6 +58,29 @@ describe('generated images route', () => {
         // The whole point: a cache hit must not touch the CLI over the socket.
         expect(rpcCalls).toBe(0)
     })
+
+    it('serves audio inline and generic files as downloads with nosniff', async () => {
+        const session = { id: 'session-1', namespace: 'default', active: true } as unknown as Session
+        let mimeType = 'audio/wav'
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            readGeneratedImage: async () => ({
+                success: true,
+                content: Buffer.from('media').toString('base64'),
+                mimeType,
+                fileName: mimeType === 'audio/wav' ? 'sample.wav' : 'archive.bin'
+            })
+        } as unknown as Partial<SyncEngine>
+
+        const audio = await buildApp(engine).request('/api/sessions/session-1/generated-images/audio-1')
+        expect(audio.headers.get('content-disposition')).toStartWith('inline;')
+        expect(audio.headers.get('x-content-type-options')).toBe('nosniff')
+
+        mimeType = 'application/octet-stream'
+        const file = await buildApp(engine).request('/api/sessions/session-1/generated-images/file-1')
+        expect(file.headers.get('content-disposition')).toStartWith('attachment;')
+        expect(file.headers.get('content-type')).toContain('application/octet-stream')
+    })
 })
 
 describe('file search route', () => {

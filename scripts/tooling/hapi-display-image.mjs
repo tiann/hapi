@@ -1,23 +1,24 @@
 #!/usr/bin/env bun
 /**
- * Post a local image inline to a HAPI session via the session CLI's display_image MCP tool.
+ * Post a local file to a HAPI session via display_image / display_video / display_media MCP.
  *
  * Uses session.metadata.hapiMcpUrl (published at MCP server start) so we hit the MCP
  * endpoint, not the session hook server on another loopback port in the same process.
  *
  * Usage:
  *   # inside a wrapped session (self-targets via $HAPI_SESSION_ID — no list):
- *   bun scripts/tooling/hapi-display-image.mjs <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs <media-path> [title]
  *   # explicit self:
- *   bun scripts/tooling/hapi-display-image.mjs self <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs self <media-path> [title]
  *   # explicit other session:
- *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <media-path> [title]
  *
  * Self-resolution (tiann/hapi#1119): $HAPI_SESSION_ID → GET /api/sessions/:id directly.
- * Prefer the MCP display_image tool when available; this script is the shell fallback.
+ * Picks the strict image/video tool when recognized, else display_media.
+ * Prefer the MCP tools when available; this script is the shell fallback.
  */
 
-import { readFileSync, lstatSync } from 'node:fs'
+import { closeSync, openSync, readSync, readFileSync, lstatSync } from 'node:fs'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
@@ -34,10 +35,68 @@ function isFile(p) {
     }
 }
 
+function sessionMatchesPrefix(session, prefix) {
+    if (typeof session.id === 'string' && session.id.startsWith(prefix)) {
+        return true
+    }
+    const meta = session.metadata ?? {}
+    const agentIds = [
+        meta.agentSessionId,
+        meta.cursorSessionId,
+        meta.codexSessionId,
+        meta.claudeSessionId,
+        meta.geminiSessionId,
+        meta.opencodeSessionId,
+        meta.kimiSessionId,
+    ]
+    return agentIds.some((id) => typeof id === 'string' && id.startsWith(prefix))
+}
+
+function readHeader(path, length = 16) {
+    const fd = openSync(path, 'r')
+    try {
+        const head = Buffer.alloc(length)
+        const bytesRead = readSync(fd, head, 0, head.length, 0)
+        return head.subarray(0, bytesRead)
+    } finally {
+        closeSync(fd)
+    }
+}
+
+function detectMediaTool(path) {
+    // EBML DocType can sit well past the first 16 bytes; match generatedImages scan window.
+    const head = readHeader(path, 128)
+    if (head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp') {
+        const brand = head.subarray(8, 12).toString('ascii')
+        if (brand === 'avif' || brand === 'avis') return 'display_image'
+        return 'display_media'
+    }
+    if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
+        // EBML is shared by WebM and Matroska — only route DocType "webm" to video.
+        const limit = Math.min(head.length, 128)
+        for (let i = 4; i + 3 < limit; i += 1) {
+            if (head[i] !== 0x42 || head[i + 1] !== 0x82) continue
+            const sizeByte = head[i + 2]
+            if ((sizeByte & 0x80) === 0) continue
+            const len = sizeByte & 0x7f
+            if (len === 0 || i + 3 + len > limit) continue
+            const docType = head.subarray(i + 3, i + 3 + len).toString('ascii')
+            if (docType === 'webm') return 'display_video'
+            break
+        }
+        return 'display_media'
+    }
+    if (head.length >= 8 && head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'display_image'
+    if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'display_image'
+    if (head.length >= 6 && ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('ascii'))) return 'display_image'
+    if (head.length >= 12 && head.subarray(0, 4).toString('ascii') === 'RIFF' && head.subarray(8, 12).toString('ascii') === 'WEBP') return 'display_image'
+    return 'display_media'
+}
+
 // Arg shapes (backward compatible):
-//   <image> [title]                     → self-target current session
-//   <self-token> <image> [title]        → self-target, explicit
-//   <session-id-prefix> <image> [title] → explicit session
+//   <media> [title]                     → self-target current session
+//   <self-token> <media> [title]        → self-target, explicit
+//   <session-id-prefix> <media> [title] → explicit session
 const args = process.argv.slice(2)
 let sessionArg
 let imagePath
@@ -53,8 +112,8 @@ if (args.length > 0 && isFile(args[0]) && !SELF_TOKENS.has(args[0])) {
 }
 
 if (!imagePath) {
-    console.error('usage: hapi-display-image.mjs [<session-id-prefix>|self] <image-path> [title]')
-    console.error('  or: HAPI_SESSION_ID=<uuid> hapi-display-image.mjs <image-path> [title]')
+    console.error('usage: hapi-display-image.mjs [<session-id-prefix>|self] <media-path> [title]')
+    console.error('  or: HAPI_SESSION_ID=<uuid> hapi-display-image.mjs <media-path> [title]')
     process.exit(2)
 }
 
@@ -118,18 +177,24 @@ if (wantsSelf) {
         process.exit(4)
     }
 } else {
-    // Explicit id/prefix: full uuid → direct GET; otherwise list + prefix match.
+    // Explicit id/prefix: full uuid → direct GET; otherwise list + prefix match
+    // (HAPI id or agent session ids such as cursorSessionId).
     const looksFull = /^[0-9a-f-]{36}$/i.test(sessionArg)
     if (looksFull) {
         session = await fetchSessionDetail(sessionArg)
     }
     if (!session) {
         const sessions = await listSessions()
-        const listed = sessions.find((s) => typeof s.id === 'string' && s.id.startsWith(sessionArg))
-        if (!listed) {
-            console.error(`no session for prefix ${sessionArg}`)
+        const matches = sessions.filter((candidate) => sessionMatchesPrefix(candidate, sessionArg))
+        if (matches.length !== 1) {
+            console.error(
+                matches.length === 0
+                    ? `no session for prefix ${sessionArg} (use HAPI session id from /sessions/<uuid>, not cursorSessionId alone)`
+                    : `ambiguous session prefix ${sessionArg} (${matches.length} matches); use a full HAPI session id`,
+            )
             process.exit(4)
         }
+        const listed = matches[0]
         // List summaries may omit hapiMcpUrl; detail fetch always has it when present.
         session = await fetchSessionDetail(listed.id) ?? listed
     }
@@ -143,11 +208,12 @@ if (!mcpUrl) {
 
 console.error(`hapi-display-image: session=${session.id} mcp=${mcpUrl}`)
 
+const mediaTool = detectMediaTool(imagePath)
 const client = new Client({ name: 'hapi-display-image', version: '1.0.0' }, { capabilities: {} })
 const transport = new StreamableHTTPClientTransport(new URL(mcpUrl))
 await client.connect(transport)
 const result = await client.callTool({
-    name: 'display_image',
+    name: mediaTool,
     arguments: { path: imagePath, title: title ?? undefined },
 })
 await client.close()

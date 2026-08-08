@@ -35,9 +35,15 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import {
+    cursorHapiMcpServerId,
+    installCursorMcpOverlay,
+    type CursorMcpOverlayHandle,
+} from './utils/cursorMcpOverlay';
+import {
     resolveCursorSpawnModel,
     tryRemapCursorSpawnModelFromConnectError
 } from './utils/cursorStaleModelRemap';
+
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
@@ -55,6 +61,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private spawnedWithAutoReview = false;
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
     private autoReviewSlashQueued = false;
+    private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
+
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
@@ -80,6 +88,24 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
         });
         this.happyServer = happyServer;
+
+        const hapiBridge = mcpServers.hapi;
+        if (hapiBridge) {
+            try {
+                this.cursorMcpOverlay = installCursorMcpOverlay(session.path, {
+                    command: hapiBridge.command,
+                    args: hapiBridge.args,
+                }, {
+                    serverId: cursorHapiMcpServerId(session.client.sessionId),
+                });
+            } catch (error) {
+                logger.warn(
+                    '[cursor-acp] failed to install HAPI MCP overlay; continuing without inline media',
+                    error,
+                );
+                this.cursorMcpOverlay = { cleanup: () => {} };
+            }
+        }
 
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
         this.spawnedWithAutoReview = autoReview;
@@ -180,7 +206,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         );
 
         const resumeSessionId = session.sessionId;
-        const mcpServerList = toAcpMcpServers(mcpServers);
+        // Cursor ACP ignores session/new|load mcpServers; native ~/.cursor/mcp.json is wired above.
+        const mcpServerList: McpServerStdio[] = [];
         let acpSessionId: string | undefined;
 
         for (let loadAttempt = 0; loadAttempt < 2; loadAttempt += 1) {
@@ -249,7 +276,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             } else {
                 acpSessionId = await backend.newSession({
                     cwd: session.path,
-                    mcpServers: mcpServerList
+                    mcpServers: mcpServerList,
                 });
                 break;
             }
@@ -380,31 +407,39 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
-        this.clearAbortHandlers(this.session.client.rpcHandlerManager);
-        this.unregisterModelApplyHandler?.();
-        this.unregisterModelApplyHandler = null;
+        // Capture overlay before awaited teardown so a reject from
+        // cancelAll/disconnect cannot leave a dead hapi-* entry in ~/.cursor/mcp.json.
+        const overlay = this.cursorMcpOverlay;
+        this.cursorMcpOverlay = null;
 
-        if (this.permissionAdapter) {
-            await this.permissionAdapter.cancelAll('Session ended');
-            this.permissionAdapter = null;
+        try {
+            this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+            this.unregisterModelApplyHandler?.();
+            this.unregisterModelApplyHandler = null;
+
+            if (this.permissionAdapter) {
+                await this.permissionAdapter.cancelAll('Session ended');
+                this.permissionAdapter = null;
+            }
+
+            if (this.extensionAdapter) {
+                await this.extensionAdapter.cancelAll('Session ended');
+                this.extensionAdapter = null;
+            }
+
+            if (this.backend) {
+                await this.backend.disconnect();
+                this.backend = null;
+            }
+
+            if (this.happyServer) {
+                this.happyServer.stop();
+                this.happyServer = null;
+            }
+        } finally {
+            overlay?.cleanup();
+            setCursorAcpModelsSnapshot(null);
         }
-
-        if (this.extensionAdapter) {
-            await this.extensionAdapter.cancelAll('Session ended');
-            this.extensionAdapter = null;
-        }
-
-        if (this.backend) {
-            await this.backend.disconnect();
-            this.backend = null;
-        }
-
-        if (this.happyServer) {
-            this.happyServer.stop();
-            this.happyServer = null;
-        }
-
-        setCursorAcpModelsSnapshot(null);
     }
 
     private wireStderrErrorListener(
@@ -482,6 +517,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'error':
                 this.messageBuffer.addMessage(message.message, 'status');
+                break;
+            case 'generated_image':
+                this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
                 break;
@@ -799,15 +837,6 @@ function syncCursorModelsFromAcp(backend: AcpSdkBackend, acpSessionId: string): 
     const payload = buildCursorModelsSeedPayload(snapshot, readSharedCursorModelsCache());
     setCursorAcpModelsSnapshot(snapshot);
     seedCursorModelsCache(payload);
-}
-
-function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
-    return Object.entries(config).map(([name, entry]) => ({
-        name,
-        command: entry.command,
-        args: entry.args,
-        env: []
-    }));
 }
 
 export async function cursorAcpRemoteLauncher(session: CursorSession): Promise<'switch' | 'exit'> {

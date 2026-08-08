@@ -18,6 +18,7 @@ import {
 } from '@/lib/files-i18n'
 import { encodeBase64 } from '@/lib/utils'
 import { queryKeys } from '@/lib/query-keys'
+import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { formatFileMetadata } from '@/lib/file-metadata'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from '@/lib/use-translation'
@@ -473,12 +474,16 @@ export default function FilesPage() {
                 outlineActive={false}
                 api={api}
                 onSessionDeleted={goBack}
-                onSessionReopened={(newSessionId) => {
-                    navigate({
-                        to: '/sessions/$sessionId/files',
-                        params: { sessionId: newSessionId },
-                        replace: true,
-                    })
+                onSessionReopened={async (newSessionId) => {
+                    await transferComposerDraftThenNavigate(
+                        session.id,
+                        newSessionId,
+                        () => navigate({
+                            to: '/sessions/$sessionId/files',
+                            params: { sessionId: newSessionId },
+                            replace: true,
+                        }),
+                    )
                 }}
             />
 

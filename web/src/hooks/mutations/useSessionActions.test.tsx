@@ -95,6 +95,64 @@ describe('useSessionActions - reopenSession', () => {
             expect(result.current.isPending).toBe(false)
         })
     })
+
+    it('does not invalidate the source session detail when reopen returns a different id', async () => {
+        const reopen = vi.fn(async () => ({
+            ok: true as const,
+            sessionId: 'session-B',
+            resumed: true,
+        }))
+        const queryClient = new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+        })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        const api = createMockApi(reopen)
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', 'cursor'),
+            { wrapper },
+        )
+
+        await act(async () => {
+            await result.current.reopenSession()
+        })
+
+        await waitFor(() => {
+            expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+        })
+        expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['session', 'session-A'] })
+    })
+
+    it('invalidates the source session detail when reopen returns the same id', async () => {
+        const reopen = vi.fn(async () => ({
+            ok: true as const,
+            sessionId: 'session-A',
+            resumed: true,
+        }))
+        const queryClient = new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+        })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        const api = createMockApi(reopen)
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', 'cursor'),
+            { wrapper },
+        )
+
+        await act(async () => {
+            await result.current.reopenSession()
+        })
+
+        await waitFor(() => {
+            expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'session-A'] })
+        })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    })
 })
 
 describe('useSessionActions - setModel', () => {

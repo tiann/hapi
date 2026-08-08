@@ -148,7 +148,7 @@ export function SessionHeader(props: {
     canReopen?: boolean
     reopenDisabledReason?: string
     onSessionDeleted?: () => void
-    onSessionReopened?: (newSessionId: string) => void
+    onSessionReopened?: (newSessionId: string) => void | Promise<void>
 }) {
     const { t, locale } = useTranslation()
     const queryClient = useQueryClient()
@@ -242,7 +242,7 @@ export function SessionHeader(props: {
         try {
             const result = await reopenSession()
             if (result.sessionId && result.sessionId !== session.id) {
-                onSessionReopened?.(result.sessionId)
+                await onSessionReopened?.(result.sessionId)
             }
         } catch (error) {
             setReopenError(formatReopenError(error))

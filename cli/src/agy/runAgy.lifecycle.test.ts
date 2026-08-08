@@ -84,7 +84,8 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 vi.mock('./utils/agyHookCarrier', () => ({
     prepareAgyHookCarrier: vi.fn(() => h.failAt === 'carrier' ? null : { carrierDir: '/tmp/carrier' }),
     cleanupAgyHookCarrier: h.carrierCleanup,
-    sweepAgyHookCarriers: vi.fn(),
+    sweepAgyHookCarriers: vi.fn(() => Promise.resolve()),
+    warmCarrierScope: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('./utils/agyPermissionHandler', () => ({
     AgyPermissionHandler: class {
@@ -113,6 +114,7 @@ vi.mock('@/modules/common/hooks/generateHookSettings', () => ({
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn() } }))
 
 import { runAgy } from './runAgy'
+import { prepareAgyHookCarrier, sweepAgyHookCarriers, warmCarrierScope } from './utils/agyHookCarrier'
 
 describe('runAgy post-bootstrap setup lifecycle', () => {
     beforeEach(() => {
@@ -173,6 +175,64 @@ describe('runAgy post-bootstrap setup lifecycle', () => {
         }
         const withoutInvocation = h.buildAgyHooksJsonCalls.filter((call) => call.preInvocationCommand === undefined)
         expect(withoutInvocation.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('never awaits sweepAgyHookCarriers before continuing session setup (Phase 2-A: fire-and-forget)', async () => {
+        // A promise that intentionally never settles. If runAgy() awaited
+        // sweepAgyHookCarriers() before continuing (the pre-Phase-2-A
+        // behavior), this test would hang until the suite's timeout instead
+        // of completing -- there is no other way for it to finish.
+        const neverResolves = new Promise<void>(() => {})
+        vi.mocked(sweepAgyHookCarriers).mockReturnValueOnce(neverResolves)
+
+        await runAgy({ startingMode: 'pty', workingDirectory: '/tmp/project' })
+
+        expect(sweepAgyHookCarriers).toHaveBeenCalled()
+        expect(prepareAgyHookCarrier).toHaveBeenCalled()
+    })
+
+    it('awaits warmCarrierScope before calling prepareAgyHookCarrier (hostile-review round 1 finding ②: mutation-killer for the pre-prepareAgyHookCarrier await)', async () => {
+        // The inverse of the fire-and-forget test above: writeOwnerMetadata's
+        // correctness depends on warmCarrierScope() having resolved BEFORE
+        // prepareAgyHookCarrier() runs. Deleting that `await` in runAgy.ts
+        // previously left every test in this file green (prepareAgyHookCarrier
+        // is itself mocked, so nothing observed the missing wait) -- this
+        // test makes that ordering an explicit, hangs-if-violated assertion.
+        //
+        // warmCarrierScope is called twice per PTY session setup (fired
+        // without awaiting it early, then awaited again right before
+        // prepareAgyHookCarrier) -- both invocations must resolve the SAME
+        // gate for this to correctly stall the awaited one specifically
+        // instead of racing an already-resolved fire-and-forget call.
+        let resolveWarm: () => void = () => {}
+        const warmGate = new Promise<void>((resolve) => { resolveWarm = resolve })
+        vi.mocked(warmCarrierScope)
+            .mockImplementationOnce(() => warmGate)
+            .mockImplementationOnce(() => warmGate)
+
+        const runPromise = runAgy({ startingMode: 'pty', workingDirectory: '/tmp/project' })
+
+        // Flush whatever CAN run without warmCarrierScope's gate resolving
+        // (hook server startup, MCP bridge setup) -- if the `await` before
+        // prepareAgyHookCarrier() were ever removed, this is exactly where
+        // prepareAgyHookCarrier would already have been called.
+        await new Promise((resolve) => setImmediate(resolve))
+        // hostile-review round 2 finding ④: without this, the negative
+        // assertion below is satisfied by two different scenarios --
+        // "reached the await and is correctly blocked on it" (the intent)
+        // and "hasn't reached that point of the function yet" (vacuous,
+        // e.g. if startHookServer/buildHapiMcpBridge/bootstrapSession ever
+        // grow a real timer or macrotask that the setImmediate flush above
+        // doesn't clear). Asserting both warmCarrierScope calls have
+        // already happened confirms execution actually reached the awaited
+        // one and is blocked there, not merely running behind schedule.
+        expect(warmCarrierScope).toHaveBeenCalledTimes(2)
+        expect(prepareAgyHookCarrier).not.toHaveBeenCalled()
+
+        resolveWarm()
+        await runPromise
+
+        expect(prepareAgyHookCarrier).toHaveBeenCalled()
     })
 })
 

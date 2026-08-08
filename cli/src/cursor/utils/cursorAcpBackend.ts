@@ -81,7 +81,8 @@ export function createCursorAcpBackend(opts: CursorAcpBackendOptions): AcpSdkBac
     return new AcpSdkBackend({
         command: 'agent',
         args: buildCursorAcpArgs(opts),
-        env: filterEnv(process.env)
+        env: filterEnv(process.env),
+        flavor: 'cursor',
     });
 }
 

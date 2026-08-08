@@ -5,6 +5,13 @@ import { logger } from '@/ui/logger';
 import { asString, isObject } from '@hapi/protocol';
 import type { AgentMessage, PlanItem } from '@/agent/types';
 import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
+import {
+    decodeGeneratedImageBase64,
+    detectImageMimeType,
+    registerGeneratedImage,
+} from '@/modules/common/generatedImages';
+import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 
 type PendingExtensionRequest = {
     tool: string;
@@ -64,7 +71,7 @@ export class CursorExtensionAdapter {
         });
 
         this.backend.registerExtensionRequestHandler('cursor/generate_image', async (params) => {
-            this.handleGenerateImage(params);
+            await this.handleGenerateImage(params);
             return {};
         });
     }
@@ -196,20 +203,47 @@ export class CursorExtensionAdapter {
         }
     }
 
-    private handleGenerateImage(params: unknown): void {
+    private async handleGenerateImage(params: unknown): Promise<void> {
         if (!isObject(params)) return;
         const toolCallId = extractToolCallId(params) ?? `cursor-image-${randomUUID()}`;
+        const safeParams = summarizeGenerateImageParams(params);
         this.onMessage({
             type: 'tool_call',
             id: toolCallId,
             name: 'CursorGenerateImage',
-            input: params,
+            input: safeParams,
             status: 'completed'
         });
+
+        const image = await registerCursorGeneratedImage(params);
+        if (image) {
+            const source: InlineMediaSource = {
+                ingress: 'acp',
+                flavor: 'cursor',
+                toolCallId,
+                toolName: 'cursor/generate_image',
+            };
+            this.onMessage({
+                type: 'generated_image',
+                imageId: image.id,
+                fileName: image.fileName,
+                mimeType: image.mimeType,
+                source,
+            });
+        } else {
+            const imageData = asString(params.imageData)
+                ?? asString(params.image_data)
+                ?? asString(params.data);
+            logger.debug('[cursor-acp] cursor/generate_image rejected', {
+                toolCallId,
+                imageDataChars: typeof imageData === 'string' ? imageData.length : 0,
+            });
+        }
+
         this.onMessage({
             type: 'tool_result',
             id: toolCallId,
-            output: params,
+            output: safeParams,
             status: 'completed'
         });
     }
@@ -256,6 +290,69 @@ export class CursorExtensionAdapter {
  */
 function wrapOutcome<T extends { outcome: string }>(outcome: T): { outcome: T } {
     return { outcome };
+}
+
+async function registerCursorGeneratedImage(params: Record<string, unknown>) {
+    const filePath = asString(params.filePath)
+        ?? asString(params.file_path)
+        ?? asString(params.path)
+        ?? asString(params.imagePath)
+        ?? asString(params.image_path);
+
+    const imageData = asString(params.imageData)
+        ?? asString(params.image_data)
+        ?? asString(params.data);
+
+    // Only inline bytes are safe here. Path-only reads would bypass the
+    // permission-gated display_image / display_video / display_media MCP tools (same class as
+    // URI-only ACP image blocks). Path support needs an explicit approval flow.
+    if (imageData) {
+        try {
+            const bytes = decodeGeneratedImageBase64(imageData);
+            if (!bytes) {
+                return null;
+            }
+            const mimeType = detectImageMimeType(bytes);
+            if (!mimeType) {
+                return null;
+            }
+            const path = filePath ?? `${randomUUID()}.bin`;
+            return registerGeneratedImage({
+                id: randomUUID(),
+                path,
+                fileName: basename(path),
+                mimeType,
+                bytes,
+            });
+        } catch (error) {
+            logger.debug('[cursor-acp] failed to register generate_image base64 payload', error);
+            return null;
+        }
+    }
+
+    if (filePath) {
+        logger.debug(
+            '[cursor-acp] ignoring cursor/generate_image filePath without inline bytes; use display_image/display_video MCP for local paths',
+            { filePath },
+        );
+    }
+
+    return null;
+}
+
+/** Drop raw base64 from chat/logs; keep length so rejects stay diagnosable. */
+function summarizeGenerateImageParams(params: Record<string, unknown>): Record<string, unknown> {
+    const imageData = asString(params.imageData)
+        ?? asString(params.image_data)
+        ?? asString(params.data);
+    const summary: Record<string, unknown> = { ...params };
+    delete summary.imageData;
+    delete summary.image_data;
+    delete summary.data;
+    if (typeof imageData === 'string') {
+        summary.imageDataChars = imageData.length;
+    }
+    return summary;
 }
 
 function extractToolCallId(params: unknown): string | null {

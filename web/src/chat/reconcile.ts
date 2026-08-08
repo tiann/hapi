@@ -11,6 +11,7 @@ import type {
     ToolPermission,
     UserTextBlock,
 } from '@/chat/types'
+import { areInlineMediaSourcesEqual } from '@/chat/inlineMediaSource'
 
 export type ChatBlocksById = Map<string, ChatBlock>
 
@@ -143,6 +144,7 @@ function areGeneratedImageBlocksEqual(left: GeneratedImageBlock, right: Generate
         && left.imageId === right.imageId
         && left.fileName === right.fileName
         && left.mimeType === right.mimeType
+        && areInlineMediaSourcesEqual(left.source, right.source)
         && left.meta === right.meta
 }
 

@@ -103,7 +103,14 @@ export function useSessionActions(
         },
         onSuccess: (result) => {
             void (async () => {
-                await invalidateSession()
+                // When reopen merges into a different id, the source detail may
+                // already be gone. Invalidating it while still on the source
+                // route races with draft handoff and flashes "Session unavailable".
+                if (result.sessionId === sessionId) {
+                    await invalidateSession()
+                } else {
+                    await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+                }
                 markSessionActiveInCache(result.sessionId)
             })()
         },

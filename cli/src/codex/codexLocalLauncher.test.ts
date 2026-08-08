@@ -1027,6 +1027,102 @@ describe('codexLocalLauncher', () => {
         });
     });
 
+    it('replays Codex 0.147 completed messages and response-only final answers once', async () => {
+        const transcriptPath = join(tempDir, 'codex-import-0.147-transcript.jsonl');
+        const { session, userMessages, agentMessages, getUserActivityCount } = createSessionStub(
+            'default',
+            undefined,
+            '/tmp/worktree',
+            null,
+            true
+        );
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-147' } }),
+                JSON.stringify({
+                    type: 'turn_context',
+                    payload: { turn_id: 'turn-147', model: 'gpt-5.6-sol' }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'item_completed',
+                        turn_id: 'turn-147',
+                        item: {
+                            type: 'UserMessage',
+                            id: 'user-147',
+                            content: [{ type: 'Text', text: 'visible 0.147 prompt' }]
+                        }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'item_completed',
+                        turn_id: 'turn-147',
+                        item: {
+                            type: 'AgentMessage',
+                            id: 'commentary-147',
+                            phase: 'commentary',
+                            content: [{ type: 'Text', text: 'visible 0.147 commentary' }]
+                        }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        id: 'commentary-147',
+                        role: 'assistant',
+                        phase: 'commentary',
+                        content: [{ type: 'output_text', text: 'visible 0.147 commentary' }],
+                        internal_chat_message_metadata_passthrough: { turn_id: 'turn-147' }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        id: 'final-147',
+                        role: 'assistant',
+                        phase: 'final_answer',
+                        content: [{ type: 'output_text', text: 'visible 0.147 final answer' }],
+                        internal_chat_message_metadata_passthrough: { turn_id: 'turn-147' }
+                    }
+                })
+            ].join('\n') + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('codex-thread-147', {
+            transcript_path: transcriptPath
+        });
+        await wait(300);
+
+        releaseRunBarrier?.();
+        await launcherPromise;
+
+        expect(userMessages).toEqual(['visible 0.147 prompt']);
+        expect(getUserActivityCount()).toBe(0);
+        expect(agentMessages).toEqual([{
+            type: 'message',
+            message: 'visible 0.147 commentary',
+            id: 'commentary-147'
+        }, {
+            type: 'message',
+            message: 'visible 0.147 final answer',
+            id: 'final-147'
+        }]);
+    });
+
     it('replays a plan-only turn when the turn completes', async () => {
         const transcriptPath = join(tempDir, 'codex-import-plan-only-transcript.jsonl');
         const { session, agentMessages } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
@@ -1157,7 +1253,7 @@ describe('codexLocalLauncher', () => {
     it('allows a clear hook to replace the primary session', async () => {
         const primaryTranscriptPath = await writeTranscriptMeta('primary-before-clear.jsonl', 'primary-thread');
         const clearTranscriptPath = await writeTranscriptMeta('clear-transcript.jsonl', 'clear-thread');
-        const { session } = createSessionStub('default');
+        const { session, agentMessages } = createSessionStub('default');
         let releaseRunBarrier: (() => void) | undefined;
         harness.runBarrier = new Promise((resolve) => {
             releaseRunBarrier = resolve;
@@ -1172,11 +1268,33 @@ describe('codexLocalLauncher', () => {
         });
         await wait(100);
 
+        await appendFile(
+            primaryTranscriptPath,
+            JSON.stringify({
+                type: 'response_item',
+                payload: {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'same text in both threads' }]
+                }
+            }) + '\n'
+        );
+        await wait(300);
+
         harness.sessionHookHandlers[0]?.('clear-thread', {
             transcript_path: clearTranscriptPath,
             source: 'clear'
         });
         await wait(100);
+
+        await appendFile(
+            clearTranscriptPath,
+            JSON.stringify({
+                type: 'event_msg',
+                payload: { type: 'agent_message', message: 'same text in both threads' }
+            }) + '\n'
+        );
+        await wait(300);
 
         if (releaseRunBarrier) {
             releaseRunBarrier();
@@ -1185,6 +1303,9 @@ describe('codexLocalLauncher', () => {
 
         expect(session.sessionId).toBe('clear-thread');
         expect(session.transcriptPath).toBe(clearTranscriptPath);
+        expect(agentMessages.filter((message) => (
+            message as { message?: string }
+        ).message === 'same text in both threads')).toHaveLength(2);
     });
 
     it('ignores mismatched session metadata from the active transcript scanner', async () => {

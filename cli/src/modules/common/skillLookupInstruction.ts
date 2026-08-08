@@ -4,7 +4,7 @@
  * prompt injection on Cursor ACP and similar remotes (tiann/hapi#1095).
  *
  * Cursor / Kimi / generic ACP rely on the `skill_lookup` MCP tool description
- * (and Cursor's native `.cursor/mcp.json` overlay where session/new mcpServers
+ * (and Cursor's native `~/.cursor/mcp.json` overlay where session/new mcpServers
  * are ignored) instead of a user-message prepend.
  */
 export const SKILL_LOOKUP_INSTRUCTION =

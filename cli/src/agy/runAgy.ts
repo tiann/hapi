@@ -16,7 +16,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { AgyPermissionHandler } from './utils/agyPermissionHandler';
 import { buildAgyHooksJson } from '@/modules/common/hooks/generateHookSettings';
-import { prepareAgyHookCarrier, cleanupAgyHookCarrier, sweepAgyHookCarriers } from './utils/agyHookCarrier';
+import { prepareAgyHookCarrier, cleanupAgyHookCarrier, sweepAgyHookCarriers, warmCarrierScope } from './utils/agyHookCarrier';
 import type { AgyMcpServerEntry } from './utils/agyHookCarrier';
 import { shellJoin } from '@/modules/common/shellQuote';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
@@ -142,10 +142,38 @@ export async function runAgy(opts: {
         if (isPtyMode) {
         // Best-effort: reclaim carriers left behind by sessions whose
         // owning process has since died (crash, kill -9 — anything that
-        // skips onAfterClose's cleanupAgyHookCarrier). Never throws; see
-        // sweepAgyHookCarriers's docstring for why over-preservation is the
-        // only safe failure mode here.
-        sweepAgyHookCarriers();
+        // skips onAfterClose's cleanupAgyHookCarrier). Fired without await:
+        // sweep is a backup path for teardown that normally already
+        // happened via cleanupAgyHookCarrier (see that function and this
+        // one's docstring), so it must never delay THIS session's own
+        // startup (hook server, carrier prep, PTY spawn) -- there is no
+        // urgency requirement on it. It runs concurrently with this
+        // session's own prepareAgyHookCarrier() call below; see
+        // agyHookCarrier.test.ts's "racing safety" suite for why that is
+        // safe. Never throws/rejects; the .catch below is defense in depth
+        // only (sweepAgyHookCarriers's own docstring documents why it
+        // should never reach here).
+        void sweepAgyHookCarriers().catch((error) => {
+            logger.debug('[agy] sweep failed unexpectedly (fire-and-forget, non-fatal)', error);
+        });
+
+        // Fired here (without await) so the macOS probe cost (two child
+        // processes: ioreg, sysctl) overlaps with the hook server startup
+        // and MCP bridge setup below instead of adding to session startup
+        // latency. Awaited just before prepareAgyHookCarrier() so that
+        // call's synchronous writeOwnerMetadata reads a warm cache instead
+        // of falling back to the (Linux-only) synchronous path. See
+        // warmCarrierScope's docstring for the respawn-path (agyPtyLauncher.ts)
+        // rationale -- it needs no equivalent wiring since it always runs in
+        // this same, by-then-already-warm process. Same fire-and-forget
+        // contract as sweepAgyHookCarriers just above (never throws/rejects
+        // on its own -- see warmCarrierScope's docstring); the .catch here
+        // is the same defense-in-depth, kept symmetric with the sweep call
+        // above rather than trusting that contract alone (both feed into
+        // the same runnerLifecycle unhandledRejection -> markCrash path).
+        void warmCarrierScope().catch((error) => {
+            logger.debug('[agy] warmCarrierScope failed unexpectedly (fire-and-forget, non-fatal)', error);
+        });
 
         hookServer = await startHookServer({
             onSessionHook: () => {
@@ -218,6 +246,9 @@ export async function runAgy(opts: {
             });
             const { command: mcpCommand, args: mcpArgs } = hapiMcpBridge.mcpServers.hapi;
             hookMcpServer = { command: mcpCommand, args: mcpArgs };
+            // warmCarrierScope() never rejects (see its docstring), so this
+            // await cannot itself trigger the catch below.
+            await warmCarrierScope();
             carrierResult = prepareAgyHookCarrier(hooksJsonWithPreInvocation, hookMcpServer);
         } catch (error) {
             throw new Error('agy PTY session aborted: could not prepare the session-local HAPI MCP bridge.', { cause: error });

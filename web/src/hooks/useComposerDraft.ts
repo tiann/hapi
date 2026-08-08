@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
 import {
     getDraftAttachments,
+    getRestoredUploadMetadata,
     saveDraftAttachments,
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
+import { persistInactiveComposerAttachments, composerDraftWasHandedOff } from '@/lib/composer-draft-transfer'
 
 export type ComposerDraftHydration = {
     /** Session represented by this status; prevents a previous session's ready state leaking across a key change. */
@@ -12,6 +14,8 @@ export type ComposerDraftHydration = {
     complete: boolean
     /** True when this hydration found and applied a persisted text or attachment draft. */
     restoredAny: boolean
+    /** True when IndexedDB still holds attachment blobs (even if not restored into the adapter). */
+    hasStoredAttachments: boolean
 }
 
 /**
@@ -46,17 +50,28 @@ export function useComposerDraft(
         sessionId,
         complete: sessionId === undefined,
         restoredAny: false,
+        hasStoredAttachments: false,
     }))
 
     useEffect(() => {
         if (!sessionId) {
-            setHydration({ sessionId: undefined, complete: true, restoredAny: false })
+            setHydration({
+                sessionId: undefined,
+                complete: true,
+                restoredAny: false,
+                hasStoredAttachments: false,
+            })
             return
         }
 
         draftReadyRef.current = false
         attachmentsReadyRef.current = false
-        setHydration({ sessionId, complete: false, restoredAny: false })
+        setHydration({
+            sessionId,
+            complete: false,
+            restoredAny: false,
+            hasStoredAttachments: false,
+        })
 
         let disposed = false
         const frame = requestAnimationFrame(() => {
@@ -65,13 +80,36 @@ export function useComposerDraft(
             if (restoreText) {
                 // Mark before the external composer store gets its render so a
                 // consumer never mistakes this persisted replacement for empty.
-                setHydration({ sessionId, complete: !canRestoreAttachments, restoredAny: true })
+                setHydration({
+                    sessionId,
+                    complete: false,
+                    restoredAny: true,
+                    hasStoredAttachments: false,
+                })
                 setText(draft!)
             }
             draftReadyRef.current = true
 
             if (!canRestoreAttachments) {
-                if (!restoreText) setHydration({ sessionId, complete: true, restoredAny: false })
+                // Peek at stored blobs without restoring them into the inactive
+                // adapter so schedule/exclusion UI still knows they exist.
+                void getDraftAttachments(sessionId).then((files) => {
+                    if (disposed) return
+                    setHydration({
+                        sessionId,
+                        complete: true,
+                        restoredAny: restoreText,
+                        hasStoredAttachments: files.length > 0,
+                    })
+                }).catch(() => {
+                    if (disposed) return
+                    setHydration({
+                        sessionId,
+                        complete: true,
+                        restoredAny: restoreText,
+                        hasStoredAttachments: false,
+                    })
+                })
                 return
             }
 
@@ -80,7 +118,14 @@ export function useComposerDraft(
                 // session can already be hydrating when it settles, so never
                 // publish old status or rehydrate old files after disposal.
                 if (disposed) return
-                const restoreAttachments = attachmentsRef.current.length === 0 && files.length > 0
+                // Same-id resume can flip inactive→active with a newly visible
+                // pick already in the adapter. Restore only missing stored ids
+                // instead of skipping the whole draft when anything is visible.
+                const visibleIds = new Set(attachmentsRef.current.map((item) => item.id))
+                const filesToRestore = files.filter((file) => {
+                    const id = getRestoredUploadMetadata(file)?.id
+                    return !id || !visibleIds.has(id)
+                })
                 // Text is already known to be restored; attachment presence by
                 // itself is not. An upload can fail, so only successful adds
                 // contribute to restoredAny in the final completion update.
@@ -89,11 +134,12 @@ export function useComposerDraft(
                         sessionId,
                         complete: false,
                         restoredAny: restoreText || current.restoredAny,
+                        hasStoredAttachments: files.length > 0,
                     }
                     : current)
                 let restoredAttachment = false
-                if (restoreAttachments) {
-                    for (const file of files) {
+                if (filesToRestore.length > 0) {
+                    for (const file of filesToRestore) {
                         if (disposed) break
                         try {
                             await addAttachment(file)
@@ -104,18 +150,19 @@ export function useComposerDraft(
                         }
                     }
                 }
-                return restoredAttachment
+                return { restoredAttachment, hasStoredAttachments: files.length > 0 }
             }).catch(() => {
                 // Attachment draft read is best effort.
-                return false
-            }).then((restoredAttachment) => {
+                return { restoredAttachment: false, hasStoredAttachments: false }
+            }).then((result) => {
                 if (!disposed) {
                     attachmentsReadyRef.current = true
                     setHydration((current) => current.sessionId === sessionId
                         ? {
                             ...current,
                             complete: true,
-                            restoredAny: current.restoredAny || Boolean(restoredAttachment),
+                            restoredAny: current.restoredAny || Boolean(result?.restoredAttachment),
+                            hasStoredAttachments: Boolean(result?.hasStoredAttachments),
                         }
                         : current)
                 }
@@ -125,11 +172,28 @@ export function useComposerDraft(
         return () => {
             disposed = true
             cancelAnimationFrame(frame)
+            // Cross-session resume already moved this draft; do not recreate the
+            // obsolete source id after the route change unmounts the composer.
+            if (composerDraftWasHandedOff(sessionId)) {
+                draftReadyRef.current = false
+                attachmentsReadyRef.current = false
+                return
+            }
             if (draftReadyRef.current) {
                 saveDraft(sessionId, composerTextRef.current)
             }
-            if (attachmentsRef.current.length > 0 || (canRestoreAttachments && attachmentsReadyRef.current)) {
+            if (canRestoreAttachments && (attachmentsRef.current.length > 0 || attachmentsReadyRef.current)) {
                 saveDraftAttachments(sessionId, [...attachmentsRef.current])
+            } else if (!canRestoreAttachments && attachmentsRef.current.length > 0) {
+                // Merge visible pending picks into IndexedDB; do not replace the
+                // hidden stored list with only the incomplete visible set.
+                void persistInactiveComposerAttachments(
+                    sessionId,
+                    composerTextRef.current,
+                    attachmentsRef.current,
+                ).catch((error) => {
+                    console.warn('[composer-draft] inactive persistence failed', error)
+                })
             }
             draftReadyRef.current = false
             attachmentsReadyRef.current = false

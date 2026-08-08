@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+
+// node:fs/promises' namespace object cannot be spied on directly in this
+// ESM environment ("Module namespace is not configurable") -- vi.mock is
+// the supported seam. Every call other than the two racing tests below
+// delegates straight through to the real implementation, so this has no
+// effect on the rest of the file's (many) real-filesystem assertions.
+vi.mock('node:fs/promises', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs/promises')>();
+    return { ...actual, readdir: vi.fn(actual.readdir) };
+});
 import {
     agyHookCarrierIsIntact,
     cleanupAgyHookCarrier,
@@ -272,7 +283,7 @@ describe('sweepAgyHookCarriers', () => {
             JSON.stringify({ pid: deadPid, scope: computeLocalCarrierScope() })
         );
 
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
 
         // Fails if the scope-match requirement (Fix 2b) or the liveness
         // check regresses to always-preserve — this is the one combination
@@ -280,7 +291,7 @@ describe('sweepAgyHookCarriers', () => {
         expect(existsSync(carrierDir)).toBe(false);
     });
 
-    it('preserves a carrier whose owner process is alive — the costliest mistake is deleting a live session\'s carrier', () => {
+    it('preserves a carrier whose owner process is alive — the costliest mistake is deleting a live session\'s carrier', async () => {
         const carrierDir = makeCarrierDir('alive-owner');
         // This test process's own PID is guaranteed alive for the duration
         // of the test.
@@ -289,12 +300,12 @@ describe('sweepAgyHookCarriers', () => {
             JSON.stringify({ pid: process.pid, scope: computeLocalCarrierScope() })
         );
 
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
 
         expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('treats EPERM (process exists but is owned by someone else) as alive, not dead', () => {
+    it('treats EPERM (process exists but is owned by someone else) as alive, not dead', async () => {
         const carrierDir = makeCarrierDir('eperm-owner');
         writeFileSync(
             join(carrierDir, 'owner.json'),
@@ -309,17 +320,17 @@ describe('sweepAgyHookCarriers', () => {
             return true;
         }) as typeof process.kill);
 
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
 
         expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('① preserves a carrier with unreadable/missing owner metadata no matter how old (Fix 2a)', () => {
+    it('① preserves a carrier with unreadable/missing owner metadata no matter how old (Fix 2a)', async () => {
         // Fresh, no owner.json at all — simulates a carrier from before this
         // feature shipped, a partial write, or a read that raced a
         // concurrent write against a still-live, multi-day session.
         const carrierDir = makeCarrierDir('no-owner-metadata');
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
         expect(existsSync(carrierDir)).toBe(true);
 
         // Fix 2a: age no longer matters at all — a carrier this old used to
@@ -329,25 +340,25 @@ describe('sweepAgyHookCarriers', () => {
         // past the OLD 24h threshold must change nothing now.
         const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
         utimesSync(carrierDir, staleTime, staleTime);
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
         // Fails (mutation check: reintroduce the mtime-based ownerless
         // fallback branch) if this carrier gets swept purely for being old.
         expect(existsSync(carrierDir)).toBe(true);
     });
 
-    it('treats a legacy owner.json (pid only, no scope field) as unreadable metadata and preserves it regardless of age', () => {
+    it('treats a legacy owner.json (pid only, no scope field) as unreadable metadata and preserves it regardless of age', async () => {
         // A pre-this-fix owner.json (hostname field, not scope) or a
         // pre-Fix-N6 one (pid only) both fail the new schema check the same
         // way: readOwnerMetadata requires a non-empty `scope` string.
         const carrierDir = makeCarrierDir('legacy-owner-no-scope');
         writeFileSync(join(carrierDir, 'owner.json'), JSON.stringify({ pid: 999999 }));
 
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
         expect(existsSync(carrierDir)).toBe(true);
 
         const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
         utimesSync(carrierDir, staleTime, staleTime);
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
         expect(existsSync(carrierDir)).toBe(true);
     });
 
@@ -365,7 +376,7 @@ describe('sweepAgyHookCarriers', () => {
             JSON.stringify({ pid: deadPid, scope: 'some-other-container-scope-4a1c9e' })
         );
 
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
 
         // Fails (mutation check: drop the `owner.scope !== localScope`
         // guard in sweepAgyHookCarriers) if the carrier gets deleted because
@@ -391,7 +402,7 @@ describe('sweepAgyHookCarriers', () => {
             readPidNamespaceId: () => { throw new Error('no /proc'); },
             hostname: () => { throw new Error('gethostname() failed'); },
         };
-        sweepAgyHookCarriers(failingProbe);
+        await sweepAgyHookCarriers(failingProbe);
 
         // Fails (mutation check: drop the `if (!localScope) return` early
         // bailout in sweepAgyHookCarriers) if this ever gets deleted despite
@@ -416,7 +427,7 @@ describe('sweepAgyHookCarriers', () => {
             JSON.stringify({ pid: deadPid, scope: computeLocalCarrierScope() })
         );
 
-        sweepAgyHookCarriers();
+        await sweepAgyHookCarriers();
 
         // Fails (mutation check: drop the `entry.startsWith(CARRIER_DIR_PREFIX)`
         // guard) if the sweep deletes this non-carrier directory despite its
@@ -425,7 +436,7 @@ describe('sweepAgyHookCarriers', () => {
         expect(existsSync(join(strangerDir, 'important-unrelated-file.txt'))).toBe(true);
     });
 
-    it('judges a carrier-prefixed entry by the entry itself, not a symlink target (Fix N4)', () => {
+    it('judges a carrier-prefixed entry by the entry itself, not a symlink target (Fix N4)', async () => {
         const root = join(customHapiHome, 'agy-carriers');
         mkdirSync(root, { recursive: true });
 
@@ -437,7 +448,7 @@ describe('sweepAgyHookCarriers', () => {
             const linkPath = join(root, `${CARRIER_PREFIX}symlinked`);
             symlinkSync(targetDir, linkPath, 'dir');
 
-            sweepAgyHookCarriers();
+            await sweepAgyHookCarriers();
 
             // Fails (mutation check: revert lstatSync back to statSync) if
             // the sweep dereferences the symlink and evaluates the TARGET
@@ -452,7 +463,7 @@ describe('sweepAgyHookCarriers', () => {
         }
     });
 
-    it('does not let two different HAPI_HOME roots interfere with each other', () => {
+    it('does not let two different HAPI_HOME roots interfere with each other', async () => {
         const hapiHomeA = customHapiHome;
         const carrierA = prepareAgyHookCarrier('{"a":true}');
         expect(carrierA).toBeDefined();
@@ -464,7 +475,7 @@ describe('sweepAgyHookCarriers', () => {
 
             // Sweeping under HAPI_HOME B must never touch A's carrier, even
             // though A's carrier has no owner.json reachable from B's root.
-            sweepAgyHookCarriers();
+            await sweepAgyHookCarriers();
             expect(existsSync(carrierA.carrierDir)).toBe(true);
 
             const carrierB = prepareAgyHookCarrier('{"b":true}');
@@ -482,5 +493,145 @@ describe('sweepAgyHookCarriers', () => {
             cleanupAgyHookCarrier(carrierA.carrierDir);
             rmSync(hapiHomeB, { recursive: true, force: true });
         }
+    });
+
+    // Phase 2-A: sweepAgyHookCarriers is now async and no longer runs
+    // strictly before every other carrier-creating call in the process (see
+    // runAgy.ts, which now fires it without awaiting it so it cannot delay
+    // session startup). That makes a genuinely new race possible: THIS
+    // session's own prepareAgyHookCarrier() call can now interleave with an
+    // in-flight sweep. Three guarantees together make that safe -- two are
+    // already covered by the tests above under their new async form
+    // (① unreadable/missing owner.json -> preserved; "preserves a carrier
+    // whose owner process is alive" -> preserved); the one below is the
+    // genuinely new guarantee this phase introduces: a directory that
+    // didn't exist yet when readdir() took its snapshot is never examined
+    // at all, matching or not.
+    describe('racing safety (Phase 2-A: sweep decoupled from the session-startup path)', () => {
+        // mockImplementationOnce below is self-consuming (reverts to the
+        // module-level vi.fn(actual.readdir) delegate after exactly one
+        // call), so no explicit mock teardown is needed here -- and
+        // vi.restoreAllMocks() would be actively harmful: readdir is a
+        // plain vi.fn() (module-mock factory, not vi.spyOn), so "restore"
+        // has no original to revert to and would instead wipe its
+        // delegating default for the rest of this file's run.
+        it('never examines a carrier created after the readdir snapshot was already taken, even though it would otherwise qualify for deletion', async () => {
+            let releaseGate: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+            let markSnapshotTaken: () => void = () => {};
+            const snapshotTaken = new Promise<void>((resolve) => { markSnapshotTaken = resolve; });
+
+            // A carrier must already exist so agy-carriers/ itself exists by
+            // the time sweep's readdir() runs (an ENOENT root is a distinct,
+            // already-covered early-return path, not what this test targets).
+            makeCarrierDir('baseline-existing');
+
+            // node:fs/promises' readdir has an overloaded signature (Dirent[]
+            // with withFileTypes, Buffer[] with an encoding option, ...);
+            // sweepAgyHookCarriers only ever calls the plain string[] form, so
+            // the cast below pins the mock to that one overload rather than
+            // fighting the union.
+            vi.mocked(readdir).mockImplementationOnce((async (path: string) => {
+                // readdirSync (already imported from node:fs for the rest of
+                // this file) captures the real, unmodified directory listing
+                // FIRST -- this is the actual snapshot sweepAgyHookCarriers
+                // will iterate over -- then signals the test it is safe to
+                // create a new (would-otherwise-qualify) carrier, and only
+                // returns the already-captured (now stale) array once
+                // released.
+                const result = readdirSync(path);
+                markSnapshotTaken();
+                await gate;
+                return result;
+            }) as typeof readdir);
+
+            const sweepPromise = sweepAgyHookCarriers();
+            await snapshotTaken;
+
+            const deadPid = await spawnAndReapDeadPid();
+            const carrierDir = makeCarrierDir('created-after-snapshot');
+            writeFileSync(
+                join(carrierDir, 'owner.json'),
+                // Matching scope + confirmed-dead pid: exactly the
+                // combination test ③ proves gets deleted for a carrier that
+                // WAS in the snapshot.
+                JSON.stringify({ pid: deadPid, scope: computeLocalCarrierScope() })
+            );
+
+            releaseGate();
+            await sweepPromise;
+
+            // Fails (mutation check: capture the snapshot lazily / re-read
+            // the directory mid-loop) if a carrier created after the
+            // snapshot was taken ever gets examined, let alone deleted.
+            expect(existsSync(carrierDir)).toBe(true);
+        });
+
+        it('reads the directory listing before resolving the local scope — not just an outcome, the actual call order', async () => {
+            // hostile-review round 1 finding ③: the test above only proves
+            // "a carrier created after the snapshot is invisible", which a
+            // reversed implementation (resolve scope, THEN readdir) could
+            // also satisfy by coincidence in a synchronous mock. This
+            // asserts the call order directly so reversing the two
+            // statements in sweepAgyHookCarriers fails this test even if it
+            // doesn't happen to break the outcome-based one above.
+            makeCarrierDir('baseline-existing');
+            const callOrder: string[] = [];
+
+            vi.mocked(readdir).mockImplementationOnce((async (path: string) => {
+                callOrder.push('readdir');
+                return readdirSync(path);
+            }) as typeof readdir);
+            const probe: ScopeProbe = {
+                readBootId: () => { callOrder.push('scope-probe'); return 'boot-id'; },
+                readPidNamespaceId: () => '1',
+                hostname: () => 'irrelevant',
+            };
+
+            await sweepAgyHookCarriers(probe);
+
+            // Fails (mutation check: swap the readdir()/resolveLocalCarrierScope()
+            // statements in sweepAgyHookCarriers) if the scope probe ever
+            // runs before the directory snapshot is taken.
+            expect(callOrder).toEqual(['readdir', 'scope-probe']);
+        });
+
+        it('preserves this session\'s own real carrier if prepareAgyHookCarrier() creates it while an in-flight sweep has already snapshotted the directory', async () => {
+            // See the previous test: a carrier must already exist so
+            // agy-carriers/ itself exists by the time sweep's readdir() runs.
+            makeCarrierDir('baseline-existing');
+
+            let releaseGate: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+            let markSnapshotTaken: () => void = () => {};
+            const snapshotTaken = new Promise<void>((resolve) => { markSnapshotTaken = resolve; });
+
+            vi.mocked(readdir).mockImplementationOnce((async (path: string) => {
+                const result = readdirSync(path);
+                markSnapshotTaken();
+                await gate;
+                return result;
+            }) as typeof readdir);
+
+            const sweepPromise = sweepAgyHookCarriers();
+            await snapshotTaken;
+
+            // The real production entrypoint (runAgy.ts/agyPtyLauncher.ts),
+            // not the hand-built makeCarrierDir helper -- proves the actual
+            // API used in production is safe under this race, not just a
+            // synthetic fixture that resembles it.
+            const ownCarrier = prepareAgyHookCarrier('{}');
+            expect(ownCarrier).toBeDefined();
+            if (!ownCarrier) return;
+
+            try {
+                releaseGate();
+                await sweepPromise;
+
+                expect(existsSync(ownCarrier.carrierDir)).toBe(true);
+            } finally {
+                cleanupAgyHookCarrier(ownCarrier.carrierDir);
+            }
+        });
     });
 });

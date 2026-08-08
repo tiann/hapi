@@ -77,9 +77,29 @@ export type SendErrorInfo = {
     mutationStarted: boolean
 }
 
+export type ResolvedSession = {
+    sessionId: string
+    /** True after an inactive-session resume, even when the hub returns the same id. */
+    resumed: boolean
+}
+
+export type SessionResolution = {
+    attachments?: AttachmentMetadata[]
+    /** Transfer moved hidden drafts; wait for the active composer to hydrate/re-upload. */
+    deferUntilDraftHydrated?: boolean
+}
+
+export type SessionResolvedContext = {
+    text: string
+    attachments?: AttachmentMetadata[]
+}
+
 type UseSendMessageOptions = {
-    resolveSessionId?: (sessionId: string) => Promise<string>
-    onSessionResolved?: (sessionId: string) => void
+    resolveSessionId?: (sessionId: string) => Promise<ResolvedSession>
+    onSessionResolved?: (
+        sessionId: string,
+        context: SessionResolvedContext,
+    ) => void | Promise<void | SessionResolution>
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
     onError?: (info: SendErrorInfo) => void
@@ -277,14 +297,28 @@ export function useSendMessage(
         const localId = makeClientSideId('local')
         const createdAt = Date.now()
         let targetSessionId = sessionId
+        let sendAttachments = attachments
         if (options?.resolveSessionId) {
             resolveGuardRef.current = true
             setIsResolving(true)
             try {
                 const resolved = await options.resolveSessionId(sessionId)
-                if (resolved && resolved !== sessionId) {
-                    options.onSessionResolved?.(resolved)
-                    targetSessionId = resolved
+                targetSessionId = resolved.sessionId
+                if (resolved.resumed) {
+                    // Await draft transfer / navigation before the mutation so
+                    // hidden inactive attachments move with the resumed id
+                    // (including same-id PTY/Pi/Cursor resumes).
+                    const resolution = await options.onSessionResolved?.(
+                        targetSessionId,
+                        { text, attachments },
+                    )
+                    if (resolution?.deferUntilDraftHydrated) {
+                        // Target composer still needs to hydrate/re-upload files.
+                        return false
+                    }
+                    if (resolution?.attachments) {
+                        sendAttachments = resolution.attachments
+                    }
                 }
             } catch (error) {
                 haptic.notification('error')
@@ -318,7 +352,7 @@ export function useSendMessage(
             text,
             localId,
             createdAt,
-            attachments,
+            attachments: sendAttachments,
             scheduledAt,
             deliveryMode,
         })

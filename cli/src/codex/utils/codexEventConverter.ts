@@ -67,6 +67,44 @@ function asString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function normalizeItemType(value: unknown): string | null {
+    const raw = asString(value);
+    return raw ? raw.toLowerCase().replace(/[\s_-]/g, '') : null;
+}
+
+function extractTextContent(value: unknown): string {
+    if (typeof value === 'string') {
+        return value.trim();
+    }
+    if (!Array.isArray(value)) {
+        return '';
+    }
+
+    return value
+        .map((entry) => {
+            if (typeof entry === 'string') {
+                return entry;
+            }
+            const record = asRecord(entry);
+            const contentType = normalizeItemType(record?.type);
+            if (
+                !record
+                || (contentType !== null && contentType !== 'text' && contentType !== 'inputtext' && contentType !== 'outputtext')
+            ) {
+                return '';
+            }
+            return typeof record.text === 'string' ? record.text : '';
+        })
+        .join('')
+        .trim();
+}
+
+function extractVisibleAssistantText(value: unknown): string {
+    return extractTextContent(value)
+        .replace(/(?:^|\n)<proposed_plan>[\s\S]*?<\/proposed_plan>(?=\n|$)/gi, '\n')
+        .trim();
+}
+
 function parseArguments(value: unknown): unknown {
     if (typeof value !== 'string') {
         return value;
@@ -108,6 +146,117 @@ function extractResponseItemTurnId(payload: Record<string, unknown>): string | n
     return metadata ? asString(metadata.turn_id) ?? asString(metadata.turnId) : null;
 }
 
+type AssistantMessageProjection = {
+    source: 'semantic' | 'response';
+    text: string;
+    turnId: string | null;
+};
+
+function extractEventTurnId(event: CodexSessionEvent): string | null {
+    const payload = asRecord(event.payload);
+    if (!payload) return null;
+
+    return asString(payload.turn_id ?? payload.turnId)
+        ?? extractResponseItemTurnId(payload);
+}
+
+function extractAssistantMessageProjection(
+    event: CodexSessionEvent,
+    currentTurnId: string | null
+): AssistantMessageProjection | null {
+    const payload = asRecord(event.payload);
+    if (!payload) return null;
+
+    if (event.type === 'event_msg' && payload.type === 'agent_message') {
+        const text = extractVisibleAssistantText(payload.message ?? payload.text ?? payload.content);
+        if (!text) return null;
+        return {
+            source: 'semantic',
+            text,
+            turnId: extractEventTurnId(event) ?? currentTurnId
+        };
+    }
+
+    if (event.type === 'event_msg' && payload.type === 'item_completed') {
+        const item = asRecord(payload.item);
+        if (normalizeItemType(item?.type) !== 'agentmessage') return null;
+        const text = extractVisibleAssistantText(item?.content ?? item?.message ?? item?.text);
+        if (!text) return null;
+        return {
+            source: 'semantic',
+            text,
+            turnId: extractEventTurnId(event) ?? currentTurnId
+        };
+    }
+
+    if (event.type === 'response_item' && payload.type === 'message' && payload.role === 'assistant') {
+        const text = extractVisibleAssistantText(payload.content);
+        if (!text) return null;
+        return {
+            source: 'response',
+            text,
+            turnId: extractEventTurnId(event) ?? currentTurnId
+        };
+    }
+
+    return null;
+}
+
+function consumeProjection(counts: Map<string, number>, key: string): boolean {
+    const count = counts.get(key) ?? 0;
+    if (count === 0) return false;
+    if (count === 1) counts.delete(key);
+    else counts.set(key, count - 1);
+    return true;
+}
+
+function rememberProjection(counts: Map<string, number>, key: string): void {
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+/**
+ * Transcript chat text is duplicated across Codex's semantic events and raw
+ * response items. Keep both as compatible sources, but project each visible
+ * assistant message once. Some Codex versions only persist final answers as
+ * response_item messages, while 0.147+ replaced legacy agent_message events
+ * with item_completed AgentMessage records.
+ */
+export function createCodexEventConverter(): (rawEvent: unknown) => CodexConversionResult | null {
+    let currentTurnId: string | null = null;
+    const unmatchedSemanticMessages = new Map<string, number>();
+    const unmatchedResponseMessages = new Map<string, number>();
+
+    return (rawEvent: unknown): CodexConversionResult | null => {
+        const parsed = CodexSessionEventSchema.safeParse(rawEvent);
+        if (!parsed.success) return null;
+
+        if (parsed.data.type === 'session_meta') {
+            currentTurnId = null;
+            unmatchedSemanticMessages.clear();
+            unmatchedResponseMessages.clear();
+        }
+
+        currentTurnId = extractEventTurnId(parsed.data) ?? currentTurnId;
+        const projection = extractAssistantMessageProjection(parsed.data, currentTurnId);
+        const converted = convertCodexEvent(parsed.data);
+        if (!projection || !converted) return converted;
+
+        const key = `${projection.turnId ?? ''}\u0000${projection.text}`;
+        const opposite = projection.source === 'semantic'
+            ? unmatchedResponseMessages
+            : unmatchedSemanticMessages;
+        if (consumeProjection(opposite, key)) {
+            return null;
+        }
+
+        rememberProjection(
+            projection.source === 'semantic' ? unmatchedSemanticMessages : unmatchedResponseMessages,
+            key
+        );
+        return converted;
+    };
+}
+
 export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | null {
     const parsed = CodexSessionEventSchema.safeParse(rawEvent);
     if (!parsed.success) {
@@ -146,7 +295,9 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
         }
 
         if (eventType === 'agent_message') {
-            const message = asString(payloadRecord.message);
+            const message = extractVisibleAssistantText(
+                payloadRecord.message ?? payloadRecord.text ?? payloadRecord.content
+            );
             if (!message) {
                 return null;
             }
@@ -161,9 +312,32 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
 
         if (eventType === 'item_completed') {
             const item = asRecord(payloadRecord.item);
-            const itemType = asString(item?.type)?.toLowerCase();
+            const itemType = normalizeItemType(item?.type);
+            const turnId = asString(payloadRecord.turn_id ?? payloadRecord.turnId);
+
+            if (itemType === 'usermessage') {
+                const message = extractTextContent(item?.content ?? item?.message ?? item?.text);
+                return {
+                    ...(turnId ? { turnId } : {}),
+                    userActivity: true,
+                    ...(message ? { userMessage: message } : {})
+                };
+            }
+
+            if (itemType === 'agentmessage') {
+                const message = extractVisibleAssistantText(item?.content ?? item?.message ?? item?.text);
+                if (!message) return null;
+                return {
+                    ...(turnId ? { turnId } : {}),
+                    messages: [{
+                        type: 'message',
+                        message,
+                        id: asString(item?.id) ?? randomUUID()
+                    }]
+                };
+            }
+
             const message = itemType === 'plan' ? asString(item?.text) : null;
-            const turnId = asString(payloadRecord.turn_id);
             if (!message || message.trim().length === 0 || !turnId) {
                 return null;
             }
@@ -234,8 +408,24 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
         }
 
         if (itemType === 'message') {
-            // Response messages are model conversation state; event_msg carries visible chat.
-            return null;
+            if (payloadRecord.role !== 'assistant') {
+                // User/developer response items include injected context. Only
+                // semantic user events represent visible chat input.
+                return null;
+            }
+            const message = extractVisibleAssistantText(payloadRecord.content);
+            if (!message) {
+                return null;
+            }
+            const turnId = extractResponseItemTurnId(payloadRecord);
+            return {
+                ...(turnId ? { turnId } : {}),
+                messages: [{
+                    type: 'message',
+                    message,
+                    id: asString(payloadRecord.id) ?? randomUUID()
+                }]
+            };
         }
 
         if (itemType === 'function_call') {

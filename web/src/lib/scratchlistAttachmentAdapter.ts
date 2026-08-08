@@ -74,7 +74,7 @@ export function createScratchlistAttachmentAdapter(
         async *add({ file }): AsyncGenerator<PendingAttachment> {
             const contentType = file.type || 'application/octet-stream'
             const restored = getRestoredUploadMetadata(file)
-            if (restored) {
+            if (restored?.path) {
                 const hubAttachment = hubAttachmentFromRestoredDraft(restored.path, file, contentType)
                 if (hubAttachment) {
                     yield {

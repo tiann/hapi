@@ -9,16 +9,18 @@ vi.mock('@/lib/composer-drafts', () => ({
 }))
 vi.mock('@/lib/composer-attachment-drafts', () => ({
     getDraftAttachments: vi.fn(async () => []),
+    getRestoredUploadMetadata: vi.fn(() => undefined),
     saveDraftAttachments: vi.fn(),
 }))
 
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
-import { getDraftAttachments, saveDraftAttachments } from '@/lib/composer-attachment-drafts'
+import { getDraftAttachments, getRestoredUploadMetadata, saveDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { useComposerDraft } from './useComposerDraft'
 
 const mockGetDraft = vi.mocked(getDraft)
 const mockSaveDraft = vi.mocked(saveDraft)
 const mockGetDraftAttachments = vi.mocked(getDraftAttachments)
+const mockGetRestoredUploadMetadata = vi.mocked(getRestoredUploadMetadata)
 const mockSaveDraftAttachments = vi.mocked(saveDraftAttachments)
 
 describe('useComposerDraft', () => {
@@ -28,6 +30,7 @@ describe('useComposerDraft', () => {
         vi.clearAllMocks()
         mockGetDraft.mockReturnValue('')
         mockGetDraftAttachments.mockResolvedValue([])
+        mockGetRestoredUploadMetadata.mockReturnValue(undefined)
         rAFCallbacks = []
         vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => {
             rAFCallbacks.push(cb)
@@ -57,13 +60,54 @@ describe('useComposerDraft', () => {
         // Before rAF fires, setText should not have been called and hydration
         // must prevent failed-send recovery from racing ahead of persistence.
         expect(setText).not.toHaveBeenCalled()
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: false, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-1', complete: false, restoredAny: false , hasStoredAttachments: false })
 
         // Flush rAF + attachment hydration.
         await act(async () => flushRAF())
         expect(mockGetDraft).toHaveBeenCalledWith('session-1')
         expect(setText).toHaveBeenCalledWith('saved text')
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true })
+        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true , hasStoredAttachments: false })
+    })
+
+    it('restores only missing stored attachments when a visible pick already exists', async () => {
+        const storedA = new File(['a'], 'a.txt')
+        const visibleB = new File(['b'], 'b.txt')
+        mockGetDraftAttachments.mockResolvedValue([storedA, visibleB])
+        mockGetRestoredUploadMetadata.mockImplementation((file: File) => {
+            if (file === storedA) return { id: 'stored-a' }
+            if (file === visibleB) return { id: 'visible-b' }
+            return undefined
+        })
+        const addAttachment = vi.fn().mockResolvedValue(undefined)
+        const visible = [{ id: 'visible-b', file: visibleB }]
+
+        const { result, rerender } = renderHook(
+            ({ canRestore, attachments }) => useComposerDraft(
+                'session-1',
+                '',
+                attachments,
+                canRestore,
+                vi.fn(),
+                addAttachment,
+            ),
+            { initialProps: { canRestore: false, attachments: visible } },
+        )
+
+        await act(async () => flushRAF())
+        expect(result.current.complete).toBe(true)
+        expect(addAttachment).not.toHaveBeenCalled()
+
+        // Same-id resume flips inactive → active with B already visible.
+        rerender({ canRestore: true, attachments: visible })
+        await act(async () => flushRAF())
+        await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+
+        expect(addAttachment).toHaveBeenCalledTimes(1)
+        expect(addAttachment).toHaveBeenCalledWith(storedA)
+        expect(result.current.complete).toBe(true)
     })
 
     it('does not restore draft if composer already has text', async () => {
@@ -146,13 +190,18 @@ describe('useComposerDraft', () => {
         await act(async () => flushRAF())
 
         expect(addAttachment).toHaveBeenCalledWith(file)
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true })
+        expect(result.current).toEqual({
+            sessionId: 'session-1',
+            complete: true,
+            restoredAny: true,
+            hasStoredAttachments: true,
+        })
     })
 
-    it('does not duplicate saved attachments when the composer already has files', async () => {
+    it('does not duplicate a stored attachment that is already visible by id', async () => {
         const current = new File(['current'], 'current.png', { type: 'image/png' })
-        const saved = new File(['saved'], 'saved.png', { type: 'image/png' })
-        mockGetDraftAttachments.mockResolvedValue([saved])
+        mockGetDraftAttachments.mockResolvedValue([current])
+        mockGetRestoredUploadMetadata.mockReturnValue({ id: 'current' })
         const addAttachment = vi.fn(async () => {})
 
         renderHook(() => useComposerDraft('session-1', '', [{ id: 'current', file: current }], true, vi.fn(), addAttachment))
@@ -161,24 +210,76 @@ describe('useComposerDraft', () => {
         expect(addAttachment).not.toHaveBeenCalled()
     })
 
+    it('restores a stored sibling when a different attachment is already visible', async () => {
+        const current = new File(['current'], 'current.png', { type: 'image/png' })
+        const saved = new File(['saved'], 'saved.png', { type: 'image/png' })
+        mockGetDraftAttachments.mockResolvedValue([saved])
+        mockGetRestoredUploadMetadata.mockImplementation((file: File) => (
+            file === saved ? { id: 'saved' } : undefined
+        ))
+        const addAttachment = vi.fn(async () => {})
+
+        renderHook(() => useComposerDraft('session-1', '', [{ id: 'current', file: current }], true, vi.fn(), addAttachment))
+        await act(async () => flushRAF())
+
+        expect(addAttachment).toHaveBeenCalledWith(saved)
+    })
+
     it('preserves saved attachments while the attachment adapter is unavailable', async () => {
         const saved = new File(['saved'], 'saved.png', { type: 'image/png' })
         mockGetDraftAttachments.mockResolvedValue([saved])
         const addAttachment = vi.fn(async () => {})
 
-        const { unmount } = renderHook(() => (
+        const { result, unmount } = renderHook(() => (
             useComposerDraft('session-1', '', [], false, vi.fn(), addAttachment)
         ))
         await act(async () => flushRAF())
-        unmount()
 
-        expect(mockGetDraftAttachments).not.toHaveBeenCalled()
+        expect(mockGetDraftAttachments).toHaveBeenCalledWith('session-1')
         expect(addAttachment).not.toHaveBeenCalled()
+        expect(result.current).toEqual({
+            sessionId: 'session-1',
+            complete: true,
+            restoredAny: false,
+            hasStoredAttachments: true,
+        })
+        unmount()
         expect(mockSaveDraftAttachments).not.toHaveBeenCalled()
+    })
+
+    it('merges a visible inactive selection into stored attachments on unmount', async () => {
+        const stored = new File(['kept'], 'kept.txt', { type: 'text/plain' })
+        const partial = new File(['picked'], 'picked.txt', { type: 'text/plain' })
+        mockGetDraftAttachments.mockResolvedValue([stored])
+        const { unmount } = renderHook(() => (
+            useComposerDraft(
+                'session-1',
+                'typed',
+                [{ id: 'partial', file: partial }],
+                false,
+                vi.fn(),
+                vi.fn(),
+            )
+        ))
+        await act(async () => flushRAF())
+        unmount()
+        await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+
+        expect(mockSaveDraft).toHaveBeenCalledWith('session-1', 'typed')
+        expect(mockSaveDraftAttachments).toHaveBeenCalledWith(
+            'session-1',
+            expect.arrayContaining([
+                expect.objectContaining({ file: stored }),
+                expect.objectContaining({ id: 'partial', file: partial }),
+            ]),
+        )
     })
     it('reports immediate complete hydration when no session exists', () => {
         const { result } = renderHook(() => useComposerDraft(undefined, '', [], true, vi.fn(), vi.fn()))
-        expect(result.current).toEqual({ sessionId: undefined, complete: true, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: undefined, complete: true, restoredAny: false , hasStoredAttachments: false })
     })
 
     it('returns to pending hydration when the session changes', async () => {
@@ -187,12 +288,12 @@ describe('useComposerDraft', () => {
             { initialProps: { sessionId: 'session-1' as string | undefined } },
         )
         await act(async () => flushRAF())
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: false , hasStoredAttachments: false })
 
         rerender({ sessionId: 'session-2' })
-        expect(result.current).toEqual({ sessionId: 'session-2', complete: false, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-2', complete: false, restoredAny: false , hasStoredAttachments: false })
         await act(async () => flushRAF())
-        expect(result.current).toEqual({ sessionId: 'session-2', complete: true, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-2', complete: true, restoredAny: false , hasStoredAttachments: false })
     })
 
     it('lets persisted replacement hydration win over an implicit failed-send restore', async () => {
@@ -240,21 +341,21 @@ describe('useComposerDraft', () => {
         )
 
         await act(async () => flushRAF())
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: false, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-1', complete: false, restoredAny: false , hasStoredAttachments: false })
 
         rerender({ sessionId: 'session-2' })
-        expect(result.current).toEqual({ sessionId: 'session-2', complete: false, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-2', complete: false, restoredAny: false , hasStoredAttachments: false })
 
         await act(async () => {
             resolveOldFiles!([oldAttachment])
             await Promise.resolve()
             await Promise.resolve()
         })
-        expect(result.current).toEqual({ sessionId: 'session-2', complete: false, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-2', complete: false, restoredAny: false , hasStoredAttachments: false })
         expect(addAttachment).not.toHaveBeenCalled()
 
         await act(async () => flushRAF())
-        expect(result.current).toEqual({ sessionId: 'session-2', complete: true, restoredAny: false })
+        expect(result.current).toEqual({ sessionId: 'session-2', complete: true, restoredAny: false , hasStoredAttachments: false })
     })
 
     it('does not mark hydration restored when every saved attachment rejects', async () => {
@@ -266,7 +367,12 @@ describe('useComposerDraft', () => {
         await act(async () => flushRAF())
 
         expect(addAttachment).toHaveBeenCalledWith(file)
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: false })
+        expect(result.current).toEqual({
+            sessionId: 'session-1',
+            complete: true,
+            restoredAny: false,
+            hasStoredAttachments: true,
+        })
     })
 
     it('marks hydration restored when at least one saved attachment succeeds', async () => {
@@ -281,7 +387,12 @@ describe('useComposerDraft', () => {
         await act(async () => flushRAF())
 
         expect(addAttachment).toHaveBeenCalledTimes(2)
-        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true })
+        expect(result.current).toEqual({
+            sessionId: 'session-1',
+            complete: true,
+            restoredAny: true,
+            hasStoredAttachments: true,
+        })
     })
 
     it('allows implicit failed-send restoration when every persisted attachment fails', async () => {

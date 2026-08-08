@@ -19,8 +19,10 @@ export function TerminalView(props: {
     onMount?: (terminal: Terminal) => void
     onResize?: (cols: number, rows: number) => void
     className?: string
+    disableStdin?: boolean
 }) {
     const containerRef = useRef<HTMLDivElement | null>(null)
+    const terminalRef = useRef<Terminal | null>(null)
     const onMountRef = useRef(props.onMount)
     const onResizeRef = useRef(props.onResize)
 
@@ -33,6 +35,15 @@ export function TerminalView(props: {
     }, [props.onResize])
 
     useEffect(() => {
+        const terminal = terminalRef.current
+        if (!terminal) return
+        terminal.options.disableStdin = props.disableStdin ?? false
+        if (props.disableStdin) {
+            terminal.blur()
+        }
+    }, [props.disableStdin])
+
+    useEffect(() => {
         const container = containerRef.current
         if (!container) return
 
@@ -43,6 +54,7 @@ export function TerminalView(props: {
         const { background, foreground, selectionBackground } = resolveThemeColors()
         const terminal = new Terminal({
             cursorBlink: true,
+            disableStdin: props.disableStdin ?? false,
             fontFamily: fontProvider.getFontFamily(),
             fontSize,
             theme: {
@@ -62,6 +74,7 @@ export function TerminalView(props: {
         terminal.loadAddon(webLinksAddon)
         terminal.loadAddon(canvasAddon)
         terminal.open(container)
+        terminalRef.current = terminal
 
         const observer = new ResizeObserver(() => {
             requestAnimationFrame(() => {
@@ -109,6 +122,7 @@ export function TerminalView(props: {
             webLinksAddon.dispose()
             canvasAddon.dispose()
             terminal.dispose()
+            terminalRef.current = null
         })
 
         requestAnimationFrame(() => {

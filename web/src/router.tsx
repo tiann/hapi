@@ -45,6 +45,9 @@ import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { seedMessageWindowFromSession, syncTailMessages } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
+import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
+import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
+import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { initializeSessionLastSeen, markSessionSeen } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
@@ -964,11 +967,15 @@ function SessionPage() {
                 await queryClient.invalidateQueries({ queryKey: queryKeys.session(result.sessionId) })
                 await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
                 if (result.sessionId && result.sessionId !== errorSessionId) {
-                    navigate({
-                        to: '/sessions/$sessionId',
-                        params: { sessionId: result.sessionId },
-                        replace: true
-                    })
+                    await transferComposerDraftThenNavigate(
+                        errorSessionId,
+                        result.sessionId,
+                        () => navigate({
+                            to: '/sessions/$sessionId',
+                            params: { sessionId: result.sessionId },
+                            replace: true
+                        }),
+                    )
                 }
             } catch (err) {
                 const message = err instanceof Error ? err.message : t('dialog.error.default')
@@ -1014,6 +1021,75 @@ function SessionPage() {
         }
         : null
 
+    const resolvedSessionRef = useRef<{ source: string; target: Promise<string> } | null>(null)
+    // Clear when the session id or active flag changes so a same-id resume
+    // that later archives again cannot reuse a stale in-flight/cached resume.
+    useEffect(() => {
+        resolvedSessionRef.current = null
+    }, [session?.id, session?.active])
+    const resolveSessionId = useCallback(async (currentSessionId: string) => {
+        if (!api || !session || session.active) {
+            return { sessionId: currentSessionId, resumed: false }
+        }
+        const cached = resolvedSessionRef.current
+        if (cached?.source === currentSessionId) {
+            return { sessionId: await cached.target, resumed: true }
+        }
+        if (!inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)) {
+            throw new ApiError(
+                t('chat.sendError.sessionInactive'),
+                409,
+                'session_inactive',
+            )
+        }
+        try {
+            const target = api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
+            resolvedSessionRef.current = { source: currentSessionId, target }
+            return { sessionId: await target, resumed: true }
+        } catch (error) {
+            if (resolvedSessionRef.current?.source === currentSessionId) {
+                resolvedSessionRef.current = null
+            }
+            const message = error instanceof Error ? error.message : t('dialog.error.default')
+            addToast({
+                title: t('resume.failed.title'),
+                body: message,
+                sessionId: currentSessionId,
+                url: ''
+            })
+            throw new ApiError(
+                t('chat.sendError.sessionInactive'),
+                409,
+                'session_inactive',
+            )
+        }
+    }, [api, session, messages.length, cursorChatStoreStatus?.onDisk, t, addToast])
+
+    const handleSessionResolved = useCallback((resolvedSessionId: string) => {
+        if (session) {
+            if (resolvedSessionId !== session.id) {
+                seedMessageWindowFromSession(session.id, resolvedSessionId)
+            }
+            queryClient.setQueryData(queryKeys.session(resolvedSessionId), (previous: { session?: typeof session } | undefined) => ({
+                session: { ...(previous?.session ?? session), id: resolvedSessionId, active: true }
+            }))
+            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        }
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId: resolvedSessionId },
+            replace: true
+        })
+        if (api) {
+            void refreshSessionDetailPreservingActive(
+                queryClient,
+                resolvedSessionId,
+                () => api.getSession(resolvedSessionId),
+            )
+            void syncTailMessages(api, resolvedSessionId).catch(() => {})
+        }
+    }, [api, navigate, queryClient, session])
+
     const {
         sendMessage,
         retryMessage,
@@ -1053,83 +1129,29 @@ function SessionPage() {
                 }
             }))
         },
-        resolveSessionId: async (currentSessionId) => {
-            if (!api || !session || session.active) {
-                return currentSessionId
-            }
-            if (!inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)) {
-                // #918: surface as a session_inactive ApiError so the
-                // onError consumer's classifier renders the Reopen
-                // affordance.  `status: 409` mirrors the hub guard for
-                // structural parity; no HTTP call was made.
-                throw new ApiError(
-                    t('chat.sendError.sessionInactive'),
-                    409,
-                    'session_inactive',
-                )
-            }
-            try {
-                return await api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
-            } catch (error) {
-                const message = error instanceof Error ? error.message : t('dialog.error.default')
-                addToast({
-                    title: t('resume.failed.title'),
-                    body: message,
-                    sessionId: currentSessionId,
-                    url: ''
-                })
-                // Rebrand as a session_inactive ApiError so the inline
-                // affordance offers Reopen (a separate code path from the
-                // failed Resume) and the operator has a recovery click.
-                throw new ApiError(
-                    t('chat.sendError.sessionInactive'),
-                    409,
-                    'session_inactive',
-                )
-            }
-        },
-        onSessionResolved: (resolvedSessionId) => {
-            // A direct retry retains its old alert with restoreSuppressed=true.
-            // Move it to the target session before navigation so the mutation's
-            // onSuccess/onError can clear or replace the same record.
-            setSendErrors((previous) => migrateSuppressedSendError(
-                previous,
+        resolveSessionId,
+        onSessionResolved: async (resolvedSessionId, context) => {
+            if (!sessionId) return undefined
+            setSendErrors((prev) => migrateSuppressedSendError(prev, sessionId, resolvedSessionId))
+            await transferComposerDraftThenNavigate(
                 sessionId,
                 resolvedSessionId,
-            ))
-            void (async () => {
-                if (api) {
-                    if (session) {
-                        if (resolvedSessionId !== session.id) {
-                            seedMessageWindowFromSession(session.id, resolvedSessionId)
-                        }
-                        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-                    }
-                    try {
-                        await Promise.all([
-                            queryClient.prefetchQuery({
-                                queryKey: queryKeys.session(resolvedSessionId),
-                                queryFn: () => api.getSession(resolvedSessionId),
-                            }),
-                            syncTailMessages(api, resolvedSessionId),
-                        ])
-                    } catch {
-                    }
-                    if (session) {
-                        // 中文注释：恢复接口成功后，REST/SSE 可能仍有短暂竞态；最后再乐观置为在线，
-                        // 避免刚 prefetch 到旧 inactive 快照导致状态栏继续显示离线。
-                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), (previous: { session?: typeof session } | undefined) => ({
-                            session: { ...(previous?.session ?? session), id: resolvedSessionId, active: true }
-                        }))
-                    }
-                }
-                navigate({
-                    to: '/sessions/$sessionId',
-                    params: { sessionId: resolvedSessionId },
-                    replace: true
-                })
-            })()
+                () => handleSessionResolved(resolvedSessionId),
+                [],
+                // assistant-ui clears composer text without awaiting this path;
+                // keep the submitted snapshot so deferred hydration still has it.
+                { textOverride: context.text },
+            )
+            // Cross-session resume: visible metadata may still carry source-scoped
+            // upload paths, and inactive remounts hide stored files entirely.
+            // Always defer so the active target can hydrate/re-upload before POST.
+            const stored = await getDraftAttachments(resolvedSessionId)
+            if ((context.attachments?.length ?? 0) > 0 || stored.length > 0) {
+                return { deferUntilDraftHydrated: true }
+            }
+            return undefined
         },
+
         onBlocked: (reason) => {
             if (reason === 'no-api') {
                 addToast({
@@ -1294,6 +1316,8 @@ function SessionPage() {
             onLoadMore={loadMoreMessages}
             onCancelLoadMore={cancelLoadMoreMessages}
             onSend={sendMessage}
+            resolveSessionIdForUpload={async (id) => (await resolveSessionId(id)).sessionId}
+            onUploadSessionResolved={handleSessionResolved}
             onViewModeChange={setViewMode}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
@@ -1313,7 +1337,7 @@ function SessionPage() {
                         message: t('chat.sendError.aborted'),
                         code: 'abort',
                         scheduledAt: null,
-                        deliveryMode: 'steer',
+                        deliveryMode: 'queue',
                         mutationStarted: true,
                         restoreSuppressed: false
                     }

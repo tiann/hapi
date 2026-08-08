@@ -75,6 +75,36 @@ describe('codexTranscriptLocator', () => {
         expect(located).toEqual([transcriptPath]);
     });
 
+    it('attaches after Codex 0.147 completed user-message activity', async () => {
+        const located: string[] = [];
+        locator = createCodexTranscriptLocator({
+            cwd: '/tmp/project',
+            startupTimestampMs: Date.now(),
+            intervalMs: 25,
+            settlementMs: 25,
+            onLocated: (result) => located.push(result.transcriptPath)
+        });
+        await locator.ready;
+        const transcriptPath = await createTranscript('thread-user-147', '/tmp/project');
+
+        await appendFile(transcriptPath, `${JSON.stringify({
+            timestamp: new Date().toISOString(),
+            type: 'event_msg',
+            payload: {
+                type: 'item_completed',
+                turn_id: 'turn-147',
+                item: {
+                    type: 'UserMessage',
+                    id: 'user-147',
+                    content: [{ type: 'Text', text: 'hello from 0.147' }]
+                }
+            }
+        })}\n`);
+        await wait(150);
+
+        expect(located).toEqual([transcriptPath]);
+    });
+
     it('attaches after image-only user activity', async () => {
         const located: string[] = [];
         locator = createCodexTranscriptLocator({

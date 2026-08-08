@@ -5,14 +5,21 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createServer, type IncomingMessage } from "node:http";
-import { lstat, readFile } from "node:fs/promises";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AddressInfo } from "node:net";
 import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
-import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
+import {
+    detectDisplayMediaMimeType,
+    detectImageMimeType,
+    detectVideoMimeType,
+    readBoundedRegularFile,
+    registerGeneratedImage,
+} from "@/modules/common/generatedImages";
+import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
+import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
 import { resolveSkill } from "@/modules/common/skills";
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
@@ -31,12 +38,17 @@ type StartHappyServerOptions = {
 };
 
 /** Registered on the MCP server, but never pre-approved via Claude --allowedTools. */
-const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set(['ping_peer', 'inspect_peer']);
+const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
+    'display_media',
+    'display_video',
+    'ping_peer',
+    'inspect_peer'
+]);
 
 /**
  * Map HAPI MCP tool names to Claude `--allowedTools` entries.
- * Keeps `ping_peer` / `inspect_peer` off the auto-allow list so cross-session
- * write (resume+inject) and read (peer histories) still prompt.
+ * Keeps `display_media` / `display_video` (arbitrary local-path readers), `ping_peer`, and
+ * `inspect_peer` off the auto-allow list so they still prompt.
  * `list_peers` stays allowed (discovery shortlist only).
  */
 export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
@@ -82,10 +94,26 @@ function createHapiMcpServer(
         title: z.string().optional().describe('Optional display title or filename for the image'),
     });
 
+    const skillLookupInputSchema: z.ZodTypeAny = z.object({
+        name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
+    });
+
+    const displayVideoInputSchema: z.ZodTypeAny = z.object({
+        path: z.string().describe('Local filesystem path of the video to display inline (mp4 or webm)'),
+        title: z.string().optional().describe('Optional display title or filename for the video'),
+    });
+
+    const displayMediaInputSchema: z.ZodTypeAny = z.object({
+        path: z.string().describe('Local filesystem path of the media or file to send to the user'),
+        title: z.string().trim().min(1).max(255).optional().describe('Optional display title or filename'),
+    });
+
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
     });
+
+    const maxInlineMediaBytes = 25 * 1024 * 1024;
 
     const inspectPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
@@ -100,13 +128,48 @@ function createHapiMcpServer(
         ),
     });
 
-    const skillLookupInputSchema: z.ZodTypeAny = z.object({
-        name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
-    });
+    async function displayInlineMedia(
+        args: { path: string; title?: string },
+        mediaKind: 'image' | 'video' | 'media',
+        toolName: 'display_image' | 'display_video' | 'display_media'
+    ) {
+        const bytes = await readBoundedRegularFile(args.path, maxInlineMediaBytes);
+        const mimeType = mediaKind === 'video'
+            ? detectVideoMimeType(bytes)
+            : mediaKind === 'image'
+                ? detectImageMimeType(bytes)
+                : detectDisplayMediaMimeType(bytes);
+        if (!mimeType) {
+            throw new Error(mediaKind === 'video' ? 'Unsupported video content' : 'Unsupported image content');
+        }
 
+        const media = registerGeneratedImage({
+            id: randomUUID(),
+            path: args.path,
+            fileName: args.title,
+            mimeType,
+            bytes
+        });
+
+        const source: InlineMediaSource = {
+            ingress: 'mcp',
+            toolName,
+        };
+
+        client.sendAgentMessage({
+            type: 'generated-image',
+            imageId: media.id,
+            fileName: media.fileName,
+            mimeType: media.mimeType,
+            id: randomUUID(),
+            source,
+        });
+
+        return media;
+    }
     if (enableChangeTitle) {
         mcp.registerTool<any, any>('change_title', {
-            description: 'Change the title of the current chat session',
+            description: 'Change the title of the current HAPI chat session. Call once when the user\'s primary objective is clear; use a concise task title.',
             title: 'Change Chat Title',
             inputSchema: changeTitleInputSchema,
         }, async (args: { title: string }) => {
@@ -138,44 +201,14 @@ function createHapiMcpServer(
     }
 
     mcp.registerTool<any, any>('display_image', {
-        description: 'Display a local image file inline in the current HAPI chat session',
+        description: `Display a local image file inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
         title: 'Display Image',
         inputSchema: displayImageInputSchema,
     }, async (args: { path: string; title?: string }) => {
         logger.debug('[hapiMCP] Display image:', args.path);
 
         try {
-            const info = await lstat(args.path);
-            if (!info.isFile()) {
-                throw new Error('Path is not a regular file');
-            }
-
-            const maxImageBytes = 25 * 1024 * 1024;
-            if (info.size > maxImageBytes) {
-                throw new Error('Image is too large to display inline');
-            }
-
-            const bytes = await readFile(args.path);
-            const mimeType = detectImageMimeType(bytes);
-            if (!mimeType) {
-                throw new Error('Unsupported image content');
-            }
-
-            const image = registerGeneratedImage({
-                id: randomUUID(),
-                path: args.path,
-                fileName: args.title,
-                mimeType,
-                bytes
-            });
-
-            client.sendAgentMessage({
-                type: 'generated-image',
-                imageId: image.id,
-                fileName: image.fileName,
-                mimeType: image.mimeType,
-                id: randomUUID()
-            });
+            const image = await displayInlineMedia(args, 'image', 'display_image');
 
             return {
                 content: [
@@ -196,6 +229,63 @@ function createHapiMcpServer(
                         text: `Failed to display image: ${message}`,
                     },
                 ],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool<any, any>('display_video', {
+        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
+        title: 'Display Video',
+        inputSchema: displayVideoInputSchema,
+    }, async (args: { path: string; title?: string }) => {
+        logger.debug('[hapiMCP] Display video:', args.path);
+
+        try {
+            const video = await displayInlineMedia(args, 'video', 'display_video');
+
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Displayed video: ${video.fileName}`,
+                    },
+                ],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.debug('[hapiMCP] Failed to display video:', message);
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Failed to display video: ${message}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool<any, any>('display_media', {
+        description: `Send a local image, video, audio, or other file to the current HAPI chat session. Recognized media is shown inline; other files use a download card. ${DISPLAY_MEDIA_PROMPT_CURSOR}`,
+        title: 'Display Media',
+        inputSchema: displayMediaInputSchema,
+    }, async (args: { path: string; title?: string }) => {
+        logger.debug('[hapiMCP] Display media:', args.path);
+
+        try {
+            const media = await displayInlineMedia(args, 'media', 'display_media');
+            return {
+                content: [{ type: 'text' as const, text: `Displayed media: ${media.fileName}` }],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.debug('[hapiMCP] Failed to display media:', message);
+            return {
+                content: [{ type: 'text' as const, text: `Failed to display media: ${message}` }],
                 isError: true,
             };
         }
@@ -323,6 +413,7 @@ function createHapiMcpServer(
         }
     });
 
+
     if (skillLookup) {
         mcp.registerTool<any, any>('skill_lookup', {
             description: 'Load a HAPI skill by exact name. When a user message starts with $name, call this tool with that name before acting.',
@@ -443,8 +534,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'list_peers', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'list_peers', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer']
+        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

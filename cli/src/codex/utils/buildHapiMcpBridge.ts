@@ -89,7 +89,17 @@ export async function buildHapiMcpBridge(
         '--tools',
         happyServer.toolNames.join(',')
     ]);
-    const tools: Record<string, McpServerToolConfig> = {};
+    const tools: Record<string, McpServerToolConfig> = {
+        display_image: {
+            approval_mode: 'prompt'
+        },
+        display_video: {
+            approval_mode: 'prompt'
+        },
+        display_media: {
+            approval_mode: 'prompt'
+        }
+    };
     if (options.enableChangeTitle !== false) {
         tools.change_title = {
             approval_mode: 'approve'

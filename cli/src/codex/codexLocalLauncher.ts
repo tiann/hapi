@@ -5,7 +5,7 @@ import { codexLocal } from './codexLocal';
 import type { ReasoningEffort } from './appServerTypes';
 import { CodexSession } from './session';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
-import { convertCodexEvent, type CodexMessage, type CodexSessionEvent } from './utils/codexEventConverter';
+import { createCodexEventConverter, type CodexMessage, type CodexSessionEvent } from './utils/codexEventConverter';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { parseCodexCliOverrides, stripCodexCliOverrides } from './utils/codexCliOverrides';
 import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
@@ -58,6 +58,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let scannerTranscriptPath: string | null = null;
     let scannerReplayedExistingHistory = false;
     let transcriptModel: string | null = null;
+    let convertTranscriptEvent = createCodexEventConverter();
     const pendingPlansByTurnId = new Map<string, ProposedPlanMessage>();
     const pendingExecWrappers = new Map<string, PendingExecWrapper>();
     const toolHookBridge = new CodexToolHookBridge();
@@ -196,6 +197,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         if (scanner) {
             if (scannerTranscriptPath !== transcriptPath) {
                 flushAllPendingPlans();
+                convertTranscriptEvent = createCodexEventConverter();
             }
             await scanner.setTranscriptPath(transcriptPath);
             scannerTranscriptPath = transcriptPath;
@@ -222,7 +224,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 if (observedReasoningEffort !== undefined) {
                     session.setModelReasoningEffort(observedReasoningEffort);
                 }
-                const converted = convertCodexEvent(event);
+                const converted = convertTranscriptEvent(event);
                 if (converted?.sessionId) {
                     if (!isPrimarySessionId(converted.sessionId)) {
                         logger.debug(`[codex-local]: Ignoring converted session id ${converted.sessionId}; primary is ${primarySessionId}`);
