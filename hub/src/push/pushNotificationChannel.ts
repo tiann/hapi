@@ -1,9 +1,11 @@
-import type { Session } from '../sync/syncEngine'
+import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
-import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
+import type { Session } from '../sync/syncEngine'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
+import type { NotificationCopyConfig } from './notificationCopy'
+import { buildPermissionRequestCopy, buildReadyCopy, buildSessionCompletionCopy, buildTaskCopy, DEFAULT_COPY } from './notificationCopy'
 import type { PushPayload, PushService } from './pushService'
 
 export class PushNotificationChannel implements NotificationChannel {
@@ -11,7 +13,8 @@ export class PushNotificationChannel implements NotificationChannel {
         private readonly pushService: PushService,
         private readonly sseManager: SSEManager,
         private readonly visibilityTracker: VisibilityTracker,
-        _appUrl: string
+        _appUrl: string,
+        private readonly getCopyConfig: () => Promise<NotificationCopyConfig> = async () => ({})
     ) {}
 
     /**
@@ -26,25 +29,37 @@ export class PushNotificationChannel implements NotificationChannel {
         console.log(`[Push.${method}] ns=${namespace} ${branch}${note}`)
     }
 
+    /**
+     * Loads custom copy, never failing a notification because of bad config:
+     * any loader error degrades to the hardcoded defaults.
+     */
+    private async loadCopy(): Promise<NotificationCopyConfig> {
+        try {
+            return await this.getCopyConfig()
+        } catch {
+            return DEFAULT_COPY
+        }
+    }
+
     async sendPermissionRequest(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
 
-        const name = getSessionName(session)
-        const requests = session.agentState?.requests ?? null
-        const requestEntries = requests ? Object.entries(requests) : []
-        const [requestId, request] = requestEntries[0] ?? [undefined, null]
-        const toolName = request?.tool ? ` (${request.tool})` : ''
+        const requestEntries = Object.entries(session.agentState?.requests ?? {})
+        const [requestId] = requestEntries[0] ?? [undefined]
+        const stored = await this.loadCopy()
+        const url = this.buildSessionPath(session.id)
+        const { title, body } = buildPermissionRequestCopy(session, stored, url)
 
         const payload: PushPayload = {
-            title: 'Permission Request',
-            body: `${name}${toolName}`,
+            title,
+            body,
             tag: `permission-${session.id}`,
             data: {
                 type: 'permission-request',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id),
+                url,
                 requestId
             }
         }
@@ -57,17 +72,18 @@ export class PushNotificationChannel implements NotificationChannel {
             return
         }
 
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
+        const stored = await this.loadCopy()
+        const url = this.buildSessionPath(session.id)
+        const { title, body } = buildReadyCopy(session, stored, url)
 
         const payload: PushPayload = {
-            title: 'Ready for input',
-            body: `${agentName} is waiting in ${name}`,
+            title,
+            body,
             tag: `ready-${session.id}`,
             data: {
                 type: 'ready',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+                url
             }
         }
 
@@ -79,32 +95,52 @@ export class PushNotificationChannel implements NotificationChannel {
             return
         }
 
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
-        const normalizedStatus = notification.status?.trim().toLowerCase()
-        const isFailure = normalizedStatus === 'failed'
-            || normalizedStatus === 'error'
-            || normalizedStatus === 'killed'
-            || normalizedStatus === 'aborted'
+        const stored = await this.loadCopy()
+        const url = this.buildSessionPath(session.id)
+        const { title, body } = buildTaskCopy(session, notification, stored, url)
 
         const payload: PushPayload = {
-            title: isFailure ? 'Task failed' : 'Task completed',
-            body: `${agentName} · ${name} · ${notification.summary}`,
+            title,
+            body,
             data: {
                 type: 'task-notification',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+                url
             }
         }
 
         await this.deliverWebOrToast(session, payload, ctx, 'task')
     }
 
+    /**
+     * Session-completion pushes. Deliberately no `session.active` gate: the
+     * session has already become inactive by the time this fires (see
+     * NotificationHub.sendSessionCompletion, which reads the session directly).
+     */
+    async sendSessionCompletion(session: Session, reason: SessionEndReason, ctx?: NotificationSendContext): Promise<void> {
+        const stored = await this.loadCopy()
+        const url = this.buildSessionPath(session.id)
+        const { title, body } = buildSessionCompletionCopy(session, reason, stored, url)
+
+        const payload: PushPayload = {
+            title,
+            body,
+            tag: `session-completion-${session.id}`,
+            data: {
+                type: 'session-completion',
+                sessionId: session.id,
+                url
+            }
+        }
+
+        await this.deliverWebOrToast(session, payload, ctx, 'session-completion')
+    }
+
     private async deliverWebOrToast(
         session: Session,
         payload: PushPayload,
         ctx: NotificationSendContext | undefined,
-        method: 'permission' | 'ready' | 'task'
+        method: 'permission' | 'ready' | 'task' | 'session-completion'
     ): Promise<void> {
         if (ctx?.nativeGate?.sent) {
             this.logBranch(method, session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
