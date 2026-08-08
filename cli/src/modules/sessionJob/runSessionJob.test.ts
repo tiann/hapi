@@ -26,15 +26,15 @@ describe('runSessionJob', () => {
                 status: 200,
                 data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
             })),
-            put: vi.fn(async () => ({
+            put: vi.fn(async (_url: string, body: { status?: string; startedAt?: number }) => ({
                 status: 200,
                 data: {
                     job: {
                         key: 'drain',
                         label: 'drain',
-                        status: 'running',
+                        status: body.status ?? 'running',
                         heartbeatAt: 1,
-                        startedAt: 1,
+                        startedAt: body.startedAt ?? 1,
                         updatedAt: 1
                     }
                 }
