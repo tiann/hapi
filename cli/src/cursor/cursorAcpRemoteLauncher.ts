@@ -672,6 +672,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             this.promptInFlight = true;
             try {
+                const settleFailure = (error: unknown) => {
+                    const rpcFailure = classifyAcpRpcRejection(error);
+                    const genericRpcFailure = rpcFailure !== null && (
+                        rpcFailure.kind === 'transport_closed'
+                        || rpcFailure.kind === 'agent_crashed'
+                        || rpcFailure.kind === 'prompt_failed'
+                    );
+                    return genericRpcFailure
+                        ? this.pendingStderrFailure ?? rpcFailure ?? this.pendingTextFailure
+                        : rpcFailure ?? this.pendingStderrFailure ?? this.pendingTextFailure;
+                };
                 for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
                     this.pendingRetryableError = null;
                     this.pendingRetryableFromStderr = false;
@@ -702,9 +713,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         if (this.userAbortRequested) break;
                         if (!isRetryableCursorError(error)) {
                             this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
-                            const failure = classifyAcpRpcRejection(error)
-                                ?? this.pendingStderrFailure
-                                ?? this.pendingTextFailure;
+                            const failure = settleFailure(error);
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
                             if (failure) this.recordModelError(failure);
@@ -722,9 +731,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
                     this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
-                    const exhaustedFailure = classifyAcpRpcRejection(
+                    const exhaustedFailure = settleFailure(
                         this.pendingRetryableError ?? 'Cursor Agent failed after retries'
-                    ) ?? this.pendingStderrFailure ?? this.pendingTextFailure;
+                    );
                     this.pendingStderrFailure = null;
                     this.pendingTextFailure = null;
                     if (exhaustedFailure) this.recordModelError(exhaustedFailure);
