@@ -501,10 +501,47 @@ export function UnifiedButton(props: {
     const hasText = props.canSend
     const routesToScratchlist = props.routesToScratchlist ?? false
 
+    if (isVoiceActive) {
+        const stopIcon = isConnecting ? <LoadingIcon /> : <StopIcon />
+        const stopAriaLabel = isConnecting ? t('voice.connecting') : t('composer.stop')
+        const sendAriaLabel = routesToScratchlist ? t('scratchlist.sendToScratchlist') : t('composer.send')
+        const sendClassName = routesToScratchlist
+            ? 'bg-amber-500 text-white hover:bg-amber-600'
+            : 'bg-black text-white'
+
+        const handleVoiceSendClick = () => {
+            props.onVoiceToggle()
+            props.onSend('default')
+        }
+
+        return (
+            <div className="flex items-center gap-1">
+                <button
+                    type="button"
+                    onClick={props.onVoiceToggle}
+                    disabled={props.controlsDisabled}
+                    aria-label={stopAriaLabel}
+                    title={stopAriaLabel}
+                    className="ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-black text-white"
+                >
+                    {stopIcon}
+                </button>
+                <button
+                    type="button"
+                    onClick={handleVoiceSendClick}
+                    disabled={props.controlsDisabled}
+                    aria-label={sendAriaLabel}
+                    title={sendAriaLabel}
+                    className={`ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sendClassName}`}
+                >
+                    <SendIcon />
+                </button>
+            </div>
+        )
+    }
+
     const handleClick = () => {
-        if (isVoiceActive) {
-            props.onVoiceToggle() // Stop voice
-        } else if (hasText) {
+        if (hasText) {
             props.onSend('default') // Send message (or scratchlist add — wrapper decides)
         } else if (props.voiceEnabled && !routesToScratchlist) {
             props.onVoiceToggle() // Start voice (suppressed in scratchlist mode)
@@ -518,7 +555,6 @@ export function UnifiedButton(props: {
     const canQueueGesture = Boolean(
         props.allowQueueGesture
         && hasText
-        && !isVoiceActive
         && !routesToScratchlist
         && !props.controlsDisabled,
     )
@@ -534,15 +570,7 @@ export function UnifiedButton(props: {
     let className: string
     let ariaLabel: string
 
-    if (isConnecting) {
-        icon = <LoadingIcon />
-        className = 'bg-black text-white'
-        ariaLabel = t('voice.connecting')
-    } else if (isConnected) {
-        icon = <StopIcon />
-        className = 'bg-black text-white'
-        ariaLabel = t('composer.stop')
-    } else if (routesToScratchlist) {
+    if (routesToScratchlist) {
         // Amber send button - matches the scratchlist drawer accent.
         // Single visual signal carries the "this goes to the scratchlist"
         // contract; without it, the modal state is invisible to the user.
@@ -571,7 +599,7 @@ export function UnifiedButton(props: {
     const isDisabled = props.controlsDisabled || (
         routesToScratchlist
             ? !hasText
-            : !hasText && !props.voiceEnabled && !isVoiceActive
+            : !hasText && !props.voiceEnabled
     )
 
     return (

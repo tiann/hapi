@@ -317,3 +317,71 @@ describe('ComposerButtons responsive toolbar', () => {
         expect(getComposerToolbarJustifyContent('split')).toBe('flex-start')
     })
 })
+
+describe('UnifiedButton — voice active state', () => {
+    afterEach(() => {
+        cleanup()
+    })
+
+    it('renders both Stop and Send buttons when voice is connected', () => {
+        const onVoiceToggle = vi.fn()
+        const onSend = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend={false}
+                voiceStatus="connected"
+                voiceEnabled
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const stopBtn = screen.getByRole('button', { name: 'Stop' })
+        const sendBtn = screen.getByRole('button', { name: 'Send' })
+        expect(stopBtn).toBeInTheDocument()
+        expect(sendBtn).toBeInTheDocument()
+    })
+
+    it('clicking Stop button calls onVoiceToggle without calling onSend', () => {
+        const onVoiceToggle = vi.fn()
+        const onSend = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend={false}
+                voiceStatus="connected"
+                voiceEnabled
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const stopBtn = screen.getByRole('button', { name: 'Stop' })
+        fireEvent.click(stopBtn)
+        expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('clicking Send button during active voice calls onVoiceToggle and onSend', () => {
+        const onVoiceToggle = vi.fn()
+        const onSend = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend={false}
+                voiceStatus="connected"
+                voiceEnabled
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const sendBtn = screen.getByRole('button', { name: 'Send' })
+        fireEvent.click(sendBtn)
+        expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).toHaveBeenCalledOnce()
+        expect(onSend).toHaveBeenCalledWith('default')
+    })
+})
+
