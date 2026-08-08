@@ -74,10 +74,10 @@ describe('runSessionJob', () => {
         })
 
         await vi.waitFor(() => expect(http.put).toHaveBeenCalled())
-        const putBody = http.put.mock.calls[0]?.[1] as { startedAt?: number; status?: string }
-        expect(putBody.status).toBe('running')
-        expect(typeof putBody.startedAt).toBe('number')
-        expect(putBody.startedAt).toBeGreaterThan(0)
+        expect(http.put.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+            status: 'running',
+            startedAt: expect.any(Number)
+        }))
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
 
