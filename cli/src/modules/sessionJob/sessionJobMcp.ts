@@ -20,25 +20,22 @@ export const SESSION_JOB_TOOL_NAME = 'session_job'
  * Write for selection, not for humans browsing a README.
  */
 export const SESSION_JOB_TOOL_DESCRIPTION = [
-    'Attach or update a hub-persisted progress meter on a HAPI session for work that',
+    'Attach or update a hub-persisted progress meter on THIS HAPI session for work that',
     'OUTLIVES this agent turn (nohup / batch import / rclone / compile / long drain /',
-    'external daemon). The session list shows the meter while the agent is idle',
-    '(active:false). Call action=set BEFORE starting that process (or immediately when',
-    'you start it). Heartbeat with action=update at least every ~10 minutes while it',
-    'runs — an idle agent cannot. Prefer honest remaining or done+total; omit counts',
-    'when unknown (UI shows "running" + elapsed). Never invent a percent or ETA.',
-    'Finish with action=update status=completed|failed or action=clear.',
-    'Default sessionId is this chat ($HAPI_SESSION_ID). Not for in-agent todos,',
-    'thinking progress, or short tool calls. For a supervised shell child that',
-    'auto-heartbeats, prefer CLI: hapi job run "$HAPI_SESSION_ID" <job-key> --label … -- <cmd>.',
+    'external daemon). Own-session only (auto-approved) — not for injecting meters onto',
+    'peer sessions (use CLI hapi job for that). The session list shows the meter while',
+    'the agent is idle (active:false). Prefer CLI for process-shaped work:',
+    'hapi job run "$HAPI_SESSION_ID" <job-key> --label … -- <cmd> (auto-heartbeats).',
+    'Manual: action=set BEFORE starting the process, then action=update at least every',
+    '~10 minutes from a self-heartbeating wrapper — an idle agent cannot. Prefer honest',
+    'remaining or done+total; omit counts when unknown (UI shows "running" + elapsed).',
+    'Never invent a percent or ETA. Finish with action=update status=completed|failed',
+    'or action=clear. Not for in-agent todos, thinking progress, or short tool calls.',
 ].join(' ')
 
 export const sessionJobInputSchema: z.ZodTypeAny = z.object({
     action: z.enum(['set', 'update', 'clear', 'list']).describe(
         'set=register/upsert running job; update=heartbeat/progress/status; clear=remove; list=show jobs'
-    ),
-    sessionId: z.string().trim().min(1).optional().describe(
-        'Target session id or prefix. Omit to use this chat ($HAPI_SESSION_ID).'
     ),
     jobKey: z.string().trim().min(1).max(128).optional().describe(
         'Stable job key (alnum . _ -). Required for set/update/clear.'
@@ -61,7 +58,6 @@ export const sessionJobInputSchema: z.ZodTypeAny = z.object({
 
 export type SessionJobToolArgs = {
     action: 'set' | 'update' | 'clear' | 'list'
-    sessionId?: string
     jobKey?: string
     label?: string
     status?: 'running' | 'completed' | 'failed'
@@ -88,10 +84,12 @@ export async function handleSessionJobTool(
     args: SessionJobToolArgs,
     defaultSessionId: string
 ): Promise<{ text: string; isError: boolean }> {
-    const sessionIdPrefix = (args.sessionId?.trim() || defaultSessionId || process.env.HAPI_SESSION_ID || '').trim()
+    // Own-session only — sessionId is not in the schema so auto-approve cannot
+    // become a silent cross-session write (cold-review pass 3 Major).
+    const sessionIdPrefix = (defaultSessionId || process.env.HAPI_SESSION_ID || '').trim()
     if (!sessionIdPrefix) {
         return {
-            text: 'sessionId required (or set HAPI_SESSION_ID / call from a HAPI-wrapped session)',
+            text: 'own session id required (set HAPI_SESSION_ID / call from a HAPI-wrapped session)',
             isError: true
         }
     }

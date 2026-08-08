@@ -44,13 +44,21 @@ describe('sessionJobMcp', () => {
         expect(SESSION_JOB_TOOL_DESCRIPTION).toContain('hapi job run')
     })
 
-    it('set requires label and defaults session to caller id', async () => {
+    it('set requires label and always targets the caller session id', async () => {
+        const { setSessionJob } = await import('./sessionJob')
         const result = await handleSessionJobTool(
             { action: 'set', jobKey: 'beets', label: 'beets import', remaining: 12 },
             'sid-1'
         )
         expect(result.isError).toBe(false)
         expect(result.text).toContain('set beets')
+        expect(setSessionJob).toHaveBeenCalledWith(
+            expect.objectContaining({ sessionIdPrefix: 'sid-1' })
+        )
+    })
+
+    it('description claims own-session only', () => {
+        expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/Own-session only/i)
     })
 
     it('rejects update with empty patch', async () => {

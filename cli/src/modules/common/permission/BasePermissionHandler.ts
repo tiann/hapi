@@ -38,7 +38,8 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'mcp__hapi__list_peers',
     // ACP permission requests often surface MCP tool title, not the snake_case name.
     'list peer sessions',
-    // Own-session progress meter (tiann/hapi#1404) — hub REST only, not peer inject.
+    // Own-session progress meter (tiann/hapi#1404) — MCP schema has no sessionId;
+    // tool always targets this chat. Cross-session writes use CLI hapi job (not auto).
     'session_job',
     'hapi_session_job',
     'happy__session_job',
@@ -49,7 +50,7 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
 // resume+inject into another session or read peer histories, so permission
 // modes must still gate them. Treat both as write-like in read-only so ACP
 // titles such as "Ping Peer Session" / "Inspect Peer Session" also require
-// approval. list_peers / session_job are auto-approved above.
+// approval. list_peers / own-session session_job are auto-approved above.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',

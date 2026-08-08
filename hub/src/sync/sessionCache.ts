@@ -1161,12 +1161,6 @@ export class SessionCache {
         const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
         const movedJobs = this.store.sessionJobs.transfer(oldSessionId, newSessionId)
         if (movedJobs.moved > 0 || movedJobs.collided > 0) {
-            // Agents keep addressing $HAPI_SESSION_ID from the pre-merge row.
-            // Record redirects so job REST routes can follow the live job owner.
-            this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
-            if (!options.deleteOldSession) {
-                this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
-            }
             this.emitAttachedJobChanged(
                 newSessionId,
                 this.store.sessionJobs.getPrimaryRunning(newSessionId)
@@ -1239,6 +1233,17 @@ export class SessionCache {
                 if (result.result === 'error') {
                     break
                 }
+            }
+        }
+
+        // Job-owner redirects AFTER metadata merge. Writing them before the
+        // merge clobbers jobsAcceptedFromSessionIds when mergeSessionMetadata
+        // rebuilds from the stale pre-merge newStored.metadata snapshot
+        // (cold-review pass 3 Major — agents heartbeating $HAPI_SESSION_ID 404).
+        if (movedJobs.moved > 0 || movedJobs.collided > 0) {
+            this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
+            if (!options.deleteOldSession) {
+                this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
             }
         }
 

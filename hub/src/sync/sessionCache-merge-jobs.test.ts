@@ -73,6 +73,35 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         expect(cache.resolveAttachedJobSessionId(newSession.id, 'default')).toBe(newSession.id)
     })
 
+    it('keeps jobsAcceptedFromSessionIds when metadata merge also copies name from old', async () => {
+        const { store, cache } = setup()
+        const oldSession = cache.getOrCreateSession(
+            'agent-jobs-named-old-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', name: 'Lidarr drain' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'agent-jobs-named-new-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        store.sessionJobs.upsert(oldSession.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 4
+        })
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const refreshed = cache.refreshSession(newSession.id)
+        expect(refreshed?.metadata?.name).toBe('Lidarr drain')
+        expect(refreshed?.metadata?.jobsAcceptedFromSessionIds).toContain(oldSession.id)
+        expect(cache.resolveAttachedJobSessionId(oldSession.id, 'default')).toBe(newSession.id)
+    })
+
     it('keeps jobsTransferredToSessionId on a kept-alive source after mergeSessionHistory', async () => {
         const { store, cache } = setup()
         const { oldSession, newSession } = makeSessions(cache)

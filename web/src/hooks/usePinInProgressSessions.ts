@@ -70,7 +70,15 @@ export function parsePinInProgressMode(raw: string | null): PinInProgressMode {
 }
 
 export function getInitialPinInProgressMode(): PinInProgressMode {
-    return parsePinInProgressMode(safeGetItem(PIN_IN_PROGRESS_STORAGE_KEY))
+    const raw = safeGetItem(PIN_IN_PROGRESS_STORAGE_KEY)
+    const mode = parsePinInProgressMode(raw)
+    // Persist so explicit Off is distinguishable from never-set→jobs.
+    // Legacy true/false also rewrite to all/off (upstream removed the key on false,
+    // so those users already look like unset — product stand maps them to jobs).
+    if (raw === null || raw === '' || raw === 'true' || raw === 'false') {
+        safeSetItem(PIN_IN_PROGRESS_STORAGE_KEY, mode)
+    }
+    return mode
 }
 
 /** @deprecated Use getInitialPinInProgressMode — boolean form treated `all` as true. */

@@ -26,7 +26,7 @@ describe('OpenCode local HAPI instructions', () => {
         const instructions = await readFile(instructionsPath, 'utf8')
         expect(instructions).toContain('$name')
         expect(instructions).toContain('skill_lookup')
-        expect(instructions).toContain('hapi job set')
+        expect(instructions).toContain('hapi job run')
         expect(instructions).toContain(TITLE_INSTRUCTION.trim())
     })
 })
