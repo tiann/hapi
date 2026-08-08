@@ -5,6 +5,7 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import { normalizeCodexUsageUpdate } from './utils/codexUsage';
 
 type LocalLaunchFailure = {
     message: string;
@@ -121,7 +122,29 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             // mergeSessionMetadata. The value is `null` on the wire only;
             // MetadataSchema parses `string().optional()`, so the
             // post-merge persisted blob carries no key.
+            //
+            // Drop thread-local context/token totals after /clear, but keep
+            // account-scoped rate-limit / credit fields. Those are not reset by
+            // starting a replacement thread and may not be re-emitted soon.
+            const previousUsage = metadata.codexUsage;
             const updated: Record<string, unknown> = { ...metadata, codexSessionId: null };
+            if (previousUsage) {
+                const accountUsage: Record<string, unknown> = {};
+                if (previousUsage.rateLimits !== undefined) accountUsage.rateLimits = previousUsage.rateLimits;
+                if (previousUsage.credits !== undefined) accountUsage.credits = previousUsage.credits;
+                if (previousUsage.rateLimitReachedType !== undefined) {
+                    accountUsage.rateLimitReachedType = previousUsage.rateLimitReachedType;
+                }
+                if (previousUsage.planType !== undefined) accountUsage.planType = previousUsage.planType;
+                if (previousUsage.limitId !== undefined) accountUsage.limitId = previousUsage.limitId;
+                if (Object.keys(accountUsage).length > 0) {
+                    updated.codexUsage = accountUsage;
+                } else {
+                    delete updated.codexUsage;
+                }
+            } else {
+                delete updated.codexUsage;
+            }
             return updated as unknown as Metadata;
         });
     }
@@ -136,6 +159,38 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setModelReasoningEffort = (modelReasoningEffort: SessionModelReasoningEffort): void => {
         this.modelReasoningEffort = modelReasoningEffort;
+    };
+
+    recordCodexUsage = (payload: unknown): void => {
+        const update = normalizeCodexUsageUpdate(payload);
+        if (!update) {
+            return;
+        }
+        const { usage, hasRateLimitSnapshot } = update;
+        this.client.updateMetadata((metadata) => {
+            const previous = metadata.codexUsage;
+            const merged = {
+                ...previous,
+                ...usage,
+                rateLimits: hasRateLimitSnapshot
+                    ? usage.rateLimits
+                    : previous?.rateLimits ?? usage.rateLimits
+            };
+            if (hasRateLimitSnapshot) {
+                if (usage.credits !== undefined) merged.credits = usage.credits;
+                else delete merged.credits;
+                if (usage.rateLimitReachedType !== undefined) merged.rateLimitReachedType = usage.rateLimitReachedType;
+                else delete merged.rateLimitReachedType;
+                if (usage.planType !== undefined) merged.planType = usage.planType;
+                else delete merged.planType;
+                if (usage.limitId !== undefined) merged.limitId = usage.limitId;
+                else delete merged.limitId;
+            }
+            return {
+                ...metadata,
+                codexUsage: merged
+            };
+        });
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

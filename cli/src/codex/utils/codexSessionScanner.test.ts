@@ -32,31 +32,33 @@ describe('codexSessionScanner', () => {
         }
     });
 
-    it('emits only new events after startup', async () => {
+    it('preserves top-level thread ids through parse and replay', async () => {
         await writeFile(
             transcriptPath,
             [
-                JSON.stringify({ type: 'session_meta', payload: { id: 'session-123' } }),
-                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'old' } })
+                JSON.stringify({ type: 'session_meta', payload: { id: 'session-thread' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    thread_id: 'parent-thread',
+                    payload: {
+                        type: 'token_count',
+                        info: { total_token_usage: { total_tokens: 42 } }
+                    }
+                })
             ].join('\n') + '\n'
         );
 
         scanner = await createCodexSessionScanner({
             transcriptPath,
+            replayExistingHistory: true,
             onEvent: (event) => events.push(event)
         });
 
-        await wait(300);
-        expect(events).toHaveLength(0);
-
-        await appendFile(
-            transcriptPath,
-            JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'new' } }) + '\n'
-        );
-
-        await wait(700);
-        expect(events).toHaveLength(1);
-        expect(events[0]?.type).toBe('event_msg');
+        expect(events).toContainEqual(expect.objectContaining({
+            type: 'event_msg',
+            thread_id: 'parent-thread',
+            payload: expect.objectContaining({ type: 'token_count' })
+        }));
     });
 
     it('flushes an appended tail without waiting for the watcher', async () => {
@@ -260,5 +262,132 @@ describe('codexSessionScanner', () => {
 
         expect(events).toHaveLength(1);
         expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'completed later' });
+    });
+
+    it('reads latest usage from a bounded reverse tail without scanning the whole file', async () => {
+        const oldTokens = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: { total_token_usage: { total_tokens: 11 }, model_context_window: 100000 }
+            }
+        });
+        const latestTokens = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 42000 },
+                    model_context_window: 128000,
+                    rate_limits: { primary: { used_percent: 33, window_minutes: 300 } }
+                }
+            }
+        });
+        const fillerLine = `${'a'.repeat(120)}\n`;
+        const filler = Buffer.from(fillerLine.repeat(3000), 'utf8'); // ~360 KiB of JSONL-ish lines
+        await writeFile(
+            transcriptPath,
+            Buffer.concat([
+                Buffer.from(`${oldTokens}\n`, 'utf8'),
+                filler,
+                Buffer.from(`${latestTokens}\n`, 'utf8')
+            ])
+        );
+
+        const { readLatestCodexUsageFromTail } = await import('./codexSessionScanner');
+        const payloads = await readLatestCodexUsageFromTail(transcriptPath, {
+            maxBytes: 64 * 1024,
+            chunkBytes: 8 * 1024
+        });
+
+        expect(payloads).toHaveLength(1);
+        expect(payloads[0]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 42000 },
+                model_context_window: 128000
+            }
+        });
+    });
+
+    it('returns split token/rate-limit samples oldest-first so newer context wins', async () => {
+        const olderMixed = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 1000 },
+                    model_context_window: 100000,
+                    rate_limits: { primary: { used_percent: 10, window_minutes: 300 } }
+                }
+            }
+        });
+        const newerTokensOnly = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 42000 },
+                    model_context_window: 128000
+                }
+            }
+        });
+        await writeFile(
+            transcriptPath,
+            `${olderMixed}\n${newerTokensOnly}\n`
+        );
+
+        const { readLatestCodexUsageFromTail } = await import('./codexSessionScanner');
+        const payloads = await readLatestCodexUsageFromTail(transcriptPath);
+
+        expect(payloads).toHaveLength(2);
+        // Oldest first: applying in order keeps newer context after the mixed rate-limit seed.
+        expect(payloads[0]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 1000 },
+                rate_limits: { primary: { used_percent: 10, window_minutes: 300 } }
+            }
+        });
+        expect(payloads[1]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 42000 },
+                model_context_window: 128000
+            }
+        });
+    });
+
+    it('primes at initialCursor without replaying prior transcript events', async () => {
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'session-cursor' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'agent_message', message: 'history should be skipped' }
+                })
+            ].join('\n') + '\n'
+        );
+        const { size } = await import('node:fs/promises').then((fs) => fs.stat(transcriptPath));
+
+        scanner = await createCodexSessionScanner({
+            transcriptPath,
+            initialCursor: size,
+            replayExistingHistory: false,
+            onEvent: (event) => events.push(event)
+        });
+        expect(events).toEqual([]);
+
+        await appendFile(
+            transcriptPath,
+            JSON.stringify({
+                type: 'event_msg',
+                payload: { type: 'agent_message', message: 'live only' }
+            }) + '\n'
+        );
+        await scanner.flush();
+        expect(events).toHaveLength(1);
+        expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'live only' });
     });
 });

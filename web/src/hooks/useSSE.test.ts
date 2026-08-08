@@ -175,6 +175,18 @@ describe('isRenderIrrelevantPatch', () => {
 
         expect(isRenderIrrelevantPatch(current, next)).toBe(false)
     })
+
+    it('reports metadata-only changes as relevant', () => {
+        const current = makeSummary({
+            metadata: { name: 'old', path: '/tmp/a', host: 'h', flavor: 'codex' } as SessionSummary['metadata']
+        })
+        const next = makeSummary({
+            metadata: { name: 'renamed', path: '/tmp/a', host: 'h', flavor: 'codex' } as SessionSummary['metadata'],
+            activeAt: 11_000
+        })
+
+        expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
 })
 
 describe('isRenderIrrelevantSessionPatch', () => {

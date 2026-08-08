@@ -13,6 +13,7 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 import { createCodexTranscriptLocator, type CodexTranscriptLocator } from './utils/codexTranscriptLocator';
 import { CodexToolHookBridge, isCodexToolHookEvent } from './utils/codexToolHookBridge';
 import { countHookCoveredExecCalls } from './utils/codexExecWrapper';
+import { createReplayUsageAccumulator, noteReplayUsageSample, orderedReplayUsagePayloads } from './utils/codexUsage';
 
 type ProposedPlanMessage = Extract<CodexMessage, { type: 'proposed_plan' }>;
 type ToolCallMessage = Extract<CodexMessage, { type: 'tool-call' }>;
@@ -204,6 +205,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             return;
         }
         const replayExistingHistory = session.shouldReplayTranscriptHistory();
+        let replayingUsage = replayExistingHistory;
+        const replayUsage = createReplayUsageAccumulator();
         const createdScanner = await createCodexSessionScanner({
             transcriptPath,
             // 中文注释：导入模式下允许 scanner 首次回放 transcript 全量内容，补齐 Codex 客户端里已有但 Hapi 还未看到的消息。
@@ -238,7 +241,44 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     session.notifyUserActivity();
                 }
                 for (const message of converted?.messages ?? []) {
-                    if (message.type === 'proposed_plan') {
+                    if (message.type === 'token_count') {
+                        const scopeRole = message.scopeRole ?? message.scope_role;
+                        const messageThreadId = message.threadId ?? message.thread_id;
+                        // Parent budget / composer gauge only; child samples keep native thread ids for hub deltas.
+                        // scopeRole is optional - a foreign thread_id alone still means child usage.
+                        const isChildUsage = scopeRole === 'child'
+                            || Boolean(messageThreadId && primarySessionId && messageThreadId !== primarySessionId);
+                        if (!isChildUsage) {
+                            if (replayingUsage) {
+                                noteReplayUsageSample(replayUsage, message);
+                            } else {
+                                session.recordCodexUsage(message);
+                            }
+                        }
+                        // Web latestUsage filters on usage.scope_role === 'child'; stamp it
+                        // even when Codex only sent a foreign thread_id (no scopeRole).
+                        const effectiveScopeRole = isChildUsage ? 'child' : scopeRole;
+                        const managedThreadId = messageThreadId ?? primarySessionId;
+                        const scopedUsage = context.replayedHistory
+                            ? {
+                                ...message,
+                                ...(effectiveScopeRole
+                                    ? { scopeRole: effectiveScopeRole, scope_role: effectiveScopeRole }
+                                    : {}),
+                                model: transcriptModel,
+                                hapiUsageScope: 'imported-history' as const
+                            }
+                            : {
+                                ...message,
+                                model: transcriptModel,
+                                ...(managedThreadId ? { threadId: managedThreadId, thread_id: managedThreadId } : {}),
+                                ...(effectiveScopeRole
+                                    ? { scopeRole: effectiveScopeRole, scope_role: effectiveScopeRole }
+                                    : {}),
+                                hapiUsageScope: 'managed' as const
+                            };
+                        session.sendAgentMessage(scopedUsage);
+                    } else if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.
                         pendingPlansByTurnId.set(message.turnId, message);
                     } else if (message.type === 'tool-call' && message.name === 'exec') {
@@ -259,20 +299,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                             flushPendingExecWrapper(message.callId, message);
                         }
                     } else {
-                        const scopedMessage = message.type !== 'token_count'
-                            ? message
-                            : context.replayedHistory
-                                ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' }
-                                : primarySessionId
-                                    ? {
-                                        ...message,
-                                        model: transcriptModel,
-                                        threadId: primarySessionId,
-                                        thread_id: primarySessionId,
-                                        hapiUsageScope: 'managed'
-                                    }
-                                    : { ...message, model: transcriptModel };
-                        session.sendAgentMessage(scopedMessage);
+                        session.sendAgentMessage(message);
                     }
                 }
                 if (converted?.finishedTurnId) {
@@ -283,6 +310,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
             }
         });
+        replayingUsage = false;
+        for (const payload of orderedReplayUsagePayloads(replayUsage)) {
+            session.recordCodexUsage(payload);
+        }
         if (shuttingDown) {
             await drainAndCleanupScanner(createdScanner, replayExistingHistory);
             return;
