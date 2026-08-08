@@ -81,10 +81,13 @@ describe('runSessionJob', () => {
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
 
-        // Heartbeat ticks reuse resolved client (no extra auth).
+        // Heartbeat ticks reuse resolved client (no extra auth) and must not
+        // send status:running (late heartbeat must not resurrect after exit).
         expect(timers.length).toBe(1)
         timers[0]!()
         await vi.waitFor(() => expect(http.patch).toHaveBeenCalled())
+        const heartbeatBody = http.patch.mock.calls[0]?.[1] as { status?: string }
+        expect(heartbeatBody.status).toBeUndefined()
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
 

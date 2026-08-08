@@ -73,6 +73,45 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         expect(cache.resolveAttachedJobSessionId(newSession.id, 'default')).toBe(newSession.id)
     })
 
+    it('preserves A→B→C jobsAccepted ancestry so deleted A still resolves on C', async () => {
+        const { store, cache } = setup()
+        const a = cache.getOrCreateSession(
+            'agent-jobs-a-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const b = cache.getOrCreateSession(
+            'agent-jobs-b-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const c = cache.getOrCreateSession(
+            'agent-jobs-c-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        store.sessionJobs.upsert(a.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 9
+        })
+        await cache.mergeSessions(a.id, b.id, 'default')
+        expect(cache.resolveAttachedJobSessionId(a.id, 'default')).toBe(b.id)
+
+        await cache.mergeSessions(b.id, c.id, 'default')
+        const refreshed = cache.refreshSession(c.id)
+        expect(refreshed?.metadata?.jobsAcceptedFromSessionIds).toEqual(
+            expect.arrayContaining([a.id, b.id])
+        )
+        expect(cache.resolveAttachedJobSessionId(a.id, 'default')).toBe(c.id)
+        expect(cache.resolveAttachedJobSessionId(b.id, 'default')).toBe(c.id)
+        expect(store.sessionJobs.getPrimaryRunning(c.id)?.key).toBe('beets')
+    })
+
     it('keeps jobsAcceptedFromSessionIds when metadata merge also copies name from old', async () => {
         const { store, cache } = setup()
         const oldSession = cache.getOrCreateSession(

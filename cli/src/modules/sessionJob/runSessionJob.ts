@@ -80,13 +80,12 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     let loggedHeartbeatFailure = false
     let inflightHeartbeat: Promise<unknown> = Promise.resolve()
     const heartbeat = setIntervalFn(() => {
+        // Never PATCH status:running on the heartbeat — a late in-flight
+        // request must not resurrect running after the terminal write.
         inflightHeartbeat = updateSessionJob({
             ...clientOpts,
             jobKey: options.jobKey,
-            body: {
-                detail: options.detail,
-                status: 'running'
-            }
+            body: options.detail !== undefined ? { detail: options.detail } : {}
         }).catch((error: unknown) => {
             // Best-effort — exit path still marks terminal status. Log once so
             // a broken supervisor is visible (stuck chip with dead PID is worse).

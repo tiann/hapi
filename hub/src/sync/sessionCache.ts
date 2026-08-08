@@ -1392,8 +1392,23 @@ export class SessionCache {
             const prev = Array.isArray(meta.jobsAcceptedFromSessionIds)
                 ? meta.jobsAcceptedFromSessionIds.filter((id): id is string => typeof id === 'string')
                 : []
-            if (prev.includes(fromSessionId)) return
-            meta.jobsAcceptedFromSessionIds = [...prev, fromSessionId]
+            // Preserve A→B→C ancestry: when B already accepted jobs from A and
+            // now merges into C, clients still holding A's HAPI_SESSION_ID must
+            // resolve through C after B is deleted.
+            const inheritedRaw = this.store.sessions
+                .getSessionByNamespace(fromSessionId, namespace)
+                ?.metadata?.jobsAcceptedFromSessionIds
+            const inherited = Array.isArray(inheritedRaw)
+                ? inheritedRaw.filter((id): id is string => typeof id === 'string')
+                : []
+            const next = [...new Set([...prev, ...inherited, fromSessionId])]
+            if (
+                next.length === prev.length
+                && next.every((id) => prev.includes(id))
+            ) {
+                return
+            }
+            meta.jobsAcceptedFromSessionIds = next
             const result = this.store.sessions.updateSessionMetadata(
                 toSessionId,
                 meta,
