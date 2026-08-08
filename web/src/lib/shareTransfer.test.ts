@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+    buildSharePayloadFromDeepLink,
     buildSharePayloadFromFormData,
+    buildSharePayloadFromSearchFields,
+    hasShareDeepLinkContent,
     ingestShareRequest,
+    parseShareDeepLinkFields,
+    parseShareHash,
+    parseShareSearch,
     type ShareTransferPayload,
 } from './shareTransfer'
 
@@ -76,6 +82,161 @@ describe('buildSharePayloadFromFormData', () => {
 
         expect(payload.files).toHaveLength(1)
         expect(payload.files[0].name).toBe('real.txt')
+    })
+})
+
+describe('parseShareSearch', () => {
+    it('keeps id and error as today', () => {
+        expect(parseShareSearch({ id: 'xfer-1', error: 'ingest' })).toEqual({
+            id: 'xfer-1',
+            error: 'ingest',
+        })
+    })
+
+    it('ignores url/text/title in the query (content belongs in the fragment)', () => {
+        expect(parseShareSearch({
+            id: 'xfer-1',
+            url: 'https://example.com',
+            text: 'hello',
+            title: 'Title',
+        })).toEqual({ id: 'xfer-1' })
+    })
+})
+
+describe('parseShareHash / parseShareDeepLinkFields', () => {
+    it('parses url, text, and title from a fragment', () => {
+        expect(parseShareHash('#url=https%3A%2F%2Fexample.com&text=hello&title=Title')).toEqual({
+            url: 'https://example.com',
+            text: 'hello',
+            title: 'Title',
+        })
+    })
+
+    it('accepts a hash without a leading #', () => {
+        expect(parseShareHash('text=note')).toEqual({ text: 'note' })
+    })
+
+    it('omits empty content fields', () => {
+        expect(parseShareDeepLinkFields({ url: '', text: '  ', title: '' })).toEqual({})
+    })
+
+    it('preserves surrounding whitespace on non-empty content fields', () => {
+        expect(parseShareDeepLinkFields({
+            title: '  Title  ',
+            text: '    indented\n',
+            url: ' https://example.com/path ',
+        })).toEqual({
+            title: '  Title  ',
+            text: '    indented\n',
+            url: ' https://example.com/path ',
+        })
+    })
+})
+
+describe('hasShareDeepLinkContent', () => {
+    it('is true for url-only', () => {
+        expect(hasShareDeepLinkContent({ url: 'https://a.example' })).toBe(true)
+    })
+
+    it('is true for text-only', () => {
+        expect(hasShareDeepLinkContent({ text: 'note' })).toBe(true)
+    })
+
+    it('is true when both url and text are set', () => {
+        expect(hasShareDeepLinkContent({
+            url: 'https://a.example',
+            text: 'note',
+        })).toBe(true)
+    })
+
+    it('is false when empty', () => {
+        expect(hasShareDeepLinkContent({})).toBe(false)
+    })
+
+    it('is true when fileUrl is present', () => {
+        expect(hasShareDeepLinkContent({
+            fileUrl: 'http://127.0.0.1:9/s',
+        })).toBe(true)
+    })
+})
+
+describe('buildSharePayloadFromSearchFields', () => {
+    it('builds the same text payload shape as form-data (url-only)', () => {
+        expect(buildSharePayloadFromSearchFields(
+            { url: 'https://example.com/page' },
+            1700000000000,
+        )).toEqual({
+            title: '',
+            text: '',
+            url: 'https://example.com/page',
+            files: [],
+            createdAt: 1700000000000,
+        })
+    })
+
+    it('builds text-only payload', () => {
+        expect(buildSharePayloadFromSearchFields(
+            { text: 'Hello world' },
+            42,
+        )).toEqual({
+            title: '',
+            text: 'Hello world',
+            url: '',
+            files: [],
+            createdAt: 42,
+        })
+    })
+
+    it('builds combined title+text+url payload', () => {
+        expect(buildSharePayloadFromSearchFields({
+            title: 'My note',
+            text: 'Hello world',
+            url: 'https://example.com/page',
+        }, 99)).toEqual({
+            title: 'My note',
+            text: 'Hello world',
+            url: 'https://example.com/page',
+            files: [],
+            createdAt: 99,
+        })
+    })
+})
+
+describe('buildSharePayloadFromDeepLink', () => {
+    it('fetches fileUrl into files[]', async () => {
+        const bytes = new Uint8Array([1, 2, 3, 4])
+        const fetchMock = vi.fn(async () => new Response(bytes, {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg' },
+        }))
+        const payload = await buildSharePayloadFromDeepLink(
+            {
+                title: 'Shot',
+                fileUrl: 'http://127.0.0.1:9/once',
+                fileName: 'shot.jpg',
+                fileType: 'image/jpeg',
+            },
+            55,
+            { fetch: fetchMock as unknown as typeof fetch },
+        )
+        expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:9/once')
+        expect(payload.title).toBe('Shot')
+        expect(payload.files).toHaveLength(1)
+        expect(payload.files[0]).toMatchObject({
+            name: 'shot.jpg',
+            type: 'image/jpeg',
+        })
+        expect(payload.files[0].blob.size).toBe(4)
+        expect(payload.createdAt).toBe(55)
+    })
+
+    it('throws when fileUrl fetch fails', async () => {
+        const fetchMock = vi.fn(async () => new Response(null, { status: 404 }))
+        await expect(buildSharePayloadFromDeepLink(
+            { fileUrl: 'http://127.0.0.1:9/missing' },
+            1,
+            { fetch: fetchMock as unknown as typeof fetch },
+        )).rejects.toThrow(/fileUrl fetch failed/)
     })
 })
 

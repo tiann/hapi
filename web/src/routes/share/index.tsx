@@ -1,12 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useAppContext } from '@/lib/app-context'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
 import {
+    buildSharePayloadFromDeepLink,
     deleteShareTransfer,
     getShareTransfer,
+    hasShareDeepLinkContent,
+    parseShareHash,
+    putShareTransfer,
+    scrubShareHashFromLocation,
+    type ShareSearch,
     type ShareTransferPayload,
 } from '@/lib/shareTransfer'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
@@ -106,10 +112,17 @@ export default function SharePage() {
 
     // Pulled via the typed validateSearch in router.tsx; reading
     // `window.location.search` directly would diverge from the rest of the
-    // codebase and miss future schema tightening.
-    const search = useSearch({ from: '/share' }) as { id?: string; error?: string }
+    // codebase and miss future schema tightening. Deep-link *content* is
+    // intentionally read from the hash (not query) so it never hits hub logs.
+    // Capture the fragment once in state so StrictMode's effect remount does
+    // not lose it after the first pass scrubs the address bar.
+    const search = useSearch({ from: '/share' }) as ShareSearch
     const transferId = search.id ?? null
     const ingestError = search.error === 'ingest'
+    const [deepLink] = useState(() =>
+        parseShareHash(typeof window === 'undefined' ? '' : window.location.hash)
+    )
+    const ingestPromiseRef = useRef<Promise<string> | null>(null)
 
     useEffect(() => {
         let cancelled = false
@@ -117,23 +130,45 @@ export default function SharePage() {
             setLoad({ state: 'missing', reason: 'ingest-error' })
             return
         }
-        if (!transferId) {
-            setLoad({ state: 'missing', reason: 'no-id' })
-            return
-        }
-        getShareTransfer(transferId).then((payload) => {
-            if (cancelled) return
-            if (!payload) {
+        if (transferId) {
+            // id path wins; drop any leftover fragment so content is not left
+            // beside the transfer id in the address bar.
+            scrubShareHashFromLocation()
+            getShareTransfer(transferId).then((payload) => {
+                if (cancelled) return
+                if (!payload) {
+                    setLoad({ state: 'missing', reason: 'not-found' })
+                    return
+                }
+                setLoad({ state: 'ready', payload })
+            }).catch(() => {
+                if (cancelled) return
                 setLoad({ state: 'missing', reason: 'not-found' })
-                return
-            }
-            setLoad({ state: 'ready', payload })
-        }).catch(() => {
-            if (cancelled) return
-            setLoad({ state: 'missing', reason: 'not-found' })
-        })
+            })
+            return () => { cancelled = true }
+        }
+        // Native / deep-link ingest via URL fragment (not query): synthesize
+        // the same IDB transfer the SW would create from POST, scrub the
+        // fragment, then replace to ?id= for picker / create-new.
+        scrubShareHashFromLocation()
+        if (hasShareDeepLinkContent(deepLink)) {
+            ingestPromiseRef.current ??= buildSharePayloadFromDeepLink(deepLink)
+                .then((payload) => putShareTransfer(payload))
+            void ingestPromiseRef.current.then(
+                (id) => {
+                    if (cancelled) return
+                    navigate({ to: '/share', search: { id }, replace: true })
+                },
+                () => {
+                    if (cancelled) return
+                    setLoad({ state: 'missing', reason: 'ingest-error' })
+                },
+            )
+            return () => { cancelled = true }
+        }
+        setLoad({ state: 'missing', reason: 'no-id' })
         return () => { cancelled = true }
-    }, [transferId, ingestError])
+    }, [transferId, ingestError, navigate, deepLink])
 
     // Snapshot the active session list once when sessions finish loading so
     // the picker doesn't re-shuffle under the operator's finger as SSE

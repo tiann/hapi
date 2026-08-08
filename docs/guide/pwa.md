@@ -74,6 +74,21 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
 
+### Native / deep-link ingest
+
+Companions that cannot use Web Share Target (for example a native app on a headset share sheet) can open the same picker with a fragment deep link:
+
+```
+{hapiOrigin}/share#url=…&text=…&title=…
+```
+
+- Fragment params: `url`, `text`, `title` (all optional; omit empty). Optional companion file hand-off: `fileUrl`, `fileName`, `fileType` — the page fetches `fileUrl` (CORS) into the same IndexedDB `files[]` as Web Share Target. The fragment is **not** sent on the HTTP request, so shared content does not appear in hub access logs.
+- When any are present and query `id` is absent, the web app synthesizes the same IndexedDB transfer used by the POST path, scrubs the fragment, then continues with the session picker / create-new flow (`?id=`).
+- When query `id` is present (Web Share Target redirect), that path wins; fragment content is ignored for ingest.
+- Files still require the POST `share_target` path — deep links cannot carry binaries.
+
+See [Web Share Target](https://developer.chrome.com/docs/capabilities/web-apis/web-share-target) for the POST vs GET distinction.
+
 ## Caching Strategy
 
 HAPI uses intelligent caching:
