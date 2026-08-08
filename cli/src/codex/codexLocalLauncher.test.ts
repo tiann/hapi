@@ -564,6 +564,8 @@ describe('codexLocalLauncher', () => {
         });
         expect(agentMessages).toContainEqual(expect.objectContaining({
             type: 'token_count',
+            scope_role: 'child',
+            scopeRole: 'child',
             thread_id: 'codex-thread-child',
             threadId: 'codex-thread-child',
             hapiUsageScope: 'managed',

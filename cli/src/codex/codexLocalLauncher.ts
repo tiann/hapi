@@ -230,13 +230,26 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         session.recordCodexUsage(message);
                     }
                 }
+                // Web latestUsage filters on usage.scope_role === 'child'; stamp it
+                // even when Codex only sent a foreign thread_id (no scopeRole).
+                const effectiveScopeRole = isChildUsage ? 'child' : scopeRole;
                 const managedThreadId = messageThreadId ?? primarySessionId;
                 const scopedUsage = context.replayedHistory
-                    ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' as const }
+                    ? {
+                        ...message,
+                        ...(effectiveScopeRole
+                            ? { scopeRole: effectiveScopeRole, scope_role: effectiveScopeRole }
+                            : {}),
+                        model: transcriptModel,
+                        hapiUsageScope: 'imported-history' as const
+                    }
                     : {
                         ...message,
                         model: transcriptModel,
                         ...(managedThreadId ? { threadId: managedThreadId, thread_id: managedThreadId } : {}),
+                        ...(effectiveScopeRole
+                            ? { scopeRole: effectiveScopeRole, scope_role: effectiveScopeRole }
+                            : {}),
                         hapiUsageScope: 'managed' as const
                     };
                 session.sendAgentMessage(scopedUsage);
