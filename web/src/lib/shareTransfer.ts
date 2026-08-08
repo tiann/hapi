@@ -227,7 +227,7 @@ async function readResponseBlobLimited(
         chunks.push(value)
     }
     const contentType = response.headers.get('content-type') ?? undefined
-    return new Blob(chunks, { type: contentType })
+    return new Blob(chunks as BlobPart[], { type: contentType })
 }
 
 function guessFileName(fileUrl: string, type: string): string {
