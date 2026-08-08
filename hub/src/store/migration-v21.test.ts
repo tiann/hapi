@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Store } from './index'
 
-describe('Store V18->V19 migration: usage scan state', () => {
-    it('adds the usage_scan_state table to a V18 database', () => {
-        const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v18-to-v19-'))
+describe('Store V21->V22 migration: notification preferences', () => {
+    it('creates notification preferences for an existing V21 database', () => {
+        const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v21-to-v22-'))
         const dbPath = join(directory, 'test.db')
         let store: Store | undefined
         try {
@@ -17,29 +17,26 @@ describe('Store V18->V19 migration: usage scan state', () => {
 
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec(`
-                INSERT INTO sessions (id, created_at, updated_at)
-                VALUES ('session-1', 1, 1);
-                INSERT INTO usage_events (
-                    session_id, source_key, source_seq, created_at, agent, kind
-                ) VALUES (
-                    'session-1', 'old-cumulative-key', 1, 1, 'codex', 'cumulative'
-                );
-                DROP TABLE usage_scan_state;
-                PRAGMA user_version = 18;
+                DROP TABLE notification_preferences;
+                PRAGMA user_version = 21;
             `)
             db.close()
 
             store = new Store(dbPath)
             const internalDb = (store as unknown as { db: Database }).db
             const table = internalDb.prepare(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'usage_scan_state'"
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_preferences'"
             ).get() as { name: string } | null
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            const usageRows = internalDb.prepare('SELECT COUNT(*) AS count FROM usage_events').get() as { count: number }
 
-            expect(table?.name).toBe('usage_scan_state')
+            expect(table?.name).toBe('notification_preferences')
             expect(version.user_version).toBe(22)
-            expect(usageRows.count).toBe(0)
+            expect(store.notificationPrefs.getPreferenceFlags('default')).toEqual({
+                permissionRequests: 1,
+                sessionReady: 1,
+                taskNotifications: 1,
+                sessionCompletion: 1
+            })
         } finally {
             store?.close()
             rmSync(directory, { recursive: true, force: true })

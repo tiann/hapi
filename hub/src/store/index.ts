@@ -35,7 +35,7 @@ export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { UsageStore } from './usageStore'
 
-const SCHEMA_VERSION: number = 21
+const SCHEMA_VERSION: number = 22
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -294,6 +294,7 @@ export class Store {
             18: () => this.migrateFromV18ToV19(),
             19: () => this.migrateFromV19ToV20(),
             20: () => this.migrateFromV20ToV21(),
+            21: () => this.migrateFromV21ToV22(),
         })
 
         if (currentVersion === 0) {
@@ -850,6 +851,21 @@ export class Store {
         this.db.exec(`
             DELETE FROM usage_events;
             DELETE FROM usage_scan_state;
+        `)
+    }
+
+    private migrateFromV21ToV22(): void {
+        // Per-namespace notification preferences. Defaults are all-enabled so
+        // existing namespaces keep the pre-preferences behavior.
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                namespace TEXT PRIMARY KEY,
+                permission_requests INTEGER NOT NULL DEFAULT 1,
+                session_ready INTEGER NOT NULL DEFAULT 1,
+                task_notifications INTEGER NOT NULL DEFAULT 1,
+                session_completion INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            );
         `)
     }
 
