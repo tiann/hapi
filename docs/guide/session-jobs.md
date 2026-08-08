@@ -161,6 +161,18 @@ Needs a hub/CLI build that includes `job` (soup / feat — global npm releases m
 
 Primary running job is enriched onto `GET /api/sessions` as `attachedJob` and pushed on `session-updated` SSE patches.
 
+## Sidebar pin (Settings → Display)
+
+Attached jobs ship with a **tri-state** "Pin in-progress sessions" control (not a yes/no):
+
+| Mode | Floats to In progress |
+|------|------------------------|
+| Off | Nothing |
+| Long-running jobs (default) | Sessions with a running attached job (even when the agent is idle) |
+| All activity | Jobs **plus** thinking / pending / in-agent background tasks |
+
+Unset preference defaults to **Long-running jobs** — that is the product stand for this capability. Legacy `true` maps to All activity; legacy `false` maps to Off.
+
 ## Related
 
 - [Supported Agents](./agents.md) — flavors and resume
