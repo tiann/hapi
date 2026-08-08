@@ -176,6 +176,9 @@ export class FcmService {
         if (payload.data.notifySummary) {
             dataRecord.notifySummary = payload.data.notifySummary
         }
+        if (payload.tag) {
+            dataRecord.tag = payload.tag
+        }
 
         // Data-only: if we also send `notification`, Android does not call
         // onMessageReceived while backgrounded — Wear relay never runs.

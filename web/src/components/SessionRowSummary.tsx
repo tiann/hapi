@@ -12,6 +12,7 @@ import { getCodexImportedAt } from '@/lib/codexImportedSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { hasActiveModelError } from '@/components/ModelErrorBanner'
 
 function LoaderIcon(props: { className?: string }) {
     return (
@@ -147,6 +148,8 @@ export function SessionRowSummary(props: {
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
     const urgentAttention = attention !== null
         && (attention.kind === 'permission' || attention.kind === 'input')
+    const modelErrorActive = hasActiveModelError(s.metadata)
+    const modelErrorLabel = t('session.modelError.listIndicator')
     const scheduledLabel = s.futureScheduledMessageCount > 1
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
@@ -172,53 +175,67 @@ export function SessionRowSummary(props: {
                     </div>
                     {s.active && s.thinking ? (
                         <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-badge-success-text)]" />
-                    ) : urgentAttention && nestedTooltips && attentionId ? (
-                        <SessionAttentionIndicator
-                            attention={attention}
-                            summary={s}
-                            label={attentionLabel ?? ''}
-                            tooltipId={attentionId}
-                        />
-                    ) : urgentAttention ? (
-                        <span
-                            className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[attention.kind]}`}
-                            title={attentionLabel ?? undefined}
-                            aria-label={attentionLabel ?? undefined}
-                        />
-                    ) : s.active && (s.backgroundTaskCount ?? 0) > 0 ? (
-                        <span
-                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-success-text)]"
-                            title={t('session.item.running')}
-                        >
-                            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
-                            {!inRunningSection ? (
-                                <span className="text-[11px] font-medium leading-none">{t('session.item.running')}</span>
+                    ) : (
+                        <>
+                            {modelErrorActive ? (
+                                <span
+                                    className="relative inline-flex h-2 w-2 shrink-0"
+                                    title={modelErrorLabel}
+                                    aria-label={modelErrorLabel}
+                                >
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+                                    <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                                </span>
                             ) : null}
-                        </span>
-                    ) : s.active && (s.pendingRequestsCount ?? 0) > 0 ? (
-                        <span
-                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-warning-text)]"
-                            title={t('session.item.pending')}
-                        >
-                            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
-                            {!inRunningSection ? (
-                                <span className="text-[11px] font-medium leading-none">{t('session.item.pending')}</span>
+                            {urgentAttention && nestedTooltips && attentionId ? (
+                                <SessionAttentionIndicator
+                                    attention={attention}
+                                    summary={s}
+                                    label={attentionLabel ?? ''}
+                                    tooltipId={attentionId}
+                                />
+                            ) : urgentAttention ? (
+                                <span
+                                    className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[attention.kind]}`}
+                                    title={attentionLabel ?? undefined}
+                                    aria-label={attentionLabel ?? undefined}
+                                />
+                            ) : s.active && (s.backgroundTaskCount ?? 0) > 0 ? (
+                                <span
+                                    className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-success-text)]"
+                                    title={t('session.item.running')}
+                                >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
+                                    {!inRunningSection ? (
+                                        <span className="text-[11px] font-medium leading-none">{t('session.item.running')}</span>
+                                    ) : null}
+                                </span>
+                            ) : s.active && (s.pendingRequestsCount ?? 0) > 0 ? (
+                                <span
+                                    className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-warning-text)]"
+                                    title={t('session.item.pending')}
+                                >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
+                                    {!inRunningSection ? (
+                                        <span className="text-[11px] font-medium leading-none">{t('session.item.pending')}</span>
+                                    ) : null}
+                                </span>
+                            ) : attention && nestedTooltips && attentionId ? (
+                                <SessionAttentionIndicator
+                                    attention={attention}
+                                    summary={s}
+                                    label={attentionLabel ?? ''}
+                                    tooltipId={attentionId}
+                                />
+                            ) : attention ? (
+                                <span
+                                    className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[attention.kind]}`}
+                                    title={attentionLabel ?? undefined}
+                                    aria-label={attentionLabel ?? undefined}
+                                />
                             ) : null}
-                        </span>
-                    ) : attention && nestedTooltips && attentionId ? (
-                        <SessionAttentionIndicator
-                            attention={attention}
-                            summary={s}
-                            label={attentionLabel ?? ''}
-                            tooltipId={attentionId}
-                        />
-                    ) : attention ? (
-                        <span
-                            className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[attention.kind]}`}
-                            title={attentionLabel ?? undefined}
-                            aria-label={attentionLabel ?? undefined}
-                        />
-                    ) : null}
+                        </>
+                    )}
                     {hasScheduleTooltip && nestedTooltips && scheduleId ? (
                         <HoverTooltip
                             id={scheduleId}

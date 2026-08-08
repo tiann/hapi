@@ -60,6 +60,26 @@ describe('FcmService.sendToNamespace', () => {
         globalThis.fetch = originalFetch
     })
 
+    it('serializes payload.tag onto message.data.tag in the HTTP body', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 'tok-1', platform: 'phone', deviceId: 'p1' }
+        ])
+        let requestBody: unknown = null
+        globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
+            requestBody = JSON.parse(String(init?.body ?? '{}'))
+            return new Response('{}', { status: 200 })
+        }) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        await svc.sendToNamespace('default', {
+            ...makePayload({ type: 'model-error', severity: 'error' }),
+            tag: 'model-error-sess-1-1710000000000'
+        })
+
+        const message = (requestBody as { message?: { data?: Record<string, string> } }).message
+        expect(message?.data?.tag).toBe('model-error-sess-1-1710000000000')
+    })
+
     it('removes the device row when FCM returns 404 UNREGISTERED (token rotated)', async () => {
         const store = makeStore([
             { namespace: 'default', token: 'rotated-token', platform: 'phone', deviceId: 'p1' }
