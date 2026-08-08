@@ -1,6 +1,7 @@
 import { getPermissionModeOptionsForFlavor, type PermissionMode } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { SelectControl } from '@/components/ui/select-control'
 import type { AgentType } from './types'
 
 export function CodexFamilyPermissionModeSelector(props: {
@@ -22,18 +23,18 @@ export function CodexFamilyPermissionModeSelector(props: {
             <label className="text-xs font-medium text-[var(--app-hint)]">
                 {t('misc.permissionMode')}
             </label>
-            <select
+            <SelectControl
                 value={props.value}
                 onChange={(event) => props.onChange(event.target.value as PermissionMode)}
                 disabled={props.isDisabled}
-                className="w-full rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
+                className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
                 {options.map((option) => (
                     <option key={option.mode} value={option.mode}>
                         {option.label}
                     </option>
                 ))}
-            </select>
+            </SelectControl>
         </div>
     )
 }

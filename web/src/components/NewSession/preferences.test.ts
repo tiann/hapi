@@ -46,7 +46,8 @@ describe('NewSession preferences', () => {
             model: 'gpt-5.6-sol',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'xhigh'
+            modelReasoningEffort: 'xhigh',
+            permissionMode: 'safe-yolo'
         })
         savePreferredLaunchSettings('machine-1', 'claude', {
             model: 'opus',
@@ -65,7 +66,8 @@ describe('NewSession preferences', () => {
             model: 'gpt-5.6-sol',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'xhigh'
+            modelReasoningEffort: 'xhigh',
+            permissionMode: 'safe-yolo'
         })
         expect(loadPreferredLaunchSettings('machine-1', 'claude')).toEqual({
             model: 'opus',
@@ -140,13 +142,55 @@ describe('NewSession preferences', () => {
             model: 'gpt-5.6-sol',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'xhigh'
+            modelReasoningEffort: 'xhigh',
+            permissionMode: 'read-only'
         })).toEqual({
             model: 'gpt-5.6-sol',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'xhigh'
+            modelReasoningEffort: 'xhigh',
+            permissionMode: 'read-only'
         })
+    })
+
+    it('falls back when a remembered permission mode is invalid for the agent', () => {
+        expect(resolvePreferredLaunchSettings('codex', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'bypassPermissions'
+        })).toEqual({
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
+        })
+    })
+
+    it('migrates the legacy YOLO preference for Codex only', () => {
+        savePreferredYoloMode(true)
+
+        expect(resolvePreferredLaunchSettings('codex', null, true).permissionMode).toBe('yolo')
+        expect(resolvePreferredLaunchSettings('copilot', null, true).permissionMode).toBe('default')
+        expect(resolvePreferredLaunchSettings('codex', null, false).permissionMode).toBe('default')
+    })
+
+    it.each([
+        ['kimi', 'safe-yolo'],
+        ['opencode', 'plan']
+    ] as const)('restores remembered permission modes for %s', (agent, permissionMode) => {
+        savePreferredLaunchSettings('machine-1', agent, {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode
+        })
+
+        const preferred = loadPreferredLaunchSettings('machine-1', agent)
+        expect(resolvePreferredLaunchSettings(agent, preferred).permissionMode).toBe(permissionMode)
     })
 
     it('drops an OpenCode reasoning value that is not offered at launch', () => {
@@ -159,7 +203,8 @@ describe('NewSession preferences', () => {
             model: 'provider/model',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
         })
     })
 })

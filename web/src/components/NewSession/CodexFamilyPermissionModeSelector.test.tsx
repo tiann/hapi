@@ -13,13 +13,14 @@ function renderSelector(props: Parameters<typeof CodexFamilyPermissionModeSelect
 
 describe('CodexFamilyPermissionModeSelector', () => {
     it('renders permission modes for copilot', () => {
-        renderSelector({
+        const { container } = renderSelector({
             agent: 'copilot',
             value: 'default',
             isDisabled: false,
             onChange: vi.fn(),
         })
-        expect(screen.getByRole('combobox')).toBeTruthy()
+        expect(screen.getByRole('combobox')).toHaveClass('appearance-none', 'pr-10')
+        expect(container.querySelector('svg[aria-hidden="true"]')).toBeTruthy()
         expect(screen.getByRole('option', { name: 'Yolo' })).toBeTruthy()
     })
 
