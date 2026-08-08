@@ -10,6 +10,7 @@ import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { WebAppEnv } from '../middleware/auth'
+import { fanOutImportAcrossOnlineMachines, mergeImportSessionsById } from './transcriptImport'
 
 type ScriptLogKind = 'sync' | 'restart'
 
@@ -65,6 +66,7 @@ type CodexLocalSessionSummary = {
     modifiedAt: number
     originator?: string | null
     cliVersion?: string | null
+    machineId?: string
 }
 
 type CodexLocalSessionsResponse = {
@@ -957,19 +959,34 @@ async function listCodexSessionsViaMachine(options: {
     cwd?: string | null
     machineId?: string | null
     sessionIds?: string[]
-}): Promise<{ sessions: RemoteCodexSession[]; machineId?: string; error?: string }> {
-    const machineId = resolveCodexImportMachineId(options.cwd, options.namespace, options.engine, options.machineId)
-    if (!machineId || !options.engine) {
-        return { sessions: [], error: 'No online machine available for Codex history import' }
+}): Promise<{ sessions: Array<RemoteCodexSession & { machineId: string }>; error?: string }> {
+    const fanOut = await fanOutImportAcrossOnlineMachines({
+        engine: options.engine,
+        namespace: options.namespace,
+        requestedMachineId: options.machineId,
+        noOnlineError: 'No online machine available for Codex history import',
+        run: async (machineId) => {
+            const result = await options.engine!.listCodexSessionsForMachine(machineId, options.cwd, options.sessionIds)
+            if (!result || typeof result !== 'object') {
+                throw new Error('Unexpected Codex sessions RPC response')
+            }
+            if ((result as { success?: unknown }).success !== true) {
+                throw new Error(
+                    typeof (result as { error?: unknown }).error === 'string'
+                        ? (result as { error: string }).error
+                        : 'Failed to list local Codex sessions'
+                )
+            }
+            return asRemoteCodexSessions((result as { sessions?: unknown }).sessions, Boolean(options.sessionIds?.length))
+        }
+    })
+    if (fanOut.error) {
+        return { sessions: [], error: fanOut.error }
     }
-    const result = await options.engine.listCodexSessionsForMachine(machineId, options.cwd, options.sessionIds)
-    if (!result || typeof result !== 'object') {
-        return { sessions: [], machineId, error: 'Unexpected Codex sessions RPC response' }
-    }
-    if ((result as { success?: unknown }).success !== true) {
-        return { sessions: [], machineId, error: typeof (result as { error?: unknown }).error === 'string' ? (result as { error: string }).error : 'Failed to list local Codex sessions' }
-    }
-    return { sessions: asRemoteCodexSessions((result as { sessions?: unknown }).sessions, Boolean(options.sessionIds?.length)), machineId }
+    const stamped = fanOut.results.flatMap(({ machineId, value }) => (
+        value.map((session) => ({ ...session, machineId }))
+    ))
+    return { sessions: mergeImportSessionsById(stamped) }
 }
 
 function buildImportedSessionMetadata(
@@ -2221,14 +2238,12 @@ export function createCodexDesktopRoutes(options: {
             return c.json({
                 success: false,
                 error: remote.error,
-                sessions: [],
-                ...(remote.machineId ? { machineId: remote.machineId } : {})
+                sessions: []
             } satisfies CodexLocalSessionsResponse, 503)
         }
         return c.json({
             success: true,
-            sessions: remote.sessions.map(({ messages: _messages, ...summary }) => summary),
-            ...(remote.machineId ? { machineId: remote.machineId } : {})
+            sessions: remote.sessions.map(({ messages: _messages, ...summary }) => summary)
         } satisfies CodexLocalSessionsResponse)
     })
 
@@ -2295,21 +2310,56 @@ export function createCodexDesktopRoutes(options: {
                 codexClientAvailable: codexStatus.clientAvailable
             })
         }
-        const result = await importSelectedCodexSessions({
+        const byMachine = new Map<string, typeof remote.sessions>()
+        for (const session of remote.sessions) {
+            const machineId = session.machineId
+            const bucket = byMachine.get(machineId) ?? []
+            bucket.push(session)
+            byMachine.set(machineId, bucket)
+        }
+        const results = []
+        for (const [machineId, sessions] of byMachine) {
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: sessions.map((session) => session.id),
+                store: options.store,
+                namespace: c.get('namespace'),
+                getSyncEngine: options.getSyncEngine,
+                localSessions: sessions,
+                machineId,
+                model: parsed.model,
+                modelReasoningEffort: parsed.modelReasoningEffort,
+                yolo: parsed.yolo
+            })
+            results.push(result)
+            if (!result.success) {
+                return c.json({
+                    ...result,
+                    codexDesktopRunning: codexStatus.running,
+                    codexClientAvailable: codexStatus.clientAvailable
+                })
+            }
+        }
+        const last = results[results.length - 1] ?? await importSelectedCodexSessions({
             codexSessionIds: parsed.sessionIds,
             store: options.store,
             namespace: c.get('namespace'),
             getSyncEngine: options.getSyncEngine,
-            localSessions: remote.sessions,
-            machineId: remote.machineId ?? null,
+            localSessions: [],
+            machineId: null,
             model: parsed.model,
             modelReasoningEffort: parsed.modelReasoningEffort,
             serviceTier: parsed.serviceTier,
             collaborationMode: parsed.collaborationMode,
             yolo: parsed.yolo
         })
+        const syncedCount = results.reduce((sum, result) => (
+            sum + (result.success ? (result.syncedCount ?? 0) : 0)
+        ), 0)
         return c.json({
-            ...result,
+            ...last,
+            success: true as const,
+            syncedCount,
+            sessionIds: parsed.sessionIds,
             codexDesktopRunning: codexStatus.running,
             codexClientAvailable: codexStatus.clientAvailable
         })

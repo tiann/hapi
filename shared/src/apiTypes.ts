@@ -211,6 +211,27 @@ export type ListCodexSessionsRpcResponse = z.infer<typeof ListCodexSessionsRpcRe
 export type ArchiveCodexSessionRpcRequest = z.infer<typeof ArchiveCodexSessionRpcRequestSchema>
 export type ArchiveCodexSessionRpcResponse = z.infer<typeof ArchiveCodexSessionRpcResponseSchema>
 
+/** Claude import messages use the same wire shape as Codex agent payloads (`type: 'codex'`). */
+export const ClaudeImportedMessageSchema = z.object({
+    content: CodexImportedMessageSchema,
+    createdAt: z.number().optional()
+})
+
+export const ClaudeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    originator: z.string().nullable().optional(),
+    cliVersion: z.string().nullable().optional()
+})
+
+export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySchema.extend({
+    messages: z.array(ClaudeImportedMessageSchema)
+})
+
 export const PiImportedMessageContentSchema = CodexImportedMessageSchema
 
 export const PiImportedMessageSchema = z.object({
@@ -255,6 +276,73 @@ export type PiLocalSessionSummary = z.infer<typeof PiLocalSessionSummarySchema>
 export type PiLocalSessionWithMessages = z.infer<typeof PiLocalSessionWithMessagesSchema>
 export type ListPiSessionsRpcRequest = z.infer<typeof ListPiSessionsRpcRequestSchema>
 export type ListPiSessionsRpcResponse = z.infer<typeof ListPiSessionsRpcResponseSchema>
+
+export const ListClaudeSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).optional()
+})
+
+export const ListClaudeSessionsRpcResponseSchema = z.union([
+    z.object({
+        success: z.literal(true),
+        sessions: z.array(z.union([ClaudeLocalSessionWithMessagesSchema, ClaudeLocalSessionSummarySchema]))
+    }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type ListClaudeSessionsRpcRequest = z.infer<typeof ListClaudeSessionsRpcRequestSchema>
+export type ListClaudeSessionsRpcResponse = z.infer<typeof ListClaudeSessionsRpcResponseSchema>
+
+export const CursorImportableSessionSummaryRpcSchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    firstUserMessage: z.string().nullable().optional(),
+    workspacePath: z.string().nullable().optional(),
+    storeDbPath: z.string().min(1),
+    sourceFormat: z.enum(['acp', 'legacy']),
+    modifiedAt: z.number(),
+    sizeBytes: z.number(),
+    alreadyImportedHapiSessionId: z.string().nullable().optional()
+})
+
+export const ListCursorImportableSessionsRpcRequestSchema = z.object({
+    candidateWorkspacePaths: z.array(z.string()).optional(),
+    limit: z.number().int().positive().optional()
+})
+
+export const ListCursorImportableSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(CursorImportableSessionSummaryRpcSchema) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export const PrepareCursorImportRpcRequestSchema = z.object({
+    uuid: z.string().min(1),
+    workspacePath: z.string().nullable().optional()
+})
+
+export const PrepareCursorImportRpcResponseSchema = z.union([
+    z.object({
+        success: z.literal(true),
+        uuid: z.string().min(1),
+        sourceFormat: z.enum(['acp', 'legacy']),
+        workspacePath: z.string().min(1),
+        title: z.string(),
+        hostName: z.string(),
+        durationMs: z.number()
+    }),
+    z.object({
+        success: z.literal(false),
+        uuid: z.string().min(1),
+        reason: z.string().min(1),
+        message: z.string().min(1),
+        durationMs: z.number()
+    })
+])
+
+export type ListCursorImportableSessionsRpcRequest = z.infer<typeof ListCursorImportableSessionsRpcRequestSchema>
+export type ListCursorImportableSessionsRpcResponse = z.infer<typeof ListCursorImportableSessionsRpcResponseSchema>
+export type PrepareCursorImportRpcRequest = z.infer<typeof PrepareCursorImportRpcRequestSchema>
+export type PrepareCursorImportRpcResponse = z.infer<typeof PrepareCursorImportRpcResponseSchema>
 
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema

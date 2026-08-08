@@ -25,6 +25,8 @@ import { createUsageRoutes } from './routes/usage'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
+import { createClaudeDesktopRoutes } from './routes/claudeDesktop'
+import { createCursorImportRoutes } from './routes/cursorImport'
 import { createPiSessionRoutes } from './routes/piSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
@@ -285,6 +287,16 @@ function createWebApp(options: {
     app.route('/api', createGitRoutes(options.getSyncEngine))
     // 中文注释：这里提供两类 Codex 辅助能力：扫描本地 transcript 以导入到 Hapi，以及按需重启 Codex Desktop 客户端。
     app.route('/api', createCodexDesktopRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
+    // 中文注释：与 Codex 对称，扫描本地 ~/.claude/projects transcript 以导入 Hapi（复用同一套导入引擎）。
+    app.route('/api', createClaudeDesktopRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
+    // Cursor flavor of the multi-agent session import surface (ACP verify-probe).
+    app.route('/api', createCursorImportRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))

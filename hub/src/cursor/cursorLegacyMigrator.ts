@@ -1217,19 +1217,7 @@ function tryRm(path: string): void {
     }
 }
 
-/**
- * Open the legacy store and flush the WAL into the main file with
- * `PRAGMA wal_checkpoint(TRUNCATE)`. Idempotent: on non-WAL stores the
- * checkpoint is a no-op (SQLite returns busy=0,log=-1,checkpointed=-1).
- *
- * Codex review #34 P1: a busy=1 result means another connection blocked
- * the checkpoint; copying only store.db would lose WAL pages. We treat
- * busy=1 as an error so the caller surfaces a refusal rather than
- * proceeding with a partial copy. Caller is expected to ensure no other
- * process has the DB open (pre-flight: lifecycleState not 'running';
- * archive-then-wait-for-lock-release for the force flag).
- */
-function defaultCheckpointLegacyStore(storeDbPath: string): void {
+export function checkpointLegacySqliteStore(storeDbPath: string): void {
     const db = new Database(storeDbPath, { readwrite: true })
     try {
         const row = db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy?: number; log?: number; checkpointed?: number } | undefined
@@ -1246,6 +1234,22 @@ function defaultCheckpointLegacyStore(storeDbPath: string): void {
     } finally {
         db.close()
     }
+}
+
+/**
+ * Open the legacy store and flush the WAL into the main file with
+ * `PRAGMA wal_checkpoint(TRUNCATE)`. Idempotent: on non-WAL stores the
+ * checkpoint is a no-op (SQLite returns busy=0,log=-1,checkpointed=-1).
+ *
+ * Codex review #34 P1: a busy=1 result means another connection blocked
+ * the checkpoint; copying only store.db would lose WAL pages. We treat
+ * busy=1 as an error so the caller surfaces a refusal rather than
+ * proceeding with a partial copy. Caller is expected to ensure no other
+ * process has the DB open (pre-flight: lifecycleState not 'running';
+ * archive-then-wait-for-lock-release for the force flag).
+ */
+function defaultCheckpointLegacyStore(storeDbPath: string): void {
+    checkpointLegacySqliteStore(storeDbPath)
 }
 
 const DEFAULT_MIN_DWELL_MS = 2_000
