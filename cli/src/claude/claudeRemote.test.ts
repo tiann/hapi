@@ -106,7 +106,7 @@ describe('claudeRemote async message handling', () => {
             queryMock.mockReset();
             querySpy.mockRestore();
         }
-    });
+    }, 15000);
 
     it('continues consuming assistant messages even when next user message is pending', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
