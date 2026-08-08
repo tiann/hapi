@@ -521,10 +521,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // be unreachable behind this early return).
             const failure = mapAcpStderrToFailure(error);
             if (error.type === 'model_not_found' && extractCannotUseThisModelMessage(hint)) {
+                // Setup/load remap may reject a stale spawn model then succeed
+                // after remap — never promote that to a turn alert. Only defer
+                // during an active prompt so RPC precedence still wins.
                 if (this.promptInFlight && failure) {
                     this.pendingStderrFailure ??= failure;
-                } else if (failure && !this.promptInFlight) {
-                    this.recordModelError(failure);
                 }
                 return;
             }

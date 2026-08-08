@@ -26,6 +26,16 @@ const harness = vi.hoisted(() => ({
         message: string
         raw: string
     } | null,
+    emitStderrOnInitialize: null as {
+        type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
+        message: string
+        raw: string
+    } | null,
+    emitStderrOnLoadSession: null as {
+        type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
+        message: string
+        raw: string
+    } | null,
     emitTextOnPrompt: null as string | null,
     promptReject: null as Error | null,
     deferPrompt: null as Promise<void> | null,
@@ -53,6 +63,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
         harness.backendArgs = { command: 'agent', args };
         return {
             initialize: vi.fn(async () => {
+                if (harness.emitStderrOnInitialize && harness.stderrErrorHandler) {
+                    harness.stderrErrorHandler(harness.emitStderrOnInitialize);
+                }
                 if (harness.initializeError) throw harness.initializeError;
             }),
             authenticateIfAvailable: vi.fn(async () => {}),
@@ -61,6 +74,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.loadSessionCalled = true;
                 if (harness.deferLoadSession) {
                     await harness.deferLoadSession;
+                }
+                if (harness.emitStderrOnLoadSession && harness.stderrErrorHandler) {
+                    harness.stderrErrorHandler(harness.emitStderrOnLoadSession);
                 }
                 if (harness.loadSessionError) throw harness.loadSessionError;
                 return 'loaded-acp-session';
@@ -254,6 +270,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.releaseLoadSession = null;
         harness.stderrErrorHandler = null;
         harness.emitStderrOnPrompt = null;
+        harness.emitStderrOnInitialize = null;
+        harness.emitStderrOnLoadSession = null;
         harness.emitTextOnPrompt = null;
         harness.promptReject = null;
         harness.deferPrompt = null;
@@ -1026,6 +1044,40 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'ready'
         )).toBe(false);
+    });
+
+    it('ignores Cannot use this model stderr during initialize/load so remap can succeed', async () => {
+        // Setup/load remap rejects a stale spawn model on stderr, then continues.
+        // Must not persist lastModelError / suppress later ready.
+        const stale = {
+            type: 'model_not_found' as const,
+            message: 'Cannot use this model: grok-4.5[fast=true]. Available models: auto',
+            raw: 'Cannot use this model: grok-4.5[fast=true]. Available models: auto'
+        };
+        harness.emitStderrOnInitialize = stale;
+        harness.emitStderrOnLoadSession = stale;
+
+        const session = makeSession('resume-remap-ok', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        expect(client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        })).toBe(false);
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
     });
 
     it('still records modelError for typed rate_limit stderr and suppresses ready', async () => {
