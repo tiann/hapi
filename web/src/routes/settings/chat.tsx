@@ -1,6 +1,7 @@
 import { useTranslation } from '@/lib/use-translation'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import { getToolGroupingModeOptions, useToolGroupingMode } from '@/hooks/useToolGroupingMode'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { useReasoningCollapse } from '@/hooks/useReasoningCollapse'
 import {
@@ -50,6 +51,7 @@ export default function SettingsChatPage() {
     const { t } = useTranslation()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const { toolGroupingMode, setToolGroupingMode } = useToolGroupingMode()
     const { codexExplorationCollapsed, setCodexExplorationCollapsed } = useCodexExplorationCollapse()
     const { reasoningCollapsed, setReasoningCollapsed } = useReasoningCollapse()
     const { toolGroupBackground, userMessageBackground, setToolGroupBackground, setUserMessageBackground } = useChatSurfaceColors()
@@ -70,6 +72,12 @@ export default function SettingsChatPage() {
                     value={terminalToolDisplayMode}
                     options={getTerminalToolDisplayModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setTerminalToolDisplayMode}
+                />
+                <SettingsChoiceGroup
+                    label={t('settings.chat.toolGrouping')}
+                    value={toolGroupingMode}
+                    options={getToolGroupingModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                    onChange={setToolGroupingMode}
                 />
                 <SettingsSwitch
                     label={t('settings.chat.codexExplorationCollapsed')}

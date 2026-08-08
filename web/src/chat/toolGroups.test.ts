@@ -249,6 +249,72 @@ describe('buildVisibleChatBlocks', () => {
         expect(isToolGroupBlock(visible[2]) && visible[2].presentationMode).toBe('codex-exploration')
     })
 
+    it('groups structured general Codex commands when grouped mode is selected', () => {
+        const first = makeToolBlock('codex-test-1', 'CodexBash', {
+            command: 'bun test',
+            command_actions: [{ type: 'unknown', command: 'bun test' }]
+        })
+        const second = makeToolBlock('codex-test-2', 'CodexBash', {
+            command: 'bun run typecheck',
+            command_actions: [{ type: 'unknown', command: 'bun run typecheck' }]
+        })
+
+        const classified = buildVisibleChatBlocks([first, second], {
+            hasMoreMessages: false,
+            groupingMode: 'classified'
+        })
+        const grouped = buildVisibleChatBlocks([first, second], {
+            hasMoreMessages: false,
+            groupingMode: 'grouped'
+        })
+
+        expect(classified).toEqual([first, second])
+        expect(grouped).toHaveLength(1)
+        expect(isToolGroupBlock(grouped[0]) && grouped[0].presentationMode).toBe('default')
+        expect(isToolGroupBlock(grouped[0]) && grouped[0].defaultOpen).toBe(false)
+    })
+
+    it('does not reuse grouped ids when switching to classified mode', () => {
+        const firstRead = makeToolBlock('codex-read-1', 'CodexBash', {
+            command: 'cat package.json',
+            command_actions: [{
+                type: 'read',
+                command: 'cat package.json',
+                name: 'package.json',
+                path: '/repo/package.json'
+            }]
+        })
+        const command = makeToolBlock('codex-test', 'CodexBash', {
+            command: 'bun test',
+            command_actions: [{ type: 'unknown', command: 'bun test' }]
+        })
+        const secondRead = makeToolBlock('codex-read-2', 'CodexBash', {
+            command: 'cat README.md',
+            command_actions: [{
+                type: 'read',
+                command: 'cat README.md',
+                name: 'README.md',
+                path: '/repo/README.md'
+            }]
+        })
+        const blocks = [firstRead, command, secondRead]
+        const grouped = buildVisibleChatBlocks(blocks, {
+            hasMoreMessages: false,
+            groupingMode: 'grouped'
+        })
+        const classified = buildVisibleChatBlocks(blocks, {
+            hasMoreMessages: false,
+            previousGroups: grouped.filter(isToolGroupBlock),
+            previousGroupingMode: 'grouped',
+            groupingMode: 'classified'
+        })
+        const classifiedGroups = classified.filter(isToolGroupBlock)
+
+        expect(grouped.filter(isToolGroupBlock)).toHaveLength(1)
+        expect(classifiedGroups).toHaveLength(2)
+        expect(new Set(classifiedGroups.map((group) => group.id)).size).toBe(2)
+    })
+
     it('groups contiguous eligible root tool cards', () => {
         const visible = buildVisibleChatBlocks([
             makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
