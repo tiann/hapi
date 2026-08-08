@@ -357,15 +357,25 @@ export function isCompletionClaim(text: string): boolean {
     return PRIOR_DONE_PATTERNS.some((pattern) => pattern.test(lower))
 }
 
-const TEXT_ERROR_MARKER = /^[ \t]*(?:Error: (?:T|RetriableError):|Gemini prompt failed:)/im
+const TEXT_ERROR_MARKER = /^[ \t]*(?:Error: (?:T|RetriableError):|Gemini prompt failed:)/gim
 
 /**
  * Prefer the matched error marker when slicing rawSnippet so "View raw error"
  * shows the failure, not the preceding assistant prose when Error: T: is
  * appended after a long response.
+ *
+ * Use the LAST marker: classifyCursorAgentMessage strips closed fences /
+ * indented code before matching, so an earlier quoted example in raw text
+ * must not steal the snippet from the real appended failure.
  */
 export function rawSnippetForFailure(failure: CursorAgentStreamFailure, maxLen = 400): string {
-    const marker = failure.source === 'text' ? failure.raw.search(TEXT_ERROR_MARKER) : -1
-    const start = marker >= 0 ? marker : 0
+    let start = 0
+    if (failure.source === 'text') {
+        const matches = Array.from(failure.raw.matchAll(TEXT_ERROR_MARKER))
+        const last = matches.at(-1)
+        if (typeof last?.index === 'number') {
+            start = last.index
+        }
+    }
     return failure.raw.slice(start, start + maxLen)
 }

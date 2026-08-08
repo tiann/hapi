@@ -519,4 +519,25 @@ describe('rawSnippetForFailure', () => {
         }
         expect(rawSnippetForFailure(failure)).toBe('status 429 ratelimitexceeded')
     })
+
+    it('prefers the last Error: T marker over an earlier fenced example', () => {
+        const filler = 'x'.repeat(450)
+        const raw = [
+            'Here is an example of a failure:',
+            '```',
+            'Error: T: [canceled] example only',
+            '```',
+            filler,
+            'Error: T: [resource_exhausted] real failure'
+        ].join('\n')
+        const failure = {
+            kind: 'resource_exhausted' as const,
+            transient: true,
+            raw,
+            source: 'text' as const
+        }
+        const snippet = rawSnippetForFailure(failure)
+        expect(snippet.startsWith('Error: T: [resource_exhausted]')).toBe(true)
+        expect(snippet).not.toContain('example only')
+    })
 })
