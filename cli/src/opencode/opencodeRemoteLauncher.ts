@@ -15,6 +15,12 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
 import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './utils/opencodeCompactBridge';
 import { formatOpencodePromptError } from './utils/opencodeErrorText';
+import {
+    formatOpencodeRetryStatus,
+    subscribeToOpencodeEvents,
+    type OpencodeEventSubscription,
+    type OpencodeRetryStatus
+} from './utils/opencodeEventStream';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
@@ -125,6 +131,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private setModelSupported: boolean | undefined = undefined;
     private setEffortSupported: boolean | undefined = undefined;
     private activeAcpSessionId: string | null = null;
+    /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
+    private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
 
     constructor(
@@ -164,7 +172,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // opencodeCompactBridge.ts).
         const hostname = '127.0.0.1';
         const port = await allocateFreePort(hostname);
-        this.baseUrl = `http://${hostname}:${port}`;
+        const baseUrl = `http://${hostname}:${port}`;
+        this.baseUrl = baseUrl;
 
         const backend = createOpencodeBackend({
             cwd: session.path,
@@ -209,6 +218,28 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
         session.onSessionFound(acpSessionId);
         this.activeAcpSessionId = acpSessionId;
+
+        // Upstream retries are announced only on the agent's own event
+        // stream — not as ACP notifications and not on stderr. Measured
+        // against a provider stubbed to answer 429: 40 minutes, 85 retries,
+        // zero ACP updates, zero stderr bytes, and a prompt that never
+        // settled. Without this the user watches a session that looks like
+        // it is thinking and never learns it is rate limited.
+        //
+        // Attached here rather than at spawn time because the stream is
+        // filtered by ACP session id, which only exists once new/loadSession
+        // has answered. Failing to subscribe degrades that visibility and
+        // nothing else, so it is deliberately neither awaited nor
+        // error-checked; the subscription reports its own failures at debug
+        // level and keeps the session running.
+        this.eventStream = subscribeToOpencodeEvents({
+            baseUrl,
+            // Required. Omitting it yields heartbeats and no session events
+            // at all, with no error to notice — see the subscription's doc.
+            directory: session.path,
+            sessionId: acpSessionId,
+            onRetry: (retry) => this.surfaceUpstreamRetry(retry)
+        });
 
         // Seed currentBackendModel from the ACP session metadata so the first
         // batch — whose model the hub mirrors from the just-discovered session —
@@ -615,6 +646,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
+        // Before anything that can fail: a stream left open would keep
+        // reconnecting to a subprocess that is on its way out.
+        this.eventStream?.close();
+        this.eventStream = null;
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         const failures: unknown[] = [];
         if (this.permissionHandler) {
@@ -671,6 +706,41 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (isStall) {
             void this.clearStalledPrompt();
         }
+    }
+
+    /**
+     * Reports an upstream retry as progress, not as a failure: the agent is
+     * still working and will try again on its own.
+     *
+     * Sent as the `api_error` system message Claude sessions already use for
+     * the same situation, rather than as a new message type, so the web
+     * timeline folds consecutive retries into a single block instead of
+     * stacking one warning per attempt (`foldApiErrorEvents` in
+     * web/src/chat/reducerEvents.ts). `maxRetries` is 0 because OpenCode
+     * announces no ceiling — it retries until the provider lets it through
+     * (its own issue tracker has the missing circuit breaker open) — and the
+     * presentation already has a branch for exactly that. The provider's own
+     * text rides in `error` so the reader learns *why* the session is
+     * waiting, which is the entire point; without it the timeline says only
+     * "Retrying...".
+     *
+     * `thinking` is deliberately untouched. During a retry the session
+     * really is busy, and the hub composes the flag it shows from what this
+     * session reports plus its own queue grace
+     * (`hub/src/sync/sessionCache.ts`) — this side reports what is true and
+     * does not reach across that seam.
+     */
+    private surfaceUpstreamRetry(retry: OpencodeRetryStatus): void {
+        const text = formatOpencodeRetryStatus(retry);
+        this.session.client.sendClaudeSessionMessage({
+            type: 'system',
+            uuid: randomUUID(),
+            subtype: 'api_error',
+            retryAttempt: retry.attempt,
+            maxRetries: 0,
+            error: { message: text }
+        });
+        this.messageBuffer.addMessage(text, 'status');
     }
 
     /**

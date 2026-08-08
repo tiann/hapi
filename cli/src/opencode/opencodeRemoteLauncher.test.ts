@@ -37,7 +37,14 @@ const harness = vi.hoisted(() => ({
     newSessionImpl: null as null | (() => Promise<string>),
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
-    serverStopError: null as Error | null
+    serverStopError: null as Error | null,
+    eventStreamOptions: [] as Array<{
+        baseUrl: string;
+        directory: string;
+        sessionId: string;
+        onRetry: (retry: { attempt: number; message: string }) => void;
+    }>,
+    eventStreamCloseCount: 0
 }));
 
 // Captures the RemoteLauncherDisplayContext (including onExit/
@@ -188,6 +195,25 @@ const compactHarness = vi.hoisted(() => ({
     >)
 }));
 
+// Partial: only the subscription is stubbed. The retry formatter is pure and
+// its output is part of what this launcher is asserted to forward.
+vi.mock('./utils/opencodeEventStream', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./utils/opencodeEventStream')>()),
+    subscribeToOpencodeEvents: vi.fn((options: {
+        baseUrl: string;
+        directory: string;
+        sessionId: string;
+        onRetry: (retry: { attempt: number; message: string }) => void;
+    }) => {
+        harness.eventStreamOptions.push(options);
+        return {
+            close: () => {
+                harness.eventStreamCloseCount++;
+            }
+        };
+    })
+}));
+
 vi.mock('./utils/opencodeCompactBridge', () => ({
     splitProviderModel: (combined: string | null | undefined) => {
         if (!combined) return null;
@@ -281,6 +307,7 @@ function createSessionStub(
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const sentAgentMessages: unknown[] = [];
+    const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
     const pushKeepAlive = vi.fn();
@@ -294,7 +321,9 @@ function createSessionStub(
             }
         },
         sendAgentMessage(_message: unknown) {},
-        sendClaudeSessionMessage(_message: unknown) {},
+        sendClaudeSessionMessage(message: unknown) {
+            claudeSessionMessages.push(message);
+        },
         sendUserMessage(_text: string) {},
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
@@ -333,7 +362,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
+    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -385,6 +414,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.disconnectImpl = null;
         harness.permissionCancelError = null;
         harness.serverStopError = null;
+        harness.eventStreamOptions = [];
+        harness.eventStreamCloseCount = 0;
         inkHarness.lastRenderProps = null;
     });
 
@@ -2030,6 +2061,64 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             type: 'error',
             message: 'Authentication failed. Please check your credentials.'
         });
+
+        harness.resolvePrompt!();
+        await launchPromise;
+    });
+
+    it('subscribes to the agent event stream for this session and directory, and closes it on teardown', async () => {
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(harness.eventStreamOptions).toHaveLength(1);
+        expect(harness.eventStreamOptions[0]).toMatchObject({
+            baseUrl: 'http://127.0.0.1:48273',
+            // Without the directory the endpoint reports nothing at all, and
+            // says so with neither an error nor a 404.
+            directory: '/tmp/hapi-opencode-test',
+            sessionId: 'acp-session-1'
+        });
+        // A stream left open would keep reconnecting to a process that is gone.
+        expect(harness.eventStreamCloseCount).toBe(1);
+    });
+
+    it('reports an upstream retry as progress carrying the provider text, not as a failure', async () => {
+        harness.hangPrompt = true;
+        const { session, agentMessages, claudeSessionMessages, thinkingChangeCalls } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.eventStreamOptions).toHaveLength(1));
+        await vi.waitFor(() => expect(harness.events).toContain('prompt:start'));
+
+        harness.eventStreamOptions[0].onRetry({
+            attempt: 2,
+            message: 'Rate limit exceeded: free-models-per-day.'
+        });
+
+        // Sent on the api_error channel the web timeline folds, not the error
+        // channel — the agent is still working.
+        expect(agentMessages).toEqual([]);
+        expect(claudeSessionMessages).toHaveLength(1);
+        expect(claudeSessionMessages[0]).toMatchObject({
+            type: 'system',
+            subtype: 'api_error',
+            retryAttempt: 2,
+            maxRetries: 0
+        });
+        // The provider's own words survive; without them the timeline says
+        // only "Retrying...".
+        const error = (claudeSessionMessages[0] as { error: { message: string } }).error;
+        expect(error.message).toContain('Rate limit exceeded: free-models-per-day.');
+        expect(error.message).toContain('attempt 2');
+        // A retry is not a turn boundary: the session really is still busy,
+        // and the hub owns how that composes with its queue grace.
+        expect(session.thinking).toBe(true);
+        expect(thinkingChangeCalls).toEqual([true]);
 
         harness.resolvePrompt!();
         await launchPromise;
