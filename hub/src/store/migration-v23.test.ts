@@ -46,4 +46,28 @@ describe('schema migration v22 to v26', () => {
         expect(version.user_version).toBe(26)
         migrated.close()
     })
+
+    it('on key collision keeps a running source over a terminal target', () => {
+        const store = new Store(':memory:')
+        const from = store.sessions.getOrCreateSession('from', { path: '/a' }, null, 'default')
+        const to = store.sessions.getOrCreateSession('to', { path: '/b' }, null, 'default')
+        store.sessionJobs.upsert(to.id, 'beets', {
+            label: 'stale',
+            status: 'completed',
+            remaining: 0
+        }, 1_000)
+        store.sessionJobs.upsert(from.id, 'beets', {
+            label: 'live',
+            status: 'running',
+            remaining: 3
+        }, 2_000)
+        const result = store.sessionJobs.transfer(from.id, to.id)
+        expect(result.collided).toBe(1)
+        expect(result.moved).toBe(1)
+        const primary = store.sessionJobs.getPrimaryRunning(to.id)
+        expect(primary?.label).toBe('live')
+        expect(primary?.status).toBe('running')
+        expect(store.sessionJobs.list(from.id)).toHaveLength(0)
+        store.close()
+    })
 })

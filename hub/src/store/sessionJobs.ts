@@ -249,6 +249,9 @@ export function transferSessionJobs(
     fromSessionId: string,
     toSessionId: string
 ): { moved: number; collided: number } {
+    if (fromSessionId === toSessionId) {
+        return { moved: 0, collided: 0 }
+    }
     const rows = listSessionJobs(db, fromSessionId)
     let moved = 0
     let collided = 0
@@ -256,8 +259,24 @@ export function transferSessionJobs(
     for (const job of rows) {
         const existing = getSessionJob(db, toSessionId, job.key)
         if (existing) {
-            db.prepare('DELETE FROM session_jobs WHERE session_id = ? AND job_key = ?')
-                .run(fromSessionId, job.key)
+            // Prefer a live source over a terminal target (or newer stamp).
+            // Redirected heartbeats omit status, so discarding a running source
+            // cannot be repaired by a later heartbeat.
+            const sourceWins =
+                (job.status === 'running' && existing.status !== 'running')
+                || (job.status === existing.status && job.updatedAt > existing.updatedAt)
+            if (sourceWins) {
+                db.prepare('DELETE FROM session_jobs WHERE session_id = ? AND job_key = ?')
+                    .run(toSessionId, job.key)
+                db.prepare(
+                    `UPDATE session_jobs SET session_id = ?
+                     WHERE session_id = ? AND job_key = ?`
+                ).run(toSessionId, fromSessionId, job.key)
+                moved += 1
+            } else {
+                db.prepare('DELETE FROM session_jobs WHERE session_id = ? AND job_key = ?')
+                    .run(fromSessionId, job.key)
+            }
             collided += 1
             continue
         }

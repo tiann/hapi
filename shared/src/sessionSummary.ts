@@ -76,6 +76,8 @@ export type SessionSummary = {
      * Independent of agent `active` / thinking — work that outlives the agent.
      */
     attachedJob: AttachedJob | null
+    /** Watermark for versioned `attachedJob` SSE patches (dual EventSource race). */
+    attachedJobUpdatedAt: number
     model: string | null
     modelReasoningEffort?: string | null
     effort: string | null
@@ -230,6 +232,7 @@ export function toSessionSummary(
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
         attachedJob: extras?.attachedJob ?? null,
+        attachedJobUpdatedAt: extras?.attachedJob?.updatedAt ?? 0,
         model: session.model,
         modelReasoningEffort: session.modelReasoningEffort,
         effort: session.effort

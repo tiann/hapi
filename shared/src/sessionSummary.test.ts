@@ -330,10 +330,12 @@ describe('summary derivation helpers', () => {
         }
         const summary = toSessionSummary(makeSession(), { attachedJob: job })
         expect(summary.attachedJob).toEqual(job)
+        expect(summary.attachedJobUpdatedAt).toBe(job.updatedAt)
     })
 
     it('defaults attachedJob to null', () => {
         expect(toSessionSummary(makeSession()).attachedJob).toBeNull()
+        expect(toSessionSummary(makeSession()).attachedJobUpdatedAt).toBe(0)
     })
 
     it('toSessionSummaryMetadata returns null for null metadata', () => {

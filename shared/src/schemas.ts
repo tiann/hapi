@@ -431,6 +431,14 @@ export const AttachedJobPatchSchema = z.object({
 
 export type AttachedJobPatch = z.infer<typeof AttachedJobPatchSchema>
 
+// Dual SSE (global + per-session) has no shared delivery order. Version =
+// job.updatedAt for a live primary, or Date.now() when cleared to null, so a
+// lagged running heartbeat cannot resurrect a finished meter.
+const VersionedAttachedJobPatchSchema = z.object({
+    version: z.number(),
+    value: AttachedJobSchema.nullable()
+})
+
 export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
@@ -466,9 +474,8 @@ export const SessionPatchSchema = z.object({
     scratchlistUpdatedAt: z.number().optional(),
     // tiann/hapi#1404 — session-attached long-running jobs. Unlike
     // scratchlist (watermark → refetch), the list row needs the progress
-    // payload inline, so patches carry the primary running job (or null
-    // when cleared / none remain).
-    attachedJob: AttachedJobSchema.nullable().optional()
+    // payload inline. Versioned like todos so dual-SSE reorder is safe.
+    attachedJob: VersionedAttachedJobPatchSchema.optional()
 }).strict()
 
 export type SessionPatch = z.infer<typeof SessionPatchSchema>

@@ -169,6 +169,7 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.attachedJob?.heartbeatAt === next.attachedJob?.heartbeatAt
         && current.attachedJob?.startedAt === next.attachedJob?.startedAt
         && (current.attachedJob == null) === (next.attachedJob == null)
+        && (current.attachedJobUpdatedAt ?? 0) === (next.attachedJobUpdatedAt ?? 0)
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort
         && current.effort === next.effort
@@ -498,6 +499,7 @@ export function useSSE(options: {
                 const summary = {
                     ...toSessionSummary(session),
                     attachedJob: existing?.attachedJob ?? null,
+                    attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
                     nextScheduledAt: existing?.nextScheduledAt ?? null
                 }
@@ -543,9 +545,8 @@ export function useSSE(options: {
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
-                    attachedJob: Object.prototype.hasOwnProperty.call(patch, 'attachedJob')
-                        ? patch.attachedJob ?? null
-                        : current.attachedJob ?? null,
+                    attachedJob: current.attachedJob ?? null,
+                    attachedJobUpdatedAt: current.attachedJobUpdatedAt ?? 0,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
                     modelReasoningEffort: Object.prototype.hasOwnProperty.call(patch, 'modelReasoningEffort')
                         ? patch.modelReasoningEffort ?? null
@@ -570,6 +571,16 @@ export function useSSE(options: {
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {
                     nextSummary.metadata = toSessionSummaryMetadata(patch.metadata.value)
                     nextSummary.metadataVersion = patch.metadata.version
+                }
+                if (
+                    patch.attachedJob !== undefined
+                    && isNewerVersionedPatch(
+                        patch.attachedJob.version,
+                        current.attachedJobUpdatedAt ?? 0
+                    )
+                ) {
+                    nextSummary.attachedJob = patch.attachedJob.value
+                    nextSummary.attachedJobUpdatedAt = patch.attachedJob.version
                 }
 
                 patched = true

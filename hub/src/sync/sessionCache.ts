@@ -611,11 +611,15 @@ export class SessionCache {
         const namespace = cached?.namespace
             ?? this.store.sessions.getSession(sessionId)?.namespace
         if (!namespace) return
+        // Clear uses wall clock so it outranks any in-flight heartbeat stamp.
+        const version = attachedJob?.updatedAt ?? Date.now()
         this.publisher.emit({
             type: 'session-updated',
             sessionId,
             namespace,
-            data: { attachedJob } satisfies SessionPatch
+            data: {
+                attachedJob: { version, value: attachedJob }
+            } satisfies SessionPatch
         })
     }
 

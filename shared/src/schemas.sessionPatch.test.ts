@@ -102,7 +102,7 @@ describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => 
         expect(SessionPatchSchema.safeParse(fullSession).success).toBe(false);
     });
 
-    it('accepts attachedJob payload or null (tiann/hapi#1404)', () => {
+    it('accepts versioned attachedJob payload or null (tiann/hapi#1404)', () => {
         const job = AttachedJobSchema.parse({
             key: 'beets',
             label: 'beets import',
@@ -114,8 +114,15 @@ describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => 
             startedAt: 1_000,
             updatedAt: 2_000
         })
-        expect(SessionPatchSchema.safeParse({ attachedJob: job }).success).toBe(true)
-        expect(SessionPatchSchema.safeParse({ attachedJob: null }).success).toBe(true)
+        expect(SessionPatchSchema.safeParse({
+            attachedJob: { version: job.updatedAt, value: job }
+        }).success).toBe(true)
+        expect(SessionPatchSchema.safeParse({
+            attachedJob: { version: 3_000, value: null }
+        }).success).toBe(true)
+        // Bare job / bare null are rejected — dual-SSE needs a watermark.
+        expect(SessionPatchSchema.safeParse({ attachedJob: job }).success).toBe(false)
+        expect(SessionPatchSchema.safeParse({ attachedJob: null }).success).toBe(false)
     });
 
     it('rejects fake percent-only attached jobs without counters', () => {
