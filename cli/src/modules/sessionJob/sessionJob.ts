@@ -119,6 +119,32 @@ export function resolveSessionByPrefix(sessions: SessionListItem[], prefix: stri
     return matches[0]!
 }
 
+const FULL_SESSION_UUID =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Resolve a session id for job CLI calls. Prefer list match; if the prefix is
+ * a full UUID missing from the list (deleted merge source), pass it through so
+ * hub job routes can follow jobsAcceptedFromSessionIds.
+ */
+export function resolveSessionIdForJobCli(
+    sessions: SessionListItem[],
+    sessionIdPrefix: string
+): string {
+    try {
+        return resolveSessionByPrefix(sessions, sessionIdPrefix).id
+    } catch (error) {
+        if (
+            error instanceof SessionJobError
+            && error.code === 'not_found'
+            && FULL_SESSION_UUID.test(sessionIdPrefix.trim())
+        ) {
+            return sessionIdPrefix.trim()
+        }
+        throw error
+    }
+}
+
 async function resolveSessionId(
     apiUrl: string,
     jwt: string,
@@ -137,7 +163,7 @@ async function resolveSessionId(
     const sessions = Array.isArray(response.data?.sessions)
         ? (response.data.sessions as SessionListItem[])
         : []
-    return resolveSessionByPrefix(sessions, sessionIdPrefix).id
+    return resolveSessionIdForJobCli(sessions, sessionIdPrefix)
 }
 
 export type SessionJobClientOptions = {

@@ -118,6 +118,13 @@ export const MetadataSchema = z.object({
     // Set only after a completed fresh-session clear. The source row remains
     // archived; web clients use this durable link to follow the replacement.
     supersededBySessionId: z.string().optional(),
+    // After session merge/dedup transfers session_jobs: the target remembers
+    // which source ids it absorbed (so job REST can follow a deleted
+    // pre-merge $HAPI_SESSION_ID), and a kept-alive source points at the
+    // post-merge owner. Must be declared here — SessionCache.refreshSession
+    // parses via MetadataSchema and strips unknown keys (tiann/hapi#1404).
+    jobsAcceptedFromSessionIds: z.array(z.string()).optional(),
+    jobsTransferredToSessionId: z.string().optional(),
     // Durable in-progress state for runner-backed OpenCode /clear.
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),

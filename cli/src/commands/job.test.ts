@@ -3,7 +3,8 @@ import { parseJobArgs } from '@/commands/job'
 import {
     SessionJobError,
     exitCodeForSessionJobError,
-    resolveSessionByPrefix
+    resolveSessionByPrefix,
+    resolveSessionIdForJobCli
 } from '@/modules/sessionJob/sessionJob'
 
 describe('parseJobArgs', () => {
@@ -81,6 +82,17 @@ describe('resolveSessionByPrefix', () => {
 
     it('errors on no match', () => {
         expect(() => resolveSessionByPrefix(sessions, 'zzzz')).toThrow(/no session matching/)
+    })
+})
+
+describe('resolveSessionIdForJobCli', () => {
+    it('passes a full UUID through when missing from the session list', () => {
+        const deleted = 'cccccccc-4444-4444-4444-444444444444'
+        expect(resolveSessionIdForJobCli([], deleted)).toBe(deleted)
+    })
+
+    it('still errors for a non-uuid prefix with no list match', () => {
+        expect(() => resolveSessionIdForJobCli([], 'deadbeef')).toThrow(/no session matching/)
     })
 })
 
