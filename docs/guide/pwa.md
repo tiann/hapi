@@ -82,10 +82,10 @@ Companions that cannot use Web Share Target (for example a native app on a heads
 {hapiOrigin}/share#url=…&text=…&title=…
 ```
 
-- Fragment params: `url`, `text`, `title` (all optional; omit empty). Optional companion file hand-off: `fileUrl`, `fileName`, `fileType` — the page fetches `fileUrl` (CORS) into the same IndexedDB `files[]` as Web Share Target. The fragment is **not** sent on the HTTP request, so shared content does not appear in hub access logs.
+- Fragment params: `url`, `text`, `title` (all optional; omit empty). Optional companion file hand-off: `fileUrl`, `fileName`, `fileType` — the page fetches `fileUrl` (CORS) into the same IndexedDB `files[]` as Web Share Target (capped at the same 50 MiB upload limit). The fragment is **not** sent on the HTTP request, so shared content does not appear in hub access logs.
 - When any are present and query `id` is absent, the web app synthesizes the same IndexedDB transfer used by the POST path, scrubs the fragment, then continues with the session picker / create-new flow (`?id=`).
 - When query `id` is present (Web Share Target redirect), that path wins; fragment content is ignored for ingest.
-- Files still require the POST `share_target` path — deep links cannot carry binaries.
+- Deep links cannot embed binaries in the fragment; a companion may hand off one file with `fileUrl`. Use Web Share Target POST for direct or multi-file payloads.
 
 See [Web Share Target](https://developer.chrome.com/docs/capabilities/web-apis/web-share-target) for the POST vs GET distinction.
 

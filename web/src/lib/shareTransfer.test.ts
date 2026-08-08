@@ -238,6 +238,45 @@ describe('buildSharePayloadFromDeepLink', () => {
             { fetch: fetchMock as unknown as typeof fetch },
         )).rejects.toThrow(/fileUrl fetch failed/)
     })
+
+    it('rejects when Content-Length exceeds the upload ceiling', async () => {
+        const fetchMock = vi.fn(async () => new Response(new Uint8Array([1]), {
+            status: 200,
+            headers: {
+                'content-type': 'application/octet-stream',
+                'content-length': String(51 * 1024 * 1024),
+            },
+        }))
+        await expect(buildSharePayloadFromDeepLink(
+            { fileUrl: 'http://127.0.0.1:9/huge' },
+            1,
+            { fetch: fetchMock as unknown as typeof fetch },
+        )).rejects.toThrow(/too large/)
+    })
+
+    it('rejects when streamed body exceeds the upload ceiling', async () => {
+        const chunk = new Uint8Array(1024 * 1024)
+        let reads = 0
+        const stream = new ReadableStream<Uint8Array>({
+            pull(controller) {
+                reads += 1
+                if (reads <= 51) {
+                    controller.enqueue(chunk)
+                    return
+                }
+                controller.close()
+            },
+        })
+        const fetchMock = vi.fn(async () => new Response(stream, {
+            status: 200,
+            headers: { 'content-type': 'application/octet-stream' },
+        }))
+        await expect(buildSharePayloadFromDeepLink(
+            { fileUrl: 'http://127.0.0.1:9/stream' },
+            1,
+            { fetch: fetchMock as unknown as typeof fetch },
+        )).rejects.toThrow(/too large/)
+    })
 })
 
 describe('ingestShareRequest', () => {

@@ -1,4 +1,5 @@
 import { shareTargetPathname } from './sharePath'
+import { MAX_UPLOAD_BYTES } from './attachmentAdapter'
 
 /**
  * Share-target transfer storage.
@@ -157,6 +158,8 @@ export function buildSharePayloadFromSearchFields(
  * Native companion ingest: text fields plus optional `fileUrl` fetch into
  * `files[]` (same shape as Web Share Target POST). `fileUrl` must be
  * CORS-readable from the HAPI origin (companions send ACAO *).
+ * Enforces {@link MAX_UPLOAD_BYTES} while streaming so a crafted link cannot
+ * buffer an unbounded response into IndexedDB before the composer rejects it.
  */
 export async function buildSharePayloadFromDeepLink(
     fields: ShareDeepLinkFields,
@@ -172,7 +175,16 @@ export async function buildSharePayloadFromDeepLink(
     if (!response.ok) {
         throw new Error(`share fileUrl fetch failed: ${response.status}`)
     }
-    const blob = await response.blob()
+    const contentLength = response.headers.get('content-length')
+    if (contentLength) {
+        const declared = Number(contentLength)
+        if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
+            throw new Error(
+                `share fileUrl too large: ${declared} bytes (max ${MAX_UPLOAD_BYTES})`
+            )
+        }
+    }
+    const blob = await readResponseBlobLimited(response, MAX_UPLOAD_BYTES)
     const headerType = response.headers.get('content-type')?.split(';')[0]?.trim()
     const type = fields.fileType?.trim()
         || headerType
@@ -183,6 +195,39 @@ export async function buildSharePayloadFromDeepLink(
         ...base,
         files: [{ name, type, blob }],
     }
+}
+
+async function readResponseBlobLimited(
+    response: Response,
+    maxBytes: number
+): Promise<Blob> {
+    if (!response.body) {
+        const blob = await response.blob()
+        if (blob.size > maxBytes) {
+            throw new Error(
+                `share fileUrl too large: ${blob.size} bytes (max ${maxBytes})`
+            )
+        }
+        return blob
+    }
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value) continue
+        total += value.byteLength
+        if (total > maxBytes) {
+            await reader.cancel()
+            throw new Error(
+                `share fileUrl too large: exceeds ${maxBytes} bytes`
+            )
+        }
+        chunks.push(value)
+    }
+    const contentType = response.headers.get('content-type') ?? undefined
+    return new Blob(chunks, { type: contentType })
 }
 
 function guessFileName(fileUrl: string, type: string): string {
