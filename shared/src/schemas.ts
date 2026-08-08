@@ -410,6 +410,7 @@ export const AttachedJobUpsertSchema = z.object({
 
 export type AttachedJobUpsert = z.infer<typeof AttachedJobUpsertSchema>
 
+/** Progress/heartbeat only — no startedAt (use PUT upsert with explicit startedAt to correct). */
 export const AttachedJobPatchSchema = z.object({
     label: z.string().min(1).max(200).optional(),
     status: AttachedJobStatusSchema.optional(),

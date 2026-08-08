@@ -60,6 +60,46 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         store.close()
     })
 
+    it('preserves startedAt on PUT without body.startedAt; honors explicit correction', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const historical = 1_785_304_595_000
+
+        const created = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 10
+        }, 2_000)
+        expect(created.outcome).toBe('upserted')
+        if (created.outcome !== 'upserted') throw new Error('unreachable')
+        expect(created.job.startedAt).toBe(2_000)
+
+        const progress = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 9
+        }, 3_000)
+        expect(progress.outcome).toBe('upserted')
+        if (progress.outcome !== 'upserted') throw new Error('unreachable')
+        expect(progress.job.startedAt).toBe(2_000)
+        expect(progress.job.remaining).toBe(9)
+
+        const corrected = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 9,
+            startedAt: historical
+        }, 4_000)
+        expect(corrected.outcome).toBe('upserted')
+        if (corrected.outcome !== 'upserted') throw new Error('unreachable')
+        expect(corrected.job.startedAt).toBe(historical)
+
+        const patched = store.sessionJobs.patch(session.id, 'beets', { remaining: 8 }, 5_000)
+        expect(patched?.startedAt).toBe(historical)
+        expect(patched?.remaining).toBe(8)
+        store.close()
+    })
+
     it('transfers jobs on merge without colliding keys', () => {
         const store = new Store(':memory:')
         const oldSession = store.sessions.getOrCreateSession('old', { path: '/a' }, null, 'default')

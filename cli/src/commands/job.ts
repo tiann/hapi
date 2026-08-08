@@ -24,6 +24,7 @@ export type ParsedJobArgs = {
     remaining?: number
     unit?: string
     detail?: string
+    startedAt?: number
     heartbeatSec?: number
     command?: string[]
 }
@@ -44,7 +45,7 @@ ${chalk.bold('Agent contract:')}
 
 ${chalk.bold('Usage:')}
   hapi job run <session> <job-key> --label <text> [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]
-  hapi job set <session> <job-key> --label <text> [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
+  hapi job set <session> <job-key> --label <text> [--started-at MS] [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
   hapi job update <session> <job-key> [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
   hapi job clear <session> <job-key>
   hapi job list <session>
@@ -55,8 +56,15 @@ ${chalk.bold('Progress UI:')}
   label/detail only   → "running · 2h" + indeterminate bar
   elapsed always from startedAt (wall clock) — never an ETA / time-remaining field
 
+${chalk.bold('startedAt / elapsed:')}
+  Prefer ${chalk.bold('update')} for heartbeats/progress so the clock is never wiped.
+  PATCH rejects startedAt. PUT/set without --started-at keeps the existing clock.
+  Late attach or wrong clock: ${chalk.bold('set --started-at <epoch-ms>')} (explicit PUT),
+  or clear then set with --started-at (works on older hubs that ignored PUT corrections).
+
 ${chalk.bold('Notes:')}
   Hub-persisted. Prefer "$HAPI_SESSION_ID" for this chat.
+  Needs a hub/CLI that includes the job subcommand (soup / feat build — not every npm release).
   Job key: 1-128 chars, alnum / . _ -
   Session lookup prefers exact id; prefix scan is the 500 most-recently-updated sessions.
   Docs: docs/guide/session-jobs.md
@@ -164,6 +172,14 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         }
         if (arg.startsWith('--heartbeat-sec=')) {
             result.heartbeatSec = parseOptionalNumber('--heartbeat-sec', arg.slice('--heartbeat-sec='.length))
+            continue
+        }
+        if (arg === '--started-at') {
+            result.startedAt = parseOptionalNumber('--started-at', flagArgs[++i])
+            continue
+        }
+        if (arg.startsWith('--started-at=')) {
+            result.startedAt = parseOptionalNumber('--started-at', arg.slice('--started-at='.length))
             continue
         }
         if (arg.startsWith('-')) {
@@ -282,6 +298,9 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         if (!parsed.label) {
             throw new SessionJobError('bad_args', 'set requires --label')
         }
+        if (parsed.startedAt !== undefined && !Number.isFinite(parsed.startedAt)) {
+            throw new SessionJobError('bad_args', '--started-at must be epoch milliseconds')
+        }
         const body: AttachedJobUpsert = {
             label: parsed.label,
             status: parsed.status ?? 'running',
@@ -289,7 +308,8 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(parsed.total !== undefined ? { total: parsed.total } : {}),
             ...(parsed.remaining !== undefined ? { remaining: parsed.remaining } : {}),
             ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
-            ...(parsed.detail !== undefined ? { detail: parsed.detail } : {})
+            ...(parsed.detail !== undefined ? { detail: parsed.detail } : {}),
+            ...(parsed.startedAt !== undefined ? { startedAt: parsed.startedAt } : {})
         }
         const result = await setSessionJob({
             sessionIdPrefix: parsed.sessionIdPrefix,

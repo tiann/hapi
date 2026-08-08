@@ -99,7 +99,7 @@ Some agents (especially Cursor) can resume after idle from harness signals such 
 
 ### How do I show progress for a long batch that outlives the agent?
 
-Use session-attached jobs (`hapi job`). The agent (or a wrapper script) registers a job on the session, heartbeats while the process runs, and clears it when done. The session list shows remaining / fraction / or an indeterminate "running" meter even when the agent is idle. See [Session-attached jobs](./session-jobs.md).
+Use session-attached jobs (`hapi job`). The agent (or a wrapper script) registers a job on the session, heartbeats while the process runs, and clears it when done. The session list shows remaining / fraction / or an indeterminate "running" meter even when the agent is idle. See [Session-attached jobs](./session-jobs.md). This is Layer 0 list chrome - not an A2A Layer 1 work advertisement ([#1332](https://github.com/tiann/hapi/discussions/1332)).
 
 ### Can I access a terminal remotely?
 

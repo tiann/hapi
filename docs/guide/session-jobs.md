@@ -6,6 +6,21 @@ This is **not** in-agent thinking progress, todos, or `backgroundTaskCount`. Tho
 
 Upstream: [tiann/hapi#1404](https://github.com/tiann/hapi/issues/1404).
 
+## Relation to A2A (not work advertisements)
+
+HAPI's Agent-to-Agent control plane ([discussion #1332](https://github.com/tiann/hapi/discussions/1332)) is a **different** object family. Do not merge them.
+
+| | Session-attached jobs (#1404) | A2A `work_ad` (Layer 1) |
+|--|------------------------------|-------------------------|
+| Store | `session_jobs` | `events` / work-graph ledger |
+| Surface | `SessionSummary.attachedJob` (list chrome) | Durable collaboration ledger |
+| Question answered | "Is a long process still running on this session, and how far?" | "What is this session claiming about turn/project work for peers/overseer?" |
+| Progress | Heartbeats + honest counts / indeterminate | Status vocabulary (`in_progress`, `done`, `failed`, `stale`, …) |
+| Silence | UI amber after ~15m without heartbeat; status stays `running` until explicit exit | `expires_at` → `stale` / `unknown` — silence is **not** failure |
+| Self-report | Optional counts/detail; `hapi job run` exit code is machine fact | Optional `AGENT_NOTIFY_SUMMARY` elevation (stays optional forever) |
+
+Jobs enrich **Layer 0** session summaries (same layer as cite / inspect / ping). They are **not** Google A2A Tasks, and they are **not** a substitute for handoffs or work ads. Do not write job heartbeats into the A2A ledger. A privileged reader may *observe* `attachedJob` later; workers still must not poll the ledger as a work queue.
+
 ## When to attach
 
 Attach a job **before** (or immediately when) you start process-shaped work that will keep running after the agent goes idle:
@@ -57,7 +72,7 @@ Same auth as `hapi ping-peer` (`HAPI_API_URL` / `CLI_API_TOKEN` or `hapi auth lo
 | Countable fraction | `--done N --total M` | `91% · 1637/1787 units · 2d 4h` |
 | Stage only / unknown size | `--label` + `--detail` + heartbeats | `running · 2d 4h` + indeterminate bar |
 
-**Elapsed** is always derived from hub `startedAt` (wall clock since register). It is **not** an ETA and there is no time-remaining field - operators get "how long has this been going" plus whatever honest count/detail you report, without a fake completion estimate.
+**Elapsed** is always derived from hub `startedAt` (wall clock). It is **not** an ETA and there is no time-remaining field - operators get "how long has this been going" plus whatever honest count/detail you report, without a fake completion estimate.
 
 Rules:
 
@@ -65,6 +80,39 @@ Rules:
 - Prefer **done+total** when both ends of a fraction exist (UI may derive %).
 - If you only know a stage name, put it in `--detail` and keep heartbeating — do **not** fake `total=100`.
 - There is **no** `--percent` flag and **no** ETA / time-remaining field. Inventing either would train agents to lie.
+
+## `startedAt` / elapsed (late attach)
+
+Elapsed is honest wall clock from hub `startedAt`. Dogfood gotcha (music drain / beets):
+
+| Call | `startedAt` behavior |
+|------|----------------------|
+| `PATCH` / `hapi job update` | **Rejected** if you send `startedAt` (`unrecognized_keys`). Progress/heartbeat only. |
+| `PUT` / `hapi job set` without `--started-at` | Keeps the existing clock when the job already exists; first create stamps now. |
+| `PUT` / `hapi job set --started-at <epoch-ms>` | Sets/corrects the clock (explicit body field). |
+| `DELETE` then `PUT` with `startedAt` | Always works — including older hubs that ignored PUT corrections. |
+
+**Prefer `update` for heartbeats** so you never wipe the clock. Only correct historical start when a late attach stamped attach-time instead of process start:
+
+```bash
+# epoch ms for when the drain actually started (example)
+START_MS=1785304595000
+
+hapi job clear "$HAPI_SESSION_ID" beets
+hapi job set "$HAPI_SESSION_ID" beets \
+  --label 'beets import' \
+  --started-at "$START_MS" \
+  --remaining 0 --done 1787 --total 1787 --unit units \
+  --detail 'ALL_DONE'
+
+# or, on hubs that honor explicit PUT startedAt without delete:
+hapi job set "$HAPI_SESSION_ID" beets \
+  --label 'beets import' \
+  --started-at "$START_MS" \
+  --remaining 12 --done 1775 --total 1787 --unit units
+```
+
+Then keep using `hapi job update` for counts/detail/status.
 
 ## Heartbeat recipe
 
@@ -78,15 +126,25 @@ hapi job update "$HAPI_SESSION_ID" rsync-backup --detail "phase: copy · $(date 
 
 When the process exits, mark completed/failed or clear. A stuck green/amber chip with a dead PID is worse than no chip.
 
-## CLI reference
+## CLI / API reference
 
 ```bash
-hapi job set <session> <job-key> --label <text> [options]
-hapi job update <session> <job-key> [options]
+hapi job set <session> <job-key> --label <text> [--started-at MS] [progress flags]
+hapi job update <session> <job-key> [progress flags]   # no startedAt
 hapi job clear <session> <job-key>
 hapi job list <session>
+hapi job run <session> <job-key> --label <text> -- <cmd>…
 hapi job --help
 ```
+
+Needs a hub/CLI build that includes `job` (soup / feat — global npm releases may lag).
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/api/sessions/:id/jobs` | List jobs |
+| `PUT` | `/api/sessions/:id/jobs/:jobKey` | Upsert (`AttachedJobUpsert`; optional `startedAt`) |
+| `PATCH` | `/api/sessions/:id/jobs/:jobKey` | Progress/heartbeat (`AttachedJobPatch`; **no** `startedAt`) |
+| `DELETE` | `/api/sessions/:id/jobs/:jobKey` | Clear |
 
 Primary running job is enriched onto `GET /api/sessions` as `attachedJob` and pushed on `session-updated` SSE patches.
 
@@ -95,3 +153,4 @@ Primary running job is enriched onto `GET /api/sessions` as `attachedJob` and pu
 - [Supported Agents](./agents.md) — flavors and resume
 - [How it Works](./how-it-works.md) — CLI ↔ hub ↔ web
 - CLI: `hapi job --help`, `cli/README.md`
+- A2A control plane: [discussion #1332](https://github.com/tiann/hapi/discussions/1332) (Layer 1 work ads / handoffs — separate from this feature)

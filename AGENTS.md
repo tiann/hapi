@@ -174,14 +174,14 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 
 ## Session-attached jobs (outliving work)
 
-When an agent starts process-shaped work that will keep running after the agent goes idle (`nohup`, batch imports, long scripts, external daemons), attach it with `hapi job` so the session list stays truthful while `active: false`. This is **not** thinking progress / todos / in-agent background tools.
+When an agent starts process-shaped work that will keep running after the agent goes idle (`nohup`, batch imports, long scripts, external daemons), attach it with `hapi job` so the session list stays truthful while `active: false`. This is **not** thinking progress / todos / in-agent background tools. It is also **not** an A2A Layer 1 `work_ad` ([#1332](https://github.com/tiann/hapi/discussions/1332)) — jobs enrich Layer 0 `SessionSummary`; leave collaboration claims / handoffs to the work-graph ledger.
 
 Agent contract (prefer the supervisor — idle agents cannot heartbeat):
 
 1. Prefer `hapi job run "$HAPI_SESSION_ID" <key> --label … -- <cmd>` (auto-heartbeat + exit status)
 2. Manual path only with a self-heartbeating wrapper: `set` / `update` ≥~10m / clear
 3. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent
-4. Elapsed wall clock is always shown from `startedAt` (not an ETA)
+4. Elapsed wall clock is always shown from `startedAt` (not an ETA); correct late attach with `set --started-at` (or clear+set)
 
 Full guide: `docs/guide/session-jobs.md`. CLI: `hapi job --help`.
 

@@ -134,7 +134,11 @@ export function upsertSessionJob(
 ): UpsertSessionJobResult {
     const existing = getSessionJob(db, sessionId, jobKey)
     const heartbeatAt = body.heartbeatAt ?? now
-    const startedAt = body.startedAt ?? existing?.startedAt ?? now
+    // Explicit startedAt wins (late-attach correction). Omitted → keep existing clock,
+    // else stamp now. PATCH never accepts startedAt — use PUT or clear+PUT.
+    const startedAt = body.startedAt !== undefined
+        ? body.startedAt
+        : (existing?.startedAt ?? now)
     const status = body.status ?? 'running'
 
     try {
@@ -152,7 +156,7 @@ export function upsertSessionJob(
                 unit = excluded.unit,
                 detail = excluded.detail,
                 heartbeat_at = excluded.heartbeat_at,
-                started_at = session_jobs.started_at,
+                started_at = excluded.started_at,
                 updated_at = excluded.updated_at`
         ).run(
             sessionId,

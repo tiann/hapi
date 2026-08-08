@@ -47,6 +47,17 @@ describe('parseJobArgs', () => {
     it('rejects bad status', () => {
         expect(() => parseJobArgs(['update', 's', 'k', '--status', 'nope'])).toThrow(SessionJobError)
     })
+
+    it('parses --started-at for set', () => {
+        const parsed = parseJobArgs([
+            'set',
+            'sid',
+            'beets',
+            '--label=beets',
+            '--started-at=1785304595000'
+        ])
+        expect(parsed.startedAt).toBe(1_785_304_595_000)
+    })
 })
 
 describe('resolveSessionByPrefix', () => {

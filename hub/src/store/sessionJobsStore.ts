@@ -39,12 +39,22 @@ export class SessionJobsStore {
         return getPrimaryRunningJobsBySessionIds(this.db, sessionIds)
     }
 
-    upsert(sessionId: string, jobKey: string, body: AttachedJobUpsert): UpsertSessionJobResult {
-        return upsertSessionJob(this.db, sessionId, jobKey, body)
+    upsert(
+        sessionId: string,
+        jobKey: string,
+        body: AttachedJobUpsert,
+        now?: number
+    ): UpsertSessionJobResult {
+        return upsertSessionJob(this.db, sessionId, jobKey, body, now)
     }
 
-    patch(sessionId: string, jobKey: string, patch: AttachedJobPatch): StoredSessionJob | null {
-        return patchSessionJob(this.db, sessionId, jobKey, patch)
+    patch(
+        sessionId: string,
+        jobKey: string,
+        patch: AttachedJobPatch,
+        now?: number
+    ): StoredSessionJob | null {
+        return patchSessionJob(this.db, sessionId, jobKey, patch, now)
     }
 
     delete(sessionId: string, jobKey: string): boolean {
