@@ -85,6 +85,11 @@ type CodexCommandCandidate = {
     version: number[] | null;
 };
 
+export type CodexAppServerCommand = {
+    command: string;
+    args: string[];
+};
+
 function parseCodexVersion(output: string): number[] | null {
     const match = /(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?/u.exec(output);
     if (!match) return null;
@@ -115,9 +120,15 @@ function compareVersion(a: number[] | null, b: number[] | null): number {
     return 0;
 }
 
-function resolveCodexAppServerCommand(): string {
+export function resolveCodexAppServerCommand(): CodexAppServerCommand {
+    const profile = process.env.HAPI_CODEX_PROFILE?.trim();
+    const args = profile ? ['--profile', profile, 'app-server'] : ['app-server'];
+
     if (process.env.HAPI_CODEX_APP_SERVER_BIN) {
-        return process.env.HAPI_CODEX_APP_SERVER_BIN;
+        return {
+            command: process.env.HAPI_CODEX_APP_SERVER_BIN,
+            args
+        };
     }
 
     const candidates: CodexCommandCandidate[] = [{
@@ -154,7 +165,10 @@ function resolveCodexAppServerCommand(): string {
             version: candidate.version?.join('.') ?? null
         }))
     });
-    return best.command;
+    return {
+        command: best.command,
+        args
+    };
 }
 
 export class CodexAppServerClient extends JsonLineParser {
@@ -179,8 +193,8 @@ export class CodexAppServerClient extends JsonLineParser {
         }
 
         const codexCommand = resolveCodexAppServerCommand();
-        logger.debug(`[CodexAppServer] Starting ${codexCommand} app-server`);
-        this.process = spawn(codexCommand, ['app-server'], {
+        logger.debug(`[CodexAppServer] Starting ${codexCommand.command} ${codexCommand.args.join(' ')}`);
+        this.process = spawn(codexCommand.command, codexCommand.args, {
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];
                 if (typeof value === 'string') acc[key] = value;
