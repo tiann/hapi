@@ -14,6 +14,7 @@ import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
 import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './utils/opencodeCompactBridge';
+import { formatOpencodePromptError } from './utils/opencodeErrorText';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
@@ -584,7 +585,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);
-                this.surfaceAgentError('OpenCode prompt failed. Check logs for details.');
+                this.reportPromptFailure(error);
             } finally {
                 session.onThinkingChange(false);
                 await this.permissionHandler?.cancelAll('Prompt finished');
@@ -670,6 +671,42 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (isStall) {
             void this.clearStalledPrompt();
         }
+    }
+
+    /**
+     * Reports a rejected `session/prompt` to the user in the provider's own
+     * words.
+     *
+     * Nothing had to be detected to make this possible: `AcpStdioTransport`
+     * already rejects the pending request with the JSON-RPC `error.message`
+     * verbatim, and this catch used to log it and hand the user a fixed
+     * "check logs for details" line instead. A remote user is by definition
+     * not at the machine holding those logs.
+     *
+     * This reports unconditionally, and that is a decision rather than an
+     * omission. On a hard error OpenCode also dumps the same JSON-RPC error
+     * onto stderr, which the shared ACP reader reports a line at a time, so
+     * the user sees three raw fragments and then this one sentence. An
+     * earlier revision tried to suppress the sentence as a duplicate; do
+     * not add that back:
+     *
+     * - The fragments are a JSON dump split at newlines. This sentence is
+     *   the only line of the four a person can read. It follows them as a
+     *   summary, which is not the same thing as a repeat.
+     * - Suppressing on containment deleted it in every measured hard error,
+     *   because a fragment embeds it as a substring; suppressing on exact
+     *   equivalence never fired at all, because the fragment and this
+     *   sentence are differently worded. There was no observed case where
+     *   the check both fired and was right.
+     * - Doing it at all needs a per-turn ledger of what has been shown, and
+     *   the stderr path has no turn boundary of its own to reset it on: a
+     *   /compact batch never reaches this loop's per-prompt reset, so the
+     *   ledger leaked across batches and silently muted the stderr channel
+     *   for the rest of such a session. That channel discarded nothing
+     *   before this branch existed and should keep discarding nothing.
+     */
+    private reportPromptFailure(error: unknown): void {
+        this.surfaceAgentError(formatOpencodePromptError(error));
     }
 
     private surfaceAgentError(message: string): void {

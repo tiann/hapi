@@ -2035,6 +2035,80 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await launchPromise;
     });
 
+    it('tells the user why the prompt failed instead of pointing at logs they cannot read', async () => {
+        // The agent's own explanation already reaches this process: the ACP
+        // transport rejects `session/prompt` with the JSON-RPC error message
+        // verbatim (AcpStdioTransport's response handler). Discarding it left
+        // a remote user — the only user this launcher has — staring at a
+        // session that stopped for no stated reason, with "check the logs"
+        // pointing at a machine they are not sitting in front of.
+        harness.promptImpl = async () => {
+            throw new Error('Internal error: Rate limit exceeded: free-models-per-day. Add credits to unlock 1000 free models.');
+        };
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(agentMessages).toEqual([{
+            type: 'error',
+            message: 'OpenCode prompt failed: Rate limit exceeded: free-models-per-day. Add credits to unlock 1000 free models.'
+        }]);
+    });
+
+    it('delivers both the raw stderr dump and the readable sentence on a hard error', async () => {
+        // Measured (isolated E2E, stub provider answering 400): OpenCode
+        // dumps the JSON-RPC error onto stderr, the shared ACP reader splits
+        // it line by line, and each line is reported — then the rejected
+        // session/prompt reaches the catch. Both arrive, on purpose. The
+        // fragments are upstream's existing behaviour and the sentence is
+        // the only line of the set a person can read, so it follows them as
+        // a summary rather than as a repeat. An earlier revision suppressed
+        // it as a duplicate; see reportPromptFailure's doc comment for why
+        // that is not coming back.
+        harness.promptImpl = async () => {
+            harness.stderrHandler!({
+                type: 'unknown',
+                message: 'Error handling request {',
+                raw: 'Error handling request {'
+            });
+            harness.stderrHandler!({
+                type: 'unknown',
+                message: 'message: "Internal error: SENTINEL stub rejected the request",',
+                raw: 'message: "Internal error: SENTINEL stub rejected the request",'
+            });
+            throw new Error('Internal error: SENTINEL stub rejected the request');
+        };
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(agentMessages).toEqual([
+            { type: 'error', message: 'Error handling request {' },
+            { type: 'error', message: 'message: "Internal error: SENTINEL stub rejected the request",' },
+            { type: 'error', message: 'OpenCode prompt failed: SENTINEL stub rejected the request' }
+        ]);
+    });
+
+    it('falls back to the original wording when the failure carries no message at all', async () => {
+        harness.promptImpl = async () => {
+            throw new Error('');
+        };
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(agentMessages).toEqual([{
+            type: 'error',
+            message: 'OpenCode prompt failed. Check logs for details.'
+        }]);
+    });
+
     it('serializes setModel after the previous prompt resolves', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode('ollama/a') },
