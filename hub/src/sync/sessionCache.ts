@@ -1395,9 +1395,10 @@ export class SessionCache {
             // Preserve A→B→C ancestry: when B already accepted jobs from A and
             // now merges into C, clients still holding A's HAPI_SESSION_ID must
             // resolve through C after B is deleted.
-            const inheritedRaw = this.store.sessions
+            const fromMeta = this.store.sessions
                 .getSessionByNamespace(fromSessionId, namespace)
-                ?.metadata?.jobsAcceptedFromSessionIds
+                ?.metadata as Record<string, unknown> | null | undefined
+            const inheritedRaw = fromMeta?.jobsAcceptedFromSessionIds
             const inherited = Array.isArray(inheritedRaw)
                 ? inheritedRaw.filter((id): id is string => typeof id === 'string')
                 : []
