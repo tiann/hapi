@@ -104,6 +104,7 @@ export default function SettingsNotificationsPage() {
     })
 
     const mutation = useMutation({
+        scope: { id: 'notification-preferences' },
         mutationFn: async (update: NotificationPreferencesUpdate) => {
             if (!api) throw new Error('API unavailable')
             return await api.updateNotificationPreferences(update)
@@ -130,6 +131,7 @@ export default function SettingsNotificationsPage() {
 
     const [draft, setDraft] = useState<NotificationCopyConfig>({})
     const userEditedRef = useRef(false)
+    const editRevisionRef = useRef(0)
     useEffect(() => {
         // Initialize the draft from server copy, but never clobber edits made
         // while the query was still resolving.
@@ -145,11 +147,14 @@ export default function SettingsNotificationsPage() {
         },
         onMutate: () => {
             setCopySaveError(null)
+            return { editRevision: editRevisionRef.current }
         },
-        onSuccess: (data) => {
-            userEditedRef.current = false
+        onSuccess: (data, _copy, context) => {
             queryClient.setQueryData(queryKeys.notificationCopy, data)
-            setDraft(resolveEffectiveCopy(data.copy, data.defaults))
+            if (context?.editRevision === editRevisionRef.current) {
+                userEditedRef.current = false
+                setDraft(resolveEffectiveCopy(data.copy, data.defaults))
+            }
             setCopySaveError(null)
             setCopySaved(true)
             setTimeout(() => setCopySaved(false), 3000)
@@ -186,6 +191,7 @@ export default function SettingsNotificationsPage() {
 
     const updateDraftField = (block: CopyKey, field: 'title' | 'body', value: string) => {
         userEditedRef.current = true
+        editRevisionRef.current += 1
         setDraft((prev) => {
             const current = prev[block] ?? { title: '', body: '' }
             return { ...prev, [block]: { ...current, [field]: value } }
@@ -194,6 +200,7 @@ export default function SettingsNotificationsPage() {
 
     const resetDraftBlock = (block: CopyKey) => {
         userEditedRef.current = true
+        editRevisionRef.current += 1
         setDraft((prev) => {
             const fallback = copyQuery.data?.defaults[block]
             return fallback ? { ...prev, [block]: fallback } : prev

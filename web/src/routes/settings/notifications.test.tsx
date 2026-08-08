@@ -88,6 +88,41 @@ describe('SettingsNotificationsPage', () => {
         })
     })
 
+    it('serializes preference saves before applying full response snapshots', async () => {
+        let resolveFirst: (value: typeof defaultPrefs) => void = () => {}
+        let resolveSecond: (value: typeof defaultPrefs) => void = () => {}
+        updateNotificationPreferences
+            .mockReturnValueOnce(new Promise((resolve) => {
+                resolveFirst = resolve
+            }))
+            .mockReturnValueOnce(new Promise((resolve) => {
+                resolveSecond = resolve
+            }))
+        const queryClient = renderPage()
+
+        fireEvent.click(await screen.findByLabelText('Session ready'))
+        fireEvent.click(screen.getByLabelText('Task notifications'))
+
+        await waitFor(() => expect(updateNotificationPreferences).toHaveBeenCalledTimes(1))
+        expect(updateNotificationPreferences).toHaveBeenNthCalledWith(1, { sessionReady: 0 })
+
+        await act(async () => {
+            resolveFirst({ ...defaultPrefs, sessionReady: 0 })
+        })
+        await waitFor(() => expect(updateNotificationPreferences).toHaveBeenCalledTimes(2))
+        expect(updateNotificationPreferences).toHaveBeenNthCalledWith(2, { taskNotifications: 0 })
+
+        await act(async () => {
+            resolveSecond({ ...defaultPrefs, sessionReady: 0, taskNotifications: 0 })
+        })
+        await waitFor(() => {
+            expect(queryClient.getQueryData(queryKeys.notificationPreferences)).toMatchObject({
+                sessionReady: 0,
+                taskNotifications: 0,
+            })
+        })
+    })
+
     it('asks for confirmation before disabling permission requests', async () => {
         renderPage()
         const permissionSwitch = await screen.findByLabelText('Permission requests')
@@ -198,6 +233,33 @@ describe('SettingsNotificationsPage', () => {
         })
 
         expect(await screen.findByRole('button', { name: /Session ready.*Remote title.*Remote body/ })).toBeTruthy()
+    })
+
+    it('preserves copy edits made while a save is in flight', async () => {
+        let resolveSave: (value: typeof defaultCopyResponse) => void = () => {}
+        updateNotificationCopy.mockReturnValueOnce(new Promise((resolve) => {
+            resolveSave = resolve
+        }))
+        const queryClient = renderPage()
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
+        fireEvent.click(readyRow)
+        const titleInput = screen.getByLabelText('Title')
+        fireEvent.change(titleInput, { target: { value: 'Saved title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save copy' }))
+        await waitFor(() => expect(updateNotificationCopy).toHaveBeenCalledTimes(1))
+
+        fireEvent.change(titleInput, { target: { value: 'Newer unsaved title' } })
+        await act(async () => {
+            resolveSave({
+                ...defaultCopyResponse,
+                copy: { ready: { title: 'Saved title', body: 'Saved body' } },
+            })
+        })
+
+        expect(titleInput).toHaveValue('Newer unsaved title')
+        expect(queryClient.getQueryData(queryKeys.notificationCopy)).toMatchObject({
+            copy: { ready: { title: 'Saved title', body: 'Saved body' } },
+        })
     })
 
     it('keeps copy editors collapsed and prefills defaults when opened', async () => {
