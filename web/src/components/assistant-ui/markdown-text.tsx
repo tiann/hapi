@@ -496,7 +496,10 @@ function Code(props: ComponentPropsWithoutRef<'code'>) {
 function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: string; sessionId: string }) {
     const navigate = useNavigate()
     const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
-    const search = new URLSearchParams({ path: encodeBase64(props.filePath) }).toString()
+    const search = new URLSearchParams({
+        path: encodeBase64(props.filePath),
+        origin: 'chat',
+    }).toString()
     const href = `/sessions/${encodeURIComponent(props.sessionId)}/file?${search}`
 
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -508,7 +511,10 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: strin
         void navigate({
             to: '/sessions/$sessionId/file',
             params: { sessionId: props.sessionId },
-            search: { path: encodeBase64(props.filePath) }
+            search: {
+                path: encodeBase64(props.filePath),
+                origin: 'chat',
+            }
         })
     }
 

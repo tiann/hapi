@@ -43,8 +43,17 @@ export function useAppGoBack(): () => void {
             return
         }
 
-        // For single file view, go back to files list
+        // Chat file links return to the conversation; file-browser previews
+        // retain their deterministic parent route and browsing context.
         if (pathname.match(/^\/sessions\/[^/]+\/file$/)) {
+            const origin = search && typeof search === 'object' && 'origin' in search
+                ? (search as { origin?: unknown }).origin
+                : undefined
+            if (origin === 'chat') {
+                navigate({ to: pathname.replace(/\/file$/, '') })
+                return
+            }
+
             const filesPath = pathname.replace(/\/file$/, '/files')
             navigate({ to: filesPath, search: getSessionFilesBackSearch(search) })
             return

@@ -1,5 +1,29 @@
-import { describe, expect, it } from 'vitest'
-import { getSessionFilesBackSearch, getSettingsBackTarget } from './useAppGoBack'
+import { act, renderHook } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const routerMocks = vi.hoisted(() => ({
+    navigate: vi.fn(),
+    historyBack: vi.fn(),
+    pathname: '/sessions',
+    search: {} as unknown,
+}))
+
+vi.mock('@tanstack/react-router', () => ({
+    useNavigate: () => routerMocks.navigate,
+    useRouter: () => ({ history: { back: routerMocks.historyBack } }),
+    useLocation: ({ select }: {
+        select: (location: { pathname: string; search: unknown }) => unknown
+    }) => select({ pathname: routerMocks.pathname, search: routerMocks.search }),
+}))
+
+import { getSessionFilesBackSearch, getSettingsBackTarget, useAppGoBack } from './useAppGoBack'
+
+beforeEach(() => {
+    routerMocks.navigate.mockReset()
+    routerMocks.historyBack.mockReset()
+    routerMocks.pathname = '/sessions'
+    routerMocks.search = {}
+})
 
 describe('getSettingsBackTarget', () => {
     it.each([
@@ -35,5 +59,39 @@ describe('getSessionFilesBackSearch', () => {
             query: '',
         })).toEqual({})
         expect(getSessionFilesBackSearch(null)).toEqual({})
+    })
+})
+
+describe('useAppGoBack file preview navigation', () => {
+    it('returns directly to chat when the preview was opened from a chat link', () => {
+        routerMocks.pathname = '/sessions/session-1/file'
+        routerMocks.search = { path: 'encoded-path', origin: 'chat' }
+        const { result } = renderHook(() => useAppGoBack())
+
+        act(() => result.current())
+
+        expect(routerMocks.navigate).toHaveBeenCalledWith({
+            to: '/sessions/session-1',
+        })
+    })
+
+    it('keeps returning file-browser previews to their previous file context', () => {
+        routerMocks.pathname = '/sessions/session-1/file'
+        routerMocks.search = {
+            path: 'encoded-path',
+            tab: 'directories',
+            query: 'readme',
+        }
+        const { result } = renderHook(() => useAppGoBack())
+
+        act(() => result.current())
+
+        expect(routerMocks.navigate).toHaveBeenCalledWith({
+            to: '/sessions/session-1/files',
+            search: {
+                tab: 'directories',
+                query: 'readme',
+            },
+        })
     })
 })
