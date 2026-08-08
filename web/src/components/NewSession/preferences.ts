@@ -1,11 +1,18 @@
-import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol'
+import {
+    CREATABLE_AGENT_FLAVORS,
+    GROK_PERMISSION_MODES,
+    type CodexCollaborationMode,
+    type GrokPermissionMode
+} from '@hapi/protocol'
 import {
     CLAUDE_EFFORT_OPTIONS,
     CODEX_REASONING_EFFORT_OPTIONS,
     MODEL_OPTIONS,
     type AgentType,
     type CodexReasoningEffort,
-    type LaunchEffort
+    type LaunchEffort,
+    type NewSessionServiceTier,
+    type SessionType
 } from './types'
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
@@ -17,6 +24,10 @@ export type PreferredLaunchSettings = {
     cursorSelectedBase: string
     effort: LaunchEffort
     modelReasoningEffort: CodexReasoningEffort
+    serviceTier?: NewSessionServiceTier
+    collaborationMode?: CodexCollaborationMode
+    grokPermissionMode?: GrokPermissionMode
+    sessionType?: SessionType
 }
 
 // Only launchable flavors are valid defaults; a stale 'gemini' preference
@@ -84,7 +95,13 @@ export function loadPreferredLaunchSettings(
             effort: typeof parsed.effort === 'string' ? parsed.effort : 'auto',
             modelReasoningEffort: typeof parsed.modelReasoningEffort === 'string'
                 ? parsed.modelReasoningEffort
-                : 'default'
+                : 'default',
+            serviceTier: parsed.serviceTier === 'fast' ? 'fast' : 'standard',
+            collaborationMode: parsed.collaborationMode === 'plan' ? 'plan' : 'default',
+            grokPermissionMode: (GROK_PERMISSION_MODES as readonly string[]).includes(parsed.grokPermissionMode ?? '')
+                ? (parsed.grokPermissionMode as GrokPermissionMode)
+                : 'default',
+            sessionType: parsed.sessionType === 'worktree' ? 'worktree' : 'simple'
         }
     } catch {
         return null
@@ -117,7 +134,7 @@ function resolvePreferredOptionValue(
 export function resolvePreferredLaunchSettings(
     agent: AgentType,
     preferred: PreferredLaunchSettings | null
-): PreferredLaunchSettings {
+): Required<PreferredLaunchSettings> {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
     const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot'
@@ -144,6 +161,12 @@ export function resolvePreferredLaunchSettings(
         model,
         cursorSelectedBase: preferred?.cursorSelectedBase ?? 'auto',
         effort,
-        modelReasoningEffort
+        modelReasoningEffort,
+        serviceTier: preferred?.serviceTier === 'fast' ? 'fast' : 'standard',
+        collaborationMode: preferred?.collaborationMode === 'plan' ? 'plan' : 'default',
+        grokPermissionMode: (GROK_PERMISSION_MODES as readonly string[]).includes(preferred?.grokPermissionMode ?? '')
+            ? (preferred!.grokPermissionMode as GrokPermissionMode)
+            : 'default',
+        sessionType: preferred?.sessionType === 'worktree' ? 'worktree' : 'simple'
     }
 }

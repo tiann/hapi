@@ -397,7 +397,11 @@ describe('NewSession launch preferences', () => {
             model: 'gpt-5.6-terra',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'max'
+            modelReasoningEffort: 'max',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
     })
 

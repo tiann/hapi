@@ -677,6 +677,10 @@ export function NewSession(props: {
         setCursorSelectedBase(preferred.cursorSelectedBase)
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
+        setServiceTier(preferred.serviceTier)
+        setCollaborationMode(preferred.collaborationMode)
+        setGrokPermissionMode(preferred.grokPermissionMode)
+        setSessionType(preferred.sessionType)
         setOpencodeSelectedModel(
             agent === 'opencode' && preferred.model !== 'auto' ? preferred.model : null
         )
@@ -1327,7 +1331,11 @@ export function NewSession(props: {
                         : model,
                 cursorSelectedBase,
                 effort,
-                modelReasoningEffort
+                modelReasoningEffort,
+                serviceTier,
+                collaborationMode,
+                grokPermissionMode,
+                sessionType
             }
             const resolvedServiceTier = agent === 'codex' && showCodexFastMode
                 ? serviceTier
