@@ -101,3 +101,14 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
         )).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision session_job', () => {
+    it.each([
+        'session_job',
+        'hapi_session_job',
+        'mcp__hapi__session_job',
+        'Session-Attached Job'
+    ])('auto-approves own-session job meter %s', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBe('approved')
+    })
+})

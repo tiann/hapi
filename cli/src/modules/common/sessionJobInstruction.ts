@@ -2,22 +2,23 @@
  * Always-on steer for session-attached long-running jobs (tiann/hapi#1404).
  *
  * Injected into flavors that have a HAPI system / developer-instructions seam
- * today: Claude, Codex, OpenCode, Grok. Cursor ACP has no such seam (estate
- * skill `hapi-session-jobs` + `hapi job --help` instead). Other ACP flavors
- * (Kimi, Copilot, Pi, …) do not receive this block until an MCP job tool or
- * per-flavor seam lands — do not claim "every flavor."
+ * today: Claude, Codex, OpenCode, Grok. Cursor/Kimi/Copilot/Pi get the same
+ * MCP tool (`session_job`) via the HAPI MCP bridge — catalog discovery, not
+ * this prompt block. Estate skill remains a Cursor backup.
  */
 
 /** Canonical one-block contract. Keep short — every session's prompt budget. */
 export const SESSION_JOB_INSTRUCTION = [
     'Session-attached jobs (outliving work):',
     'When you start work that will keep running after this agent goes idle',
-    '(batch imports, long scripts, external daemons), attach it so the session',
-    'list can show progress while you are idle.',
-    'Prefer: hapi job run "$HAPI_SESSION_ID" <job-key> --label <text> -- <cmd>…',
-    '(auto-heartbeats + marks completed/failed on exit).',
-    'Manual path: hapi job set … then a wrapper must heartbeat via',
-    'hapi job update at least every ~10 minutes — an idle agent cannot.',
+    '(batch imports, long scripts, external daemons), attach a session job so',
+    'the session list shows progress while you are idle — same class of HAPI',
+    'tooling as ping_peer / inspect_peer.',
+    'Prefer MCP tool session_job (aliases: mcp__hapi__session_job, hapi_session_job,',
+    'functions.hapi__session_job) with action=set before the process starts, then',
+    'action=update every ~10m (idle agents cannot heartbeat).',
+    'For a supervised shell child: hapi job run "$HAPI_SESSION_ID" <job-key>',
+    '--label <text> -- <cmd>… (auto-heartbeats + completed/failed on exit).',
     'Prefer honest remaining or done+total; omit counts when unknown',
     '(UI shows "running" + elapsed). Never invent a fake percent.',
     'Full contract: hapi job --help.'
