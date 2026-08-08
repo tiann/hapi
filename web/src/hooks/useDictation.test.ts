@@ -52,9 +52,9 @@ describe('useDictation', () => {
             onTextChange
         }), { wrapper: StrictMode })
 
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
         expect(result.current.status).toBe('connected')
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
 
         await waitFor(() => expect(onTextChange).toHaveBeenCalledWith('existing draft dictated words'))
         expect(api.transcribeVoice).toHaveBeenCalledOnce()
@@ -99,7 +99,7 @@ describe('useDictation', () => {
             onTextChange
         }))
 
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
         expect(result.current.status).toBe('connected')
 
         let toggleResolved = false
@@ -161,12 +161,12 @@ describe('useDictation', () => {
             onTextChange
         }))
 
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
         act(() => recognition?.emit('live words', false))
         expect(result.current.partialTranscript).toBe('live words')
         expect(onTextChange).not.toHaveBeenCalled()
         act(() => recognition?.emit('final words', true))
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
 
         await waitFor(() => expect(onTextChange).toHaveBeenCalledWith('existing draft final words'))
         expect(result.current.partialTranscript).toBe('')
