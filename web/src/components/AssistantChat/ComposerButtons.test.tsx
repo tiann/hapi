@@ -363,8 +363,34 @@ describe('UnifiedButton — voice active state', () => {
         expect(onSend).not.toHaveBeenCalled()
     })
 
-    it('clicking Send button during active voice calls onVoiceToggle and onSend', () => {
-        const onVoiceToggle = vi.fn()
+    it('clicking Send button during active voice calls onVoiceToggle and onSend', async () => {
+        const onVoiceToggle = vi.fn(async () => {})
+        const onSend = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend={false}
+                voiceStatus="connected"
+                voiceEnabled
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const sendBtn = screen.getByRole('button', { name: 'Send' })
+        await act(async () => {
+            fireEvent.click(sendBtn)
+        })
+        expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).toHaveBeenCalledOnce()
+        expect(onSend).toHaveBeenCalledWith('default')
+    })
+
+    it('awaits onVoiceToggle completion before invoking onSend', async () => {
+        let resolveVoiceToggle!: () => void
+        const onVoiceToggle = vi.fn(() => new Promise<void>((resolve) => {
+            resolveVoiceToggle = resolve
+        }))
         const onSend = vi.fn()
         renderInProviders(
             <UnifiedButton
@@ -380,8 +406,14 @@ describe('UnifiedButton — voice active state', () => {
         const sendBtn = screen.getByRole('button', { name: 'Send' })
         fireEvent.click(sendBtn)
         expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).not.toHaveBeenCalled()
+
+        await act(async () => {
+            resolveVoiceToggle()
+        })
         expect(onSend).toHaveBeenCalledOnce()
         expect(onSend).toHaveBeenCalledWith('default')
     })
 })
+
 

@@ -58,6 +58,7 @@ export function useDictation(config: {
     const mountedRef = useRef(true)
     const operationRef = useRef(0)
     const transcribingRef = useRef(false)
+    const stopResolverRef = useRef<(() => void) | null>(null)
 
     const stopTracks = useCallback(() => {
         streamRef.current?.getTracks().forEach((track) => track.stop())
@@ -98,11 +99,19 @@ export function useDictation(config: {
                 const blob = new Blob(chunksRef.current, { type })
                 recorderRef.current = null
                 chunksRef.current = []
-                if (!mountedRef.current) return
+                if (!mountedRef.current) {
+                    const resolve = stopResolverRef.current
+                    stopResolverRef.current = null
+                    resolve?.()
+                    return
+                }
                 if (!blob.size) {
                     transcribingRef.current = false
                     setError('No audio was recorded')
                     setStatus('error')
+                    const resolve = stopResolverRef.current
+                    stopResolverRef.current = null
+                    resolve?.()
                     return
                 }
                 transcribingRef.current = true
@@ -122,6 +131,9 @@ export function useDictation(config: {
                     setStatus('error')
                 } finally {
                     transcribingRef.current = false
+                    const resolve = stopResolverRef.current
+                    stopResolverRef.current = null
+                    resolve?.()
                 }
             }
             recorder.start()
@@ -141,7 +153,11 @@ export function useDictation(config: {
         if (recorder && recorder.state !== 'inactive') {
             transcribingRef.current = true
             setStatus('connecting')
+            const completionPromise = new Promise<void>((resolve) => {
+                stopResolverRef.current = resolve
+            })
             recorder.stop()
+            await completionPromise
         } else {
             setStatus('disconnected')
             stopTracks()

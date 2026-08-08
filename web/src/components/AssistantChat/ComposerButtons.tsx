@@ -476,7 +476,7 @@ export function UnifiedButton(props: {
     voiceEnabled: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
-    onVoiceToggle: () => void
+    onVoiceToggle: () => void | Promise<void>
     voiceLabel?: string
     /**
      * When true, the send button repaints amber and the aria-label
@@ -509,8 +509,8 @@ export function UnifiedButton(props: {
             ? 'bg-amber-500 text-white hover:bg-amber-600'
             : 'bg-black text-white'
 
-        const handleVoiceSendClick = () => {
-            props.onVoiceToggle()
+        const handleVoiceSendClick = async () => {
+            await props.onVoiceToggle()
             props.onSend('default')
         }
 
