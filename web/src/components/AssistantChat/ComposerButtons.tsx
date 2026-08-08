@@ -474,9 +474,10 @@ export function UnifiedButton(props: {
     canSend: boolean
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
+    dictationEnabled?: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
-    onVoiceToggle: () => void
+    onVoiceToggle: () => void | boolean | Promise<void | boolean>
     voiceLabel?: string
     /**
      * When true, the send button repaints amber and the aria-label
@@ -494,17 +495,66 @@ export function UnifiedButton(props: {
     allowQueueGesture?: boolean
 }) {
     const { t } = useTranslation()
+    const voiceSendPendingRef = useRef(false)
 
     const isConnecting = props.voiceStatus === 'connecting'
     const isConnected = props.voiceStatus === 'connected'
     const isVoiceActive = isConnecting || isConnected
     const hasText = props.canSend
     const routesToScratchlist = props.routesToScratchlist ?? false
+    const isDictation = props.dictationEnabled ?? false
+
+    if (isVoiceActive) {
+        const stopIcon = isConnecting ? <LoadingIcon /> : <StopIcon />
+        const stopAriaLabel = isConnecting ? t('voice.connecting') : t('composer.stop')
+        const sendAriaLabel = routesToScratchlist ? t('scratchlist.sendToScratchlist') : t('composer.send')
+        const sendClassName = routesToScratchlist
+            ? 'bg-amber-500 text-white hover:bg-amber-600'
+            : 'bg-black text-white'
+
+        const handleVoiceSendClick = async () => {
+            if (voiceSendPendingRef.current) return
+            voiceSendPendingRef.current = true
+            try {
+                const committed = await props.onVoiceToggle()
+                if (committed !== false) {
+                    props.onSend('default')
+                }
+            } finally {
+                voiceSendPendingRef.current = false
+            }
+        }
+
+        return (
+            <div className="flex items-center gap-1">
+                <button
+                    type="button"
+                    onClick={props.onVoiceToggle}
+                    disabled={props.controlsDisabled}
+                    aria-label={stopAriaLabel}
+                    title={stopAriaLabel}
+                    className="ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-black text-white"
+                >
+                    {stopIcon}
+                </button>
+                {isDictation ? (
+                    <button
+                        type="button"
+                        onClick={handleVoiceSendClick}
+                        disabled={props.controlsDisabled}
+                        aria-label={sendAriaLabel}
+                        title={sendAriaLabel}
+                        className={`ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sendClassName}`}
+                    >
+                        <SendIcon />
+                    </button>
+                ) : null}
+            </div>
+        )
+    }
 
     const handleClick = () => {
-        if (isVoiceActive) {
-            props.onVoiceToggle() // Stop voice
-        } else if (hasText) {
+        if (hasText) {
             props.onSend('default') // Send message (or scratchlist add — wrapper decides)
         } else if (props.voiceEnabled && !routesToScratchlist) {
             props.onVoiceToggle() // Start voice (suppressed in scratchlist mode)
@@ -518,7 +568,6 @@ export function UnifiedButton(props: {
     const canQueueGesture = Boolean(
         props.allowQueueGesture
         && hasText
-        && !isVoiceActive
         && !routesToScratchlist
         && !props.controlsDisabled,
     )
@@ -534,15 +583,7 @@ export function UnifiedButton(props: {
     let className: string
     let ariaLabel: string
 
-    if (isConnecting) {
-        icon = <LoadingIcon />
-        className = 'bg-black text-white'
-        ariaLabel = t('voice.connecting')
-    } else if (isConnected) {
-        icon = <StopIcon />
-        className = 'bg-black text-white'
-        ariaLabel = t('composer.stop')
-    } else if (routesToScratchlist) {
+    if (routesToScratchlist) {
         // Amber send button - matches the scratchlist drawer accent.
         // Single visual signal carries the "this goes to the scratchlist"
         // contract; without it, the modal state is invisible to the user.
@@ -571,7 +612,7 @@ export function UnifiedButton(props: {
     const isDisabled = props.controlsDisabled || (
         routesToScratchlist
             ? !hasText
-            : !hasText && !props.voiceEnabled && !isVoiceActive
+            : !hasText && !props.voiceEnabled
     )
 
     return (
@@ -907,6 +948,7 @@ export function ComposerButtons(props: {
                 canSend={props.canSend}
                 voiceStatus={props.voiceStatus}
                 voiceEnabled={props.voiceEnabled}
+                dictationEnabled={props.dictationEnabled}
                 controlsDisabled={props.controlsDisabled}
                 onSend={props.onSend}
                 onVoiceToggle={props.onVoiceToggle}
