@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
     ClearOpencodeSessionCallbackRequestSchema,
     ClearOpencodeSessionResponseSchema,
+    ListClaudeSessionsRpcResponseSchema,
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
@@ -33,6 +34,36 @@ describe('ListCodexSessionsRpcResponseSchema', () => {
         expect(parsed.success).toBe(true)
         if (parsed.success) {
             expect(parsed.sessions[0]?.messages).toHaveLength(1)
+        }
+    })
+})
+
+describe('ListClaudeSessionsRpcResponseSchema', () => {
+    it('preserves Claude transcript messages when parsing runner RPC responses', () => {
+        const parsed = ListClaudeSessionsRpcResponseSchema.parse({
+            success: true,
+            sessions: [{
+                id: 'claude-session-id',
+                title: 'Claude Session',
+                file: '/home/user/.claude/projects/project/session.jsonl',
+                modifiedAt: 1_000,
+                messageCount: 1,
+                messages: [{
+                    localId: 'claude:claude-session-id:user-1',
+                    createdAt: 900,
+                    content: {
+                        role: 'user',
+                        content: { type: 'text', text: 'hello' },
+                        meta: { sentFrom: 'cli' }
+                    }
+                }]
+            }]
+        })
+
+        expect(parsed.success).toBe(true)
+        if (parsed.success) {
+            const first = parsed.sessions[0]
+            expect(first && 'messages' in first ? first.messages : []).toHaveLength(1)
         }
     })
 })

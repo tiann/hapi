@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
+import type { ClaudeLocalSessionSummary, CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -41,6 +41,7 @@ import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTi
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { CollaborationModeSelector } from './CollaborationModeSelector'
+import { ClaudeImportActions } from './ClaudeImportActions'
 import { CodexImportActions } from './CodexImportActions'
 import { PiImportActions } from './PiImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
@@ -69,6 +70,7 @@ import { SessionTypeSelector } from './SessionTypeSelector'
 import { PermissionField } from './PermissionField'
 import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
+import { ClaudeSessionImportDialog } from '@/components/ClaudeSessionImportDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
@@ -126,6 +128,15 @@ export function NewSession(props: {
     const [codexImportError, setCodexImportError] = useState<string | null>(null)
     const [isImportingCodexSession, setIsImportingCodexSession] = useState(false)
     const [isCodexImportDialogOpen, setIsCodexImportDialogOpen] = useState(false)
+    const [claudeImportSessions, setClaudeImportSessions] = useState<ClaudeLocalSessionSummary[]>([])
+    const [selectedClaudeImportSessionId, setSelectedClaudeImportSessionId] = useState<string | null>(null)
+    const [claudeImportMachineId, setClaudeImportMachineId] = useState<string | null>(null)
+    const [isLoadingClaudeImportSessions, setIsLoadingClaudeImportSessions] = useState(false)
+    const [claudeImportError, setClaudeImportError] = useState<string | null>(null)
+    const [isImportingClaudeSession, setIsImportingClaudeSession] = useState(false)
+    const [isBulkImportingClaudeSessions, setIsBulkImportingClaudeSessions] = useState(false)
+    const [isClaudeImportDialogOpen, setIsClaudeImportDialogOpen] = useState(false)
+    const claudeLoadGenerationRef = useRef(0)
     const [piImportSessions, setPiImportSessions] = useState<PiLocalSessionSummary[]>([])
     const [selectedPiImportSessionId, setSelectedPiImportSessionId] = useState<string | null>(null)
     const [piImportMachineId, setPiImportMachineId] = useState<string | null>(null)
@@ -150,6 +161,8 @@ export function NewSession(props: {
         || props.isLoading
         || isImportingCodexSession
         || isBulkImportingCodexSessions
+        || isImportingClaudeSession
+        || isBulkImportingClaudeSessions
         || isImportingPiSession
         || isBulkImportingPiSessions
     )
@@ -191,6 +204,22 @@ export function NewSession(props: {
             setCodexImportError(null)
         }
     }, [agent])
+
+    useEffect(() => {
+        if (agent !== 'claude') {
+            setSelectedClaudeImportSessionId(null)
+            setClaudeImportSessions([])
+            setClaudeImportMachineId(null)
+            setClaudeImportError(null)
+        }
+    }, [agent])
+
+    useEffect(() => {
+        setSelectedClaudeImportSessionId(null)
+        setClaudeImportSessions([])
+        setClaudeImportMachineId(null)
+        setClaudeImportError(null)
+    }, [machineId])
 
     useEffect(() => {
         savePreferredYoloMode(yoloMode)
@@ -907,6 +936,44 @@ export function NewSession(props: {
     }, [agent, machineId, props.api, trimmedDirectory, t])
 
     useEffect(() => {
+        claudeLoadGenerationRef.current += 1
+        setIsLoadingClaudeImportSessions(false)
+    }, [agent, machineId, trimmedDirectory])
+
+    useEffect(() => () => {
+        claudeLoadGenerationRef.current += 1
+    }, [])
+
+    const loadClaudeImportSessions = useCallback(async () => {
+        if (agent !== 'claude' || !machineId) return
+        const generation = ++claudeLoadGenerationRef.current
+        setIsLoadingClaudeImportSessions(true)
+        setClaudeImportError(null)
+        try {
+            const result = await props.api.getClaudeSessions(trimmedDirectory || null, machineId)
+            if (generation !== claudeLoadGenerationRef.current) return
+            if (!result.success) throw new Error(result.error)
+            setClaudeImportSessions(result.sessions)
+            setClaudeImportMachineId(result.machineId ?? machineId)
+            setSelectedClaudeImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
+        } catch (loadError) {
+            if (generation !== claudeLoadGenerationRef.current) return
+            setClaudeImportSessions([])
+            setClaudeImportMachineId(null)
+            setSelectedClaudeImportSessionId(null)
+            setClaudeImportError(loadError instanceof Error ? loadError.message : t('claudeImport.failed.body'))
+        } finally {
+            if (generation === claudeLoadGenerationRef.current) setIsLoadingClaudeImportSessions(false)
+        }
+    }, [agent, machineId, props.api, trimmedDirectory, t])
+
+    const formatClaudeImportError = useCallback((code?: string, message?: string): string => {
+        if (code === 'transcript_diverged') return t('claudeImport.error.diverged')
+        if (code === 'session_active') return t('claudeImport.error.active')
+        return message?.trim() || t('claudeImport.failed.body')
+    }, [t])
+
+    useEffect(() => {
         piLoadGenerationRef.current += 1
         setIsLoadingPiImportSessions(false)
     }, [agent, machineId, trimmedDirectory])
@@ -1138,6 +1205,66 @@ export function NewSession(props: {
         t
     ])
 
+    const handleBulkImportClaudeSessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingClaudeSessions || isLoadingClaudeImportSessions) return
+        setIsBulkImportingClaudeSessions(true)
+        try {
+            const result = await props.api.importClaudeSessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: claudeImportMachineId ?? machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error).length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('claudeImport.success.title'),
+                    body: t('claudeImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await loadClaudeImportSessions()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('claudeImport.failed.title'),
+                    body: t('claudeImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatClaudeImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsClaudeImportDialogOpen(false)
+            setSelectedClaudeImportSessionId(null)
+        } catch (importError) {
+            addToast({
+                title: t('claudeImport.failed.title'),
+                body: importError instanceof Error ? importError.message : t('claudeImport.failed.body'),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingClaudeSessions(false)
+        }
+    }, [
+        addToast,
+        claudeImportMachineId,
+        formatClaudeImportError,
+        isBulkImportingClaudeSessions,
+        isLoadingClaudeImportSessions,
+        loadClaudeImportSessions,
+        machineId,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
     const handleBulkImportPiSessions = useCallback(async (sessionIds: string[]) => {
         if (isBulkImportingPiSessions || isLoadingPiImportSessions) return
         setIsBulkImportingPiSessions(true)
@@ -1202,6 +1329,10 @@ export function NewSession(props: {
         () => codexImportSessions.find((session) => session.id === selectedCodexImportSessionId) ?? null,
         [codexImportSessions, selectedCodexImportSessionId]
     )
+    const selectedClaudeImportSession = useMemo(
+        () => claudeImportSessions.find((session) => session.id === selectedClaudeImportSessionId) ?? null,
+        [claudeImportSessions, selectedClaudeImportSessionId]
+    )
     const selectedPiImportSession = useMemo(
         () => piImportSessions.find((session) => session.id === selectedPiImportSessionId) ?? null,
         [piImportSessions, selectedPiImportSessionId]
@@ -1223,6 +1354,9 @@ export function NewSession(props: {
         setSelectedCodexImportSessionId(null)
         setCodexImportSessions([])
         setCodexImportMachineId(null)
+        setSelectedClaudeImportSessionId(null)
+        setClaudeImportSessions([])
+        setClaudeImportMachineId(null)
         setSelectedPiImportSessionId(null)
         setPiImportSessions([])
         setPiImportMachineId(null)
@@ -1477,6 +1611,34 @@ export function NewSession(props: {
                 return
             }
 
+            if (agent === 'claude' && selectedClaudeImportSession) {
+                setIsImportingClaudeSession(true)
+                const result = await props.api.importClaudeSessions({
+                    sessionIds: [selectedClaudeImportSession.id],
+                    cwd: selectedClaudeImportSession.cwd ?? trimmedDirectory,
+                    machineId: claudeImportMachineId ?? machineId,
+                    model: resolvedModel ?? null,
+                    effort: resolvedEffort ?? null,
+                    permissionMode: yoloMode ? 'bypassPermissions' : 'default'
+                })
+                const imported = result.results.find((item) => item.claudeSessionId === selectedClaudeImportSession.id)
+                if (imported?.error) {
+                    setIsImportingClaudeSession(false)
+                    haptic.notification('error')
+                    setError(formatClaudeImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('claudeImport.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
             if (agent === 'pi' && selectedPiImportSession) {
                 setIsImportingPiSession(true)
                 const result = await props.api.importPiSessions({
@@ -1537,6 +1699,7 @@ export function NewSession(props: {
             setError(result.message)
         } catch (e) {
             setIsImportingCodexSession(false)
+            setIsImportingClaudeSession(false)
             setIsImportingPiSession(false)
             haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Failed to create session')
@@ -1634,6 +1797,19 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onAgentChange={handleAgentChange}
             />
+            {agent === 'claude' ? (
+                <ClaudeImportActions
+                    selectedSession={selectedClaudeImportSession}
+                    isLoading={isLoadingClaudeImportSessions}
+                    isDisabled={isFormDisabled}
+                    error={claudeImportError}
+                    onChooseHistory={() => {
+                        setIsClaudeImportDialogOpen(true)
+                        void loadClaudeImportSessions()
+                    }}
+                    onClear={() => setSelectedClaudeImportSessionId(null)}
+                />
+            ) : null}
             {agent === 'codex' ? (
                 <CodexImportActions
                     selectedSession={selectedCodexImportSession}
@@ -1821,6 +1997,27 @@ export function NewSession(props: {
                 createLabel={createLabel}
                 onCancel={props.onCancel}
                 onCreate={handleCreate}
+            />
+            <ClaudeSessionImportDialog
+                isOpen={isClaudeImportDialogOpen}
+                onClose={() => setIsClaudeImportDialogOpen(false)}
+                sessions={claudeImportSessions}
+                currentSessionId={selectedClaudeImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = claudeImportSessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            setSelectedClaudeImportSessionId(session.id)
+                            if (session.cwd?.trim()) setDirectory(session.cwd.trim())
+                            setIsClaudeImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportClaudeSessions(sessionIds)
+                }}
+                isPending={isBulkImportingClaudeSessions}
+                isLoading={isLoadingClaudeImportSessions}
             />
             <CodexSessionSyncDialog
                 isOpen={isCodexImportDialogOpen}
