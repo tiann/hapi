@@ -33,7 +33,9 @@ function humanizeStatus(status: string): string {
 function SummaryStatusIndicator({ summary }: { summary: NotifySummary }) {
     const { t } = useTranslation()
     const normalizedStatus = normalizeStatus(summary.status)
-    const presentation = SUMMARY_STATUS_PRESENTATIONS[normalizedStatus]
+    const presentation = Object.hasOwn(SUMMARY_STATUS_PRESENTATIONS, normalizedStatus)
+        ? SUMMARY_STATUS_PRESENTATIONS[normalizedStatus]
+        : undefined
     const statusLabel = presentation
         ? t(presentation.labelKey)
         : normalizedStatus

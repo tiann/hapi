@@ -41,6 +41,19 @@ describe('NotifySummaryText', () => {
         expect(screen.getByTestId('notify-summary-status').querySelector('svg')).toBeNull()
     })
 
+    it('humanizes unknown prototype-named statuses instead of using inherited presentations', () => {
+        const view = renderText('Finished.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"constructor"}')
+
+        expect(screen.getByTestId('notify-summary-status')).toHaveTextContent('Constructor')
+        expect(screen.getByTestId('notify-summary-status').querySelector('svg')).toBeNull()
+
+        view.unmount()
+        renderText('Finished.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"__proto__"}')
+
+        expect(screen.getByTestId('notify-summary-status')).toHaveTextContent('Proto')
+        expect(screen.getByTestId('notify-summary-status').querySelector('svg')).toBeNull()
+    })
+
     it('keeps prose glued to the footer in the visible message body', () => {
         renderText('Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}')
 
