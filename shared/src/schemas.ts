@@ -123,6 +123,7 @@ export const MetadataSchema = z.object({
     // pre-merge $HAPI_SESSION_ID), and a kept-alive source points at the
     // post-merge owner. Must be declared here — SessionCache.refreshSession
     // parses via MetadataSchema and strips unknown keys (tiann/hapi#1404).
+    // Hub-owned: CLI update-metadata cannot forge/erase (HUB_OWNED_METADATA_KEYS).
     jobsAcceptedFromSessionIds: z.array(z.string()).optional(),
     jobsTransferredToSessionId: z.string().optional(),
     // Durable in-progress state for runner-backed OpenCode /clear.
