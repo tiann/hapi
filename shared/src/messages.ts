@@ -142,17 +142,26 @@ export type NotifySummary = {
  * Match a well-formed `AGENT_NOTIFY_SUMMARY {...}` footer on a single line.
  *
  * Allows an optional prose prefix on the same line (agents sometimes glue
- * trailing text and the token without a newline). The token must be the
- * last occurrence on the line, and the JSON object must run through the
- * end of the line.
+ * trailing text and the token without a newline). Scans left-to-right and
+ * returns the first token occurrence whose remainder is valid JSON through
+ * end of line - so a literal `AGENT_NOTIFY_SUMMARY ` inside a JSON string
+ * value does not steal the match from the real footer.
  */
 function matchNotifySummaryLine(line: string): string | null {
-    const idx = line.lastIndexOf(NOTIFY_SUMMARY_PREFIX)
-    if (idx < 0) return null
-
-    const jsonPart = line.slice(idx + NOTIFY_SUMMARY_PREFIX.length).trim()
-    if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) return null
-    return jsonPart
+    for (
+        let idx = line.indexOf(NOTIFY_SUMMARY_PREFIX);
+        idx >= 0;
+        idx = line.indexOf(NOTIFY_SUMMARY_PREFIX, idx + NOTIFY_SUMMARY_PREFIX.length)
+    ) {
+        const jsonPart = line.slice(idx + NOTIFY_SUMMARY_PREFIX.length).trim()
+        if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) continue
+        try {
+            if (isObject(JSON.parse(jsonPart))) return jsonPart
+        } catch {
+            // Try the next occurrence (e.g. token mentioned inside a value).
+        }
+    }
+    return null
 }
 
 /**

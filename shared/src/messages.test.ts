@@ -195,6 +195,21 @@ describe('extractNotifySummary', () => {
         expect(r?.summary).toBe('thing {nested} thing')
         expect(r?.status).toBe('done')
     })
+
+    test('parses when a JSON string value mentions the token literal', () => {
+        // lastIndexOf would start inside the summary value and fail.
+        const text = 'AGENT_NOTIFY_SUMMARY {"summary":"Fixed AGENT_NOTIFY_SUMMARY parsing","status":"done"}'
+        const r = extractNotifySummary(text)
+        expect(r?.summary).toBe('Fixed AGENT_NOTIFY_SUMMARY parsing')
+        expect(r?.status).toBe('done')
+    })
+
+    test('parses glued prose when a JSON string value mentions the token', () => {
+        const text = 'Done.AGENT_NOTIFY_SUMMARY {"summary":"mentions AGENT_NOTIFY_SUMMARY here","status":"done"}'
+        const r = extractNotifySummary(text)
+        expect(r?.summary).toBe('mentions AGENT_NOTIFY_SUMMARY here')
+        expect(r?.status).toBe('done')
+    })
 })
 
 describe('extractNotifySummary + extractAssistantPlainText (integration)', () => {
