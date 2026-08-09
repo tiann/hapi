@@ -63,6 +63,8 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { readAutoBridgeTransientModelErrorsEnabled } from '../config/autoBridgeTransientModelErrors'
+import { getConfiguration } from '../configuration'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -205,6 +207,8 @@ export class SyncEngine {
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
      */
     private hubOwnerUserId: string = '1'
+    /** Test-only settings root so session-ready reconcile can run without full hub boot. */
+    private settingsDataDirForTests: string | null = null
 
     constructor(
         private readonly store: Store,
@@ -552,7 +556,57 @@ export class SyncEngine {
                 })
                 .catch(() => {})
         }
+        // Settings UI only fans out to rows already marked active. A Cursor CLI
+        // can fetch create/get before its first liveness event; reconcile here
+        // once set-session-config is registered (session-ready).
+        void this.reconcileCursorAutoBridgeOnReady(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    /** @internal test hook — hub settings dataDir without createConfiguration(). */
+    setSettingsDataDirForTests(dataDir: string | null): void {
+        this.settingsDataDirForTests = dataDir
+    }
+
+    /**
+     * Push the owner hub auto-bridge pref to a Cursor CLI after session-ready.
+     * Best-effort: never throws into the socket path.
+     */
+    async reconcileCursorAutoBridgeOnReady(sessionId: string): Promise<void> {
+        const session = this.sessionCache.getSession(sessionId)
+            ?? this.sessionCache.refreshSession(sessionId)
+        if (!session) {
+            return
+        }
+        if (session.namespace !== 'default' || session.metadata?.flavor !== 'cursor') {
+            return
+        }
+        const dataDir = this.resolveSettingsDataDir()
+        if (!dataDir) {
+            return
+        }
+        try {
+            const enabled = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+            await this.rpcGateway.requestSessionConfig(sessionId, {
+                autoBridgeTransientModelErrors: enabled
+            })
+        } catch (error) {
+            console.warn(
+                `[sync] failed to reconcile auto-bridge setting for session ${sessionId}`,
+                error
+            )
+        }
+    }
+
+    private resolveSettingsDataDir(): string | null {
+        if (this.settingsDataDirForTests) {
+            return this.settingsDataDirForTests
+        }
+        try {
+            return getConfiguration().dataDir
+        } catch {
+            return null
+        }
     }
 
     clearQueuedThinkingGrace(sessionId: string): void {
