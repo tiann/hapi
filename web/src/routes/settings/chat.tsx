@@ -75,24 +75,36 @@ export default function SettingsChatPage() {
         mutationFn: async (enabled: boolean) => {
             if (!api) throw new Error('API unavailable')
             const previous = hubSettingsQuery.data?.autoBridgeTransientModelErrors ?? false
-            const next = await api.updateHubSettings({ autoBridgeTransientModelErrors: enabled })
-            const response = await api.getSessions()
-            const activeCursor = (response.sessions ?? []).filter(
-                (s) => s.active && s.metadata?.flavor === 'cursor'
-            )
-            const results = await Promise.allSettled(
-                activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, enabled))
-            )
-            if (results.some((result) => result.status === 'rejected')) {
-                await Promise.allSettled(
-                    activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
+            let activeCursor: Array<{ id: string }> = []
+            let persisted = false
+            try {
+                const next = await api.updateHubSettings({ autoBridgeTransientModelErrors: enabled })
+                persisted = true
+                const response = await api.getSessions()
+                activeCursor = (response.sessions ?? []).filter(
+                    (s) => s.active && s.metadata?.flavor === 'cursor'
                 )
-                await api.updateHubSettings({ autoBridgeTransientModelErrors: previous })
-                writeAutoBridgeTransientModelErrors(previous)
-                throw new Error('Failed to update every active Cursor session')
+                const results = await Promise.allSettled(
+                    activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, enabled))
+                )
+                if (results.some((result) => result.status === 'rejected')) {
+                    throw new Error('Failed to update every active Cursor session')
+                }
+                writeAutoBridgeTransientModelErrors(enabled)
+                return next
+            } catch (error) {
+                // Hub may already be written — roll it back even if discovery failed
+                // before any per-session RPC ran (otherwise Settings shows off while
+                // live CLIs keep auto-bridging).
+                if (persisted) {
+                    await Promise.allSettled(
+                        activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
+                    )
+                    await api.updateHubSettings({ autoBridgeTransientModelErrors: previous })
+                    writeAutoBridgeTransientModelErrors(previous)
+                }
+                throw error
             }
-            writeAutoBridgeTransientModelErrors(enabled)
-            return next
         },
         onSuccess: (data) => {
             queryClient.setQueryData(queryKeys.hubSettings, data)
