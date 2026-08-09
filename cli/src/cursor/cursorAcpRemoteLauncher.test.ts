@@ -316,6 +316,7 @@ function makeClient() {
             }),
             unregisterHandler: vi.fn()
         },
+        getMetadata: vi.fn(() => null),
         updateMetadata: vi.fn(),
         flushMetadata: vi.fn(async () => true),
         sendSessionEvent: vi.fn(),
@@ -2293,6 +2294,61 @@ describe('cursorAcpRemoteLauncher', () => {
 
         session.queue.close();
         nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('hydrates persisted lastModelError so a post-restart turn supersedes it', async () => {
+        const eventId = '33333333-3333-4333-8333-333333333333';
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost',
+            lastModelError: {
+                eventId,
+                atTs: 1000,
+                kind: 'rate_limited',
+                transient: true,
+                rawSnippet: 'status 429',
+                priorAssistantClaimsDone: false,
+                lastUserMessage: 'old failed turn'
+            }
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+
+        session.queue.push('continue after restart', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => {
+            const err = metadata.lastModelError as { supersededByUserTurn?: boolean } | undefined;
+            expect(err?.supersededByUserTurn).toBe(true);
+        });
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'old failed turn',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        session.queue.close();
         await launchPromise;
     });
 

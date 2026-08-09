@@ -598,6 +598,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
         );
 
+        // Restart / resume: hub metadata may still hold an unresolved error from
+        // the previous process. Hydrate before the queue loop so the first newer
+        // normal turn can durably set supersededByUserTurn.
+        this.hydrateLastRecordedModelErrorFromMetadata();
+
         const sendReady = () => {
             if (this.turnHasModelError) {
                 // Don't clear the error state with a 'ready' — banner stays visible.
@@ -1332,6 +1337,25 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             };
         });
+    }
+
+    /** Load durable lastModelError from hub metadata after CLI restart/resume. */
+    private hydrateLastRecordedModelErrorFromMetadata(): void {
+        if (this.lastRecordedModelError) {
+            return;
+        }
+        const getMetadata = this.session.client.getMetadata;
+        if (typeof getMetadata !== 'function') {
+            return;
+        }
+        const persistedError = getMetadata.call(this.session.client)?.lastModelError;
+        if (!persistedError || typeof persistedError.eventId !== 'string') {
+            return;
+        }
+        this.lastRecordedModelError = {
+            ...persistedError,
+            lastUserMessage: persistedError.lastUserMessage ?? ''
+        };
     }
 
     private installLiveSessionConfigSync(
