@@ -14,6 +14,7 @@ afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
     localStorage.removeItem('hapi-pin-in-progress-sessions')
+    localStorage.removeItem('hapi-pin-active-sessions')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -645,6 +646,39 @@ describe('SessionList collapse behavior', () => {
             machineId: 'machine-1',
             directory: '/work/hapi',
         })
+    })
+
+    it('pins every active session when pin-active is on', () => {
+        localStorage.setItem('hapi-pin-active-sessions', 'true')
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Running task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-quiet',
+                active: true,
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Quiet task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-inactive',
+                updatedAt: 80,
+                metadata: { path: '/work/hapi', name: 'Inactive task', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
+        expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
+        expect(screen.getByText(/Active \(1\)/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Running task/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Inactive task/ })).toBeInTheDocument()
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
     })
 
     it('auto-expands the path again when the selected session changes', async () => {
