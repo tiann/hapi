@@ -156,7 +156,12 @@ export type NotifySummary = {
  * end of line - so a literal `AGENT_NOTIFY_SUMMARY ` inside a JSON string
  * value does not steal the match from the real footer.
  */
-function matchNotifySummaryLine(line: string): string | null {
+type NotifySummaryLineMatch = {
+    jsonPart: string
+    start: number
+}
+
+function matchNotifySummaryLine(line: string): NotifySummaryLineMatch | null {
     for (
         let idx = line.indexOf(NOTIFY_SUMMARY_PREFIX);
         idx >= 0;
@@ -165,12 +170,53 @@ function matchNotifySummaryLine(line: string): string | null {
         const jsonPart = line.slice(idx + NOTIFY_SUMMARY_PREFIX.length).trim()
         if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) continue
         try {
-            if (isObject(JSON.parse(jsonPart))) return jsonPart
+            if (isObject(JSON.parse(jsonPart))) return { jsonPart, start: idx }
         } catch {
             // Try the next occurrence (e.g. token mentioned inside a value).
         }
     }
     return null
+}
+
+function parseNotifySummaryJson(jsonPart: string): NotifySummary | null {
+    try {
+        const parsed: unknown = JSON.parse(jsonPart)
+        if (!isObject(parsed)) return null
+        const result: NotifySummary = {}
+        if (typeof parsed.version === 'number') result.version = parsed.version
+        if (typeof parsed.agent === 'string') result.agent = parsed.agent
+        if (typeof parsed.project === 'string') result.project = parsed.project
+        if (typeof parsed.status === 'string') result.status = parsed.status
+        if (typeof parsed.action === 'string') result.action = parsed.action
+        if (typeof parsed.summary === 'string') result.summary = parsed.summary
+        return result
+    } catch {
+        return null
+    }
+}
+
+type NotifySummaryMatch = {
+    lines: string[]
+    lastIdx: number
+    line: string
+    match: NotifySummaryLineMatch
+    summary: NotifySummary
+}
+
+function findNotifySummary(text: string): NotifySummaryMatch | null {
+    const lines = text.split('\n')
+    let lastIdx = lines.length - 1
+    while (lastIdx >= 0 && lines[lastIdx].trim() === '') lastIdx -= 1
+    if (lastIdx < 0) return null
+
+    const line = lines[lastIdx].trim()
+    const match = matchNotifySummaryLine(line)
+    if (match === null) return null
+
+    const summary = parseNotifySummaryJson(match.jsonPart)
+    if (summary === null) return null
+
+    return { lines, lastIdx, line, match, summary }
 }
 
 /**
@@ -191,27 +237,34 @@ function matchNotifySummaryLine(line: string): string | null {
 export function extractNotifySummary(text: unknown): NotifySummary | null {
     if (typeof text !== 'string' || text.length === 0) return null
 
-    const lines = text.split('\n')
-    let lastIdx = lines.length - 1
-    while (lastIdx >= 0 && lines[lastIdx].trim() === '') lastIdx -= 1
-    if (lastIdx < 0) return null
+    return findNotifySummary(text)?.summary ?? null
+}
 
-    const jsonPart = matchNotifySummaryLine(lines[lastIdx].trim())
-    if (jsonPart === null) return null
+export type NotifySummaryDisplay = {
+    /** Agent prose with the machine-readable footer removed. */
+    visibleText: string
+    summary: NotifySummary
+}
 
-    try {
-        const parsed: unknown = JSON.parse(jsonPart)
-        if (!isObject(parsed)) return null
-        const result: NotifySummary = {}
-        if (typeof parsed.version === 'number') result.version = parsed.version
-        if (typeof parsed.agent === 'string') result.agent = parsed.agent
-        if (typeof parsed.project === 'string') result.project = parsed.project
-        if (typeof parsed.status === 'string') result.status = parsed.status
-        if (typeof parsed.action === 'string') result.action = parsed.action
-        if (typeof parsed.summary === 'string') result.summary = parsed.summary
-        return result
-    } catch {
-        return null
+/**
+ * Split a valid trailing summary footer into user-facing prose and metadata.
+ *
+ * The original message remains untouched; callers can use `visibleText` only
+ * for presentation while retaining the raw text for copy/export/notifications.
+ */
+export function splitNotifySummary(text: unknown): NotifySummaryDisplay | null {
+    if (typeof text !== 'string' || text.length === 0) return null
+
+    const found = findNotifySummary(text)
+    if (found === null) return null
+
+    const prefix = found.line.slice(0, found.match.start).trimEnd()
+    const visibleLines = found.lines.slice(0, found.lastIdx)
+    if (prefix.length > 0) visibleLines.push(prefix)
+
+    return {
+        visibleText: visibleLines.join('\n').trimEnd(),
+        summary: found.summary
     }
 }
 

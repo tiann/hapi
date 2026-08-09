@@ -1,5 +1,4 @@
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
-import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
@@ -9,13 +8,14 @@ import { getConversationMessageAnchorId } from '@/chat/outline'
 import { CodexReviewCard } from '@/components/AssistantChat/messages/CodexReviewCard'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
+import { NotifySummaryText } from '@/components/AssistantChat/messages/NotifySummaryText'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
 } as const
 
 const MESSAGE_PART_COMPONENTS = {
-    Text: MarkdownText,
+    Text: NotifySummaryText,
     Reasoning: Reasoning,
     ReasoningGroup: ReasoningGroup,
     tools: TOOL_COMPONENTS

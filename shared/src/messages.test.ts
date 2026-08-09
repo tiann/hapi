@@ -3,6 +3,7 @@ import {
     extractAssistantPlainText,
     extractNotifySummary,
     isRedundantGoalStatusEventContent,
+    splitNotifySummary,
     type NotifySummary
 } from './messages'
 
@@ -224,6 +225,27 @@ describe('extractNotifySummary', () => {
         const r = extractNotifySummary(text)
         expect(r?.summary).toBe('mentions AGENT_NOTIFY_SUMMARY here')
         expect(r?.status).toBe('done')
+    })
+
+    test('splits a clean footer into visible prose and metadata', () => {
+        const text = 'Did the work.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done","action":"Review it"}'
+        const result = splitNotifySummary(text)
+
+        expect(result?.visibleText).toBe('Did the work.')
+        expect(result?.summary).toEqual({ summary: 'Done', status: 'done', action: 'Review it' })
+    })
+
+    test('splits a footer glued to prose on the last line', () => {
+        const text = 'Did the work.\nOwnership session pinged.AGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+        const result = splitNotifySummary(text)
+
+        expect(result?.visibleText).toBe('Did the work.\nOwnership session pinged.')
+        expect(result?.summary.summary).toBe('Done')
+    })
+
+    test('returns null when the footer is not a compliant final line', () => {
+        expect(splitNotifySummary('AGENT_NOTIFY_SUMMARY {"summary":"Done"}\nMore prose')).toBeNull()
+        expect(splitNotifySummary('Plain prose')).toBeNull()
     })
 })
 
