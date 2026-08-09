@@ -177,4 +177,17 @@ describe('work-graph routes', () => {
         })
         expect(response.status).toBe(413)
     })
+
+    it('rejects fractional list limit with 400 (not SQLite 500)', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store)
+        const headers = await authHeaders('default')
+        const response = await app.request(
+            '/api/work-graph/events?related_session_id=sess-1&limit=1.5',
+            { headers }
+        )
+        expect(response.status).toBe(400)
+        const body = await response.json() as { error: string }
+        expect(body.error).toBe('Invalid limit')
+    })
 })

@@ -66,7 +66,8 @@ export function createWorkGraphRoutes(store: Store): Hono<WebAppEnv> {
         }
         const limitRaw = c.req.query('limit')
         const limit = limitRaw ? Number(limitRaw) : undefined
-        if (limit !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+        // Integer only — fractional LIMIT (e.g. 1.5) is a SQLite error → 500.
+        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
             return c.json({ error: 'Invalid limit' }, 400)
         }
         const events = store.workGraph.listByRelatedSession(namespace, relatedSessionId, { limit })
