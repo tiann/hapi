@@ -48,6 +48,13 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                 return map
             },
             getPrimaryAttachedJob: () => [...jobs.values()].find((j) => j.status === 'running') ?? null,
+            allocateAttachedJobVersion: (() => {
+                let n = 0
+                return () => {
+                    n += 1
+                    return Date.now() + n
+                }
+            })(),
             listSessionJobs: () => [...jobs.values()],
             upsertSessionJob: (_sid: string, key: string, body: AttachedJobUpsert) => {
                 const now = Date.now()
