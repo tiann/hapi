@@ -130,13 +130,12 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         // Never PATCH status:running on the heartbeat — a late in-flight
         // request must not resurrect running after the terminal write.
         // Fence with runId so a superseded run cannot touch a key reuse.
+        // Do not re-send --detail: MCP/CLI progress updates would otherwise be
+        // clobbered by the next timer tick with the launch-time string.
         inflightHeartbeat = updateSessionJob({
             ...clientOpts,
             jobKey: options.jobKey,
-            body: {
-                expectedRunId: runId,
-                ...(options.detail !== undefined ? { detail: options.detail } : {}),
-            }
+            body: { expectedRunId: runId }
         }).catch((error: unknown) => {
             // Best-effort — exit path still marks terminal status. Log once so
             // a broken supervisor is visible (stuck chip with dead PID is worse).
