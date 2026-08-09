@@ -603,6 +603,10 @@ export class SessionCache {
      * tiann/hapi#1404 — emit primary attached job (or null) so session-list
      * caches update inline without a dedicated refetch.
      */
+    /** Monotonic emit watermark per session — never follows primary.updatedAt
+     *  (primary switches can go backwards and would strand the web cache). */
+    private attachedJobEmitVersion = new Map<string, number>()
+
     emitAttachedJobChanged(
         sessionId: string,
         attachedJob: import('@hapi/protocol').AttachedJob | null
@@ -611,8 +615,9 @@ export class SessionCache {
         const namespace = cached?.namespace
             ?? this.store.sessions.getSession(sessionId)?.namespace
         if (!namespace) return
-        // Clear uses wall clock so it outranks any in-flight heartbeat stamp.
-        const version = attachedJob?.updatedAt ?? Date.now()
+        const prev = this.attachedJobEmitVersion.get(sessionId) ?? 0
+        const version = Math.max(Date.now(), prev + 1)
+        this.attachedJobEmitVersion.set(sessionId, version)
         this.publisher.emit({
             type: 'session-updated',
             sessionId,

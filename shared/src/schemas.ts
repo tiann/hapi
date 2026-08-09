@@ -431,9 +431,9 @@ export const AttachedJobPatchSchema = z.object({
 
 export type AttachedJobPatch = z.infer<typeof AttachedJobPatchSchema>
 
-// Dual SSE (global + per-session) has no shared delivery order. Version =
-// job.updatedAt for a live primary, or Date.now() when cleared to null, so a
-// lagged running heartbeat cannot resurrect a finished meter.
+// Dual SSE (global + per-session) has no shared delivery order. Version is a
+// monotonic per-session emit watermark (not primary.updatedAt — primary
+// switches can go backwards). Lagged heartbeats cannot resurrect a clear.
 const VersionedAttachedJobPatchSchema = z.object({
     version: z.number(),
     value: AttachedJobSchema.nullable()

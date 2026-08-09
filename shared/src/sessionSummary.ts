@@ -210,8 +210,14 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
 
 export function toSessionSummary(
     session: Session,
-    extras?: { attachedJob?: AttachedJob | null }
+    extras?: {
+        attachedJob?: AttachedJob | null
+        /** Explicit SSE/list watermark; required when attachedJob is null so
+         *  a REST refetch does not reset the client gate to 0. */
+        attachedJobUpdatedAt?: number
+    }
 ): SessionSummary {
+    const attachedJob = extras?.attachedJob ?? null
     return {
         id: session.id,
         active: session.active,
@@ -231,8 +237,10 @@ export function toSessionSummary(
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
-        attachedJob: extras?.attachedJob ?? null,
-        attachedJobUpdatedAt: extras?.attachedJob?.updatedAt ?? 0,
+        attachedJob,
+        attachedJobUpdatedAt: extras?.attachedJobUpdatedAt
+            ?? attachedJob?.updatedAt
+            ?? 0,
         model: session.model,
         modelReasoningEffort: session.modelReasoningEffort,
         effort: session.effort
