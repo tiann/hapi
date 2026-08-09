@@ -207,6 +207,37 @@ describe('applyCursorAcpModel', () => {
         expect(setConfigOption).not.toHaveBeenCalled();
     });
 
+    it('prefers compatible option wires over bare metadata bases (#1430)', async () => {
+        const setConfigOption = vi.fn(async () => {});
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'claude-opus-4-8' }],
+                currentModelId: 'claude-opus-4-8'
+            })),
+            getConfigOptionByCategory: vi.fn(() => ({
+                id: 'model-opt',
+                options: [
+                    { value: 'claude-opus-4-8[thinking=true,context=300k,effort=low,fast=false]' },
+                    { value: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]' },
+                ]
+            }))
+        });
+
+        await expect(
+            applyCursorAcpModel(backend, 's1', 'claude-opus-4-8[effort=high]')
+        ).resolves.toEqual({
+            applied: true,
+            resolvedWireId: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]',
+            requestedWireId: 'claude-opus-4-8[effort=high]'
+        });
+        expect(setConfigOption).toHaveBeenCalledWith(
+            's1',
+            'model-opt',
+            'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]'
+        );
+    });
+
     it('resolves spawn wire id via config option list when metadata lists one variant', async () => {
         const setConfigOption = vi.fn(async () => {});
         const backend = mockModelBackend({

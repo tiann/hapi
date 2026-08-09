@@ -226,11 +226,25 @@ export async function applyCursorAcpModel(
         return parameterized;
     }
 
+    // Prefer the live model-option value list for set_config_option. Merging in
+    // metadata bare bases first lets spawn-safe remap return a bare id that the
+    // option catalog rejects (wire-only options).
     const optionWireIds = modelOption?.options?.map((option) => ({ modelId: option.value })) ?? [];
-    const catalog = [...available, ...optionWireIds];
-    const resolved = resolveCursorAcpWireId(trimmed, catalog);
+    const resolved = (
+        optionWireIds.length > 0
+            ? resolveCursorAcpWireId(trimmed, optionWireIds)
+            : null
+    ) ?? resolveCursorAcpWireId(trimmed, [...available, ...optionWireIds]);
     if (!resolved) {
         logger.debug(`[cursor-acp] Model ${trimmed} is not in ACP configOptions; skipping`);
+        return { applied: false };
+    }
+    if (
+        modelOption?.options
+        && modelOption.options.length > 0
+        && !optionHasValue(modelOption, resolved)
+    ) {
+        logger.debug(`[cursor-acp] Model ${resolved} is not an ACP model option value; skipping`);
         return { applied: false };
     }
 
