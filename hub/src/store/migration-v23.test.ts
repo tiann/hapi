@@ -70,4 +70,29 @@ describe('schema migration v22 to v26', () => {
         expect(store.sessionJobs.list(from.id)).toHaveLength(0)
         store.close()
     })
+
+    it('on key collision prefers a newer terminal source over an older terminal target', () => {
+        const store = new Store(':memory:')
+        const from = store.sessions.getOrCreateSession('from-term', { path: '/a' }, null, 'default')
+        const to = store.sessions.getOrCreateSession('to-term', { path: '/b' }, null, 'default')
+        store.sessionJobs.upsert(to.id, 'beets', {
+            label: 'old-complete',
+            status: 'completed',
+            remaining: 0
+        }, 1_000)
+        store.sessionJobs.upsert(from.id, 'beets', {
+            label: 'new-fail',
+            status: 'failed',
+            remaining: 0
+        }, 2_000)
+        const result = store.sessionJobs.transfer(from.id, to.id)
+        expect(result.collided).toBe(1)
+        expect(result.moved).toBe(1)
+        const kept = store.sessionJobs.list(to.id)
+        expect(kept).toHaveLength(1)
+        expect(kept[0]?.label).toBe('new-fail')
+        expect(kept[0]?.status).toBe('failed')
+        expect(store.sessionJobs.list(from.id)).toHaveLength(0)
+        store.close()
+    })
 })

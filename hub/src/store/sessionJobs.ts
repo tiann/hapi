@@ -259,12 +259,16 @@ export function transferSessionJobs(
     for (const job of rows) {
         const existing = getSessionJob(db, toSessionId, job.key)
         if (existing) {
-            // Prefer a live source over a terminal target (or newer stamp).
-            // Redirected heartbeats omit status, so discarding a running source
-            // cannot be repaired by a later heartbeat.
+            // Prefer a live source over a terminal target. When both are
+            // running or both terminal (incl. completed vs failed), prefer
+            // the newer updatedAt — otherwise a later terminal result loses
+            // to an older one with a different status. Redirected heartbeats
+            // omit status, so discarding a running source cannot be repaired.
+            const sourceRunning = job.status === 'running'
+            const targetRunning = existing.status === 'running'
             const sourceWins =
-                (job.status === 'running' && existing.status !== 'running')
-                || (job.status === existing.status && job.updatedAt > existing.updatedAt)
+                (sourceRunning && !targetRunning)
+                || (sourceRunning === targetRunning && job.updatedAt > existing.updatedAt)
             if (sourceWins) {
                 db.prepare('DELETE FROM session_jobs WHERE session_id = ? AND job_key = ?')
                     .run(toSessionId, job.key)
