@@ -148,12 +148,7 @@ export async function handleSessionJobTool(
             ...(args.unit !== undefined ? { unit: args.unit } : {}),
             ...(args.detail !== undefined ? { detail: args.detail } : {})
         }
-        if (Object.keys(body).length === 0) {
-            return {
-                text: 'update requires at least one of label/status/done/total/remaining/unit/detail',
-                isError: true
-            }
-        }
+        // Empty body is a heartbeat-only update; hub stamps heartbeatAt.
         const result = await updateSessionJob({ sessionIdPrefix, jobKey, body })
         return {
             text: `updated ${formatJobLine(result.job)} on ${result.sessionId}`,

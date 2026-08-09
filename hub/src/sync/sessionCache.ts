@@ -1174,6 +1174,11 @@ export class SessionCache {
         // promise that scratchlist survives reloads.
         const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
         const movedJobs = this.store.sessionJobs.transfer(oldSessionId, newSessionId)
+        // Install the source→target redirect BEFORE any await below. Merge can
+        // spend time on scratchlist attachment I/O while the old session row
+        // still exists; without this pointer, retained $HAPI_SESSION_ID hits
+        // the emptied source and terminal PATCHes 404.
+        this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
         if (movedJobs.moved > 0 || movedJobs.collided > 0) {
             this.emitAttachedJobChanged(
                 newSessionId,
@@ -1250,16 +1255,10 @@ export class SessionCache {
             }
         }
 
-        // Job-owner redirects AFTER metadata merge. Writing them before the
-        // merge clobbers jobsAcceptedFromSessionIds when mergeSessionMetadata
-        // rebuilds from the stale pre-merge newStored.metadata snapshot
-        // (cold-review pass 3 Major — agents heartbeating $HAPI_SESSION_ID 404).
-        // Always record redirects even when the source had zero jobs yet — the
-        // first post-merge set/update still uses retained $HAPI_SESSION_ID.
+        // Acceptor list AFTER metadata merge (writing before clobbers when
+        // mergeSessionMetadata rebuilds from the stale pre-merge snapshot).
+        // Source transfer pointer was installed immediately after job transfer.
         this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
-        if (!options.deleteOldSession) {
-            this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
-        }
 
         if (newStored.model === null && oldStored.model !== null) {
             const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {

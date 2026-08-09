@@ -358,9 +358,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
         ...(parsed.detail !== undefined ? { detail: parsed.detail } : {})
     }
-    if (Object.keys(body).length === 0) {
-        throw new SessionJobError('bad_args', 'update requires at least one field')
-    }
+    // Empty body is a heartbeat-only update; hub stamps heartbeatAt.
     const result = await updateSessionJob({
         sessionIdPrefix: parsed.sessionIdPrefix,
         jobKey: parsed.jobKey,
