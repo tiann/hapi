@@ -119,13 +119,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
         const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionRecords.map((session) => session.id))
-        // Fresh wall-clock watermark so a REST refetch never resets the client
-        // SSE gate to 0 (which would let a lagged running patch resurrect).
-        const listJobWatermark = Date.now()
         const sessions = sessionRecords.map((session) => {
             const summary = toSessionSummary(session, {
                 attachedJob: attachedJobs.get(session.id) ?? null,
-                attachedJobUpdatedAt: listJobWatermark
+                // Same allocator as SSE emits — equal-ms terminal patches stay applyable.
+                attachedJobUpdatedAt: engine.allocateAttachedJobVersion(session.id)
             })
             return {
                 ...summary,

@@ -603,9 +603,16 @@ export class SessionCache {
      * tiann/hapi#1404 — emit primary attached job (or null) so session-list
      * caches update inline without a dedicated refetch.
      */
-    /** Monotonic emit watermark per session — never follows primary.updatedAt
-     *  (primary switches can go backwards and would strand the web cache). */
+    /** Monotonic watermark per session — shared by REST list snapshots and SSE
+     *  emits so equal-ms terminal patches are not rejected after a refetch. */
     private attachedJobEmitVersion = new Map<string, number>()
+
+    allocateAttachedJobVersion(sessionId: string): number {
+        const prev = this.attachedJobEmitVersion.get(sessionId) ?? 0
+        const version = Math.max(Date.now(), prev + 1)
+        this.attachedJobEmitVersion.set(sessionId, version)
+        return version
+    }
 
     emitAttachedJobChanged(
         sessionId: string,
@@ -615,9 +622,7 @@ export class SessionCache {
         const namespace = cached?.namespace
             ?? this.store.sessions.getSession(sessionId)?.namespace
         if (!namespace) return
-        const prev = this.attachedJobEmitVersion.get(sessionId) ?? 0
-        const version = Math.max(Date.now(), prev + 1)
-        this.attachedJobEmitVersion.set(sessionId, version)
+        const version = this.allocateAttachedJobVersion(sessionId)
         this.publisher.emit({
             type: 'session-updated',
             sessionId,

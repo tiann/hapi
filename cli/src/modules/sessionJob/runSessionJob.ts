@@ -4,6 +4,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { constants as osConstants } from 'node:os'
 import type { AttachedJobUpsert } from '@hapi/protocol'
 import {
     SessionJobError,
@@ -131,7 +132,8 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         child.on('exit', (code, signal) => {
             clearIntervalFn(heartbeat)
             if (signal) {
-                resolve(128 + (signal === 'SIGINT' ? 2 : signal === 'SIGTERM' ? 15 : 1))
+                const signalNumber = osConstants.signals[signal] ?? 1
+                resolve(128 + signalNumber)
                 return
             }
             resolve(code ?? 1)

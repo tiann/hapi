@@ -789,6 +789,11 @@ export class SyncEngine {
         return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
     }
 
+    /** Shared REST/SSE watermark allocator for attachedJob patches. */
+    allocateAttachedJobVersion(sessionId: string): number {
+        return this.sessionCache.allocateAttachedJobVersion(sessionId)
+    }
+
     upsertSessionJob(
         sessionId: string,
         jobKey: string,
