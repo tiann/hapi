@@ -74,51 +74,16 @@ export default function SettingsChatPage() {
     const autoBridgeMutation = useMutation({
         mutationFn: async (enabled: boolean) => {
             if (!api) throw new Error('API unavailable')
-            const previous = hubSettingsQuery.data?.autoBridgeTransientModelErrors ?? false
-            let activeCursor: Array<{ id: string }> = []
-            let persisted = false
-            try {
-                const next = await api.updateHubSettings({ autoBridgeTransientModelErrors: enabled })
-                persisted = true
-                const response = await api.getSessions()
-                activeCursor = (response.sessions ?? []).filter(
-                    (s) => s.active && s.metadata?.flavor === 'cursor'
-                )
-                const results = await Promise.allSettled(
-                    activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, enabled))
-                )
-                if (results.some((result) => result.status === 'rejected')) {
-                    throw new Error('Failed to update every active Cursor session')
-                }
-                writeAutoBridgeTransientModelErrors(enabled)
-                return next
-            } catch (error) {
-                // Hub may already be written — roll it back even if discovery failed
-                // before any per-session RPC ran (otherwise Settings shows off while
-                // live CLIs keep auto-bridging). Re-discover after hub restore so a
-                // session that started mid-mutation is not left on the temp value.
-                if (persisted) {
-                    await Promise.allSettled(
-                        activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
-                    )
-                    await api.updateHubSettings({ autoBridgeTransientModelErrors: previous })
-                    const rollbackResponse = await api.getSessions().catch(() => null)
-                    const rollbackCursor = (rollbackResponse?.sessions ?? []).filter(
-                        (s) => s.active && s.metadata?.flavor === 'cursor'
-                    )
-                    await Promise.allSettled(
-                        rollbackCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
-                    )
-                    writeAutoBridgeTransientModelErrors(previous)
-                }
-                throw error
-            }
+            // Hub persists + fans out to active Cursor CLIs under one lock
+            // (and rolls back on fanout failure). Web only mirrors the result.
+            const next = await api.updateHubSettings({ autoBridgeTransientModelErrors: enabled })
+            writeAutoBridgeTransientModelErrors(enabled)
+            return next
         },
         onSuccess: (data) => {
             queryClient.setQueryData(queryKeys.hubSettings, data)
         },
         onError: async () => {
-            // Reconcile UI with hub truth after a rolled-back / failed sync.
             await queryClient.invalidateQueries({ queryKey: queryKeys.hubSettings })
         },
     })

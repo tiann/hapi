@@ -378,22 +378,22 @@ describe('mapAcpStderrToFailure (structural stderr signal)', () => {
 })
 
 describe('classifyAcpRpcRejection (structural RPC signal)', () => {
-    it('classifies WritableIterable is closed -> transport_closed (transient)', () => {
+    it('classifies WritableIterable is closed -> transport_closed (non-bridgeable)', () => {
         // Real session b52b9117: the agent rejected sendRequest with this
         // exact message after the writable side of the ACP transport died.
         const err = new Error('WritableIterable is closed')
         const out = classifyAcpRpcRejection(err)
         expect(out).not.toBeNull()
         expect(out?.kind).toBe('transport_closed')
-        expect(out?.transient).toBe(true)
+        expect(out?.transient).toBe(false)
         expect(out?.source).toBe('rpc')
     })
 
-    it('classifies ACP transport closed -> transport_closed', () => {
+    it('classifies ACP transport closed -> transport_closed (non-bridgeable)', () => {
         const err = new Error('ACP transport is closed')
         const out = classifyAcpRpcRejection(err)
         expect(out?.kind).toBe('transport_closed')
-        expect(out?.transient).toBe(true)
+        expect(out?.transient).toBe(false)
     })
 
     it('classifies process exit -> transport_closed (rejectAllPending pathway)', () => {
@@ -402,14 +402,14 @@ describe('classifyAcpRpcRejection (structural RPC signal)', () => {
         const err = new Error('ACP process exited (code=137, signal=SIGKILL)')
         const out = classifyAcpRpcRejection(err)
         expect(out?.kind).toBe('transport_closed')
-        expect(out?.transient).toBe(true)
+        expect(out?.transient).toBe(false)
     })
 
-    it('classifies spawn failure -> agent_crashed', () => {
+    it('classifies spawn failure -> agent_crashed (non-bridgeable)', () => {
         const err = new Error('Failed to spawn cursor-agent: ENOENT. Is it installed and on PATH?')
         const out = classifyAcpRpcRejection(err)
         expect(out?.kind).toBe('agent_crashed')
-        expect(out?.transient).toBe(true)
+        expect(out?.transient).toBe(false)
     })
 
     it('classifies request timeout -> rpc_timeout', () => {

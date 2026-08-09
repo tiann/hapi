@@ -16,6 +16,8 @@ export type ModelErrorBridgeGate = {
     bridgedForEventId?: string;
     retriedAndFailed?: boolean;
     supersededByUserTurn?: boolean;
+    /** Explicit false blocks Bridge (e.g. idle stderr after a successful turn). */
+    bridgeable?: boolean;
 };
 
 export function truncateLastUserMessage(message: string): string {
@@ -56,6 +58,9 @@ export function canBridgeModelError(gate: ModelErrorBridgeGate): boolean {
     if (!gate.transient) {
         return false;
     }
+    if (gate.bridgeable === false) {
+        return false;
+    }
     if (gate.retriedAndFailed) {
         return false;
     }
@@ -70,13 +75,17 @@ export function canBridgeModelError(gate: ModelErrorBridgeGate): boolean {
 
 /** Merge hub RPC snapshot gates into local state without clobbering. */
 export function mergeBridgeGateFields(
-    prior: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn'> | null | undefined,
-    incoming: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn'>
-): Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn'> {
+    prior: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn' | 'bridgeable'> | null | undefined,
+    incoming: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn' | 'bridgeable'>
+): Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn' | 'bridgeable'> {
     return {
         bridgedForEventId: incoming.bridgedForEventId ?? prior?.bridgedForEventId,
         retriedAndFailed: incoming.retriedAndFailed === true || prior?.retriedAndFailed === true,
         supersededByUserTurn: incoming.supersededByUserTurn === true
-            || prior?.supersededByUserTurn === true
+            || prior?.supersededByUserTurn === true,
+        // false wins — never re-open Bridge from a stale hub omit.
+        bridgeable: incoming.bridgeable === false || prior?.bridgeable === false
+            ? false
+            : (incoming.bridgeable ?? prior?.bridgeable)
     };
 }

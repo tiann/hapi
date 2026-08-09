@@ -53,6 +53,7 @@ export type SessionSummaryMetadata = {
         bridgedForEventId?: string
         retriedAndFailed?: boolean
         supersededByUserTurn?: boolean
+        bridgeable?: boolean
         acknowledgedAt?: number
         notifiedAt?: number
     }

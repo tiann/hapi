@@ -142,6 +142,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         bridgedForEventId?: string;
         retriedAndFailed?: boolean;
         supersededByUserTurn?: boolean;
+        bridgeable?: boolean;
     } | null = null;
 
     constructor(session: CursorSession) {
@@ -904,11 +905,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // ACP treats stderr as logging, and the transport labels any
             // "error"/"failed"/"exception" line as unknown.
             // While prompt is in flight, defer so RPC rejection keeps precedence.
+            // Idle stderr can still surface a banner/notify, but must not be
+            // Bridgeable — stdout/stderr are independent, so a strong rate-limit
+            // line can arrive after a turn already succeeded.
             if (failure) {
                 if (this.promptInFlight) {
                     this.pendingStderrFailure ??= failure;
                 } else {
-                    this.recordModelError(failure);
+                    this.recordModelError(failure, { bridgeable: false });
                 }
             }
         });
@@ -1056,7 +1060,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * via pendingTextFailure until prompt settles, then flushed here.
      * First recorded signal wins for the turn.
      */
-    private recordModelError(failure: CursorAgentStreamFailure): void {
+    private recordModelError(
+        failure: CursorAgentStreamFailure,
+        opts?: { bridgeable?: boolean }
+    ): void {
         if (this.turnHasModelError) {
             logger.debug(
                 `[cursor-acp] modelError already recorded for this turn, dropping ${failure.source}/${failure.kind}`
@@ -1097,9 +1104,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const eventId = randomUUID();
         const atTs = Date.now();
         const lastUserMessage = truncateLastUserMessage(this.lastUserMessage ?? '');
+        const bridgeable = opts?.bridgeable !== false;
 
         logger.debug(
-            `[cursor-acp] modelError recorded source=${failure.source} kind=${failure.kind} transient=${failure.transient}${bridgedFailure ? ' (bridge failed)' : ''}`
+            `[cursor-acp] modelError recorded source=${failure.source} kind=${failure.kind} transient=${failure.transient}${bridgedFailure ? ' (bridge failed)' : ''}${!bridgeable ? ' (not bridgeable)' : ''}`
         );
 
         this.lastRecordedModelError = {
@@ -1110,6 +1118,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             rawSnippet,
             priorAssistantClaimsDone,
             lastUserMessage,
+            ...(bridgeable ? {} : { bridgeable: false }),
             ...(bridgedFailure ? { retriedAndFailed: true } : {})
         };
 
@@ -1126,7 +1135,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             priorAssistantClaimsDone
         });
 
-        if (!bridgedFailure && failure.transient && getAutoBridgeTransientModelErrors()) {
+        if (
+            !bridgedFailure
+            && bridgeable
+            && failure.transient
+            && getAutoBridgeTransientModelErrors()
+        ) {
             this.tryEnqueueModelErrorBridge('auto');
         }
     }
@@ -1151,7 +1165,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 ? record.bridgedForEventId
                 : undefined,
             retriedAndFailed: record.retriedAndFailed === true,
-            supersededByUserTurn: record.supersededByUserTurn === true
+            supersededByUserTurn: record.supersededByUserTurn === true,
+            bridgeable: record.bridgeable === false ? false : undefined
         };
 
         if (snapshot.eventId !== undefined) {
@@ -1163,12 +1178,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 return { ok: false, reason: 'model_error_changed' };
             }
             // Merge hub snapshot into local gate state — never clobber
-            // bridgedForEventId / retriedAndFailed / supersededByUserTurn with
-            // undefined/false from a stale hub payload.
+            // bridgedForEventId / retriedAndFailed / supersededByUserTurn /
+            // bridgeable=false with undefined/false from a stale hub payload.
             const gates = mergeBridgeGateFields(this.lastRecordedModelError, {
                 bridgedForEventId: snapshot.bridgedForEventId,
                 retriedAndFailed: snapshot.retriedAndFailed,
-                supersededByUserTurn: snapshot.supersededByUserTurn
+                supersededByUserTurn: snapshot.supersededByUserTurn,
+                bridgeable: snapshot.bridgeable
             });
             this.lastRecordedModelError = {
                 eventId: snapshot.eventId,
@@ -1183,7 +1199,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 transient: snapshot.transient,
                 bridgedForEventId: gates.bridgedForEventId,
                 retriedAndFailed: gates.retriedAndFailed,
-                supersededByUserTurn: gates.supersededByUserTurn
+                supersededByUserTurn: gates.supersededByUserTurn,
+                bridgeable: gates.bridgeable
             };
         }
 
@@ -1232,7 +1249,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             eventId: metadataError.eventId,
             bridgedForEventId: metadataError.bridgedForEventId,
             retriedAndFailed: metadataError.retriedAndFailed,
-            supersededByUserTurn: metadataError.supersededByUserTurn
+            supersededByUserTurn: metadataError.supersededByUserTurn,
+            bridgeable: metadataError.bridgeable
         })) {
             return { ok: false, reason: 'not_bridgeable' };
         }

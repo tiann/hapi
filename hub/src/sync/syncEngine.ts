@@ -209,6 +209,8 @@ export class SyncEngine {
     private hubOwnerUserId: string = '1'
     /** Test-only settings root so session-ready reconcile can run without full hub boot. */
     private settingsDataDirForTests: string | null = null
+    /** Serialize settings write/fanout with first-activation / session-ready reconcile. */
+    private autoBridgeConfigTail: Promise<unknown> = Promise.resolve()
 
     constructor(
         private readonly store: Store,
@@ -540,9 +542,16 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
+        const before = this.sessionCache.getSession(payload.sid)
+        const wasActive = before?.active === true
         this.sessionCache.handleSessionAlive(payload)
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+        // First inactive → active transition: catch toggles that happened while
+        // the row was still inactive (Settings fanout is active-only).
+        if (!wasActive) {
+            void this.reconcileCursorAutoBridgeSetting(payload.sid)
+        }
     }
 
     handleSessionReady(payload: { sid: string; time: number }): void {
@@ -556,10 +565,9 @@ export class SyncEngine {
                 })
                 .catch(() => {})
         }
-        // Settings UI only fans out to rows already marked active. A Cursor CLI
-        // can fetch create/get before its first liveness event; reconcile here
-        // once set-session-config is registered (session-ready).
-        void this.reconcileCursorAutoBridgeOnReady(payload.sid)
+        // session-ready fires after set-session-config is registered (alive can
+        // race earlier). Re-read under the same lock as Settings fanout.
+        void this.reconcileCursorAutoBridgeSetting(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
     }
 
@@ -569,26 +577,50 @@ export class SyncEngine {
     }
 
     /**
-     * Push the owner hub auto-bridge pref to a Cursor CLI after session-ready.
+     * Owner hub setting changed: push to every active default-namespace Cursor CLI.
+     * Serialized with first-activation / session-ready reconcile.
+     */
+    async fanoutAutoBridgeTransientModelErrors(enabled: boolean): Promise<void> {
+        await this.withAutoBridgeConfigLock(async () => {
+            const targets = this.sessionCache.getSessions().filter(
+                (session) => session.active
+                    && session.namespace === 'default'
+                    && session.metadata?.flavor === 'cursor'
+            )
+            const results = await Promise.allSettled(
+                targets.map((session) => this.rpcGateway.requestSessionConfig(session.id, {
+                    autoBridgeTransientModelErrors: enabled
+                }))
+            )
+            if (results.some((result) => result.status === 'rejected')) {
+                throw new Error('Failed to update every active Cursor session')
+            }
+        })
+    }
+
+    /**
+     * Push the current owner hub auto-bridge pref to one Cursor CLI.
      * Best-effort: never throws into the socket path.
      */
-    async reconcileCursorAutoBridgeOnReady(sessionId: string): Promise<void> {
-        const session = this.sessionCache.getSession(sessionId)
-            ?? this.sessionCache.refreshSession(sessionId)
-        if (!session) {
-            return
-        }
-        if (session.namespace !== 'default' || session.metadata?.flavor !== 'cursor') {
-            return
-        }
-        const dataDir = this.resolveSettingsDataDir()
-        if (!dataDir) {
-            return
-        }
+    async reconcileCursorAutoBridgeSetting(sessionId: string): Promise<void> {
         try {
-            const enabled = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
-            await this.rpcGateway.requestSessionConfig(sessionId, {
-                autoBridgeTransientModelErrors: enabled
+            await this.withAutoBridgeConfigLock(async () => {
+                const session = this.sessionCache.getSession(sessionId)
+                    ?? this.sessionCache.refreshSession(sessionId)
+                if (!session) {
+                    return
+                }
+                if (session.namespace !== 'default' || session.metadata?.flavor !== 'cursor') {
+                    return
+                }
+                const dataDir = this.resolveSettingsDataDir()
+                if (!dataDir) {
+                    return
+                }
+                const enabled = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+                await this.rpcGateway.requestSessionConfig(sessionId, {
+                    autoBridgeTransientModelErrors: enabled
+                })
             })
         } catch (error) {
             console.warn(
@@ -596,6 +628,12 @@ export class SyncEngine {
                 error
             )
         }
+    }
+
+    private withAutoBridgeConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+        const run = this.autoBridgeConfigTail.then(fn, fn)
+        this.autoBridgeConfigTail = run.then(() => undefined, () => undefined)
+        return run
     }
 
     private resolveSettingsDataDir(): string | null {
@@ -2027,6 +2065,9 @@ export class SyncEngine {
         if (err.supersededByUserTurn) {
             throw new Error('Model error was superseded by a newer turn')
         }
+        if (err.bridgeable === false) {
+            throw new Error('Model error is not bridgeable')
+        }
 
         // Do not mark bridgedForEventId here — CLI persists recovery only after
         // the bridge prompt actually succeeds.
@@ -2040,7 +2081,8 @@ export class SyncEngine {
             transient: err.transient,
             bridgedForEventId: err.bridgedForEventId,
             retriedAndFailed: err.retriedAndFailed,
-            supersededByUserTurn: err.supersededByUserTurn
+            supersededByUserTurn: err.supersededByUserTurn,
+            bridgeable: err.bridgeable
         })
     }
 

@@ -1979,7 +1979,7 @@ describe('cursorAcpRemoteLauncher', () => {
 
     it('prefers structural RPC classification over text fallback when both fire', async () => {
         // Prompt callback emits wire text first (unknown_t_prefix / non-transient),
-        // then the promise rejects with WritableIterable (transport_closed / transient).
+        // then the promise rejects with WritableIterable (transport_closed).
         harness.emitTextOnPrompt = '\n\nError: T: WritableIterable is closed';
         harness.promptReject = new Error('WritableIterable is closed');
 
@@ -1999,7 +1999,7 @@ describe('cursorAcpRemoteLauncher', () => {
             .filter((event) => event?.type === 'modelError');
         expect(modelErrors).toHaveLength(1);
         expect(modelErrors[0]?.kind).toBe('transport_closed');
-        expect(modelErrors[0]?.transient).toBe(true);
+        expect(modelErrors[0]?.transient).toBe(false);
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'ready'
         )).toBe(false);
@@ -2291,6 +2291,71 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
         expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
         expect(session.queue.pendingLocalIds()).toContain(`bridge:${eventId}`);
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('records idle stderr as non-bridgeable so it cannot replay a finished turn', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        harness.stderrErrorHandler!({
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        });
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((c) => {
+                const u = c[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof u !== 'function') return null;
+                return u({}).lastModelError as {
+                    eventId?: string
+                    bridgeable?: boolean
+                } | undefined;
+            })
+            .find((err) => typeof err?.eventId === 'string');
+        expect(recorded?.bridgeable).toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
 
         session.queue.close();
         nextWait.release?.();

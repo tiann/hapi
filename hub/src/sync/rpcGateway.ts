@@ -184,6 +184,7 @@ export class RpcGateway {
             bridgedForEventId?: string
             retriedAndFailed?: boolean
             supersededByUserTurn?: boolean
+            bridgeable?: boolean
         }
     ): Promise<{ ok: boolean; reason?: string }> {
         return await this.sessionRpc(sessionId, RPC_METHODS.BridgeModelError, payload) as {

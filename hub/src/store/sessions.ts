@@ -171,6 +171,10 @@ function preserveModelErrorHubFields(
         preserved.supersededByUserTurn = true
         changed = true
     }
+    if (oldError.bridgeable === false && newError.bridgeable !== false) {
+        preserved.bridgeable = false
+        changed = true
+    }
     if (typeof oldError.lastUserMessage === 'string' && newError.lastUserMessage === undefined) {
         preserved.lastUserMessage = oldError.lastUserMessage
         changed = true

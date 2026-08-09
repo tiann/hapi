@@ -312,18 +312,21 @@ export function classifyAcpRpcRejection(error: unknown): CursorAgentStreamFailur
 
     // Transport-level closure: WritableIterable closed, ACP transport closed,
     // or process exited. All come through markClosed() -> rejectAllPending().
+    // Not bridgeable: Bridge reuses the same backend.prompt path, and a closed
+    // AcpStdioTransport rejects every subsequent sendRequest until reconnect.
     if (
         lower.includes('writableiterable is closed') ||
         lower.includes('acp transport is closed') ||
         lower.includes('acp transport closed') ||
         lower.includes('acp process exited')
     ) {
-        return { kind: 'transport_closed', transient: true, raw, source: 'rpc' }
+        return { kind: 'transport_closed', transient: false, raw, source: 'rpc' }
     }
 
     // Process error during spawn / IO failure during write.
+    // Same as transport_closed: no reconnect/reload yet, so Bridge cannot recover.
     if (lower.includes('failed to spawn') || lower.includes('epipe') || lower.includes('ecanceled')) {
-        return { kind: 'agent_crashed', transient: true, raw, source: 'rpc' }
+        return { kind: 'agent_crashed', transient: false, raw, source: 'rpc' }
     }
 
     // Request-level timeout (DEFAULT_TIMEOUT_MS in AcpStdioTransport).

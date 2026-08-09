@@ -85,6 +85,13 @@ describe('canBridgeModelError', () => {
             supersededByUserTurn: true
         })).toBe(false);
     });
+
+    it('blocks when bridgeable is explicitly false', () => {
+        expect(canBridgeModelError({
+            ...base,
+            bridgeable: false
+        })).toBe(false);
+    });
 });
 
 describe('mergeBridgeGateFields', () => {

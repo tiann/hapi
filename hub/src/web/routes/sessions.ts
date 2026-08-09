@@ -538,6 +538,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 || message.includes('already failed')
                 || message.includes('changed')
                 || message.includes('superseded')
+                || message.includes('not bridgeable')
             ) {
                 return c.json({ error: message }, 409)
             }

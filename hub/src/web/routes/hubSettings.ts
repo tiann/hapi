@@ -12,6 +12,7 @@ import {
     readSessionSummaryInChatEnabled,
     writeSessionSummaryInChatEnabled
 } from '../../config/sessionSummaryInChat'
+import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 
 const OWNER_ONLY_ERROR = 'Hub settings are only available to the hub owner'
@@ -29,7 +30,10 @@ async function readHubSettings(dataDir: string): Promise<HubSettingsResponse> {
     }
 }
 
-export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
+export function createHubSettingsRoutes(
+    dataDir: string,
+    getSyncEngine?: () => SyncEngine | null
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
     // Authenticated readers (any namespace) can observe hub-wide display/emit
@@ -61,10 +65,22 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
             )
         }
         if (parsed.data.autoBridgeTransientModelErrors !== undefined) {
-            await writeAutoBridgeTransientModelErrorsEnabled(
-                dataDir,
-                parsed.data.autoBridgeTransientModelErrors
-            )
+            const enabled = parsed.data.autoBridgeTransientModelErrors
+            const previous = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+            await writeAutoBridgeTransientModelErrorsEnabled(dataDir, enabled)
+            const engine = getSyncEngine?.() ?? null
+            if (engine) {
+                try {
+                    await engine.fanoutAutoBridgeTransientModelErrors(enabled)
+                } catch (error) {
+                    await writeAutoBridgeTransientModelErrorsEnabled(dataDir, previous)
+                    await engine.fanoutAutoBridgeTransientModelErrors(previous).catch(() => {})
+                    const message = error instanceof Error
+                        ? error.message
+                        : 'Failed to update every active Cursor session'
+                    return c.json({ error: message }, 409)
+                }
+            }
         }
         c.header('Cache-Control', 'no-store')
         return c.json(await readHubSettings(dataDir))

@@ -58,6 +58,12 @@ describe('model error UI states', () => {
         expect(getModelErrorUiState(metadata)).toBe('unrecovered')
         expect(canShowModelErrorBridge(metadata)).toBe(false)
     })
+
+    it('hides Bridge when bridgeable is explicitly false', () => {
+        const metadata = holder({ ...base, bridgeable: false })
+        expect(getModelErrorUiState(metadata)).toBe('unrecovered')
+        expect(canShowModelErrorBridge(metadata)).toBe(false)
+    })
 })
 
 describe('model error chat event labels', () => {

@@ -13,6 +13,7 @@ export type ModelErrorHolder = {
         bridgedForEventId?: string
         retriedAndFailed?: boolean
         supersededByUserTurn?: boolean
+        bridgeable?: boolean
         acknowledgedAt?: number
     }
     [key: string]: unknown
@@ -38,6 +39,7 @@ export function canShowModelErrorBridge(metadata: ModelErrorHolder | null | unde
     return getModelErrorUiState(metadata) === 'unrecovered'
         && Boolean(metadata?.lastModelError?.transient)
         && !metadata?.lastModelError?.supersededByUserTurn
+        && metadata?.lastModelError?.bridgeable !== false
 }
 
 /** Any unacknowledged model-error surface (error, recovered, or bridge failed). */

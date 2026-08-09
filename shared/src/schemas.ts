@@ -178,6 +178,11 @@ export const MetadataSchema = z.object({
          * Blocks Bridge so a later retry cannot replay work the newer turn already handled.
          */
         supersededByUserTurn: z.boolean().optional(),
+        /**
+         * Explicit false blocks Bridge (idle stderr after a successful turn).
+         * Omitted / true keeps the existing transient gate.
+         */
+        bridgeable: z.boolean().optional(),
         acknowledgedAt: z.number().optional(),
         /** Hub-owned: successful push/FCM/Telegram delivery watermark. */
         notifiedAt: z.number().optional()
