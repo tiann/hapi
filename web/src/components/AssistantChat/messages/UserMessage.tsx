@@ -1,19 +1,16 @@
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
-import { useNavigate } from '@tanstack/react-router'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { MessageAttachments } from '@/components/AssistantChat/messages/MessageAttachments'
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
+import { PeerSenderChip } from '@/components/AssistantChat/messages/PeerSenderChip'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
-import { useTranslation } from '@/lib/use-translation'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
-    const navigate = useNavigate()
-    const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
@@ -120,34 +117,17 @@ export function HappyUserMessage() {
             data-hapi-message-role="user"
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
-            {isPeerDelivery ? (
-                <div
-                    className="mb-1 max-w-[92%] text-right text-[11px] leading-snug text-[var(--app-hint)]"
-                    data-hapi-peer-delivery="true"
-                >
-                    {peerSourceId ? (
-                        <button
-                            type="button"
-                            className="underline-offset-2 hover:underline"
-                            onClick={() => {
-                                void navigate({
-                                    to: '/sessions/$sessionId',
-                                    params: { sessionId: peerSourceId }
-                                })
-                            }}
-                        >
-                            {peerSourceName
-                                ? t('message.peerFromNamed', { name: peerSourceName })
-                                : t('message.peerFromSession')}
-                        </button>
-                    ) : (
-                        <span>{t('message.peerFromUnknown')}</span>
-                    )}
-                </div>
-            ) : null}
             <div className={getUserBubbleClassName(status)}>
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
+                        {isPeerDelivery ? (
+                            <div className="mb-1.5">
+                                <PeerSenderChip
+                                    sourceSessionId={peerSourceId}
+                                    sourceName={peerSourceName}
+                                />
+                            </div>
+                        ) : null}
                         {hasText ? <UserBubbleContent text={text} /> : null}
                         {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
                     </div>

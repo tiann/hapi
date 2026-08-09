@@ -14,6 +14,7 @@ export default {
   'message.peerFromSession': '来自对等会话',
   'message.peerFromNamed': '来自对等会话：{name}',
   'message.peerFromUnknown': '来自对等会话（未知来源）',
+  'message.peerUnknownChip': '@peer',
   'message.fork': '分叉',
   'message.rewind': '回退',
   'message.fork.confirmTitle': '分叉对话',

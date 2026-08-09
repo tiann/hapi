@@ -14,6 +14,7 @@ export default {
   'message.peerFromSession': 'From peer session',
   'message.peerFromNamed': 'From peer session: {name}',
   'message.peerFromUnknown': 'From peer (unknown session)',
+  'message.peerUnknownChip': '@peer',
   'message.fork': 'Fork',
   'message.rewind': 'Rewind',
   'message.fork.confirmTitle': 'Fork conversation',
