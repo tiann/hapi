@@ -61,12 +61,20 @@ describe('sessionJobMcp', () => {
         expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/Own-session only/i)
     })
 
-    it('rejects update with empty patch', async () => {
+    it('treats empty update as a heartbeat-only patch', async () => {
+        const { updateSessionJob } = await import('./sessionJob')
         const result = await handleSessionJobTool(
             { action: 'update', jobKey: 'beets' },
             'sid-1'
         )
-        expect(result.isError).toBe(true)
-        expect(result.text).toMatch(/at least one/i)
+        expect(result.isError).toBe(false)
+        expect(result.text).toContain('updated')
+        expect(updateSessionJob).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionIdPrefix: 'sid-1',
+                jobKey: 'beets',
+                body: {}
+            })
+        )
     })
 })
