@@ -1185,6 +1185,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             return { ok: false, reason: 'no_model_error' };
         }
 
+        // Manual Bridge during a newer in-flight turn would front-queue a stale
+        // retry that still runs if that turn succeeds (no superseding modelError).
+        // Auto-bridge may still fire while settling the failed turn itself.
+        if (source === 'manual' && this.promptInFlight) {
+            return { ok: false, reason: 'prompt_in_flight' };
+        }
+
         // Fail closed while a bridge for this eventId is pending or active.
         if (
             this.bridgingForEventId === metadataError.eventId

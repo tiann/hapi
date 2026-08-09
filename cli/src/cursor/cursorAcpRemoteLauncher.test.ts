@@ -2191,6 +2191,40 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
     });
 
+    it('rejects manual bridge while a normal prompt is in flight', async () => {
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        const eventId = '66666666-6666-4666-8666-666666666666';
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'older failed turn',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'prompt_in_flight' });
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        session.queue.close();
+        harness.releasePrompt?.();
+        await launchPromise;
+    });
+
     it('clears pending bridge on abort so the same event can be bridged again', async () => {
         // Hold the first prompt so the bridge stays queued (not dequeued yet).
         harness.deferPrompt = new Promise<void>((resolve) => {
