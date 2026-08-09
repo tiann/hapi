@@ -6,6 +6,7 @@ import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport
 
 const harness = vi.hoisted(() => ({
     initializeError: null as Error | null,
+    initializeAttempts: 0,
     loadSessionError: null as Error | null,
     newSessionError: null as Error | null,
     failSetConfigOption: false,
@@ -78,10 +79,22 @@ vi.mock('./utils/cursorAcpBackend', () => ({
         harness.backendArgs = { command: 'agent', args };
         return {
             initialize: vi.fn(async () => {
+                harness.initializeAttempts += 1;
                 if (harness.emitStderrOnInitialize && harness.stderrErrorHandler) {
                     harness.stderrErrorHandler(harness.emitStderrOnInitialize);
                 }
-                if (harness.initializeError) throw harness.initializeError;
+                // Remap path (#1430 / stale spawn): fail only the first initialize
+                // so the launcher can retry after rewriting --model.
+                if (harness.initializeError && harness.initializeAttempts === 1) {
+                    if (!harness.emitStderrOnInitialize) {
+                        harness.stderrErrorHandler?.({
+                            type: 'model_not_found',
+                            message: harness.initializeError.message,
+                            raw: harness.initializeError.message
+                        });
+                    }
+                    throw harness.initializeError;
+                }
             }),
             authenticateIfAvailable: vi.fn(async () => {}),
             supportsLoadSession: vi.fn(() => harness.supportsLoadSession),
@@ -318,11 +331,13 @@ function makeClient() {
 describe('cursorAcpRemoteLauncher', () => {
     beforeEach(() => {
         harness.initializeError = null;
+        harness.initializeAttempts = 0;
         harness.loadSessionError = null;
         harness.newSessionError = null;
         harness.failSetConfigOption = false;
         harness.supportsLoadSession = true;
         harness.loadSessionCalled = false;
+        harness.newSessionAttempts = 0;
         harness.newSessionCalled = false;
         harness.newSessionAttempts = 0;
         harness.promptCalls = 0;
