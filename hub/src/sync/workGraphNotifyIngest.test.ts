@@ -341,4 +341,34 @@ describe('ingestNotifySummaryFromMessage', () => {
         expect(new TextEncoder().encode(action).byteLength).toBeLessThanOrEqual(WORK_GRAPH_MAX_STRING)
         expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
     })
+
+    it('clamps JSON-escapable ASCII so elevation still inserts', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-esc', {}, null, 'default')
+        // Raw UTF-8 clamp would keep 8192 backslashes; JSON.stringify doubles them.
+        const fatEsc = '\\'.repeat(8_192)
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-esc',
+            content: assistantOutput(
+                `AGENT_NOTIFY_SUMMARY ${JSON.stringify({
+                    status: 'done',
+                    summary: 'ok',
+                    action: fatEsc,
+                    project: fatEsc,
+                    agent: fatEsc
+                })}`
+            ),
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+
+        expect(result?.inserted).toBe(true)
+        const action = (result?.event.payloadJson as { action?: string })?.action ?? ''
+        const escaped = JSON.stringify(action).slice(1, -1)
+        expect(new TextEncoder().encode(escaped).byteLength).toBeLessThanOrEqual(WORK_GRAPH_MAX_STRING)
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
+    })
 })

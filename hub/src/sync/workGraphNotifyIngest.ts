@@ -15,7 +15,7 @@ import type { InsertWorkGraphEventResult } from '../store/workGraph'
 const WORK_GRAPH_MAX_TAG = 256
 const utf8Encoder = new TextEncoder()
 
-/** Truncate to a UTF-8 byte budget (matches payload_json store validator). */
+/** Truncate to a UTF-8 byte budget (event.summary Zod max is char-oriented). */
 function clampUtf8(value: string, maxBytes: number): string {
     if (utf8Encoder.encode(value).byteLength <= maxBytes) return value
     const chars: string[] = []
@@ -29,9 +29,26 @@ function clampUtf8(value: string, maxBytes: number): string {
     return chars.join('')
 }
 
-function clampUtf8Opt(value: string | undefined, maxBytes: number): string | undefined {
+/**
+ * Truncate so JSON-escaped UTF-8 bytes stay within budget.
+ * `payloadJsonWithinLimit` measures JSON.stringify, where `\` / `"` / controls expand.
+ */
+function clampJsonUtf8(value: string, maxBytes: number): string {
+    const chars: string[] = []
+    let bytes = 0
+    for (const char of value) {
+        const escaped = JSON.stringify(char).slice(1, -1)
+        const size = utf8Encoder.encode(escaped).byteLength
+        if (bytes + size > maxBytes) break
+        chars.push(char)
+        bytes += size
+    }
+    return chars.join('')
+}
+
+function clampJsonUtf8Opt(value: string | undefined, maxBytes: number): string | undefined {
     if (value === undefined) return undefined
-    return clampUtf8(value, maxBytes)
+    return clampJsonUtf8(value, maxBytes)
 }
 
 /** WorkAd status vocabulary from the A2A RFC (P3 notify elevation). */
@@ -123,9 +140,9 @@ function buildTags(notify: NotifySummary, flavor: string | null | undefined): st
     // project-scoped list query is deferred to #1374 / P4 (cold review M4).
     // Tag strings are untrusted footer text — clamp to schema max before insert.
     const tags: string[] = ['notify_summary']
-    if (notify.project) tags.push(clampUtf8(`project:${notify.project}`, WORK_GRAPH_MAX_TAG))
-    if (notify.agent) tags.push(clampUtf8(`agent:${notify.agent}`, WORK_GRAPH_MAX_TAG))
-    if (flavor) tags.push(clampUtf8(`flavor:${flavor}`, WORK_GRAPH_MAX_TAG))
+    if (notify.project) tags.push(clampJsonUtf8(`project:${notify.project}`, WORK_GRAPH_MAX_TAG))
+    if (notify.agent) tags.push(clampJsonUtf8(`agent:${notify.agent}`, WORK_GRAPH_MAX_TAG))
+    if (flavor) tags.push(clampJsonUtf8(`flavor:${flavor}`, WORK_GRAPH_MAX_TAG))
     return tags.slice(0, WORK_GRAPH_MAX_TAGS)
 }
 
@@ -147,9 +164,9 @@ export function buildWorkAdFromNotify(params: {
     // Footer fields are untrusted. Clamp to ledger schema bounds so elevation
     // still lands; store insert also validates WorkGraphEventCreateSchema.
     const summary = clampUtf8(buildWorkAdSummaryFromNotify(params.notify), WORK_GRAPH_MAX_SUMMARY)
-    const action = clampUtf8Opt(params.notify.action, WORK_GRAPH_MAX_STRING) ?? null
-    const project = clampUtf8Opt(params.notify.project, WORK_GRAPH_MAX_STRING) ?? null
-    const agent = clampUtf8Opt(params.notify.agent, WORK_GRAPH_MAX_STRING) ?? null
+    const action = clampJsonUtf8Opt(params.notify.action, WORK_GRAPH_MAX_STRING) ?? null
+    const project = clampJsonUtf8Opt(params.notify.project, WORK_GRAPH_MAX_STRING) ?? null
+    const agent = clampJsonUtf8Opt(params.notify.agent, WORK_GRAPH_MAX_STRING) ?? null
     // Audit principal is always session-bound. notify.agent is untrusted
     // self-label text and stays advisory in payload/tags only.
     // Do not nest a full notify_summary copy — duplicating clamped strings
