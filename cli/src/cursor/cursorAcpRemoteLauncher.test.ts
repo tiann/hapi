@@ -2094,9 +2094,9 @@ describe('cursorAcpRemoteLauncher', () => {
     it('does not mark an in-flight bridge recovered when Abort wins the race', async () => {
         // Bridge prompt is deferred; abort clears bridgingForEventId before any
         // await, then the prompt settles cleanly — must NOT emit recovered.
-        let releaseFirst: (() => void) | null = null;
+        const firstGate = { release: null as (() => void) | null };
         harness.deferPrompt = new Promise<void>((resolve) => {
-            releaseFirst = resolve;
+            firstGate.release = resolve;
         });
 
         const session = makeSession('acp-session', { keepQueueOpen: true });
@@ -2124,11 +2124,11 @@ describe('cursorAcpRemoteLauncher', () => {
         })).toEqual({ ok: true });
 
         // Park the bridge turn before releasing the first prompt.
-        let releaseBridge: (() => void) | null = null;
+        const bridgeGate = { release: null as (() => void) | null };
         harness.deferPrompt = new Promise<void>((resolve) => {
-            releaseBridge = resolve;
+            bridgeGate.release = resolve;
         });
-        releaseFirst?.();
+        firstGate.release?.();
         await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
 
         const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
@@ -2136,7 +2136,7 @@ describe('cursorAcpRemoteLauncher', () => {
         )?.[1] as (() => Promise<void>) | undefined;
         expect(abortHandler).toBeTypeOf('function');
         await abortHandler!();
-        releaseBridge?.();
+        bridgeGate.release?.();
         session.queue.close();
         await launchPromise;
 
