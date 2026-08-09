@@ -521,12 +521,37 @@ export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
 export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
 
+/**
+ * Peer-delivery provenance for `ping_peer` / `hapi ping-peer` (A2A Layer 0.1 / #1203).
+ *
+ * Wire shape (request): optional `sourceSessionId` hint from the CLI env.
+ * Hub only honors this when {@link HAPI_PEER_DELIVERY_HEADER} is present; without
+ * the header, `peer` is ignored and the row stays `sentFrom: webapp` (stops the
+ * normal web composer path from accidentally labeling operator keystrokes as peer).
+ *
+ * Trust note: the header is not a cryptographic authenticity bound - any holder of
+ * the namespace JWT can set it. Authoritative source id is still never an MCP/tool
+ * argument; the hub additionally drops ids that are not in the caller's namespace
+ * and fills `sourceName` from its own session store (client-supplied names ignored).
+ */
+export const PeerDeliveryMetaSchema = z.object({
+    sourceSessionId: z.string().trim().min(1).max(128).optional(),
+    // Accepted for forward-compat but ignored by the hub (name is store-derived).
+    sourceName: z.string().trim().min(1).max(255).optional()
+})
+export type PeerDeliveryMeta = z.infer<typeof PeerDeliveryMetaSchema>
+
+/** Lower-case header name; HTTP headers are case-insensitive. */
+export const HAPI_PEER_DELIVERY_HEADER = 'x-hapi-peer-delivery'
+export const HAPI_PEER_DELIVERY_HEADER_VALUE = '1'
+
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
     attachments: z.array(AttachmentMetadataSchema).optional(),
     scheduledAt: z.number().int().positive().nullable().optional(),
-    deliveryMode: MessageDeliveryModeSchema.optional()
+    deliveryMode: MessageDeliveryModeSchema.optional(),
+    peer: PeerDeliveryMetaSchema.optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',
     { message: 'scheduledAt requires localId', path: ['localId'] }

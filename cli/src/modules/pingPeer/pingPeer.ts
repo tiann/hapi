@@ -9,11 +9,36 @@
  */
 
 import axios, { type AxiosInstance } from 'axios'
-import { extractAssistantPlainText, isObject } from '@hapi/protocol'
+import {
+    extractAssistantPlainText,
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE,
+    isObject,
+    type PeerDeliveryMeta
+} from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
+
+const SESSION_ID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Trusted peer provenance for delivery. Source id comes only from process env
+ * (`HAPI_SESSION_ID`) - never from MCP/CLI free-form args (#1203 kill criterion).
+ * Display name is filled hub-side from the session store when the id is valid.
+ */
+export function resolvePeerDeliveryProvenance(
+    env: NodeJS.ProcessEnv = process.env
+): PeerDeliveryMeta {
+    const rawId = env[HAPI_SESSION_ID_ENV]?.trim() ?? ''
+    if (rawId && SESSION_ID_RE.test(rawId)) {
+        return { sourceSessionId: rawId }
+    }
+    return {}
+}
 
 export type PingPeerErrorCode =
     | 'bad_args'
@@ -345,13 +370,17 @@ async function sendMessage(
     jwt: string,
     sessionId: string,
     message: string,
-    http: AxiosInstance
+    http: AxiosInstance,
+    peer: PeerDeliveryMeta = {}
 ): Promise<void> {
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message },
+        { text: message, peer },
         {
-            headers: authHeaders(jwt),
+            headers: {
+                ...authHeaders(jwt),
+                [HAPI_PEER_DELIVERY_HEADER]: HAPI_PEER_DELIVERY_HEADER_VALUE
+            },
             timeout: 30_000,
             validateStatus: () => true
         }
@@ -515,8 +544,9 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         }
     }
 
+    const peer = resolvePeerDeliveryProvenance()
     onProgress?.(`sending message (${message.length} chars)...`)
-    await sendMessage(apiUrl, jwt, matched.id, message, http)
+    await sendMessage(apiUrl, jwt, matched.id, message, http, peer)
 
     return {
         sessionId: matched.id,

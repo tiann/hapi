@@ -77,6 +77,12 @@ export const MessageMetaSchema = z.object({
     // Queue remains the default for existing clients. Pi-aware callers may
     // explicitly request native steering while a turn is streaming.
     deliveryMode: z.enum(['queue', 'steer']).optional(),
+    // Peer delivery provenance (#1203). Additive; agents may reply via ping_peer
+    // targeting peer.sourceSessionId. Not a Layer 1 work-contract.
+    peer: z.object({
+        sourceSessionId: z.string().optional(),
+        sourceName: z.string().optional()
+    }).optional(),
     fallbackModel: z.string().nullable().optional(),
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),

@@ -805,7 +805,11 @@ export class MessageService {
             text: string
             localId?: string | null
             attachments?: AttachmentMetadata[]
-            sentFrom?: 'telegram-bot' | 'webapp'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'peer'
+            peer?: {
+                sourceSessionId?: string
+                sourceName?: string
+            }
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }
@@ -828,6 +832,16 @@ export class MessageService {
             payload.deliveryMode,
             payload.scheduledAt
         )
+        const peer = sentFrom === 'peer' && payload.peer
+            ? {
+                ...(payload.peer.sourceSessionId
+                    ? { sourceSessionId: payload.peer.sourceSessionId }
+                    : {}),
+                ...(payload.peer.sourceName
+                    ? { sourceName: payload.peer.sourceName }
+                    : {})
+            }
+            : undefined
 
         const content = {
             role: 'user',
@@ -838,7 +852,8 @@ export class MessageService {
             },
             meta: {
                 sentFrom,
-                deliveryMode
+                deliveryMode,
+                ...(peer ? { peer } : {})
             }
         }
 

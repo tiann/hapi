@@ -1156,6 +1156,78 @@ describe('MessageService.sendMessage with scheduledAt', () => {
     })
 })
 
+describe('MessageService.sendMessage peer provenance', () => {
+    it('persists sentFrom peer and optional source session meta', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'peer-provenance',
+            { path: '/tmp/peer-provenance', host: 'localhost', flavor: 'cursor' },
+            null,
+            'default'
+        )
+        const service = new MessageService(store, {
+            of: () => ({
+                to: () => ({ emit: () => {}, timeout: () => ({ emit: () => {} }) }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server, makePublisher() as any)
+
+        await service.sendMessage(session.id, {
+            text: 'peer nudge',
+            localId: 'peer-local',
+            sentFrom: 'peer',
+            peer: {
+                sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+                sourceName: 'Orchestrator'
+            }
+        })
+
+        const stored = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stored).toHaveLength(1)
+        expect(stored[0]?.content).toMatchObject({
+            role: 'user',
+            meta: {
+                sentFrom: 'peer',
+                peer: {
+                    sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+                    sourceName: 'Orchestrator'
+                }
+            }
+        })
+    })
+
+    it('never stores peer meta when sentFrom is webapp', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'peer-forge-guard',
+            { path: '/tmp/peer-forge-guard', host: 'localhost', flavor: 'cursor' },
+            null,
+            'default'
+        )
+        const service = new MessageService(store, {
+            of: () => ({
+                to: () => ({ emit: () => {}, timeout: () => ({ emit: () => {} }) }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server, makePublisher() as any)
+
+        await service.sendMessage(session.id, {
+            text: 'web typed',
+            localId: 'web-local',
+            sentFrom: 'webapp',
+            peer: {
+                sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+            }
+        })
+
+        const stored = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stored[0]?.content).toMatchObject({
+            meta: { sentFrom: 'webapp' }
+        })
+        expect((stored[0]?.content as { meta?: { peer?: unknown } }).meta?.peer).toBeUndefined()
+    })
+})
+
 describe('MessageService.sendMessage deliveryMode', () => {
     function makeTrackingIo(): { io: Server; cliEmitted: unknown[] } {
         const cliEmitted: unknown[] = []

@@ -145,3 +145,36 @@ describe('SendMessageRequestSchema deliveryMode', () => {
         }
     })
 })
+
+describe('SendMessageRequestSchema peer provenance', () => {
+    it('accepts empty peer object and optional source fields', () => {
+        expect(SendMessageRequestSchema.parse({ text: 'nudge', peer: {} }).peer).toEqual({})
+        expect(SendMessageRequestSchema.parse({
+            text: 'nudge',
+            peer: {
+                sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+                sourceName: 'meta - PR watcher'
+            }
+        }).peer).toEqual({
+            sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+            sourceName: 'meta - PR watcher'
+        })
+    })
+
+    it('strips top-level forge fields and keeps peer delivery fail-open on wire', () => {
+        // Invalid UUID-shaped ids are accepted on the wire; hub drops unknown ids.
+        expect(SendMessageRequestSchema.safeParse({
+            text: 'nudge',
+            peer: { sourceSessionId: 'not-a-uuid-but-nonzero' }
+        }).success).toBe(true)
+
+        const forgedInput = {
+            text: 'nudge',
+            sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+            sentFrom: 'peer'
+        }
+        const forged = SendMessageRequestSchema.parse(forgedInput)
+        expect(forged).toEqual({ text: 'nudge' })
+        expect('peer' in forged).toBe(false)
+    })
+})

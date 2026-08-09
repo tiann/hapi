@@ -1,8 +1,45 @@
 import { Hono } from 'hono'
-import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema } from '@hapi/protocol'
+import {
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE,
+    MessagesQuerySchema,
+    QueuedStateRequestSchema,
+    SendMessageRequestSchema,
+    type PeerDeliveryMeta
+} from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+
+function isPeerDeliveryRequest(c: { req: { header: (name: string) => string | undefined } }): boolean {
+    const raw = c.req.header(HAPI_PEER_DELIVERY_HEADER)
+    return (raw?.trim().toLowerCase() ?? '') === HAPI_PEER_DELIVERY_HEADER_VALUE
+}
+
+/**
+ * Keep sentFrom=peer, but only persist a sourceSessionId that exists in this
+ * namespace. Fill sourceName from hub metadata (ignore client-supplied name).
+ */
+export function resolveTrustedPeerMeta(
+    engine: SyncEngine,
+    namespace: string,
+    claimed: PeerDeliveryMeta | undefined
+): PeerDeliveryMeta {
+    const claimedId = claimed?.sourceSessionId?.trim()
+    if (!claimedId) {
+        return {}
+    }
+    const access = engine.resolveSessionAccess(claimedId, namespace)
+    if (!access.ok) {
+        return {}
+    }
+    const meta = access.session.metadata as { name?: unknown } | null | undefined
+    const sourceName = typeof meta?.name === 'string' ? meta.name.trim() : ''
+    return {
+        sourceSessionId: access.sessionId,
+        ...(sourceName ? { sourceName: sourceName.slice(0, 255) } : {})
+    }
+}
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -141,11 +178,19 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
+        // Peer provenance is header-gated (#1203). Body `peer` without the
+        // delivery header is ignored so the normal web send path cannot label
+        // operator keystrokes as peer.
+        const peerDelivery = isPeerDeliveryRequest(c)
+        const peer = peerDelivery
+            ? resolveTrustedPeerMeta(engine, c.get('namespace'), parsed.data.peer)
+            : undefined
         await engine.sendMessage(sessionId, {
             text: parsed.data.text,
             localId: parsed.data.localId,
             attachments: parsed.data.attachments,
-            sentFrom: 'webapp',
+            sentFrom: peerDelivery ? 'peer' : 'webapp',
+            peer,
             scheduledAt: parsed.data.scheduledAt,
             deliveryMode: parsed.data.deliveryMode
         })

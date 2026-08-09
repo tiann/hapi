@@ -1,4 +1,5 @@
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
+import { useNavigate } from '@tanstack/react-router'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
@@ -11,6 +12,7 @@ import { useTranslation } from '@/lib/use-translation'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
+    const navigate = useNavigate()
     const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
@@ -33,6 +35,23 @@ export function HappyUserMessage() {
         if (s.message.role !== 'user') return undefined
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.attachments
+    })
+    const isPeerDelivery = useAuiState((s) => {
+        if (s.message.role !== 'user') return false
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.sentFrom === 'peer'
+    })
+    const peerSourceId = useAuiState((s) => {
+        if (s.message.role !== 'user') return null
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        const id = custom?.peer?.sourceSessionId
+        return typeof id === 'string' && id.trim() ? id.trim() : null
+    })
+    const peerSourceName = useAuiState((s) => {
+        if (s.message.role !== 'user') return null
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        const name = custom?.peer?.sourceName
+        return typeof name === 'string' && name.trim() ? name.trim() : null
     })
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -101,6 +120,31 @@ export function HappyUserMessage() {
             data-hapi-message-role="user"
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
+            {isPeerDelivery ? (
+                <div
+                    className="mb-1 max-w-[92%] text-right text-[11px] leading-snug text-[var(--app-hint)]"
+                    data-hapi-peer-delivery="true"
+                >
+                    {peerSourceId ? (
+                        <button
+                            type="button"
+                            className="underline-offset-2 hover:underline"
+                            onClick={() => {
+                                void navigate({
+                                    to: '/sessions/$sessionId',
+                                    params: { sessionId: peerSourceId }
+                                })
+                            }}
+                        >
+                            {peerSourceName
+                                ? t('message.peerFromNamed', { name: peerSourceName })
+                                : t('message.peerFromSession')}
+                        </button>
+                    ) : (
+                        <span>{t('message.peerFromUnknown')}</span>
+                    )}
+                </div>
+            ) : null}
             <div className={getUserBubbleClassName(status)}>
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
