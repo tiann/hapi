@@ -167,6 +167,10 @@ import { classifyCursorAcpLoadError, cursorAcpRemoteLauncher } from './cursorAcp
 import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
+import {
+    _resetSharedCursorModelsCacheForTests,
+    writeSharedCursorModelsCache
+} from '@/modules/common/cursorModelsSharedCache';
 
 function makeSession(sessionId: string | null): CursorSession {
     const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
@@ -233,6 +237,7 @@ describe('cursorAcpRemoteLauncher', () => {
 
     afterEach(() => {
         vi.clearAllMocks();
+        _resetSharedCursorModelsCacheForTests();
     });
 
     it('spawns agent acp backend, not stream-json', async () => {
@@ -321,6 +326,60 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.loadSessionCalled).toBe(true);
         expect(harness.newSessionCalled).toBe(false);
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('spawns bare remap but reapplies original fast=true variant via ACP (#1430)', async () => {
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'composer-2.5' }],
+            currentModelId: 'composer-2.5',
+            cliModelSkus: [{ modelId: 'composer-2.5' }],
+        });
+
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const keepAlive = vi.fn();
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive,
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'composer-2.5[fast=true]'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => {
+            expect(harness.backendArgs?.args).toEqual(['--model', 'composer-2.5', 'acp']);
+            expect(
+                harness.setConfigOptionCalls.some(
+                    (call) => call.configId === 'model-opt' && call.value === 'composer-2.5[fast=true]'
+                )
+            ).toBe(true);
+            expect(session.model).toBe('composer-2.5[fast=true]');
+        });
+
+        queue.close();
+        await runPromise;
+        _resetSharedCursorModelsCacheForTests();
     });
 
     it('remaps stale spawn model and retries initialize once on model rejection', async () => {

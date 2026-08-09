@@ -110,15 +110,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
         this.spawnedWithAutoReview = autoReview;
 
-        const requestedSpawnModel = session.model;
+        // Desired hub/UI model (may be a bracket wire). Spawn may use a remap for
+        // `agent --model`, but applyLiveModel must reapply this original so variants
+        // like composer-2.5[fast=true] are not silently coerced to fast=false (#1430).
+        const desiredModel = session.model;
+        const requestedSpawnModel = desiredModel;
         let spawnModel = resolveCursorSpawnModel(requestedSpawnModel);
         let backend: AcpSdkBackend | null = null;
         let recentStderrHint: string | null = null;
 
         for (let connectAttempt = 0; connectAttempt < 2; connectAttempt += 1) {
-            if (spawnModel && spawnModel !== session.model) {
-                session.setModel(spawnModel);
-                session.pushKeepAlive();
+            if (spawnModel && spawnModel !== desiredModel) {
+                // Status only — do not session.setModel(spawnModel) or keepalive will
+                // overwrite the desired variant before ACP apply.
                 this.messageBuffer.addMessage(`[MODEL:${spawnModel}]`, 'system');
             }
 
@@ -231,8 +235,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     if (remapped && loadAttempt === 0) {
                         logger.info(`[cursor-acp] Remapping stale resume model ${spawnModel} → ${remapped}`);
                         spawnModel = remapped;
-                        session.setModel(remapped);
-                        session.pushKeepAlive();
+                        // Keep session.model as desiredModel; only the process --model remaps.
                         this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
                         await backend.disconnect();
                         backend = createCursorAcpBackend({
@@ -313,8 +316,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const previousSetModel = session.setModel.bind(session);
 
         await applyCursorAcpMode(backend, acpSessionId, session.getPermissionMode() as PermissionMode);
-        if (session.model) {
-            await this.applyLiveModel(backend, acpSessionId, session.model, previousSetModel, {
+        const modelToApply = desiredModel ?? session.model;
+        if (modelToApply) {
+            await this.applyLiveModel(backend, acpSessionId, modelToApply, previousSetModel, {
                 optimistic: false,
                 throwOnFailure: false
             });

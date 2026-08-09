@@ -96,15 +96,23 @@ type ParameterizedCursorModelResult = ApplyCursorAcpModelResult | 'unsupported' 
 
 /**
  * Wire id stored on session + keepalive.
- * Prefer spawn-safe resolved ids (bare / CLI SKU) so the next resume does not
- * re-pass a bracketed wire that `agent --model` rejects (#1428).
+ * Spawn-safe requested ids (bare / CLI SKU) must stay spawn-safe — do not
+ * re-persist ACP parameterized wires after apply (#1428 / #1430).
  */
 export function wireIdForCursorSessionState(requested: string, resolved: string): string {
     const trimmedRequested = requested.trim();
     const trimmedResolved = resolved.trim();
+
+    // Bare/SKU request: keep it even when ACP resolved a bracket wire.
+    if (trimmedRequested && !trimmedRequested.includes('[')) {
+        return trimmedRequested;
+    }
+
+    // Prefer a spawn-safe resolved id when the request was a wire.
     if (trimmedResolved && !trimmedResolved.includes('[')) {
         return trimmedResolved;
     }
+
     if (trimmedRequested.includes('[')) {
         const legacyBase = resolveCursorLegacyModelBase(cursorModelBaseId(trimmedRequested));
         if (legacyBase !== cursorModelBaseId(trimmedRequested)) {
@@ -112,6 +120,7 @@ export function wireIdForCursorSessionState(requested: string, resolved: string)
         }
         return trimmedRequested;
     }
+
     return trimmedResolved || trimmedRequested;
 }
 

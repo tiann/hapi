@@ -138,10 +138,13 @@ describe('wireIdForCursorSessionState', () => {
         ).toBe('cursor-grok-4.5-medium');
     });
 
-    it('uses resolved wire id for base-only requests', () => {
+    it('keeps spawn-safe bare/SKU requests instead of re-persisting ACP wires (#1430)', () => {
         expect(
             wireIdForCursorSessionState('composer-2.5', 'composer-2.5[fast=true]')
-        ).toBe('composer-2.5[fast=true]');
+        ).toBe('composer-2.5');
+        expect(
+            wireIdForCursorSessionState('gpt-5.3-codex', 'gpt-5.3-codex[reasoning=medium,fast=false]')
+        ).toBe('gpt-5.3-codex');
     });
 
     it('prefers spawn-safe bare/SKU resolved ids over bracketed requests (#1428)', () => {
