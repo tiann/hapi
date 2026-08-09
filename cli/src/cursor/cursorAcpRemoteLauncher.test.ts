@@ -2091,6 +2091,67 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(wroteLastModelError).toBe(false);
     });
 
+    it('does not mark an in-flight bridge recovered when Abort wins the race', async () => {
+        // Bridge prompt is deferred; abort clears bridgingForEventId before any
+        // await, then the prompt settles cleanly — must NOT emit recovered.
+        let releaseFirst: (() => void) | null = null;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+        });
+
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        const eventId = '55555555-5555-4555-8555-555555555555';
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        // Park the bridge turn before releasing the first prompt.
+        let releaseBridge: (() => void) | null = null;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releaseBridge = resolve;
+        });
+        releaseFirst?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeTypeOf('function');
+        await abortHandler!();
+        releaseBridge?.();
+        session.queue.close();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+        const wroteBridgedForEventId = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgedForEventId?: string } | undefined;
+            return err?.bridgedForEventId === eventId;
+        });
+        expect(wroteBridgedForEventId).toBe(false);
+    });
+
     it('does not promote ACP process-exit rejection after deliberate abort to modelError', async () => {
         harness.deferPrompt = new Promise<void>((resolve) => {
             harness.releasePrompt = resolve;

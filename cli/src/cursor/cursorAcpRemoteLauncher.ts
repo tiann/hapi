@@ -783,7 +783,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
-                if (!this.turnHasModelError && this.bridgingForEventId !== null) {
+                if (
+                    !this.userAbortRequested
+                    && !this.turnHasModelError
+                    && this.bridgingForEventId !== null
+                ) {
                     const eventId = this.bridgingForEventId;
                     const source = this.bridgingSource ?? 'manual';
                     this.markModelErrorBridgeSucceeded(eventId, source);
@@ -1468,8 +1472,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         this.userAbortRequested = true;
         const backend = this.backend;
-        // userAbortRequested already set above so in-flight prompt rejection
-        // cannot promote Cursor's canceled/aborted wire shape into lastModelError.
         const sessionId = this.acpSessionId ?? this.session.sessionId;
         if (backend && sessionId) {
             const pendingSoftSteers = [...this.softSteerWaiters];
@@ -1501,11 +1503,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
         await this.permissionAdapter?.cancelAll('User aborted');
         await this.extensionAdapter?.cancelAll('User aborted');
-        // Clear bridge gates before reset — reset alone would leave pending/
-        // in-flight attribution stuck (permanent not_bridgeable).
-        this.cancelPendingBridge();
-        this.bridgingForEventId = null;
-        this.bridgingSource = null;
         this.session.queue.reset();
         // A soft steer may settle after Abort; preserve its reservation until
         // the completion callback records accepted or indeterminate.
