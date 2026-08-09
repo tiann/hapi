@@ -126,6 +126,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private lastUserMessage: string | null = null;
     private lastTurnMode: EnhancedMode | null = null;
     private bridgingForEventId: string | null = null;
+    private bridgingSource: 'auto' | 'manual' | null = null;
     private lastRecordedModelError: {
         eventId: string;
         atTs: number;
@@ -764,7 +765,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
                 if (!this.turnHasModelError && this.bridgingForEventId !== null) {
+                    const eventId = this.bridgingForEventId;
+                    const source = this.bridgingSource ?? 'manual';
+                    this.markModelErrorBridgeSucceeded(eventId, source);
                     this.bridgingForEventId = null;
+                    this.bridgingSource = null;
                 }
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     sendReady();
@@ -1040,6 +1045,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const bridgedFailure = this.bridgingForEventId !== null;
         if (bridgedFailure) {
             this.bridgingForEventId = null;
+            this.bridgingSource = null;
         }
 
         // Same-message case: Cursor often appends `Error: T: ...` onto the
@@ -1109,9 +1115,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         };
 
         if (snapshot.eventId !== undefined) {
+            // Bind to the displayed error — refuse if a newer local error won.
+            if (
+                this.lastRecordedModelError
+                && this.lastRecordedModelError.eventId !== snapshot.eventId
+            ) {
+                return { ok: false, reason: 'model_error_changed' };
+            }
             // Merge hub snapshot into local gate state — never clobber
             // bridgedForEventId / retriedAndFailed with undefined/false from a
-            // stale hub payload (would allow a second pushIsolated for same event).
+            // stale hub payload (would allow a second enqueue for same event).
             const gates = mergeBridgeGateFields(this.lastRecordedModelError, {
                 bridgedForEventId: snapshot.bridgedForEventId,
                 retriedAndFailed: snapshot.retriedAndFailed
@@ -1176,55 +1189,52 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const bridgedEventId = metadataError.eventId;
         this.bridgingForEventId = bridgedEventId;
+        this.bridgingSource = source;
 
-        this.lastRecordedModelError = {
-            ...metadataError,
-            bridgedForEventId: bridgedEventId
-        };
-
-        this.session.client.updateMetadata((metadata) => {
-            const current = metadata.lastModelError;
-            const nextError = current?.eventId === bridgedEventId
-                ? {
-                    ...current,
-                    bridgedForEventId: bridgedEventId
-                }
-                : {
-                    eventId: metadataError.eventId,
-                    kind: metadataError.kind,
-                    transient: metadataError.transient,
-                    rawSnippet: metadataError.rawSnippet,
-                    atTs: metadataError.atTs,
-                    priorAssistantClaimsDone: metadataError.priorAssistantClaimsDone,
-                    ...(metadataError.lastUserMessage
-                        ? { lastUserMessage: metadataError.lastUserMessage }
-                        : {}),
-                    bridgedForEventId: bridgedEventId
-                };
-
-            return {
-                ...metadata,
-                lastModelError: nextError
-            };
-        });
+        // Do not persist bridgedForEventId / recovered UI until the bridge
+        // prompt succeeds. In-flight gating uses bridgingForEventId only.
 
         const mode = this.lastTurnMode ?? {
             permissionMode: this.session.getPermissionMode() as PermissionMode,
             model: this.currentBackendModel ?? this.session.model ?? undefined
         };
 
-        this.session.queue.pushIsolated(prompt, mode);
-        // Chat-visible recovery marker only. Not an AGENT_NOTIFY_SUMMARY — overseer/inbox
-        // must not treat successful bridges as attention candidates.
-        this.session.sendSessionEvent({
-            type: 'modelErrorBridged',
-            kind: metadataError.kind,
-            auto: source === 'auto',
-            eventId: bridgedEventId
-        });
+        // Ahead of any already-queued user turns so retry attribution stays correct.
+        this.session.queue.unshiftIsolated(prompt, mode);
         logger.debug(`[cursor-acp] modelError bridge enqueued for eventId=${bridgedEventId} source=${source}`);
 
         return { ok: true };
+    }
+
+    private markModelErrorBridgeSucceeded(eventId: string, source: 'auto' | 'manual'): void {
+        const current = this.lastRecordedModelError;
+        if (!current || current.eventId !== eventId) {
+            return;
+        }
+        this.lastRecordedModelError = {
+            ...current,
+            bridgedForEventId: eventId
+        };
+        this.session.client.updateMetadata((metadata) => {
+            const err = metadata.lastModelError;
+            if (!err || err.eventId !== eventId) {
+                return metadata;
+            }
+            return {
+                ...metadata,
+                lastModelError: {
+                    ...err,
+                    bridgedForEventId: eventId
+                }
+            };
+        });
+        // Chat-visible recovery marker only. Not an AGENT_NOTIFY_SUMMARY.
+        this.session.sendSessionEvent({
+            type: 'modelErrorBridged',
+            kind: current.kind,
+            auto: source === 'auto',
+            eventId
+        });
     }
 
     private installLiveSessionConfigSync(

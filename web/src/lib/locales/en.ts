@@ -917,7 +917,7 @@ export default {
   'settings.chat.colors': 'Conversation colors',
   'settings.chat.modelErrors': 'Model errors',
   'settings.chat.autoBridgeTransientModelErrors': 'Automatically bridge transient model errors',
-  'settings.chat.autoBridgeTransientModelErrors.description': 'When enabled, Cursor sessions re-send your last message once after a recoverable model error.',
+  'settings.chat.autoBridgeTransientModelErrors.description': 'When enabled, Cursor sessions re-send your last message once after a recoverable model error. Stored on the hub so new and restarted sessions honor the setting (default off).',
   'settings.chat.enterBehavior': 'Enter Key',
   'settings.chat.enterBehavior.send': 'Send message',
   'settings.chat.enterBehavior.newline': 'Insert newline',

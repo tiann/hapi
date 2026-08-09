@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "hapi-96f67085-5dd3-4a10-aa7c-785f72a227c2": {
+      "command": "/home/heavygee/.bun/bin/bun",
+      "args": [
+        "--cwd",
+        "/home/heavygee/coding/hapi/driver/cli",
+        "/home/heavygee/coding/hapi/driver/cli/src/index.ts",
+        "mcp",
+        "--url",
+        "http://127.0.0.1:34059/",
+        "--tools",
+        "link_pr,display_image,display_video,list_peers,ping_peer,inspect_peer,skill_lookup"
+      ],
+      "env": {
+        "HAPI_MCP_OVERLAY_PID": "1588300"
+      }
+    }
+  }
+}

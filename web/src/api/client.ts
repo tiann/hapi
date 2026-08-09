@@ -625,7 +625,7 @@ export class ApiClient {
         })
     }
 
-    async bridgeModelError(sessionId: string): Promise<{ ok: boolean; reason?: string }> {
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
         const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
         const headers = new Headers({ 'content-type': 'application/json' })
         const authToken = this.getToken ? this.getToken() : this.token
@@ -636,7 +636,7 @@ export class ApiClient {
         const res = await fetch(this.buildUrl(path), {
             method: 'POST',
             headers,
-            body: JSON.stringify({})
+            body: JSON.stringify({ eventId })
         })
 
         if (res.status === 401) {

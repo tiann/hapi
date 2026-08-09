@@ -915,7 +915,7 @@ export default {
   'settings.chat.colors': '对话颜色',
   'settings.chat.modelErrors': '模型错误',
   'settings.chat.autoBridgeTransientModelErrors': '自动桥接暂时性模型错误',
-  'settings.chat.autoBridgeTransientModelErrors.description': '启用后，Cursor 会话在可恢复的模型错误后会自动重发上一条用户消息一次。',
+  'settings.chat.autoBridgeTransientModelErrors.description': '启用后，Cursor 会话在可恢复的模型错误后会自动重发上一条用户消息一次。保存在 hub，新建/重启会话也会生效（默认关闭）。',
   'settings.chat.enterBehavior': '回车键行为',
   'settings.chat.enterBehavior.send': '发送消息',
   'settings.chat.enterBehavior.newline': '插入换行',

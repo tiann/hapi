@@ -8,6 +8,7 @@ import {
     PROTOCOL_VERSION
 } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
+import { readAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
@@ -129,10 +130,12 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                 parsed.data.modelReasoningEffort,
                 parsed.data.id
             )
-            const sessionSummaryContract = await readSessionSummaryContractEnabled(
-                getConfiguration().dataDir
-            )
-            return c.json({ session, sessionSummaryContract })
+            const dataDir = getConfiguration().dataDir
+            const [sessionSummaryContract, autoBridgeTransientModelErrors] = await Promise.all([
+                readSessionSummaryContractEnabled(dataDir),
+                readAutoBridgeTransientModelErrorsEnabled(dataDir)
+            ])
+            return c.json({ session, sessionSummaryContract, autoBridgeTransientModelErrors })
         } catch (error) {
             if (error instanceof SessionIdentityConflictError) {
                 return c.json({ error: error.message }, 409)
@@ -249,10 +252,16 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         if (!resolved.ok) {
             return c.json({ error: resolved.error }, resolved.status)
         }
-        const sessionSummaryContract = await readSessionSummaryContractEnabled(
-            getConfiguration().dataDir
-        )
-        return c.json({ session: resolved.session, sessionSummaryContract })
+        const dataDir = getConfiguration().dataDir
+        const [sessionSummaryContract, autoBridgeTransientModelErrors] = await Promise.all([
+            readSessionSummaryContractEnabled(dataDir),
+            readAutoBridgeTransientModelErrorsEnabled(dataDir)
+        ])
+        return c.json({
+            session: resolved.session,
+            sessionSummaryContract,
+            autoBridgeTransientModelErrors
+        })
     })
 
     app.get('/sessions/:id/messages', (c) => {

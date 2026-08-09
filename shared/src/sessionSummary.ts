@@ -50,7 +50,6 @@ export type SessionSummaryMetadata = {
         rawSnippet: string
         atTs: number
         priorAssistantClaimsDone: boolean
-        lastUserMessage?: string
         bridgedForEventId?: string
         retriedAndFailed?: boolean
         acknowledgedAt?: number
@@ -213,7 +212,17 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         agentSessionId: getSummaryAgentSessionId(metadata),
         lifecycleState: metadata.lifecycleState,
         hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
+        // Omit lastUserMessage — bridge recovery text stays in full session
+        // metadata only; list/SSE summaries must not ship up to 32 KB of prompt.
         lastModelError: metadata.lastModelError
+            ? (() => {
+                const {
+                    lastUserMessage: _omitLastUserMessage,
+                    ...summaryError
+                } = metadata.lastModelError
+                return summaryError
+            })()
+            : undefined
     }
 }
 

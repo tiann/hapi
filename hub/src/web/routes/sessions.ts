@@ -1,5 +1,6 @@
 import {
     AcknowledgeModelErrorRequestSchema,
+    BridgeModelErrorRequestSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
@@ -513,15 +514,30 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Model error bridge is only supported for Cursor sessions' }, 400)
         }
 
+        const body = await c.req.json().catch(() => null)
+        const parsed = BridgeModelErrorRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
         try {
-            const result = await engine.bridgeModelError(sessionResult.sessionId)
+            const result = await engine.bridgeModelError(
+                sessionResult.sessionId,
+                parsed.data.eventId
+            )
             if (!result.ok) {
                 return c.json({ ok: false, reason: result.reason ?? 'not_bridgeable' }, 409)
             }
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to bridge model error'
-            if (message.includes('not active') || message.includes('not transient') || message.includes('already bridged') || message.includes('already failed')) {
+            if (
+                message.includes('not active')
+                || message.includes('not transient')
+                || message.includes('already bridged')
+                || message.includes('already failed')
+                || message.includes('changed')
+            ) {
                 return c.json({ error: message }, 409)
             }
             return c.json({ error: message }, 500)

@@ -84,7 +84,6 @@ import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/c
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
 import { ModelErrorBanner, hasActiveModelError } from '@/components/ModelErrorBanner'
-import { readAutoBridgeTransientModelErrors } from '@/lib/modelErrorBridgePrefs'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
@@ -1263,10 +1262,15 @@ function SessionChatInner(props: SessionChatProps) {
         if (isBridgingModelError) {
             return
         }
+        const eventId = props.session.metadata?.lastModelError?.eventId
+        if (typeof eventId !== 'string' || eventId.length === 0) {
+            props.onRefresh()
+            return
+        }
         setIsBridgingModelError(true)
         setBridgeModelErrorReason(null)
         try {
-            const result = await props.api.bridgeModelError(props.session.id)
+            const result = await props.api.bridgeModelError(props.session.id, eventId)
             if (!result.ok) {
                 setBridgeModelErrorReason(result.reason ?? 'not_bridgeable')
             }
@@ -1278,20 +1282,13 @@ function SessionChatInner(props: SessionChatProps) {
         } finally {
             setIsBridgingModelError(false)
         }
-    }, [isBridgingModelError, props.api, props.session.id, props.onRefresh])
-
-    // Push browser auto-bridge preference into the live Cursor CLI. Settings
-    // toggle only updates currently-active sessions; new/resumed sessions need
-    // this apply-on-open so UI ON matches process memory.
-    useEffect(() => {
-        if (!props.session.active || agentFlavor !== 'cursor') {
-            return
-        }
-        if (!readAutoBridgeTransientModelErrors()) {
-            return
-        }
-        void props.api.setModelErrorAutoBridge(props.session.id, true).catch(() => {})
-    }, [props.api, props.session.active, props.session.id, agentFlavor])
+    }, [
+        isBridgingModelError,
+        props.api,
+        props.session.id,
+        props.session.metadata?.lastModelError?.eventId,
+        props.onRefresh
+    ])
 
     // Voice assistant integration
     const voice = useVoiceOptional()

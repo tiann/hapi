@@ -1744,7 +1744,9 @@ describe('sessions routes', () => {
             }))
 
             const response = await app.request('/api/sessions/session-1/model-error/bridge', {
-                method: 'POST'
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-1' })
             })
 
             expect(response.status).toBe(409)
@@ -1752,6 +1754,20 @@ describe('sessions routes', () => {
                 error: 'Session is inactive',
                 code: 'session_inactive'
             })
+        })
+
+        it('returns 400 when eventId is missing', async () => {
+            const { app } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/bridge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({})
+            })
+
+            expect(response.status).toBe(400)
         })
     })
 

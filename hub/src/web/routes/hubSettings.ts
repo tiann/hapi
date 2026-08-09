@@ -1,19 +1,31 @@
 import { Hono } from 'hono'
 import { UpdateHubSettingsRequestSchema, type HubSettingsResponse } from '@hapi/protocol'
 import {
-    getSettingsFile,
-    readSettingsOrThrow,
-    updateSettings,
-    type Settings
-} from '../../config/settings'
+    readAutoBridgeTransientModelErrorsEnabled,
+    writeAutoBridgeTransientModelErrorsEnabled
+} from '../../config/autoBridgeTransientModelErrors'
+import {
+    readSessionSummaryContractEnabled,
+    writeSessionSummaryContractEnabled
+} from '../../config/sessionSummaryContract'
+import {
+    readSessionSummaryInChatEnabled,
+    writeSessionSummaryInChatEnabled
+} from '../../config/sessionSummaryInChat'
 import type { WebAppEnv } from '../middleware/auth'
 
 const OWNER_ONLY_ERROR = 'Hub settings are only available to the hub owner'
 
-function toHubSettings(settings: Settings): HubSettingsResponse {
+async function readHubSettings(dataDir: string): Promise<HubSettingsResponse> {
+    const [sessionSummaryContract, sessionSummaryInChat, autoBridgeTransientModelErrors] = await Promise.all([
+        readSessionSummaryContractEnabled(dataDir),
+        readSessionSummaryInChatEnabled(dataDir),
+        readAutoBridgeTransientModelErrorsEnabled(dataDir)
+    ])
     return {
-        sessionSummaryContract: settings.sessionSummaryContract === true,
-        sessionSummaryInChat: settings.sessionSummaryInChat === true
+        sessionSummaryContract,
+        sessionSummaryInChat,
+        autoBridgeTransientModelErrors
     }
 }
 
@@ -24,8 +36,7 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
     // flags. Mutations stay owner-only below.
     app.get('/hub-settings', async (c) => {
         c.header('Cache-Control', 'no-store')
-        const settings = await readSettingsOrThrow(getSettingsFile(dataDir))
-        return c.json(toHubSettings(settings))
+        return c.json(await readHubSettings(dataDir))
     })
 
     app.put('/hub-settings', async (c) => {
@@ -37,21 +48,26 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
-        const response = await updateSettings(getSettingsFile(dataDir), (current) => {
-            const settings: Settings = { ...current }
-            if (parsed.data.sessionSummaryContract !== undefined) {
-                settings.sessionSummaryContract = parsed.data.sessionSummaryContract
-            }
-            if (parsed.data.sessionSummaryInChat !== undefined) {
-                settings.sessionSummaryInChat = parsed.data.sessionSummaryInChat
-            }
-            return {
-                settings,
-                result: toHubSettings(settings)
-            }
-        })
+        if (parsed.data.sessionSummaryContract !== undefined) {
+            await writeSessionSummaryContractEnabled(
+                dataDir,
+                parsed.data.sessionSummaryContract
+            )
+        }
+        if (parsed.data.sessionSummaryInChat !== undefined) {
+            await writeSessionSummaryInChatEnabled(
+                dataDir,
+                parsed.data.sessionSummaryInChat
+            )
+        }
+        if (parsed.data.autoBridgeTransientModelErrors !== undefined) {
+            await writeAutoBridgeTransientModelErrorsEnabled(
+                dataDir,
+                parsed.data.autoBridgeTransientModelErrors
+            )
+        }
         c.header('Cache-Control', 'no-store')
-        return c.json(response)
+        return c.json(await readHubSettings(dataDir))
     })
 
     return app
