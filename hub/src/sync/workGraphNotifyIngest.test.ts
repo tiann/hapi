@@ -281,4 +281,35 @@ describe('ingestNotifySummaryFromMessage', () => {
         expect(result?.event.summary?.length).toBe(WORK_GRAPH_MAX_SUMMARY)
         expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
     })
+
+    it('elevates max-clamped footer fields without duplicating into payload (bot Minor)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-budget', {}, null, 'default')
+        // Three near-max strings previously lived twice (flat + notify_summary)
+        // and blew the 32 KiB payload cap → silent null. Flat-only must insert.
+        const fat = 'a'.repeat(6_000)
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-budget',
+            content: assistantOutput(
+                `AGENT_NOTIFY_SUMMARY ${JSON.stringify({
+                    status: 'done',
+                    summary: 'ok',
+                    action: fat,
+                    project: fat,
+                    agent: fat
+                })}`
+            ),
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+
+        expect(result?.inserted).toBe(true)
+        const payload = result?.event.payloadJson as Record<string, unknown>
+        expect(payload).not.toHaveProperty('notify_summary')
+        expect(payload?.action).toBe(fat)
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
+    })
 })

@@ -72,6 +72,20 @@ describe('WorkGraphEventCreateSchema bounds', () => {
         expect(parsed.success).toBe(false)
     })
 
+    it('rejects payload_json that fits UTF-16 length but exceeds UTF-8 bytes', () => {
+        // CJK is 1 UTF-16 code unit / 3 UTF-8 bytes. ~12k chars stays under
+        // string.length of 32 KiB but over UTF-8 byte budget.
+        const cjk = '\u4e2d'.repeat(12_000)
+        const json = JSON.stringify({ blob: cjk })
+        expect(json.length).toBeLessThanOrEqual(WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES)
+        expect(new TextEncoder().encode(json).byteLength).toBeGreaterThan(WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES)
+        const parsed = WorkGraphEventCreateSchema.safeParse({
+            ...base,
+            payload_json: { blob: cjk }
+        })
+        expect(parsed.success).toBe(false)
+    })
+
     it('rejects too many tags', () => {
         const parsed = WorkGraphEventCreateSchema.safeParse({
             ...base,

@@ -139,15 +139,10 @@ export function buildWorkAdFromNotify(params: {
     const action = clampOpt(params.notify.action, WORK_GRAPH_MAX_STRING) ?? null
     const project = clampOpt(params.notify.project, WORK_GRAPH_MAX_STRING) ?? null
     const agent = clampOpt(params.notify.agent, WORK_GRAPH_MAX_STRING) ?? null
-    const notifySummary: NotifySummary = {
-        ...params.notify,
-        summary: clampOpt(params.notify.summary, WORK_GRAPH_MAX_SUMMARY),
-        action: clampOpt(params.notify.action, WORK_GRAPH_MAX_STRING),
-        project: clampOpt(params.notify.project, WORK_GRAPH_MAX_STRING),
-        agent: clampOpt(params.notify.agent, WORK_GRAPH_MAX_STRING)
-    }
     // Audit principal is always session-bound. notify.agent is untrusted
     // self-label text and stays advisory in payload/tags only.
+    // Do not nest a full notify_summary copy — duplicating clamped strings
+    // can blow the 32 KiB payload_json cap and silently drop the ledger row.
     return {
         source_kind: 'session',
         source_ref: params.sessionId,
@@ -158,7 +153,6 @@ export function buildWorkAdFromNotify(params: {
             action,
             project,
             agent,
-            notify_summary: notifySummary,
             messageId: params.messageId
         },
         tags: buildTags(params.notify, params.flavor),

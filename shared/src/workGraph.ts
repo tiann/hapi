@@ -44,10 +44,15 @@ export type WorkGraphArtifactRef = z.infer<typeof WorkGraphArtifactRefSchema>
 /** Open vocabulary; common Layer 1 types listed for docs, not enforced as enum. */
 export const WORK_GRAPH_EVENT_TYPES = ['work_ad', 'handoff', 'handoff_receipt'] as const
 
+const utf8Encoder = new TextEncoder()
+
 function payloadJsonWithinLimit(value: unknown): boolean {
     if (value === undefined) return true
     try {
-        return JSON.stringify(value).length <= WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES
+        const json = JSON.stringify(value)
+        // Persist/wire as UTF-8 — string.length is UTF-16 code units and
+        // under-counts CJK/emoji relative to stored bytes.
+        return utf8Encoder.encode(json).byteLength <= WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES
     } catch {
         return false
     }
