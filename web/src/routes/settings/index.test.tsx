@@ -165,7 +165,7 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
-        api: { getHubSettings, updateHubSettings },
+        api: { getHubSettings, updateHubSettings, getSessions: vi.fn().mockResolvedValue({ sessions: [] }) },
         baseUrl: 'http://127.0.0.1:3006',
         token: context.token,
     }),

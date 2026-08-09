@@ -287,7 +287,23 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
         // Banner already surfaces the full model-error UI; avoid dumping
         // rawSnippet via the JSON.stringify fallback into the chat thread.
         const kind = typeof event.kind === 'string' ? event.kind : 'unknown'
-        return { icon: '⚠️', text: `Model error: ${kind}` }
+        const transient = event.transient === true
+        return {
+            icon: '⚠️',
+            text: transient
+                ? `Model error (${kind}, transient)`
+                : `Model error (${kind})`
+        }
+    }
+    if (event.type === 'modelErrorBridged') {
+        const kind = typeof event.kind === 'string' ? event.kind : 'unknown'
+        const auto = event.auto === true
+        return {
+            icon: '✓',
+            text: auto
+                ? `HAPI auto-bridged after ${kind} — re-sent last user message`
+                : `HAPI bridged after ${kind} — re-sent last user message`
+        }
     }
     try {
         return { icon: null, text: JSON.stringify(event) }

@@ -625,6 +625,49 @@ export class ApiClient {
         })
     }
 
+    async bridgeModelError(sessionId: string): Promise<{ ok: boolean; reason?: string }> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
+        const headers = new Headers({ 'content-type': 'application/json' })
+        const authToken = this.getToken ? this.getToken() : this.token
+        if (authToken) {
+            headers.set('authorization', `Bearer ${authToken}`)
+        }
+
+        const res = await fetch(this.buildUrl(path), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({})
+        })
+
+        if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again.')
+        }
+
+        const body = await res.json().catch(() => null) as { ok?: boolean; reason?: string; error?: string } | null
+        if (res.status === 409 && body && typeof body.ok === 'boolean') {
+            return { ok: body.ok, reason: body.reason }
+        }
+
+        if (!res.ok) {
+            const detail = body?.error ?? (typeof body === 'object' ? JSON.stringify(body) : '')
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${detail}`,
+                res.status,
+                undefined,
+                detail || undefined
+            )
+        }
+
+        return { ok: true }
+    }
+
+    async setModelErrorAutoBridge(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/auto-bridge-setting`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled })
+        })
+    }
+
     async reopenSession(sessionId: string): Promise<ReopenSessionResponse> {
         return await this.request<ReopenSessionResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/reopen`,

@@ -1,8 +1,10 @@
 import { useTranslation } from '@/lib/use-translation'
+import { useAppContext } from '@/lib/app-context'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { useReasoningCollapse } from '@/hooks/useReasoningCollapse'
+import { useAutoBridgeTransientModelErrors } from '@/hooks/useAutoBridgeTransientModelErrors'
 import {
     getChatSurfaceColorPickerValue,
     getChatSurfaceColorPresetOptions,
@@ -48,11 +50,14 @@ function ChatSurfaceColorControl(props: {
 
 export default function SettingsChatPage() {
     const { t } = useTranslation()
+    const { api } = useAppContext()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { codexExplorationCollapsed, setCodexExplorationCollapsed } = useCodexExplorationCollapse()
     const { reasoningCollapsed, setReasoningCollapsed } = useReasoningCollapse()
     const { toolGroupBackground, userMessageBackground, setToolGroupBackground, setUserMessageBackground } = useChatSurfaceColors()
+    const { enabled: autoBridgeTransientModelErrors, setEnabled: setAutoBridgeTransientModelErrors } =
+        useAutoBridgeTransientModelErrors()
     return (
         <SettingsPageContent description={t('settings.chat.description')}>
             <SettingsSection title={t('settings.chat.input')}>
@@ -87,6 +92,26 @@ export default function SettingsChatPage() {
             <SettingsSection title={t('settings.chat.colors')}>
                 <ChatSurfaceColorControl label={t('settings.chat.groupedToolBackground')} preference={toolGroupBackground} onPresetChange={(preset) => setToolGroupBackground(toPresetChatSurfaceColorPreference(preset))} onCustomChange={(value) => setToolGroupBackground(toCustomChatSurfaceColorPreference(value))} />
                 <ChatSurfaceColorControl label={t('settings.chat.userMessageBackground')} preference={userMessageBackground} onPresetChange={(preset) => setUserMessageBackground(toPresetChatSurfaceColorPreference(preset))} onCustomChange={(value) => setUserMessageBackground(toCustomChatSurfaceColorPreference(value))} />
+            </SettingsSection>
+            <SettingsSection title={t('settings.chat.modelErrors')}>
+                <SettingsSwitch
+                    label={t('settings.chat.autoBridgeTransientModelErrors')}
+                    description={t('settings.chat.autoBridgeTransientModelErrors.description')}
+                    checked={autoBridgeTransientModelErrors}
+                    onChange={(next) => {
+                        setAutoBridgeTransientModelErrors(next)
+                        void api.getSessions().then((response) => {
+                            const activeCursor = (response.sessions ?? []).filter(
+                                (s) => s.active && s.metadata?.flavor === 'cursor'
+                            )
+                            return Promise.all(
+                                activeCursor.map((s) =>
+                                    api.setModelErrorAutoBridge(s.id, next).catch(() => {})
+                                )
+                            )
+                        })
+                    }}
+                />
             </SettingsSection>
         </SettingsPageContent>
     )
