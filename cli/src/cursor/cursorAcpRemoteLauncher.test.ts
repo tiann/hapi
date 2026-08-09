@@ -2092,13 +2092,8 @@ describe('cursorAcpRemoteLauncher', () => {
     });
 
     it('does not mark an in-flight bridge recovered when Abort wins the race', async () => {
-        // Bridge prompt is deferred; abort clears bridgingForEventId before any
-        // await, then the prompt settles cleanly — must NOT emit recovered.
-        const firstGate = { release: null as (() => void) | null };
-        harness.deferPrompt = new Promise<void>((resolve) => {
-            firstGate.release = resolve;
-        });
-
+        // Enqueue bridge while idle, then hold the bridge prompt and abort before
+        // it settles — must NOT emit recovered.
         const session = makeSession('acp-session', { keepQueueOpen: true });
         const client = session.client as unknown as {
             rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
@@ -2106,9 +2101,24 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: ReturnType<typeof vi.fn>
         };
 
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            // Park from the second wait (post-first-turn idle) so bridge stays queued.
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
         session.queue.push('hello', { permissionMode: 'default' });
         const launchPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
 
         const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
             (call) => call[0] === RPC_METHODS.BridgeModelError
@@ -2123,12 +2133,11 @@ describe('cursorAcpRemoteLauncher', () => {
             priorAssistantClaimsDone: false
         })).toEqual({ ok: true });
 
-        // Park the bridge turn before releasing the first prompt.
         const bridgeGate = { release: null as (() => void) | null };
         harness.deferPrompt = new Promise<void>((resolve) => {
             bridgeGate.release = resolve;
         });
-        firstGate.release?.();
+        nextWait.release?.();
         await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
 
         const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
@@ -2226,19 +2235,29 @@ describe('cursorAcpRemoteLauncher', () => {
     });
 
     it('clears pending bridge on abort so the same event can be bridged again', async () => {
-        // Hold the first prompt so the bridge stays queued (not dequeued yet).
-        harness.deferPrompt = new Promise<void>((resolve) => {
-            harness.releasePrompt = resolve;
-        });
-
         const session = makeSession(null, { keepQueueOpen: true });
         const client = session.client as unknown as {
             rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
         };
 
+        // Park the post-turn wait so a manual bridge stays queued (idle, not mid-prompt).
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
         session.queue.push('hello', { permissionMode: 'default' });
         const launchPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
 
         const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
             (call) => call[0] === RPC_METHODS.BridgeModelError
@@ -2273,34 +2292,23 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.queue.pendingLocalIds()).toContain(`bridge:${eventId}`);
 
         session.queue.close();
-        harness.releasePrompt?.();
+        nextWait.release?.();
         await launchPromise;
     });
 
     it('cancels a pending bridge when a newer modelError supersedes it', async () => {
-        harness.emitStderrOnPrompt = {
-            type: 'rate_limit',
-            message: 'Rate limit exceeded.',
-            raw: 'status 429 ratelimitexceeded'
-        };
-        harness.deferPrompt = new Promise<void>((resolve) => {
-            harness.releasePrompt = resolve;
-        });
-
         const session = makeSession(null, { keepQueueOpen: true });
         const client = session.client as unknown as {
             rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
             sendSessionEvent: ReturnType<typeof vi.fn>
         };
 
-        // After the first prompt settles, park the next dequeue so we can observe
-        // cancelPendingBridge before the bridge row is consumed.
-        let blockNextWait = false;
+        let waitCount = 0;
         const nextWait = { release: null as (() => void) | null };
         const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
         session.queue.waitForMessagesAndGetAsString = async (signal) => {
-            if (blockNextWait) {
-                blockNextWait = false;
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
                 await new Promise<void>((resolve) => {
                     nextWait.release = resolve;
                 });
@@ -2311,6 +2319,7 @@ describe('cursorAcpRemoteLauncher', () => {
         session.queue.push('first', { permissionMode: 'default' });
         const launchPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
 
         const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
             (call) => call[0] === RPC_METHODS.BridgeModelError
@@ -2327,12 +2336,16 @@ describe('cursorAcpRemoteLauncher', () => {
         })).toEqual({ ok: true });
         expect(session.queue.pendingLocalIds()).toContain(`bridge:${staleEventId}`);
 
-        blockNextWait = true;
-        harness.releasePrompt?.();
+        // Idle structural stderr supersedes the displayed error and drops the pending bridge.
+        expect(harness.stderrErrorHandler).toBeTypeOf('function');
+        harness.stderrErrorHandler!({
+            type: 'rate_limit',
+            message: 'Rate limit exceeded again.',
+            raw: 'status 429 ratelimitexceeded again'
+        });
         await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelError'
         ));
-        await vi.waitFor(() => nextWait.release !== null);
 
         expect(session.queue.pendingLocalIds()).not.toContain(`bridge:${staleEventId}`);
         expect(await bridgeHandler!({
