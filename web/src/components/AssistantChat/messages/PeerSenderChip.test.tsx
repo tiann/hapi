@@ -12,6 +12,14 @@ vi.mock('@/lib/use-translation', () => ({
     }),
 }))
 
+vi.mock('@/components/AssistantChat/context', () => ({
+    useOptionalHappyChatContext: () => null,
+}))
+
+vi.mock('@/hooks/queries/useSessions', () => ({
+    useSessions: () => ({ sessions: [], isLoading: false, error: null, refetch: vi.fn() }),
+}))
+
 describe('PeerSenderChip', () => {
     it('renders the same @title chip label as rich-composer mentions', () => {
         render(

@@ -12,7 +12,7 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isCopilotAgentMode, isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { resolveCopilotRuntimeConfig } from './utils/config';
 import { listSlashCommands } from '@/modules/common/slashCommands';
@@ -140,7 +140,11 @@ export async function runCopilot(opts: {
                 return cancelledBeforeEnqueue.delete(localId);
             };
             const pushPlain = () => {
-                const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+                const formattedText = formatUserMessageForAgent(
+                    message.content.text,
+                    message.content.attachments,
+                    message.meta
+                );
                 messageQueue.push(formattedText, buildMode(), localId);
             };
             let recognizedSlash = false;
@@ -214,7 +218,11 @@ export async function runCopilot(opts: {
                     text = slash.text;
                 }
 
-                const formattedText = formatMessageWithAttachments(text, message.content.attachments);
+                const formattedText = formatUserMessageForAgent(
+                    text,
+                    message.content.attachments,
+                    message.meta
+                );
                 messageQueue.push(formattedText, buildMode(), localId);
             } catch (error) {
                 logger.debug('[copilot] Failed to handle user message', error);

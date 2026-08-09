@@ -465,7 +465,8 @@ function containsActiveAssistantOutput(
         ))
 }
 
-function toThreadMessageLike(
+/** Exported for unit tests covering peer meta → custom mapping (#1203). */
+export function toThreadMessageLike(
     block: VisibleChatBlock,
     threadMessageId: string,
     timestamp: number

@@ -17,24 +17,24 @@ function isPeerDeliveryRequest(c: { req: { header: (name: string) => string | un
 }
 
 /**
- * Keep sentFrom=peer, but only persist a sourceSessionId that exists in this
- * namespace. Fill sourceName from hub metadata (ignore client-supplied name).
+ * Build stored peer meta from a hub-known source session id (CLI path param).
+ * Never use a web JWT request-body claim here (#1203 kill criterion).
+ * `sourceName` is a delivery-time snapshot from session metadata.
  */
-export function resolveTrustedPeerMeta(
+export function resolvePeerMetaFromSourceSession(
     engine: SyncEngine,
     namespace: string,
-    claimed: PeerDeliveryMeta | undefined
-): PeerDeliveryMeta {
-    const claimedId = claimed?.sourceSessionId?.trim()
+    sourceSessionId: string
+): PeerDeliveryMeta | undefined {
+    const claimedId = sourceSessionId.trim()
     if (!claimedId) {
-        return {}
+        return undefined
     }
     const access = engine.resolveSessionAccess(claimedId, namespace)
     if (!access.ok) {
-        return {}
+        return undefined
     }
-    const meta = access.session.metadata as { name?: unknown } | null | undefined
-    const sourceName = typeof meta?.name === 'string' ? meta.name.trim() : ''
+    const sourceName = access.session.metadata?.name?.trim() ?? ''
     return {
         sourceSessionId: access.sessionId,
         ...(sourceName ? { sourceName: sourceName.slice(0, 255) } : {})
@@ -178,19 +178,16 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
-        // Peer provenance is header-gated (#1203). Body `peer` without the
-        // delivery header is ignored so the normal web send path cannot label
-        // operator keystrokes as peer.
+        // Peer header marks outside-session / unattributed peer delivery.
+        // Body `peer` / sourceSessionId is never authoritative on this JWT path
+        // (#1203 kill criterion) — attributed sends use /cli/.../peer-messages.
         const peerDelivery = isPeerDeliveryRequest(c)
-        const peer = peerDelivery
-            ? resolveTrustedPeerMeta(engine, c.get('namespace'), parsed.data.peer)
-            : undefined
         await engine.sendMessage(sessionId, {
             text: parsed.data.text,
             localId: parsed.data.localId,
             attachments: parsed.data.attachments,
             sentFrom: peerDelivery ? 'peer' : 'webapp',
-            peer,
+            peer: undefined,
             scheduledAt: parsed.data.scheduledAt,
             deliveryMode: parsed.data.deliveryMode
         })

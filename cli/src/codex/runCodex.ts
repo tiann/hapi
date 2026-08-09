@@ -13,7 +13,7 @@ import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } f
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { ReasoningEffort } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
@@ -261,7 +261,7 @@ export async function runCodex(opts: {
                         isolatedCommandText = message.content.text.trim();
                     }
                 }
-                text = formatMessageWithAttachments(text, message.content.attachments);
+                text = formatUserMessageForAgent(text, message.content.attachments, message.meta);
 
                 const messagePermissionMode = currentPermissionMode;
                 logger.debug(
@@ -295,7 +295,15 @@ export async function runCodex(opts: {
                     serviceTier: currentServiceTier,
                     personality: currentPersonality
                 };
-                messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId);
+                messageQueue.push(
+                    formatUserMessageForAgent(
+                        message.content.text,
+                        message.content.attachments,
+                        message.meta
+                    ),
+                    enhancedMode,
+                    localId
+                );
             }
         }).catch((error) => {
             logger.debug('[Codex] User message handler chain failed', error);

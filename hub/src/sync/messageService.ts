@@ -832,11 +832,11 @@ export class MessageService {
             payload.deliveryMode,
             payload.scheduledAt
         )
-        const peer = sentFrom === 'peer' && payload.peer
+        // Omit empty peer:{} — only persist when a sourceSessionId was resolved.
+        const peer = sentFrom === 'peer'
+            && payload.peer?.sourceSessionId
             ? {
-                ...(payload.peer.sourceSessionId
-                    ? { sourceSessionId: payload.peer.sourceSessionId }
-                    : {}),
+                sourceSessionId: payload.peer.sourceSessionId,
                 ...(payload.peer.sourceName
                     ? { sourceName: payload.peer.sourceName }
                     : {})

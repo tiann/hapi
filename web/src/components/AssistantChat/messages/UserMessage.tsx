@@ -33,23 +33,25 @@ export function HappyUserMessage() {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.attachments
     })
-    const isPeerDelivery = useAuiState((s) => {
-        if (s.message.role !== 'user') return false
+    const peerDelivery = useAuiState((s) => {
+        if (s.message.role !== 'user') {
+            return { isPeer: false, sourceId: null as string | null, sourceName: null as string | null }
+        }
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-        return custom?.sentFrom === 'peer'
+        if (custom?.sentFrom !== 'peer') {
+            return { isPeer: false, sourceId: null, sourceName: null }
+        }
+        const id = custom.peer?.sourceSessionId
+        const name = custom.peer?.sourceName
+        return {
+            isPeer: true,
+            sourceId: typeof id === 'string' && id.trim() ? id.trim() : null,
+            sourceName: typeof name === 'string' && name.trim() ? name.trim() : null
+        }
     })
-    const peerSourceId = useAuiState((s) => {
-        if (s.message.role !== 'user') return null
-        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-        const id = custom?.peer?.sourceSessionId
-        return typeof id === 'string' && id.trim() ? id.trim() : null
-    })
-    const peerSourceName = useAuiState((s) => {
-        if (s.message.role !== 'user') return null
-        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-        const name = custom?.peer?.sourceName
-        return typeof name === 'string' && name.trim() ? name.trim() : null
-    })
+    const isPeerDelivery = peerDelivery.isPeer
+    const peerSourceId = peerDelivery.sourceId
+    const peerSourceName = peerDelivery.sourceName
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'

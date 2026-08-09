@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import {
+    CliPeerDeliverRequestSchema,
     CreateOrLoadMachineRequestSchema,
     CreateOrLoadSessionRequestSchema,
     ClearOpencodeSessionCallbackRequestSchema,
     CursorMigrateToAcpRequestSchema,
     PROTOCOL_VERSION
 } from '@hapi/protocol'
+import { resolvePeerMetaFromSourceSession } from './messages'
 import { getConfiguration } from '../../configuration'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { constantTimeEquals } from '../../utils/crypto'
@@ -283,6 +285,47 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             now: Date.now()
         })
         return c.json({ messages })
+    })
+
+    /**
+     * Attributed peer delivery (#1203). Source id is this path param — the
+     * calling session's CLI identity — not a web JWT body field.
+     */
+    app.post('/sessions/:id/peer-messages', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+        const sourceSessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const source = resolveSessionForNamespace(engine, sourceSessionId, namespace)
+        if (!source.ok) {
+            return c.json({ error: source.error }, source.status)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = CliPeerDeliverRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
+        }
+
+        const target = resolveSessionForNamespace(engine, parsed.data.targetSessionId, namespace)
+        if (!target.ok) {
+            return c.json({ error: target.error }, target.status)
+        }
+        if (!target.session.active) {
+            return c.json({ error: 'Session is not active' }, 409)
+        }
+
+        const peer = resolvePeerMetaFromSourceSession(engine, namespace, source.sessionId)
+        await engine.sendMessage(target.sessionId, {
+            text: parsed.data.text,
+            localId: parsed.data.localId,
+            sentFrom: 'peer',
+            peer,
+            deliveryMode: parsed.data.deliveryMode
+        })
+        return c.json({ ok: true })
     })
 
     app.post('/sessions/:id/migrate-to-acp', async (c) => {

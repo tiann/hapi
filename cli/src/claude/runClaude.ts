@@ -18,7 +18,12 @@ import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } f
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
-import { formatAttachmentsForClaude, formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import {
+    annotatePeerDeliveryForAgent,
+    formatAttachmentsForClaude,
+    formatMessageWithAttachments,
+    formatUserMessageForAgent
+} from '@/utils/attachmentFormatter';
 import { normalizeClaudeSessionModel } from './model';
 import { normalizeClaudeSessionEffort } from './effort';
 import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
@@ -380,9 +385,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         const attachmentText = formatAttachmentsForClaude(message.content.attachments);
         const expandedText = currentSessionRef.current?.expandSkillReference(message.content.text, attachmentText)
             ?? message.content.text;
-        const formattedText = expandedText !== message.content.text
-            ? expandedText
-            : formatMessageWithAttachments(message.content.text, message.content.attachments);
+        const formattedText = annotatePeerDeliveryForAgent(
+            expandedText !== message.content.text
+                ? expandedText
+                : formatMessageWithAttachments(message.content.text, message.content.attachments),
+            message.meta
+        );
 
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');
@@ -451,7 +459,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 return;
             }
 
-            const planPrompt = formatMessageWithAttachments(specialCommand.prompt, message.content.attachments);
+            const planPrompt = formatUserMessageForAgent(
+                specialCommand.prompt,
+                message.content.attachments,
+                message.meta
+            );
             messageQueue.push(planPrompt, enhancedMode, localId);
             logger.debugLargeJson('[start] /plan command prompt pushed to queue:', message);
             return;

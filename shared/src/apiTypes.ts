@@ -522,21 +522,19 @@ export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
 export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
 
 /**
- * Peer-delivery provenance for `ping_peer` / `hapi ping-peer` (A2A Layer 0.1 / #1203).
+ * Peer-delivery provenance stored on user-message meta (#1203 / A2A Layer 0.1).
  *
- * Wire shape (request): optional `sourceSessionId` hint from the CLI env.
- * Hub only honors this when {@link HAPI_PEER_DELIVERY_HEADER} is present; without
- * the header, `peer` is ignored and the row stays `sentFrom: webapp` (stops the
- * normal web composer path from accidentally labeling operator keystrokes as peer).
+ * Authoritative `sourceSessionId` is never taken from the web JWT send body.
+ * Attributed delivery uses {@link CliPeerDeliverRequestSchema} on
+ * `POST /cli/sessions/:sourceSessionId/peer-messages` (CLI token + path id).
+ * The web path may still set `sentFrom: peer` via {@link HAPI_PEER_DELIVERY_HEADER}
+ * for unattributed outside-session CLI sends; any body `peer` field is ignored.
  *
- * Trust note: the header is not a cryptographic authenticity bound - any holder of
- * the namespace JWT can set it. Authoritative source id is still never an MCP/tool
- * argument; the hub additionally drops ids that are not in the caller's namespace
- * and fills `sourceName` from its own session store (client-supplied names ignored).
+ * `sourceName` is a delivery-time snapshot from the hub session store (titles
+ * can change later; the link still resolves to the live session).
  */
 export const PeerDeliveryMetaSchema = z.object({
     sourceSessionId: z.string().trim().min(1).max(128).optional(),
-    // Accepted for forward-compat but ignored by the hub (name is store-derived).
     sourceName: z.string().trim().min(1).max(255).optional()
 })
 export type PeerDeliveryMeta = z.infer<typeof PeerDeliveryMetaSchema>
@@ -545,12 +543,30 @@ export type PeerDeliveryMeta = z.infer<typeof PeerDeliveryMetaSchema>
 export const HAPI_PEER_DELIVERY_HEADER = 'x-hapi-peer-delivery'
 export const HAPI_PEER_DELIVERY_HEADER_VALUE = '1'
 
+/**
+ * Attributed peer deliver: source id is the CLI route path param (the calling
+ * session's ApiSessionClient identity), never a tool argument or web body field.
+ */
+export const CliPeerDeliverRequestSchema = z.object({
+    targetSessionId: z.string().trim().min(1).max(128),
+    text: z.string().min(1),
+    localId: z.string().min(1).optional(),
+    deliveryMode: MessageDeliveryModeSchema.optional()
+})
+export type CliPeerDeliverRequest = z.infer<typeof CliPeerDeliverRequestSchema>
+
+/** Hub session ids are UUIDs today; single validator for CLI provenance gates. */
+export function isSessionId(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
+
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
     attachments: z.array(AttachmentMetadataSchema).optional(),
     scheduledAt: z.number().int().positive().nullable().optional(),
     deliveryMode: MessageDeliveryModeSchema.optional(),
+    // Ignored by hub on the web JWT path (kill criterion: not authoritative).
     peer: PeerDeliveryMetaSchema.optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',

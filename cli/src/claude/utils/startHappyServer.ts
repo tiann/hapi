@@ -301,6 +301,8 @@ function createHapiMcpServer(
             const result = await pingPeer({
                 sessionIdPrefix: args.sessionIdPrefix,
                 message: args.message,
+                // Hub binds provenance to this CLI session id via /cli/.../peer-messages.
+                authenticatedSourceSessionId: client.sessionId,
             });
             return {
                 content: [

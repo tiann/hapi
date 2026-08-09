@@ -14,31 +14,12 @@ import {
     HAPI_PEER_DELIVERY_HEADER,
     HAPI_PEER_DELIVERY_HEADER_VALUE,
     isObject,
-    type PeerDeliveryMeta
+    isSessionId
 } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
-import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
-
-const SESSION_ID_RE =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/**
- * Trusted peer provenance for delivery. Source id comes only from process env
- * (`HAPI_SESSION_ID`) - never from MCP/CLI free-form args (#1203 kill criterion).
- * Display name is filled hub-side from the session store when the id is valid.
- */
-export function resolvePeerDeliveryProvenance(
-    env: NodeJS.ProcessEnv = process.env
-): PeerDeliveryMeta {
-    const rawId = env[HAPI_SESSION_ID_ENV]?.trim() ?? ''
-    if (rawId && SESSION_ID_RE.test(rawId)) {
-        return { sourceSessionId: rawId }
-    }
-    return {}
-}
 
 export type PingPeerErrorCode =
     | 'bad_args'
@@ -80,6 +61,13 @@ export type PingPeerOptions = {
     waitActiveSecs?: number
     apiUrl?: string
     accessToken?: string
+    /**
+     * Calling session id from ApiSessionClient (MCP inside a wrapped session).
+     * When set, delivery uses `POST /cli/sessions/:source/peer-messages` so the
+     * hub binds provenance to the CLI path — never a web JWT body field (#1203).
+     * Bare `hapi ping-peer` omits this and sends unattributed peer rows.
+     */
+    authenticatedSourceSessionId?: string
     http?: AxiosInstance
     sleep?: (ms: number) => Promise<void>
     now?: () => number
@@ -365,22 +353,57 @@ async function waitForPiReady(
     )
 }
 
-async function sendMessage(
+/** Unattributed peer send (bare CLI / no session client). Web JWT + peer header. */
+async function sendUnattributedPeerMessage(
     apiUrl: string,
     jwt: string,
-    sessionId: string,
+    targetSessionId: string,
     message: string,
-    http: AxiosInstance,
-    peer: PeerDeliveryMeta = {}
+    http: AxiosInstance
 ): Promise<void> {
     const response = await http.post(
-        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message, peer },
+        `${apiUrl}/api/sessions/${encodeURIComponent(targetSessionId)}/messages`,
+        { text: message },
         {
             headers: {
                 ...authHeaders(jwt),
                 [HAPI_PEER_DELIVERY_HEADER]: HAPI_PEER_DELIVERY_HEADER_VALUE
             },
+            timeout: 30_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        return
+    }
+    const detail = typeof response.data?.error === 'string'
+        ? response.data.error
+        : typeof response.data?.code === 'string'
+            ? response.data.code
+            : `HTTP ${response.status}`
+    throw new PingPeerError('send_failed', `send failed: ${detail}`)
+}
+
+/**
+ * Attributed peer send: CLI token + path source id. Hub ignores any body
+ * sourceSessionId and fills sourceName from the store.
+ */
+async function sendAttributedPeerMessage(
+    apiUrl: string,
+    cliToken: string,
+    sourceSessionId: string,
+    targetSessionId: string,
+    message: string,
+    http: AxiosInstance
+): Promise<void> {
+    const response = await http.post(
+        `${apiUrl}/cli/sessions/${encodeURIComponent(sourceSessionId)}/peer-messages`,
+        { targetSessionId, text: message },
+        {
+            headers: buildHubRequestHeaders({
+                Authorization: `Bearer ${cliToken}`,
+                'Content-Type': 'application/json'
+            }),
             timeout: 30_000,
             validateStatus: () => true
         }
@@ -544,9 +567,22 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         }
     }
 
-    const peer = resolvePeerDeliveryProvenance()
-    onProgress?.(`sending message (${message.length} chars)...`)
-    await sendMessage(apiUrl, jwt, matched.id, message, http, peer)
+    const sourceId = options.authenticatedSourceSessionId?.trim() ?? ''
+    const attributed = Boolean(sourceId && isSessionId(sourceId))
+    onProgress?.(`sending message (${message.length} chars${attributed ? ', attributed' : ', unattributed'})...`)
+    if (attributed) {
+        // CLI token (same credential as ApiSessionClient), not the web JWT.
+        await sendAttributedPeerMessage(
+            apiUrl,
+            accessToken,
+            sourceId,
+            matched.id,
+            message,
+            http
+        )
+    } else {
+        await sendUnattributedPeerMessage(apiUrl, jwt, matched.id, message, http)
+    }
 
     return {
         sessionId: matched.id,

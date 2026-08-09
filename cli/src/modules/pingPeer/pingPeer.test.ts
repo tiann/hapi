@@ -3,12 +3,10 @@ import {
     HAPI_PEER_DELIVERY_HEADER,
     HAPI_PEER_DELIVERY_HEADER_VALUE
 } from '@hapi/protocol'
-import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
     pingPeer,
-    resolvePeerDeliveryProvenance,
     resolveSessionByPrefix,
     type PingPeerSessionSummary
 } from './pingPeer'
@@ -76,20 +74,6 @@ describe('resolveSessionByPrefix', () => {
     })
 })
 
-describe('resolvePeerDeliveryProvenance', () => {
-    it('reads trusted env only (never free-form args)', () => {
-        expect(resolvePeerDeliveryProvenance({})).toEqual({})
-        expect(resolvePeerDeliveryProvenance({
-            [HAPI_SESSION_ID_ENV]: '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
-        })).toEqual({
-            sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
-        })
-        expect(resolvePeerDeliveryProvenance({
-            [HAPI_SESSION_ID_ENV]: 'not-a-uuid'
-        })).toEqual({})
-    })
-})
-
 describe('pingPeer', () => {
     let nowMs: number
     let sleepCalls: number[]
@@ -97,7 +81,6 @@ describe('pingPeer', () => {
     beforeEach(() => {
         nowMs = 1_000_000
         sleepCalls = []
-        delete process.env[HAPI_SESSION_ID_ENV]
     })
 
     it('sends to an already-active session without resume', async () => {
@@ -109,7 +92,8 @@ describe('pingPeer', () => {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
-                    expect(body).toEqual({ text: 'hello peer', peer: {} })
+                    // Bare CLI: unattributed peer header, no body source claim.
+                    expect(body).toEqual({ text: 'hello peer' })
                     expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER])
                         .toBe(HAPI_PEER_DELIVERY_HEADER_VALUE)
                     return { status: 200, data: { ok: true } }
@@ -703,23 +687,22 @@ describe('listSessions query params', () => {
         expect(pingParams[0]).toBeUndefined()
     })
 
-    it('stamps peer provenance from HAPI_SESSION_ID when inside a wrapped session', async () => {
+    it('attributes via CLI peer-messages when authenticatedSourceSessionId is set', async () => {
         const targetId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
-        process.env[HAPI_SESSION_ID_ENV] = sourceId
 
         const http = createHttpMock({
             post: (url, body, config) => {
                 if (url.endsWith('/api/auth')) {
                     return { status: 200, data: { token: 'jwt' } }
                 }
-                if (url.endsWith(`/api/sessions/${targetId}/messages`)) {
+                if (url.endsWith(`/cli/sessions/${sourceId}/peer-messages`)) {
                     expect(body).toEqual({
-                        text: 'handoff',
-                        peer: { sourceSessionId: sourceId }
+                        targetSessionId: targetId,
+                        text: 'handoff'
                     })
-                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER])
-                        .toBe(HAPI_PEER_DELIVERY_HEADER_VALUE)
+                    expect(config?.headers?.Authorization).toBe('Bearer tok')
+                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER]).toBeUndefined()
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -757,6 +740,7 @@ describe('listSessions query params', () => {
             sessionIdPrefix: '05d9f0f2',
             message: 'handoff',
             accessToken: 'tok',
+            authenticatedSourceSessionId: sourceId,
             apiUrl: 'http://127.0.0.1:3006',
             http: http as never
         })

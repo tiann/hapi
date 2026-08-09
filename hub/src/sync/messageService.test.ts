@@ -1196,6 +1196,35 @@ describe('MessageService.sendMessage peer provenance', () => {
         })
     })
 
+    it('omits empty peer objects from stored meta', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'peer-empty-meta',
+            { path: '/tmp/peer-empty-meta', host: 'localhost', flavor: 'cursor' },
+            null,
+            'default'
+        )
+        const service = new MessageService(store, {
+            of: () => ({
+                to: () => ({ emit: () => {}, timeout: () => ({ emit: () => {} }) }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server, makePublisher() as any)
+
+        await service.sendMessage(session.id, {
+            text: 'unattributed peer',
+            localId: 'peer-empty',
+            sentFrom: 'peer',
+            peer: {}
+        })
+
+        const stored = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stored[0]?.content).toMatchObject({
+            meta: { sentFrom: 'peer' }
+        })
+        expect((stored[0]?.content as { meta?: { peer?: unknown } }).meta?.peer).toBeUndefined()
+    })
+
     it('never stores peer meta when sentFrom is webapp', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(

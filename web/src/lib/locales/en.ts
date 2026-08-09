@@ -11,8 +11,6 @@ export default {
   'message.copy': 'Copy',
   'message.copied': 'Copied',
   'message.info': 'Message details',
-  'message.peerFromSession': 'From peer session',
-  'message.peerFromNamed': 'From peer session: {name}',
   'message.peerFromUnknown': 'From peer (unknown session)',
   'message.peerUnknownChip': '@peer',
   'message.fork': 'Fork',
