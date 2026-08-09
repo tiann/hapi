@@ -100,6 +100,70 @@ describe('runSessionJob', () => {
         expect(http.get).toHaveBeenCalledTimes(1)
     })
 
+    it('retries terminal status write after transient failures', async () => {
+        let patchCalls = 0
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async (_url: string, body: { status?: string }) => {
+                patchCalls += 1
+                if (body.status === 'completed' && patchCalls < 3) {
+                    throw new Error('transient hub 503')
+                }
+                return {
+                    status: 200,
+                    data: {
+                        job: {
+                            key: 'drain',
+                            label: 'drain',
+                            status: body.status ?? 'running',
+                            heartbeatAt: 2,
+                            startedAt: 1,
+                            updatedAt: 2
+                        }
+                    }
+                }
+            })
+        }
+
+        const sleeps: number[] = []
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => fakeChild(0)) as never,
+            setIntervalImpl: ((() => 1) as never),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async (ms) => { sleeps.push(ms) }
+        })
+
+        expect(exitCode).toBe(0)
+        expect(patchCalls).toBe(3)
+        expect(sleeps).toEqual([1_000, 2_000])
+        const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
+        expect(lastPatch.status).toBe('completed')
+    })
+
     it('marks failed on non-zero exit', async () => {
         const http = {
             post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),

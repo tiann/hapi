@@ -112,6 +112,10 @@ export async function handleSessionJobTool(
         }
         const jobKey = args.jobKey.trim()
 
+        if (args.startedAt !== undefined && args.action !== 'set') {
+            return { text: 'startedAt is only valid with action=set', isError: true }
+        }
+
         if (args.action === 'clear') {
             const result = await clearSessionJob({ sessionIdPrefix, jobKey })
             return { text: `cleared ${jobKey} on ${result.sessionId}`, isError: false }

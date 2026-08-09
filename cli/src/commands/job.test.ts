@@ -59,6 +59,15 @@ describe('parseJobArgs', () => {
         ])
         expect(parsed.startedAt).toBe(1_785_304_595_000)
     })
+
+    it('rejects --started-at on update', () => {
+        expect(() => parseJobArgs([
+            'update',
+            'sid',
+            'beets',
+            '--started-at=1785304595000'
+        ])).toThrow(/--started-at is only valid with job set/)
+    })
 })
 
 describe('resolveSessionByPrefix', () => {

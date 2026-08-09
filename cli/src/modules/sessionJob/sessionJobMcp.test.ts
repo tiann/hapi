@@ -77,4 +77,13 @@ describe('sessionJobMcp', () => {
             })
         )
     })
+
+    it('rejects startedAt on update', async () => {
+        const result = await handleSessionJobTool(
+            { action: 'update', jobKey: 'beets', startedAt: 1_785_304_595_000 },
+            'sid-1'
+        )
+        expect(result.isError).toBe(true)
+        expect(result.text).toMatch(/startedAt is only valid with action=set/)
+    })
 })

@@ -209,6 +209,10 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         throw new SessionJobError('bad_args', `unexpected arg: ${arg}`)
     }
 
+    if (result.startedAt !== undefined && result.action !== undefined && result.action !== 'set') {
+        throw new SessionJobError('bad_args', '--started-at is only valid with job set')
+    }
+
     return result
 }
 
@@ -283,6 +287,10 @@ export async function handleJobCommand(args: string[]): Promise<void> {
 
     if (!parsed.jobKey) {
         throw new SessionJobError('bad_args', 'missing job key')
+    }
+
+    if (parsed.startedAt !== undefined && parsed.action !== 'set') {
+        throw new SessionJobError('bad_args', '--started-at is only valid with job set')
     }
 
     if (parsed.action === 'clear') {

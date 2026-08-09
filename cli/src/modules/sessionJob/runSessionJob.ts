@@ -29,9 +29,42 @@ export type RunSessionJobOptions = SessionJobClientOptions & {
     spawnImpl?: typeof spawn
     setIntervalImpl?: typeof setInterval
     clearIntervalImpl?: typeof clearInterval
+    /** Injected for tests (terminal-status retry backoff). */
+    sleepImpl?: (ms: number) => Promise<void>
 }
 
 const DEFAULT_HEARTBEAT_MS = 5 * 60 * 1000
+const TERMINAL_STATUS_ATTEMPTS = 3
+
+async function markTerminalWithRetry(options: {
+    clientOpts: SessionJobClientOptions & { resolved: SessionJobResolvedClient }
+    jobKey: string
+    status: 'completed' | 'failed'
+    detail?: string
+    sleep: (ms: number) => Promise<void>
+}): Promise<void> {
+    let lastError: unknown
+    for (let attempt = 0; attempt < TERMINAL_STATUS_ATTEMPTS; attempt += 1) {
+        try {
+            await updateSessionJob({
+                ...options.clientOpts,
+                jobKey: options.jobKey,
+                body: {
+                    status: options.status,
+                    ...(options.detail !== undefined ? { detail: options.detail } : {}),
+                },
+            })
+            return
+        } catch (error) {
+            lastError = error
+            if (attempt === TERMINAL_STATUS_ATTEMPTS - 1) {
+                break
+            }
+            await options.sleep(1_000 * 2 ** attempt)
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
 
 export async function runSessionJob(options: RunSessionJobOptions): Promise<number> {
     if (options.command.length === 0) {
@@ -71,6 +104,8 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const spawnFn = options.spawnImpl ?? spawn
     const setIntervalFn = options.setIntervalImpl ?? setInterval
     const clearIntervalFn = options.clearIntervalImpl ?? clearInterval
+    const sleep = options.sleepImpl
+        ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
     const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
 
     const child: ChildProcess = spawnFn(options.command[0]!, options.command.slice(1), {
@@ -114,19 +149,11 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     process.on('SIGINT', onSigInt)
     process.on('SIGTERM', onSigTerm)
 
+    let spawnErrorDetail: string | undefined
     const exitCode = await new Promise<number>((resolve) => {
         child.on('error', async (error) => {
             clearIntervalFn(heartbeat)
-            await inflightHeartbeat.catch(() => undefined)
-            try {
-                await updateSessionJob({
-                    ...clientOpts,
-                    jobKey: options.jobKey,
-                    body: { status: 'failed', detail: error.message }
-                })
-            } catch {
-                // ignore
-            }
+            spawnErrorDetail = error.message
             resolve(127)
         })
         child.on('exit', (code, signal) => {
@@ -149,10 +176,12 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
 
     const terminalStatus = exitCode === 0 ? 'completed' : 'failed'
     try {
-        await updateSessionJob({
-            ...clientOpts,
+        await markTerminalWithRetry({
+            clientOpts,
             jobKey: options.jobKey,
-            body: { status: terminalStatus }
+            status: terminalStatus,
+            ...(spawnErrorDetail !== undefined ? { detail: spawnErrorDetail } : {}),
+            sleep,
         })
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
