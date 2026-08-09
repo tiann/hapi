@@ -2162,13 +2162,13 @@ describe('cursorAcpRemoteLauncher', () => {
         // After the first prompt settles, park the next dequeue so we can observe
         // cancelPendingBridge before the bridge row is consumed.
         let blockNextWait = false;
-        let releaseNextWait: (() => void) | null = null;
+        const nextWait = { release: null as (() => void) | null };
         const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
         session.queue.waitForMessagesAndGetAsString = async (signal) => {
             if (blockNextWait) {
                 blockNextWait = false;
                 await new Promise<void>((resolve) => {
-                    releaseNextWait = resolve;
+                    nextWait.release = resolve;
                 });
             }
             return originalWait(signal);
@@ -2198,7 +2198,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelError'
         ));
-        await vi.waitFor(() => releaseNextWait !== null);
+        await vi.waitFor(() => nextWait.release !== null);
 
         expect(session.queue.pendingLocalIds()).not.toContain(`bridge:${staleEventId}`);
         expect(await bridgeHandler!({
@@ -2211,7 +2211,7 @@ describe('cursorAcpRemoteLauncher', () => {
         })).toEqual({ ok: false, reason: 'model_error_changed' });
 
         session.queue.close();
-        releaseNextWait?.();
+        nextWait.release?.();
         await launchPromise;
     });
 });
