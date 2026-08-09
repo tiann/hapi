@@ -1263,6 +1263,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
 
         const bridgedEventId = metadataError.eventId;
+
+        // Never overtake newer user intent already waiting in the queue.
+        // supersededByUserTurn is only stamped when a normal batch starts; if we
+        // unshift Bridge ahead of that batch we replay the old prompt first.
+        const hasQueuedUserTurn = this.session.queue.queue.some(
+            (item) => !item.localId?.startsWith('bridge:')
+        );
+        if (hasQueuedUserTurn) {
+            this.markModelErrorSupersededByUserTurn();
+            return { ok: false, reason: 'superseded_by_newer_turn' };
+        }
+
         // Drop any stale pending bridge for a different event before enqueue.
         if (this.pendingBridgeEventId && this.pendingBridgeEventId !== bridgedEventId) {
             this.cancelPendingBridge();
@@ -1277,7 +1289,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             model: this.currentBackendModel ?? this.session.model ?? undefined
         };
 
-        // Ahead of any already-queued user turns so retry attribution stays correct.
+        // Front of queue only when no newer user turn is waiting.
         this.session.queue.unshiftIsolated(prompt, mode, `bridge:${bridgedEventId}`);
         logger.debug(`[cursor-acp] modelError bridge enqueued for eventId=${bridgedEventId} source=${source}`);
 

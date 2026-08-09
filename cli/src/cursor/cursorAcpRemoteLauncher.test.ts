@@ -278,6 +278,7 @@ import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
 } from '@/modules/common/cursorModelsSharedCache';
+import { setAutoBridgeTransientModelErrors } from './cursorModelErrorBridgePrefs';
 
 function makeSession(sessionId: string | null, opts?: { keepQueueOpen?: boolean }): CursorSession {
     const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
@@ -372,12 +373,14 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.overlayCleanup = null;
         harness.agentActivityListener = null;
         legacyLauncher.mockClear();
+        setAutoBridgeTransientModelErrors(false);
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
     });
 
     afterEach(() => {
         vi.clearAllMocks();
+        setAutoBridgeTransientModelErrors(false);
         _resetSharedCursorModelsCacheForTests();
     });
 
@@ -2294,6 +2297,86 @@ describe('cursorAcpRemoteLauncher', () => {
 
         session.queue.close();
         nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('rejects manual bridge when a newer user turn is already queued', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        session.queue.push('correction instead of retry', { permissionMode: 'default' });
+        expect(await bridgeHandler!({
+            eventId: '44444444-4444-4444-8444-444444444444',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(session.queue.queue.some((item) => item.message === 'correction instead of retry')).toBe(true);
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('does not auto-bridge ahead of a newer queued user turn', async () => {
+        const { setAutoBridgeTransientModelErrors } = await import('./cursorModelErrorBridgePrefs');
+        setAutoBridgeTransientModelErrors(true);
+
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        harness.promptReject = new Error('status 429 ratelimitexceeded');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        // User queues a replacement while the failing turn is still settling.
+        session.queue.push('do something else', { permissionMode: 'default' });
+        harness.releasePrompt?.();
+
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(session.queue.queue[0]?.message).toBe('do something else');
+
+        setAutoBridgeTransientModelErrors(false);
+        session.queue.close();
         await launchPromise;
     });
 
