@@ -59,6 +59,11 @@ describe('attachedJob helpers', () => {
         expect(attachedJobFraction(job({ remaining: 100, total: 1000 }))).toBe(0.9)
     })
 
+    it('prefers remaining over stale done when both are present', () => {
+        // PATCH that only updates remaining preserves an older done — bar must match label.
+        expect(attachedJobFraction(job({ remaining: 100, total: 1000, done: 200 }))).toBe(0.9)
+    })
+
     it('marks stale after heartbeat window', () => {
         const now = 1_000 + ATTACHED_JOB_STALE_MS + 1
         expect(isAttachedJobStale(job({ heartbeatAt: 1_000 }), now)).toBe(true)

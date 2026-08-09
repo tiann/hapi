@@ -75,12 +75,14 @@ export function formatAttachedJobProgress(
 }
 
 export function attachedJobFraction(job: AttachedJob): number | null {
-    if (job.done !== undefined && job.total !== undefined && job.total > 0) {
-        return Math.max(0, Math.min(1, job.done / job.total))
-    }
+    // Same precedence as formatAttachedJobProgress: remaining wins over done/total
+    // so a PATCH that only updates remaining cannot leave a stale done% on the bar.
     if (job.remaining !== undefined && job.total !== undefined && job.total > 0) {
         const done = Math.max(0, job.total - job.remaining)
         return Math.max(0, Math.min(1, done / job.total))
+    }
+    if (job.done !== undefined && job.total !== undefined && job.total > 0) {
+        return Math.max(0, Math.min(1, job.done / job.total))
     }
     return null
 }

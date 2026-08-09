@@ -368,6 +368,26 @@ describe('shouldShowSessionInSidebar', () => {
         expect(shouldShowSessionInSidebar({ ...stub, active: true })).toBe(true)
         expect(shouldShowSessionInSidebar({ ...stub, pinned: true })).toBe(true)
     })
+
+    it('keeps idle empty stubs with a running attached job (pre-title register)', () => {
+        const stub = makeSession({
+            id: 'job-stub',
+            active: false,
+            metadata: { path: '/work/hapi' },
+            attachedJob: {
+                key: 'beets',
+                label: 'beets import',
+                status: 'running',
+                heartbeatAt: 1_000,
+                startedAt: 1_000,
+                updatedAt: 1_000,
+                remaining: 10,
+            },
+        })
+        expect(isSidebarEmptySessionStub(stub)).toBe(true)
+        expect(shouldShowSessionInSidebar(stub)).toBe(true)
+        expect(prepareSidebarSessions([stub]).map((s) => s.id)).toEqual(['job-stub'])
+    })
 })
 
 describe('session list search helpers', () => {
