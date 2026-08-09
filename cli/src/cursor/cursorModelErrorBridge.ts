@@ -1,6 +1,6 @@
 export const MODEL_ERROR_BRIDGE_HEADER = '[HAPI bridge — transient model error]';
 
-const MAX_LAST_USER_MESSAGE_CHARS = 32_000;
+export const MAX_LAST_USER_MESSAGE_CHARS = 32_000;
 const MAX_EXCERPT_CHARS = 120;
 
 export type ModelErrorBridgeInput = {

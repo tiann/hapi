@@ -63,7 +63,7 @@ import {
     buildModelErrorBridgePrompt,
     canBridgeModelError,
     mergeBridgeGateFields,
-    truncateLastUserMessage
+    MAX_LAST_USER_MESSAGE_CHARS
 } from './cursorModelErrorBridge';
 import { getAutoBridgeTransientModelErrors } from './cursorModelErrorBridgePrefs';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -624,13 +624,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            // Activate bridge attribution only when this batch is the bridge
-            // prompt — never while some other turn is still in flight.
-            const bridgeLocalId = batch.items
-                .map((item) => item.localId)
-                .find((id): id is string => typeof id === 'string' && id.startsWith('bridge:'));
-            if (bridgeLocalId) {
-                const eventId = bridgeLocalId.slice('bridge:'.length);
+            // Activate bridge attribution only from queue-owned provenance —
+            // never from caller-controlled localId (which can forge `bridge:`).
+            const bridgeItem = batch.items.find(
+                (item) => item.internal?.kind === 'model-error-bridge'
+            );
+            if (bridgeItem?.internal?.kind === 'model-error-bridge') {
+                const eventId = bridgeItem.internal.eventId;
                 this.bridgingForEventId = eventId;
                 this.bridgingSource = this.pendingBridgeSource ?? 'manual';
                 if (this.pendingBridgeEventId === eventId) {
@@ -1103,8 +1103,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const rawSnippet = rawSnippetForFailure(failure);
         const eventId = randomUUID();
         const atTs = Date.now();
-        const lastUserMessage = truncateLastUserMessage(this.lastUserMessage ?? '');
-        const bridgeable = opts?.bridgeable !== false;
+        // Fail closed on silently truncated prompts — Bridge must replay exact text.
+        const fullMessage = this.lastUserMessage ?? '';
+        const fitsBridgeLimit = fullMessage.length <= MAX_LAST_USER_MESSAGE_CHARS;
+        const bridgeable = opts?.bridgeable !== false && fitsBridgeLimit;
+        const lastUserMessage = bridgeable ? fullMessage : '';
 
         logger.debug(
             `[cursor-acp] modelError recorded source=${failure.source} kind=${failure.kind} transient=${failure.transient}${bridgedFailure ? ' (bridge failed)' : ''}${!bridgeable ? ' (not bridgeable)' : ''}`
@@ -1267,10 +1270,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // Never overtake newer user intent already waiting in the queue.
         // supersededByUserTurn is only stamped when a normal batch starts; if we
         // unshift Bridge ahead of that batch we replay the old prompt first.
-        const hasQueuedUserTurn = this.session.queue.queue.some(
-            (item) => !item.localId?.startsWith('bridge:')
-        );
-        if (hasQueuedUserTurn) {
+        if (this.session.queue.hasPendingNonBridgeTurn()) {
             this.markModelErrorSupersededByUserTurn();
             return { ok: false, reason: 'superseded_by_newer_turn' };
         }
@@ -1290,7 +1290,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         };
 
         // Front of queue only when no newer user turn is waiting.
-        this.session.queue.unshiftIsolated(prompt, mode, `bridge:${bridgedEventId}`);
+        // Provenance is queue-owned (`internal`); localId is cancel/telemetry only.
+        this.session.queue.unshiftIsolated(
+            prompt,
+            mode,
+            `bridge:${bridgedEventId}`,
+            { kind: 'model-error-bridge', eventId: bridgedEventId }
+        );
         logger.debug(`[cursor-acp] modelError bridge enqueued for eventId=${bridgedEventId} source=${source}`);
 
         return { ok: true };
@@ -1300,12 +1306,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private cancelPendingBridge(): void {
         const eventId = this.pendingBridgeEventId;
         if (eventId) {
-            this.session.queue.cancelByLocalId(`bridge:${eventId}`);
+            this.session.queue.cancelModelErrorBridge(eventId);
         } else {
-            // Gate/queue desync: still scrub orphaned bridge:* rows.
-            for (const localId of this.session.queue.pendingLocalIds()) {
-                if (localId.startsWith('bridge:')) {
-                    this.session.queue.cancelByLocalId(localId);
+            // Gate/queue desync: scrub any pending queue-owned bridge rows.
+            for (const item of this.session.queue.queue) {
+                if (item.internal?.kind === 'model-error-bridge') {
+                    this.session.queue.cancelModelErrorBridge(item.internal.eventId);
                 }
             }
         }

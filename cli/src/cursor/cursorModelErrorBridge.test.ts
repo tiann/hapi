@@ -4,6 +4,7 @@ import {
     canBridgeModelError,
     mergeBridgeGateFields,
     MODEL_ERROR_BRIDGE_HEADER,
+    MAX_LAST_USER_MESSAGE_CHARS,
     truncateLastUserMessage
 } from './cursorModelErrorBridge';
 
@@ -137,6 +138,12 @@ describe('truncateLastUserMessage', () => {
 
     it('caps very long messages', () => {
         const long = 'x'.repeat(40_000);
-        expect(truncateLastUserMessage(long).length).toBe(32_000);
+        expect(truncateLastUserMessage(long).length).toBe(MAX_LAST_USER_MESSAGE_CHARS);
+    });
+});
+
+describe('MAX_LAST_USER_MESSAGE_CHARS', () => {
+    it('is the bridge fail-closed limit', () => {
+        expect(MAX_LAST_USER_MESSAGE_CHARS).toBe(32_000);
     });
 });

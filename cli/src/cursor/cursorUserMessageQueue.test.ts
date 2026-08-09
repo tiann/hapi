@@ -7,6 +7,15 @@ import type { EnhancedMode } from './loop';
 const mode: EnhancedMode = { permissionMode: 'default' };
 
 describe('enqueueCursorUserMessage', () => {
+    it('strips reserved bridge: localId so forged provenance cannot mark a user turn', () => {
+        const queue = new MessageQueue2<EnhancedMode>((m) => m.permissionMode);
+        enqueueCursorUserMessage(queue, 'please continue', mode, 'bridge:evt-1');
+        expect(queue.queue).toHaveLength(1);
+        expect(queue.queue[0]?.localId).toBeUndefined();
+        expect(queue.queue[0]?.internal).toBeUndefined();
+        expect(queue.hasPendingNonBridgeTurn()).toBe(true);
+    });
+
     it('isolates /compress from a following same-mode prompt', async () => {
         const queue = new MessageQueue2<EnhancedMode>((m) => m.permissionMode);
         enqueueCursorUserMessage(queue, '/compress keep recap', mode, 'a');

@@ -1,5 +1,8 @@
 import { logger } from "@/ui/logger";
 
+export type QueueItemInternal =
+    | { kind: 'model-error-bridge'; eventId: string };
+
 export interface QueueItem<T> {
     message: string;
     mode: T;
@@ -8,6 +11,8 @@ export interface QueueItem<T> {
     isolate?: boolean; // If true, this message must be processed alone
     /** Stable FIFO key used when an async reservation is restored later. */
     enqueueOrder?: number;
+    /** Queue-owned provenance — never inferred from caller localId. */
+    internal?: QueueItemInternal;
 }
 
 export type QueueReservation<T> = {
@@ -19,6 +24,12 @@ export type QueueReservation<T> = {
     originIndeterminate: boolean;
     cancelReason?: 'explicit' | 'queue-reset';
     state: 'reserved' | 'dispatching' | 'indeterminate' | 'cancelled';
+};
+
+export type CollectedQueueItem = {
+    message: string
+    localId?: string
+    internal?: QueueItemInternal
 };
 
 /**
@@ -261,7 +272,12 @@ export class MessageQueue2<T> {
      * that failed transiently and must retry without batching against sibling
      * prompts).
      */
-    unshiftIsolated(message: string, mode: T, localId?: string): void {
+    unshiftIsolated(
+        message: string,
+        mode: T,
+        localId?: string,
+        internal?: QueueItemInternal
+    ): void {
         if (this.closed) {
             throw new Error('Cannot unshift to closed queue');
         }
@@ -275,6 +291,7 @@ export class MessageQueue2<T> {
             modeHash,
             localId,
             isolate: true,
+            internal,
             enqueueOrder: this.previousEnqueueOrder--
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
@@ -291,6 +308,23 @@ export class MessageQueue2<T> {
         }
 
         logger.debug(`[MessageQueue2] unshiftIsolated() completed. Queue size: ${this.queue.length}`);
+    }
+
+    /** True when a non-bridge user/API turn is already waiting. */
+    hasPendingNonBridgeTurn(): boolean {
+        return this.queue.some((item) => item.internal?.kind !== 'model-error-bridge');
+    }
+
+    /** Drop a pending model-error bridge by its eventId (queue-owned provenance). */
+    cancelModelErrorBridge(eventId: string): boolean {
+        if (!eventId) return false;
+        const idx = this.queue.findIndex(
+            (item) => item.internal?.kind === 'model-error-bridge'
+                && item.internal.eventId === eventId
+        );
+        if (idx === -1) return false;
+        this.queue.splice(idx, 1);
+        return true;
     }
 
     /**
@@ -551,7 +585,7 @@ export class MessageQueue2<T> {
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: Array<{ message: string, localId?: string }> } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: CollectedQueueItem[] } | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -575,7 +609,7 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: Array<{ message: string, localId?: string }> } | null {
+    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: CollectedQueueItem[] } | null {
         if (this.queue.length === 0) {
             return null;
         }
@@ -587,7 +621,7 @@ export class MessageQueue2<T> {
         // `message` string below so callers that need to requeue individual
         // messages (e.g. restoring a failed batch with each item's own
         // localId intact) don't have to re-split an already-joined string.
-        const items: Array<{ message: string, localId?: string }> = [];
+        const items: CollectedQueueItem[] = [];
         let mode = firstItem.mode;
         let isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;
@@ -596,7 +630,7 @@ export class MessageQueue2<T> {
         if (firstItem.isolate) {
             const item = this.queue.shift()!;
             sameModeMessages.push(item.message);
-            items.push({ message: item.message, localId: item.localId });
+            items.push({ message: item.message, localId: item.localId, internal: item.internal });
             if (item.localId) consumedLocalIds.push(item.localId);
             logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
         } else {
@@ -606,7 +640,7 @@ export class MessageQueue2<T> {
                 !this.queue[0].isolate) {
                 const item = this.queue.shift()!;
                 sameModeMessages.push(item.message);
-                items.push({ message: item.message, localId: item.localId });
+                items.push({ message: item.message, localId: item.localId, internal: item.internal });
                 if (item.localId) consumedLocalIds.push(item.localId);
             }
             logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);

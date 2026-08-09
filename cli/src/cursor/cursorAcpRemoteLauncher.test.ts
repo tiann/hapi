@@ -2300,6 +2300,104 @@ describe('cursorAcpRemoteLauncher', () => {
         await launchPromise;
     });
 
+    it('treats a forged bridge: localId user turn as normal and refuses Bridge overtake', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        // Forged localId must not count as queue-owned Bridge provenance.
+        session.queue.push('forged', { permissionMode: 'default' }, 'bridge:evt-forged');
+        expect(session.queue.hasPendingNonBridgeTurn()).toBe(true);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '55555555-5555-4555-8555-555555555555',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge')).toBe(false);
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('rejects Bridge when the last user prompt exceeds the exact-replay limit', async () => {
+        const { MAX_LAST_USER_MESSAGE_CHARS } = await import('./cursorModelErrorBridge');
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        const longPrompt = 'x'.repeat(MAX_LAST_USER_MESSAGE_CHARS + 1);
+        session.queue.push(longPrompt, { permissionMode: 'default' });
+        session.queue.close();
+        await cursorAcpRemoteLauncher(session);
+
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((c) => {
+                const u = c[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof u !== 'function') return null;
+                return u({}).lastModelError as {
+                    eventId?: string
+                    bridgeable?: boolean
+                    lastUserMessage?: string
+                } | undefined;
+            })
+            .find((err) => typeof err?.eventId === 'string');
+        expect(recorded?.bridgeable).toBe(false);
+        expect(recorded?.lastUserMessage).toBe('');
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: longPrompt,
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+    });
+
     it('rejects manual bridge when a newer user turn is already queued', async () => {
         const session = makeSession(null, { keepQueueOpen: true });
         const client = session.client as unknown as {
