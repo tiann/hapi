@@ -139,14 +139,31 @@ export type NotifySummary = {
 }
 
 /**
- * Look for an `AGENT_NOTIFY_SUMMARY {...json...}` line as the **last
+ * Match a well-formed `AGENT_NOTIFY_SUMMARY {...}` footer on a single line.
+ *
+ * Allows an optional prose prefix on the same line (agents sometimes glue
+ * trailing text and the token without a newline). The token must be the
+ * last occurrence on the line, and the JSON object must run through the
+ * end of the line.
+ */
+function matchNotifySummaryLine(line: string): string | null {
+    const idx = line.lastIndexOf(NOTIFY_SUMMARY_PREFIX)
+    if (idx < 0) return null
+
+    const jsonPart = line.slice(idx + NOTIFY_SUMMARY_PREFIX.length).trim()
+    if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) return null
+    return jsonPart
+}
+
+/**
+ * Look for an `AGENT_NOTIFY_SUMMARY {...json...}` footer as the **last
  * non-empty line** of an agent's plain-text message.
  *
- * Strict end-anchor: anything below the JSON line (even whitespace) is
- * fine, but if the agent wrote prose AFTER the line we treat it as
- * non-compliant and return null. This also makes false positives from
- * `AGENT_NOTIFY_SUMMARY` quoted inside an earlier paragraph harmless,
- * because such a quote is never the last line.
+ * End-anchor: trailing blank lines are fine, but prose on a later
+ * non-empty line is non-compliant and returns null. Mid-body quotes of
+ * the token are ignored for the same reason. An optional prose prefix on
+ * the last line itself is tolerated when the line still ends with a
+ * well-formed `AGENT_NOTIFY_SUMMARY {…}` payload.
  *
  * Returns the parsed object on success, `null` on any deviation. The
  * shape is intentionally loose - we only trust `summary`, `action`, and
@@ -161,11 +178,8 @@ export function extractNotifySummary(text: unknown): NotifySummary | null {
     while (lastIdx >= 0 && lines[lastIdx].trim() === '') lastIdx -= 1
     if (lastIdx < 0) return null
 
-    const lastLine = lines[lastIdx].trim()
-    if (!lastLine.startsWith(NOTIFY_SUMMARY_PREFIX)) return null
-
-    const jsonPart = lastLine.slice(NOTIFY_SUMMARY_PREFIX.length).trim()
-    if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) return null
+    const jsonPart = matchNotifySummaryLine(lines[lastIdx].trim())
+    if (jsonPart === null) return null
 
     try {
         const parsed: unknown = JSON.parse(jsonPart)

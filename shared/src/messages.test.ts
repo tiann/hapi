@@ -122,6 +122,23 @@ describe('extractNotifySummary', () => {
         expect(r?.summary).toBe('Published v0.1.0')
     })
 
+    test('parses when prose is glued onto the same last line before the token', () => {
+        // Agents sometimes omit the newline before the footer.
+        const glued = 'Ownership session pinged.AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"ok"}'
+        const r = extractNotifySummary(glued)
+        expect(r).not.toBeNull()
+        expect(r?.version).toBe(1)
+        expect(r?.status).toBe('done')
+        expect(r?.summary).toBe('ok')
+    })
+
+    test('parses glued token after multi-line prose (token still on last line)', () => {
+        const text = `Did the work.\n\nOwnership session pinged.AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"ok"}`
+        const r = extractNotifySummary(text)
+        expect(r?.summary).toBe('ok')
+        expect(r?.status).toBe('done')
+    })
+
     test('tolerates trailing whitespace and blank lines', () => {
         const r = extractNotifySummary(`prose\n\n${FULL_LINE}\n\n  \n`)
         expect(r?.summary).toBe('Published v0.1.0')
@@ -130,6 +147,14 @@ describe('extractNotifySummary', () => {
     test('returns null when summary is not on the LAST non-empty line', () => {
         // Operator wrote prose AFTER the line - non-compliant.
         const text = `${FULL_LINE}\nOh, one more thing.`
+        expect(extractNotifySummary(text)).toBeNull()
+    })
+
+    test('ignores mid-message token that is not on the last non-empty line', () => {
+        const text = [
+            'See AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"mid"} for the contract.',
+            'More prose after that quote.',
+        ].join('\n')
         expect(extractNotifySummary(text)).toBeNull()
     })
 
