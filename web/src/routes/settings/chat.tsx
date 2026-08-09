@@ -95,12 +95,20 @@ export default function SettingsChatPage() {
             } catch (error) {
                 // Hub may already be written — roll it back even if discovery failed
                 // before any per-session RPC ran (otherwise Settings shows off while
-                // live CLIs keep auto-bridging).
+                // live CLIs keep auto-bridging). Re-discover after hub restore so a
+                // session that started mid-mutation is not left on the temp value.
                 if (persisted) {
                     await Promise.allSettled(
                         activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
                     )
                     await api.updateHubSettings({ autoBridgeTransientModelErrors: previous })
+                    const rollbackResponse = await api.getSessions().catch(() => null)
+                    const rollbackCursor = (rollbackResponse?.sessions ?? []).filter(
+                        (s) => s.active && s.metadata?.flavor === 'cursor'
+                    )
+                    await Promise.allSettled(
+                        rollbackCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
+                    )
                     writeAutoBridgeTransientModelErrors(previous)
                 }
                 throw error

@@ -1050,11 +1050,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             );
             return;
         }
-        if (this.userAbortRequested && failure.kind === 'canceled') {
+        // Abort/Exit/Switch can settle as canceled *or* transport/process-close
+        // shapes (ACP process exited, WritableIterable closed, …). Never promote
+        // those into lastModelError / notify / auto-bridge after a deliberate stop.
+        if (this.userAbortRequested) {
             logger.debug(
-                '[cursor-acp] dropping canceled modelError after user abort'
+                `[cursor-acp] dropping modelError after user abort kind=${failure.kind}`
             );
             this.pendingTextFailure = null;
+            this.pendingStderrFailure = null;
             return;
         }
         this.turnHasModelError = true;

@@ -2091,6 +2091,45 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(wroteLastModelError).toBe(false);
     });
 
+    it('does not promote ACP process-exit rejection after deliberate abort to modelError', async () => {
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+
+        // Non-null Cursor session id so handleAbort reaches backend.cancelPrompt.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        harness.rejectPromptOnCancel = new Error('ACP process exited (code=143, signal=null)');
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeTypeOf('function');
+        await abortHandler!();
+        harness.releasePrompt?.();
+        session.queue.close();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+    });
+
     it('clears pending bridge on abort so the same event can be bridged again', async () => {
         // Hold the first prompt so the bridge stays queued (not dequeued yet).
         harness.deferPrompt = new Promise<void>((resolve) => {
