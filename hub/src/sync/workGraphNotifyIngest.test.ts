@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
+import { WORK_GRAPH_MAX_STRING, WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
 import { Store } from '../store'
 import {
     WORK_AD_DEFAULT_TTL_MS,
@@ -310,6 +310,35 @@ describe('ingestNotifySummaryFromMessage', () => {
         const payload = result?.event.payloadJson as Record<string, unknown>
         expect(payload).not.toHaveProperty('notify_summary')
         expect(payload?.action).toBe(fat)
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
+    })
+
+    it('clamps CJK footer fields by UTF-8 bytes so elevation still inserts', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-cjk', {}, null, 'default')
+        // 6k CJK × 3 ≈ 54 KiB UTF-8 if unclamped; must not silent-drop.
+        const fatCjk = '\u4e2d'.repeat(6_000)
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-cjk',
+            content: assistantOutput(
+                `AGENT_NOTIFY_SUMMARY ${JSON.stringify({
+                    status: 'done',
+                    summary: 'ok',
+                    action: fatCjk,
+                    project: fatCjk,
+                    agent: fatCjk
+                })}`
+            ),
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+
+        expect(result?.inserted).toBe(true)
+        const action = (result?.event.payloadJson as { action?: string })?.action ?? ''
+        expect(new TextEncoder().encode(action).byteLength).toBeLessThanOrEqual(WORK_GRAPH_MAX_STRING)
         expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
     })
 })
