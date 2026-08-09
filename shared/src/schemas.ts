@@ -418,7 +418,6 @@ export const AttachedJobUpsertSchema = z.object({
     remaining: z.number().nonnegative().optional(),
     unit: z.string().min(1).max(64).optional(),
     detail: z.string().max(500).optional(),
-    heartbeatAt: z.number().optional(),
     startedAt: z.number().optional(),
     /** Supervisor-owned generation; hub mints one when omitted. */
     runId: z.string().min(1).max(64).optional()
@@ -435,7 +434,6 @@ export const AttachedJobPatchSchema = z.object({
     remaining: z.number().nonnegative().nullable().optional(),
     unit: z.string().min(1).max(64).nullable().optional(),
     detail: z.string().max(500).nullable().optional(),
-    heartbeatAt: z.number().optional(),
     /**
      * Run generation fence. Supervisors that stamped runId on PUT must send the
      * same value so a stale process cannot mutate a newer key-reuse run.

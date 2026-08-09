@@ -68,7 +68,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                     ...(body.remaining !== undefined ? { remaining: body.remaining } : {}),
                     ...(body.unit !== undefined ? { unit: body.unit } : {}),
                     ...(body.detail !== undefined ? { detail: body.detail } : {}),
-                    heartbeatAt: body.heartbeatAt ?? now,
+                    heartbeatAt: now,
                     startedAt: body.startedAt ?? now,
                     updatedAt: now
                 }
@@ -92,7 +92,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                     ...(patch.remaining !== undefined && patch.remaining !== null
                         ? { remaining: patch.remaining }
                         : {}),
-                    heartbeatAt: patch.heartbeatAt ?? Date.now(),
+                    heartbeatAt: Date.now(),
                     updatedAt: Date.now()
                 }
                 jobs.set(key, next)
@@ -224,6 +224,20 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             }
         )
         expect(badBody.status).toBe(400)
+
+        // Client must not supply heartbeatAt — hub stamps receipt time.
+        const clientHeartbeat = await app.request(
+            `http://localhost/api/sessions/${session.id}/jobs/ok-key`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    label: 'x',
+                    heartbeatAt: 9_999_999_999_999
+                })
+            }
+        )
+        expect(clientHeartbeat.status).toBe(400)
     })
 
     it('refuses DELETE /sessions/:id while a primary attached job is running', async () => {

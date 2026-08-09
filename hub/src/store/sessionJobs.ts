@@ -138,7 +138,8 @@ export function upsertSessionJob(
     now: number = Date.now()
 ): UpsertSessionJobResult {
     const existing = getSessionJob(db, sessionId, jobKey)
-    const heartbeatAt = body.heartbeatAt ?? now
+    // Hub clock only — never trust client heartbeatAt (skew / future-stamp stale chrome).
+    const heartbeatAt = now
     // Explicit startedAt wins (late-attach correction). Omitted → keep existing clock,
     // else stamp now. PATCH never accepts startedAt — use PUT or clear+PUT.
     const startedAt = body.startedAt !== undefined
@@ -228,7 +229,7 @@ export function patchSessionJob(
         remaining: patch.remaining === null ? undefined : (patch.remaining ?? existing.remaining),
         unit: patch.unit === null ? undefined : (patch.unit ?? existing.unit),
         detail: patch.detail === null ? undefined : (patch.detail ?? existing.detail),
-        heartbeatAt: patch.heartbeatAt ?? now,
+        heartbeatAt: now,
         updatedAt: now
     }
 

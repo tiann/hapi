@@ -143,6 +143,29 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         store.close()
     })
 
+    it('stamps heartbeatAt from hub now on upsert and patch', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const created = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'running',
+        }, 5_000)
+        expect(created.outcome).toBe('upserted')
+        if (created.outcome !== 'upserted') throw new Error('unreachable')
+        expect(created.job.heartbeatAt).toBe(5_000)
+
+        const patched = store.sessionJobs.patch(
+            session.id,
+            'beets',
+            { remaining: 1 },
+            6_000
+        )
+        expect(patched.outcome).toBe('patched')
+        if (patched.outcome !== 'patched') throw new Error('unreachable')
+        expect(patched.job.heartbeatAt).toBe(6_000)
+        store.close()
+    })
+
     it('mints distinct runIds even when startedAt collides', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
