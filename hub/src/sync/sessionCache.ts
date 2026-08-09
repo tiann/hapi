@@ -1254,11 +1254,11 @@ export class SessionCache {
         // merge clobbers jobsAcceptedFromSessionIds when mergeSessionMetadata
         // rebuilds from the stale pre-merge newStored.metadata snapshot
         // (cold-review pass 3 Major — agents heartbeating $HAPI_SESSION_ID 404).
-        if (movedJobs.moved > 0 || movedJobs.collided > 0) {
-            this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
-            if (!options.deleteOldSession) {
-                this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
-            }
+        // Always record redirects even when the source had zero jobs yet — the
+        // first post-merge set/update still uses retained $HAPI_SESSION_ID.
+        this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
+        if (!options.deleteOldSession) {
+            this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
         }
 
         if (newStored.model === null && oldStored.model !== null) {

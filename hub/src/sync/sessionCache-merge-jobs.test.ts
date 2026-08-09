@@ -73,6 +73,28 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         expect(cache.resolveAttachedJobSessionId(newSession.id, 'default')).toBe(newSession.id)
     })
 
+    it('records job redirects even when the source has no jobs yet', async () => {
+        const { store, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        expect(store.sessions.getSession(oldSession.id)).toBeNull()
+        const refreshed = cache.refreshSession(newSession.id)
+        expect(refreshed?.metadata?.jobsAcceptedFromSessionIds).toContain(oldSession.id)
+        expect(cache.resolveAttachedJobSessionId(oldSession.id, 'default')).toBe(newSession.id)
+
+        // First job attach after merge still lands on the canonical session
+        // when the agent keeps the pre-merge HAPI_SESSION_ID.
+        const upserted = store.sessionJobs.upsert(
+            cache.resolveAttachedJobSessionId(oldSession.id, 'default')!,
+            'late',
+            { label: 'late attach', status: 'running', remaining: 1 }
+        )
+        expect(upserted.outcome).toBe('upserted')
+        expect(store.sessionJobs.getPrimaryRunning(newSession.id)?.key).toBe('late')
+    })
+
     it('preserves A→B→C jobsAccepted ancestry so deleted A still resolves on C', async () => {
         const { store, cache } = setup()
         const a = cache.getOrCreateSession(
