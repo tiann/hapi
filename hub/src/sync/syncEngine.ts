@@ -804,6 +804,11 @@ export class SyncEngine {
         return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
     }
 
+    /** Move outliving jobs + redirects onto another session (pre-delete). */
+    transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
+        this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
+    }
+
     /** Shared REST/SSE watermark allocator for attachedJob patches. */
     allocateAttachedJobVersion(sessionId: string): number {
         return this.sessionCache.allocateAttachedJobVersion(sessionId)

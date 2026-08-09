@@ -1092,6 +1092,12 @@ export class SessionCache {
             throw new Error('Cannot delete active session')
         }
 
+        if (this.store.sessionJobs.getPrimaryRunning(sessionId)) {
+            throw new Error(
+                'Cannot delete a session while an attached job is running. Complete or clear it first.'
+            )
+        }
+
         const scratchlistAttachments = this.store.scratchlist
             .list(sessionId)
             .flatMap((entry) => entry.attachments)
@@ -1105,6 +1111,7 @@ export class SessionCache {
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
         this.pendingThinkingUntilBySessionId.delete(sessionId)
+        this.attachedJobEmitVersion.delete(sessionId)
 
         void import('../scratchlistAttachments/storage').then(async ({
             deleteScratchlistAttachmentFiles,
@@ -1117,6 +1124,28 @@ export class SessionCache {
         })
 
         this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
+    }
+
+    /**
+     * Move outliving jobs + install owner/key redirects without deleting either
+     * session. Used by Codex duplicate consolidation before a hard delete.
+     */
+    transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
+        if (fromSessionId === toSessionId) return
+        const movedJobs = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
+        this.recordJobsTransferredToSession(fromSessionId, toSessionId, namespace)
+        this.recordJobKeyRedirects(toSessionId, fromSessionId, movedJobs.keyRedirects, namespace)
+        this.recordJobsAcceptedFromSession(toSessionId, fromSessionId, namespace)
+        if (movedJobs.moved > 0 || movedJobs.collided > 0) {
+            this.emitAttachedJobChanged(
+                toSessionId,
+                this.store.sessionJobs.getPrimaryRunning(toSessionId)
+            )
+            this.emitAttachedJobChanged(
+                fromSessionId,
+                this.store.sessionJobs.getPrimaryRunning(fromSessionId)
+            )
+        }
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
@@ -1386,6 +1415,7 @@ export class SessionCache {
             }
             this.lastBroadcastAtBySessionId.delete(oldSessionId)
             this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
+            this.attachedJobEmitVersion.delete(oldSessionId)
         } else {
             this.refreshSession(oldSessionId)
         }

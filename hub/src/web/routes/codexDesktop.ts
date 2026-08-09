@@ -1335,9 +1335,12 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
         }
 
+        // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
         if (engine) {
+            engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
             await engine.deleteSession(source.sessionId)
         } else {
+            options.store.sessionJobs.transfer(source.sessionId, canonical.sessionId)
             const deleted = options.store.sessions.deleteSession(source.sessionId, options.namespace)
             if (!deleted) {
                 throw new Error(`Failed to delete duplicate Hapi session: ${source.sessionId}`)

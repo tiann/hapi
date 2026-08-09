@@ -61,12 +61,16 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         store.close()
     })
 
-    it('cascade-deletes jobs when session is deleted', async () => {
+    it('refuses delete while a running job exists; cascades terminal jobs', async () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
         store.sessionJobs.upsert(session.id, 'job', { label: 'x', status: 'running' })
         expect(store.sessionJobs.list(session.id)).toHaveLength(1)
-        await store.sessions.deleteSession(session.id, 'default')
+        expect(store.sessions.deleteSession(session.id, 'default')).toBe(false)
+        expect(store.sessionJobs.list(session.id)).toHaveLength(1)
+
+        store.sessionJobs.patch(session.id, 'job', { status: 'completed' })
+        expect(store.sessions.deleteSession(session.id, 'default')).toBe(true)
         expect(store.sessionJobs.list(session.id)).toHaveLength(0)
         store.close()
     })
