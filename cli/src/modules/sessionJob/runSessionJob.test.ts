@@ -86,18 +86,77 @@ describe('runSessionJob', () => {
         expect(timers.length).toBe(1)
         timers[0]!()
         await vi.waitFor(() => expect(http.patch).toHaveBeenCalled())
-        const heartbeatBody = http.patch.mock.calls[0]?.[1] as { status?: string }
+        const putStartedAt = (http.put.mock.calls[0]?.[1] as { startedAt: number }).startedAt
+        const heartbeatBody = http.patch.mock.calls[0]?.[1] as {
+            status?: string
+            expectedStartedAt?: number
+        }
         expect(heartbeatBody.status).toBeUndefined()
+        expect(heartbeatBody.expectedStartedAt).toBe(putStartedAt)
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
 
         child.exit()
         const exitCode = await running
         expect(exitCode).toBe(0)
-        const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
+        const lastPatch = http.patch.mock.calls.at(-1)?.[1] as {
+            status?: string
+            expectedStartedAt?: number
+        }
         expect(lastPatch.status).toBe('completed')
+        expect(lastPatch.expectedStartedAt).toBe(putStartedAt)
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not mark terminal when hub reports run mismatch (key reused)', async () => {
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async (_url: string, body: { startedAt?: number }) => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: body.startedAt ?? 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async () => ({
+                status: 409,
+                data: { error: 'Job run mismatch' }
+            }))
+        }
+
+        const child = fakeChild(0, true)
+        const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+        const running = runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => child) as never,
+            setIntervalImpl: ((() => 1) as unknown as typeof setInterval),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async () => undefined
+        })
+        await vi.waitFor(() => expect(http.put).toHaveBeenCalled())
+        child.exit()
+        const exitCode = await running
+        expect(exitCode).toBe(0)
+        expect(http.patch).toHaveBeenCalledTimes(1)
+        expect(err).toHaveBeenCalledWith(expect.stringMatching(/run mismatch|Job run mismatch/i))
+        err.mockRestore()
     })
 
     it('retries terminal status write after transient failures', async () => {

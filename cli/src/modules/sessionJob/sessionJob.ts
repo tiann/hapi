@@ -14,6 +14,7 @@ export type SessionJobErrorCode =
     | 'auth_failed'
     | 'not_found'
     | 'ambiguous'
+    | 'run_mismatch'
     | 'request_failed'
 
 export class SessionJobError extends Error {
@@ -341,6 +342,14 @@ export async function updateSessionJob(
             if (response.status === 404) {
                 throw new SessionJobError('not_found', 'job not found')
             }
+            if (response.status === 409) {
+                const data = response.data as { error?: string } | undefined
+                throw new SessionJobError(
+                    'run_mismatch',
+                    data?.error
+                        ?? 'job run mismatch (expectedStartedAt); another run reused this key'
+                )
+            }
             const data = response.data as { job?: AttachedJob; error?: string } | undefined
             if (response.status < 200 || response.status >= 300 || !data?.job) {
                 throw httpStatusError('update job', response, data?.error)
@@ -385,6 +394,8 @@ export function exitCodeForSessionJobError(error: SessionJobError): number {
             return 4
         case 'ambiguous':
             return 5
+        case 'run_mismatch':
+            return 6
         default:
             return 1
     }

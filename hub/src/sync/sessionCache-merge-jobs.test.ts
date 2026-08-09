@@ -251,8 +251,10 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
             { status: 'completed' },
             3_000
         )
-        expect(patched?.key).toBe('beets.aaaaaaaa')
-        expect(patched?.status).toBe('completed')
+        expect(patched.outcome).toBe('patched')
+        if (patched.outcome !== 'patched') throw new Error('unreachable')
+        expect(patched.job.key).toBe('beets.aaaaaaaa')
+        expect(patched.job.status).toBe('completed')
         expect(store.sessionJobs.get(newId, 'beets')?.status).toBe('running')
     })
 

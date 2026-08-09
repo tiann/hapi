@@ -850,23 +850,32 @@ export class SyncEngine {
         sessionId: string,
         jobKey: string,
         patch: import('@hapi/protocol').AttachedJobPatch
-    ): import('@hapi/protocol').AttachedJob | null {
-        const updated = this.store.sessionJobs.patch(sessionId, jobKey, patch)
-        if (!updated) return null
+    ):
+        | { outcome: 'patched'; job: import('@hapi/protocol').AttachedJob }
+        | { outcome: 'not-found' }
+        | { outcome: 'run-mismatch' } {
+        const result = this.store.sessionJobs.patch(sessionId, jobKey, patch)
+        if (result.outcome !== 'patched') {
+            return result
+        }
+        const updated = result.job
         const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
         this.sessionCache.emitAttachedJobChanged(sessionId, primary)
         return {
-            key: updated.key,
-            label: updated.label,
-            status: updated.status,
-            ...(updated.done !== undefined ? { done: updated.done } : {}),
-            ...(updated.total !== undefined ? { total: updated.total } : {}),
-            ...(updated.remaining !== undefined ? { remaining: updated.remaining } : {}),
-            ...(updated.unit !== undefined ? { unit: updated.unit } : {}),
-            ...(updated.detail !== undefined ? { detail: updated.detail } : {}),
-            heartbeatAt: updated.heartbeatAt,
-            startedAt: updated.startedAt,
-            updatedAt: updated.updatedAt
+            outcome: 'patched',
+            job: {
+                key: updated.key,
+                label: updated.label,
+                status: updated.status,
+                ...(updated.done !== undefined ? { done: updated.done } : {}),
+                ...(updated.total !== undefined ? { total: updated.total } : {}),
+                ...(updated.remaining !== undefined ? { remaining: updated.remaining } : {}),
+                ...(updated.unit !== undefined ? { unit: updated.unit } : {}),
+                ...(updated.detail !== undefined ? { detail: updated.detail } : {}),
+                heartbeatAt: updated.heartbeatAt,
+                startedAt: updated.startedAt,
+                updatedAt: updated.updatedAt
+            }
         }
     }
 

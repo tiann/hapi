@@ -77,7 +77,13 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             },
             patchSessionJob: (_sid: string, key: string, patch: AttachedJobPatch) => {
                 const existing = jobs.get(key)
-                if (!existing) return null
+                if (!existing) return { outcome: 'not-found' as const }
+                if (
+                    patch.expectedStartedAt !== undefined
+                    && existing.startedAt !== patch.expectedStartedAt
+                ) {
+                    return { outcome: 'run-mismatch' as const }
+                }
                 const next: AttachedJob = {
                     ...existing,
                     ...(patch.label !== undefined ? { label: patch.label } : {}),
@@ -90,7 +96,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                     updatedAt: Date.now()
                 }
                 jobs.set(key, next)
-                return next
+                return { outcome: 'patched' as const, job: next }
             },
             deleteSessionJob: (_sid: string, key: string) => jobs.delete(key)
         } as unknown as SyncEngine
@@ -162,7 +168,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             listSessionJobs: (sid: string) => (sid === owner.id ? [...jobs.values()] : []),
             getPrimaryAttachedJob: (sid: string) => (sid === owner.id ? jobs.get('beets')! : null),
             upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
-            patchSessionJob: () => null,
+            patchSessionJob: () => ({ outcome: 'not-found' as const }),
             deleteSessionJob: () => false
         } as unknown as SyncEngine
 
@@ -188,7 +194,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             listSessionJobs: () => [],
             getPrimaryAttachedJob: () => null,
             upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
-            patchSessionJob: () => null,
+            patchSessionJob: () => ({ outcome: 'not-found' as const }),
             deleteSessionJob: () => false
         } as unknown as SyncEngine
 

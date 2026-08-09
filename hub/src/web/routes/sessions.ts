@@ -1384,11 +1384,16 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!parsed.success) {
             return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
         }
-        const job = engine.patchSessionJob(sessionResult.sessionId, jobKey, parsed.data)
-        if (!job) {
+        const result = engine.patchSessionJob(sessionResult.sessionId, jobKey, parsed.data)
+        if (result.outcome === 'not-found') {
             return c.json({ error: 'Job not found' }, 404)
         }
-        return c.json({ job })
+        if (result.outcome === 'run-mismatch') {
+            return c.json({
+                error: 'Job run mismatch: expectedStartedAt does not match the current run (key was reused or clock corrected).'
+            }, 409)
+        }
+        return c.json({ job: result.job })
     })
 
     app.delete('/sessions/:id/jobs/:jobKey', (c) => {

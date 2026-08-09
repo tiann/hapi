@@ -188,15 +188,27 @@ export function upsertSessionJob(
     return { outcome: 'upserted', job }
 }
 
+export type PatchSessionJobResult =
+    | { outcome: 'patched'; job: StoredSessionJob }
+    | { outcome: 'not-found' }
+    | { outcome: 'run-mismatch' }
+
 export function patchSessionJob(
     db: Database,
     sessionId: string,
     jobKey: string,
     patch: AttachedJobPatch,
     now: number = Date.now()
-): StoredSessionJob | null {
+): PatchSessionJobResult {
     const existing = getSessionJob(db, sessionId, jobKey)
-    if (!existing) return null
+    if (!existing) return { outcome: 'not-found' }
+
+    if (
+        patch.expectedStartedAt !== undefined
+        && existing.startedAt !== patch.expectedStartedAt
+    ) {
+        return { outcome: 'run-mismatch' }
+    }
 
     const next: StoredSessionJob = {
         ...existing,
@@ -211,11 +223,13 @@ export function patchSessionJob(
         updatedAt: now
     }
 
-    db.prepare(
+    // CAS in SQL too so a concurrent PUT cannot lose the race after the JS check.
+    const result = db.prepare(
         `UPDATE session_jobs SET
             label = ?, status = ?, done = ?, total = ?, remaining = ?, unit = ?, detail = ?,
             heartbeat_at = ?, updated_at = ?
-         WHERE session_id = ? AND job_key = ?`
+         WHERE session_id = ? AND job_key = ?
+           AND (? IS NULL OR started_at = ?)`
     ).run(
         next.label,
         next.status,
@@ -227,10 +241,27 @@ export function patchSessionJob(
         next.heartbeatAt,
         next.updatedAt,
         sessionId,
-        jobKey
+        jobKey,
+        patch.expectedStartedAt ?? null,
+        patch.expectedStartedAt ?? null
     )
 
-    return getSessionJob(db, sessionId, jobKey)
+    if (result.changes === 0) {
+        // Row vanished or started_at raced; distinguish for callers.
+        const still = getSessionJob(db, sessionId, jobKey)
+        if (!still) return { outcome: 'not-found' }
+        if (
+            patch.expectedStartedAt !== undefined
+            && still.startedAt !== patch.expectedStartedAt
+        ) {
+            return { outcome: 'run-mismatch' }
+        }
+        return { outcome: 'not-found' }
+    }
+
+    const job = getSessionJob(db, sessionId, jobKey)
+    if (!job) return { outcome: 'not-found' }
+    return { outcome: 'patched', job }
 }
 
 export function deleteSessionJob(db: Database, sessionId: string, jobKey: string): boolean {

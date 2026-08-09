@@ -54,7 +54,9 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         expect(store.sessionJobs.delete(session.id, 'newer')).toBe(true)
 
         const patched = store.sessionJobs.patch(session.id, 'beets', { remaining: 80 })
-        expect(patched?.remaining).toBe(80)
+        expect(patched.outcome).toBe('patched')
+        if (patched.outcome !== 'patched') throw new Error('unreachable')
+        expect(patched.job.remaining).toBe(80)
 
         expect(store.sessionJobs.delete(session.id, 'beets')).toBe(true)
         expect(store.sessionJobs.getPrimaryRunning(session.id)).toBeNull()
@@ -110,8 +112,30 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         expect(corrected.job.startedAt).toBe(historical)
 
         const patched = store.sessionJobs.patch(session.id, 'beets', { remaining: 8 }, 5_000)
-        expect(patched?.startedAt).toBe(historical)
-        expect(patched?.remaining).toBe(8)
+        expect(patched.outcome).toBe('patched')
+        if (patched.outcome !== 'patched') throw new Error('unreachable')
+        expect(patched.job.startedAt).toBe(historical)
+        expect(patched.job.remaining).toBe(8)
+
+        // Stale supervisor fence: wrong expectedStartedAt must not mutate the row.
+        const stale = store.sessionJobs.patch(
+            session.id,
+            'beets',
+            { status: 'completed', expectedStartedAt: 2_000 },
+            6_000
+        )
+        expect(stale.outcome).toBe('run-mismatch')
+        expect(store.sessionJobs.get(session.id, 'beets')?.status).toBe('running')
+
+        const owned = store.sessionJobs.patch(
+            session.id,
+            'beets',
+            { status: 'completed', expectedStartedAt: historical },
+            7_000
+        )
+        expect(owned.outcome).toBe('patched')
+        if (owned.outcome !== 'patched') throw new Error('unreachable')
+        expect(owned.job.status).toBe('completed')
         store.close()
     })
 

@@ -431,7 +431,13 @@ export const AttachedJobPatchSchema = z.object({
     remaining: z.number().nonnegative().nullable().optional(),
     unit: z.string().min(1).max(64).nullable().optional(),
     detail: z.string().max(500).nullable().optional(),
-    heartbeatAt: z.number().optional()
+    heartbeatAt: z.number().optional(),
+    /**
+     * Run generation fence (compare-and-swap on startedAt). Supervisors that
+     * stamped startedAt on PUT should send the same value on every PATCH so a
+     * stale process cannot mutate a newer run that reused the job key.
+     */
+    expectedStartedAt: z.number().optional()
 }).strict()
 
 export type AttachedJobPatch = z.infer<typeof AttachedJobPatchSchema>

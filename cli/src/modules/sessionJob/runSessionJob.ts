@@ -41,6 +41,7 @@ async function markTerminalWithRetry(options: {
     jobKey: string
     status: 'completed' | 'failed'
     detail?: string
+    expectedStartedAt: number
     sleep: (ms: number) => Promise<void>
 }): Promise<void> {
     let lastError: unknown
@@ -51,12 +52,17 @@ async function markTerminalWithRetry(options: {
                 jobKey: options.jobKey,
                 body: {
                     status: options.status,
+                    expectedStartedAt: options.expectedStartedAt,
                     ...(options.detail !== undefined ? { detail: options.detail } : {}),
                 },
             })
             return
         } catch (error) {
             lastError = error
+            // Another run owns the key — retrying cannot help and may confuse logs.
+            if (error instanceof SessionJobError && error.code === 'run_mismatch') {
+                break
+            }
             if (attempt === TERMINAL_STATUS_ATTEMPTS - 1) {
                 break
             }
@@ -71,12 +77,14 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         throw new SessionJobError('bad_args', 'run requires a command after --')
     }
 
+    // Supervised child: always this run's clock. Omitting startedAt would
+    // sticky-reuse a prior completed/failed row's startedAt on key reuse.
+    // startedAt is also the run-generation fence on later PATCHes.
+    const startedAt = Date.now()
     const body: AttachedJobUpsert = {
         label: options.label,
         status: 'running',
-        // Supervised child: always this run's clock. Omitting startedAt would
-        // sticky-reuse a prior completed/failed row's startedAt on key reuse.
-        startedAt: Date.now(),
+        startedAt,
         ...(options.done !== undefined ? { done: options.done } : {}),
         ...(options.total !== undefined ? { total: options.total } : {}),
         ...(options.remaining !== undefined ? { remaining: options.remaining } : {}),
@@ -118,10 +126,14 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const heartbeat = setIntervalFn(() => {
         // Never PATCH status:running on the heartbeat — a late in-flight
         // request must not resurrect running after the terminal write.
+        // Fence with startedAt so a superseded run cannot touch a key reuse.
         inflightHeartbeat = updateSessionJob({
             ...clientOpts,
             jobKey: options.jobKey,
-            body: options.detail !== undefined ? { detail: options.detail } : {}
+            body: {
+                expectedStartedAt: startedAt,
+                ...(options.detail !== undefined ? { detail: options.detail } : {}),
+            }
         }).catch((error: unknown) => {
             // Best-effort — exit path still marks terminal status. Log once so
             // a broken supervisor is visible (stuck chip with dead PID is worse).
@@ -180,6 +192,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
             clientOpts,
             jobKey: options.jobKey,
             status: terminalStatus,
+            expectedStartedAt: startedAt,
             ...(spawnErrorDetail !== undefined ? { detail: spawnErrorDetail } : {}),
             sleep,
         })

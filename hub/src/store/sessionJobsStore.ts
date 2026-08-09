@@ -12,6 +12,7 @@ import {
     toAttachedJob,
     transferSessionJobs,
     upsertSessionJob,
+    type PatchSessionJobResult,
     type TransferSessionJobsResult,
     type UpsertSessionJobResult
 } from './sessionJobs'
@@ -54,7 +55,7 @@ export class SessionJobsStore {
         jobKey: string,
         patch: AttachedJobPatch,
         now?: number
-    ): StoredSessionJob | null {
+    ): PatchSessionJobResult {
         return patchSessionJob(this.db, sessionId, jobKey, patch, now)
     }
 
