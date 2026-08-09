@@ -7,6 +7,7 @@ import {
     type WorkGraphEventLink,
     type WorkGraphEventLinkCreate,
     type WorkGraphPrincipal,
+    WorkGraphPrincipalSchema,
     isPrincipalAccountable
 } from '@hapi/protocol'
 
@@ -102,8 +103,18 @@ function toEvent(row: EventRow): WorkGraphEvent {
         severity: row.severity,
         expiresAt: row.expires_at,
         namespace: row.namespace,
-        principal: JSON.parse(row.principal_json) as WorkGraphPrincipal
+        principal: parsePrincipal(row.principal_json)
     }
+}
+
+function parsePrincipal(raw: string): WorkGraphPrincipal {
+    const parsed = parseJsonUnknown(raw)
+    const result = WorkGraphPrincipalSchema.safeParse(parsed)
+    if (result.success) {
+        return result.data
+    }
+    // Corrupt row must not 500 the whole list endpoint.
+    return { kind: 'human', id: 'invalid' }
 }
 
 function toLink(row: LinkRow): WorkGraphEventLink {

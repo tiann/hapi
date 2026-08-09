@@ -21,8 +21,12 @@ export class WorkGraphStore {
         this.db = db
     }
 
-    insertEvent(namespace: string, input: WorkGraphEventCreate): InsertWorkGraphEventResult {
-        return insertWorkGraphEvent(this.db, namespace, input)
+    insertEvent(
+        namespace: string,
+        input: WorkGraphEventCreate,
+        options?: { id?: string; ts?: number }
+    ): InsertWorkGraphEventResult {
+        return insertWorkGraphEvent(this.db, namespace, input, options)
     }
 
     getEvent(eventId: string, namespace: string): WorkGraphEvent | null {

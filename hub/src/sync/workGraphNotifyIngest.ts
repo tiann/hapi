@@ -3,7 +3,6 @@ import {
     extractNotifySummary,
     unwrapRoleWrappedRecordEnvelope,
     type NotifySummary,
-    type WorkGraphEvent,
     type WorkGraphEventCreate
 } from '@hapi/protocol'
 import type { Store } from '../store'
@@ -20,6 +19,13 @@ export const WORK_AD_STATUSES = [
     'unknown'
 ] as const
 export type WorkAdStatus = (typeof WORK_AD_STATUSES)[number]
+
+/**
+ * Default work_ad TTL from message timestamp.
+ * Staleness filtering / reap is P4; this field must still be populated so
+ * "eventually stale via expires_at" is representable (cold review M2).
+ */
+export const WORK_AD_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
  * Map AGENT_NOTIFY_SUMMARY.status → WorkAd payload status.
@@ -82,6 +88,8 @@ function isAgentMessageContent(content: unknown): boolean {
 }
 
 function buildTags(notify: NotifySummary, flavor: string | null | undefined): string[] {
+    // Project stays in tags + payload for now. Indexed `project` column /
+    // project-scoped list query is deferred to #1374 / P4 (cold review M4).
     const tags: string[] = ['notify_summary']
     if (notify.project) tags.push(`project:${notify.project}`)
     if (notify.agent) tags.push(`agent:${notify.agent}`)
@@ -98,11 +106,13 @@ export function buildWorkAdFromNotify(params: {
     messageId: string
     notify: NotifySummary
     ownerUserId: string | number
+    /** Message createdAt — also anchors default expires_at. */
+    ts: number
     flavor?: string | null
     expiresAt?: number
 }): WorkGraphEventCreate {
     const status = mapNotifyStatusToWorkAdStatus(params.notify.status)
-    const agentId = params.notify.agent?.trim() || params.sessionId
+    const agentId = params.notify.agent?.trim() || `session:${params.sessionId}`
     return {
         source_kind: 'session',
         source_ref: params.sessionId,
@@ -119,7 +129,7 @@ export function buildWorkAdFromNotify(params: {
         related_session_id: params.sessionId,
         provenance: 'AGENT_NOTIFY_SUMMARY',
         idempotency_key: `session:${params.sessionId}:message:${params.messageId}:notify`,
-        expires_at: params.expiresAt,
+        expires_at: params.expiresAt ?? (params.ts + WORK_AD_DEFAULT_TTL_MS),
         principal: {
             kind: 'agent',
             id: agentId,
@@ -131,6 +141,9 @@ export function buildWorkAdFromNotify(params: {
 /**
  * On assistant message ingest: well-formed trailing AGENT_NOTIFY_SUMMARY →
  * idempotent work_ad row. Invalid/missing footer → no-op (null).
+ *
+ * Ledger rows are append-only audit: deleting the related session does not
+ * delete work_ad rows (cold review M1).
  */
 export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): NotifyIngestResult {
     if (!isAgentMessageContent(input.content)) {
@@ -154,10 +167,9 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
         messageId: input.messageId,
         notify,
         ownerUserId: input.ownerUserId,
-        flavor: input.flavor
+        flavor: input.flavor,
+        ts: input.ts
     })
 
-    return input.store.workGraph.insertEvent(input.namespace, create)
+    return input.store.workGraph.insertEvent(input.namespace, create, { ts: input.ts })
 }
-
-export type { WorkGraphEvent }

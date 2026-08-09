@@ -470,30 +470,33 @@ export class SyncEngine {
             if (!this.getSession(event.sessionId)) {
                 this.sessionCache.refreshSession(event.sessionId)
             }
+        }
+
+        // Emit chat updates before ledger capture so SSE is not blocked on
+        // synchronous SQLite ingest (cold review m5).
+        this.eventPublisher.emit(event)
+
+        if (event.type === 'message-received' && event.sessionId && 'message' in event && event.message) {
             // A2A P3: well-formed AGENT_NOTIFY_SUMMARY → work-graph work_ad.
             // Capture is independent of chat display settings (#1462/#1464).
-            if ('message' in event && event.message) {
-                const session = this.getSession(event.sessionId)
-                if (session) {
-                    try {
-                        ingestNotifySummaryFromMessage({
-                            store: this.store,
-                            namespace: session.namespace,
-                            sessionId: session.id,
-                            messageId: event.message.id,
-                            content: event.message.content,
-                            ts: event.message.createdAt,
-                            ownerUserId: this.hubOwnerUserId,
-                            flavor: session.metadata?.flavor ?? null
-                        })
-                    } catch (error) {
-                        console.error('[work-graph] notify ingest failed', error)
-                    }
+            const session = this.getSession(event.sessionId)
+            if (session) {
+                try {
+                    ingestNotifySummaryFromMessage({
+                        store: this.store,
+                        namespace: session.namespace,
+                        sessionId: session.id,
+                        messageId: event.message.id,
+                        content: event.message.content,
+                        ts: event.message.createdAt,
+                        ownerUserId: this.hubOwnerUserId,
+                        flavor: session.metadata?.flavor ?? null
+                    })
+                } catch (error) {
+                    console.error('[work-graph] notify ingest failed', error)
                 }
             }
         }
-
-        this.eventPublisher.emit(event)
     }
 
     handleSessionAlive(payload: {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Store } from '../store'
 import {
+    WORK_AD_DEFAULT_TTL_MS,
     buildWorkAdFromNotify,
     ingestNotifySummaryFromMessage,
     mapNotifyStatusToWorkAdStatus
@@ -37,11 +38,13 @@ describe('mapNotifyStatusToWorkAdStatus', () => {
 
 describe('buildWorkAdFromNotify field mapping', () => {
     it('maps notify fields per RFC elevation table', () => {
+        const ts = 1_700_000_000_000
         const create = buildWorkAdFromNotify({
             sessionId: 'sess-1',
             messageId: 'msg-1',
             ownerUserId: 42,
             flavor: 'claude',
+            ts,
             notify: {
                 version: 1,
                 status: 'done',
@@ -57,6 +60,7 @@ describe('buildWorkAdFromNotify field mapping', () => {
         expect(create.related_session_id).toBe('sess-1')
         expect(create.provenance).toBe('AGENT_NOTIFY_SUMMARY')
         expect(create.idempotency_key).toBe('session:sess-1:message:msg-1:notify')
+        expect(create.expires_at).toBe(ts + WORK_AD_DEFAULT_TTL_MS)
         expect(create.principal).toEqual({
             kind: 'agent',
             id: 'peer-a',
@@ -69,6 +73,21 @@ describe('buildWorkAdFromNotify field mapping', () => {
             action: 'review diff',
             project: 'hapi',
             messageId: 'msg-1'
+        })
+    })
+
+    it('uses session: prefix when notify.agent is omitted', () => {
+        const create = buildWorkAdFromNotify({
+            sessionId: 'sess-xyz',
+            messageId: 'msg-1',
+            ownerUserId: 1,
+            ts: 1000,
+            notify: { status: 'done', summary: 'ok' }
+        })
+        expect(create.principal).toEqual({
+            kind: 'agent',
+            id: 'session:sess-xyz',
+            on_behalf_of: '1'
         })
     })
 })
@@ -190,5 +209,51 @@ describe('ingestNotifySummaryFromMessage', () => {
         })
         expect(result?.inserted).toBe(true)
         expect(result?.event.payloadJson).toMatchObject({ status: 'needs_decision' })
+    })
+
+    it('persists the message timestamp and default expires_at (M2/M3)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-ts', {}, null, 'default')
+        const messageTs = 1_650_000_000_000
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-ts',
+            content: assistantOutput(
+                'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Historical import"}'
+            ),
+            ts: messageTs,
+            ownerUserId: 1
+        })
+
+        expect(result?.inserted).toBe(true)
+        expect(result?.event.ts).toBe(messageTs)
+        expect(result?.event.expiresAt).toBe(messageTs + WORK_AD_DEFAULT_TTL_MS)
+    })
+
+    it('keeps work_ad rows after session delete (append-only audit, M1)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-survive', {}, null, 'default')
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-survive',
+            content: assistantOutput(
+                'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Survives delete"}'
+            ),
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+        expect(result?.inserted).toBe(true)
+
+        expect(store.sessions.deleteSession(session.id, 'default')).toBe(true)
+        expect(store.sessions.getSession(session.id)).toBeNull()
+
+        const listed = store.workGraph.listByRelatedSession('default', session.id)
+        expect(listed).toHaveLength(1)
+        expect(listed[0]!.summary).toBe('Survives delete')
+        expect(listed[0]!.id).toBe(result!.event.id)
     })
 })
