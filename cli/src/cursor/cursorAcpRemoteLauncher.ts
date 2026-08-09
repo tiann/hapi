@@ -1067,6 +1067,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.bridgingSource = null;
         }
 
+        // A newer displayed error invalidates any not-yet-started bridge.
+        this.cancelPendingBridge();
+
         // Same-message case: Cursor often appends `Error: T: ...` onto the
         // assistant block that already claimed "Done." — lastAssistantText is
         // still null because we classify before storing. Check failure.raw too.
@@ -1210,6 +1213,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
 
         const bridgedEventId = metadataError.eventId;
+        // Drop any stale pending bridge for a different event before enqueue.
+        if (this.pendingBridgeEventId && this.pendingBridgeEventId !== bridgedEventId) {
+            this.cancelPendingBridge();
+        }
+
         // Attribution arms when the bridge batch starts, not at enqueue.
         this.pendingBridgeEventId = bridgedEventId;
         this.pendingBridgeSource = source;
@@ -1224,6 +1232,23 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         logger.debug(`[cursor-acp] modelError bridge enqueued for eventId=${bridgedEventId} source=${source}`);
 
         return { ok: true };
+    }
+
+    /** Drop not-yet-started bridge queue entries and clear the retry gate. */
+    private cancelPendingBridge(): void {
+        const eventId = this.pendingBridgeEventId;
+        if (eventId) {
+            this.session.queue.cancelByLocalId(`bridge:${eventId}`);
+        } else {
+            // Gate/queue desync: still scrub orphaned bridge:* rows.
+            for (const localId of this.session.queue.pendingLocalIds()) {
+                if (localId.startsWith('bridge:')) {
+                    this.session.queue.cancelByLocalId(localId);
+                }
+            }
+        }
+        this.pendingBridgeEventId = null;
+        this.pendingBridgeSource = null;
     }
 
     private markModelErrorBridgeSucceeded(eventId: string, source: 'auto' | 'manual'): void {
@@ -1472,6 +1497,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
         await this.permissionAdapter?.cancelAll('User aborted');
         await this.extensionAdapter?.cancelAll('User aborted');
+        // Clear bridge gates before reset — reset alone would leave pending/
+        // in-flight attribution stuck (permanent not_bridgeable).
+        this.cancelPendingBridge();
+        this.bridgingForEventId = null;
+        this.bridgingSource = null;
+        this.session.queue.reset();
         // A soft steer may settle after Abort; preserve its reservation until
         // the completion callback records accepted or indeterminate.
         this.session.queue.reset({ preserveDispatchingReservations: true });

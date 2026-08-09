@@ -273,6 +273,7 @@ import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
@@ -324,7 +325,8 @@ function makeClient() {
         setSteerDeliveryState: vi.fn(async () => true),
         sendClaudeSessionMessage: vi.fn(),
         keepAlive: vi.fn(),
-        emitSessionReady: vi.fn()
+        emitSessionReady: vi.fn(),
+        emitMessagesConsumed: vi.fn()
     } as unknown as ApiSessionClient;
 }
 
@@ -2087,5 +2089,129 @@ describe('cursorAcpRemoteLauncher', () => {
             return Boolean(updater({}).lastModelError);
         });
         expect(wroteLastModelError).toBe(false);
+    });
+
+    it('clears pending bridge on abort so the same event can be bridged again', async () => {
+        // Hold the first prompt so the bridge stays queued (not dequeued yet).
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        const eventId = '11111111-1111-4111-8111-111111111111';
+        const bridgePayload = {
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        };
+
+        expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
+        expect(session.queue.pendingLocalIds()).toContain(`bridge:${eventId}`);
+        expect(await bridgeHandler!(bridgePayload)).toEqual({
+            ok: false,
+            reason: 'not_bridgeable'
+        });
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeTypeOf('function');
+        await abortHandler!();
+
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
+        expect(session.queue.pendingLocalIds()).toContain(`bridge:${eventId}`);
+
+        session.queue.close();
+        harness.releasePrompt?.();
+        await launchPromise;
+    });
+
+    it('cancels a pending bridge when a newer modelError supersedes it', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        // After the first prompt settles, park the next dequeue so we can observe
+        // cancelPendingBridge before the bridge row is consumed.
+        let blockNextWait = false;
+        let releaseNextWait: (() => void) | null = null;
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            if (blockNextWait) {
+                blockNextWait = false;
+                await new Promise<void>((resolve) => {
+                    releaseNextWait = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        const staleEventId = '22222222-2222-4222-8222-222222222222';
+        expect(await bridgeHandler!({
+            eventId: staleEventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+        expect(session.queue.pendingLocalIds()).toContain(`bridge:${staleEventId}`);
+
+        blockNextWait = true;
+        harness.releasePrompt?.();
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        await vi.waitFor(() => releaseNextWait !== null);
+
+        expect(session.queue.pendingLocalIds()).not.toContain(`bridge:${staleEventId}`);
+        expect(await bridgeHandler!({
+            eventId: staleEventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'model_error_changed' });
+
+        session.queue.close();
+        releaseNextWait?.();
+        await launchPromise;
     });
 });
