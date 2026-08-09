@@ -139,3 +139,98 @@ describe('SyncEngine.handleRealtimeEvent dedup-on-metadata-change', () => {
         expect(dedupCalls).toEqual([created.id])
     })
 })
+
+describe('SyncEngine.handleRealtimeEvent notify → work-graph ingest', () => {
+    function makeEngine(): { engine: SyncEngine; store: Store } {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        engine.setHubOwnerUserId(7)
+        return { engine, store }
+    }
+
+    it('captures AGENT_NOTIFY_SUMMARY from message-received (display cannot gate)', () => {
+        const { engine, store } = makeEngine()
+        const session = store.sessions.getOrCreateSession(
+            'notify-wiring',
+            { path: '/tmp', host: 'h', flavor: 'claude' },
+            null,
+            'default'
+        )
+        // Ensure cache has the session for ingest namespace/flavor lookup.
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: session.id
+        })
+
+        const messageTs = 1_660_000_000_000
+        engine.handleRealtimeEvent({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'msg-wire-1',
+                seq: 1,
+                localId: null,
+                createdAt: messageTs,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'assistant',
+                            message: {
+                                content: [{
+                                    type: 'text',
+                                    text: 'Done.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"Wired through engine","project":"hapi"}'
+                                }]
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+        const rows = store.workGraph.listByRelatedSession('default', session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.summary).toBe('Wired through engine')
+        expect(rows[0]!.ts).toBe(messageTs)
+        expect(rows[0]!.provenance).toBe('AGENT_NOTIFY_SUMMARY')
+        expect(rows[0]!.payloadJson).toMatchObject({ status: 'done' })
+    })
+
+    it('does not ingest when the footer is missing', () => {
+        const { engine, store } = makeEngine()
+        const session = store.sessions.getOrCreateSession(
+            'notify-wiring-none',
+            { path: '/tmp', host: 'h', flavor: 'claude' },
+            null,
+            'default'
+        )
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+        engine.handleRealtimeEvent({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'msg-wire-none',
+                seq: 1,
+                localId: null,
+                createdAt: Date.now(),
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'assistant',
+                            message: { content: [{ type: 'text', text: 'No footer here.' }] }
+                        }
+                    }
+                }
+            }
+        })
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(0)
+    })
+})
