@@ -64,4 +64,27 @@ describe('cursorStaleModelRemap', () => {
             )
         ).toBe('cursor-grok-4.5-high');
     });
+
+    it('pre-spawns bare base when cache only lists bare ACP catalog ids (#1428)', () => {
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [
+                { modelId: 'gpt-5.3-codex' },
+                { modelId: 'composer-2.5' },
+            ],
+            currentModelId: 'gpt-5.3-codex',
+            cliModelSkus: [{ modelId: 'gpt-5.3-codex' }],
+        });
+
+        expect(resolveCursorSpawnModel('gpt-5.3-codex[fast=false]')).toBe('gpt-5.3-codex');
+        expect(resolveCursorSpawnModel('composer-2.5[fast=true]')).toBe('composer-2.5');
+    });
+
+    it('remaps rejected bracket wires from stderr Available models (#1428)', () => {
+        const remapped = tryRemapCursorSpawnModelFromError(
+            'gpt-5.3-codex[fast=false]',
+            'Cannot use this model: gpt-5.3-codex[fast=false]. Available models: auto, gpt-5.3-codex, gpt-5.3-codex-fast, composer-2.5'
+        );
+        expect(remapped).toBe('gpt-5.3-codex');
+    });
 });

@@ -143,6 +143,12 @@ describe('wireIdForCursorSessionState', () => {
             wireIdForCursorSessionState('composer-2.5', 'composer-2.5[fast=true]')
         ).toBe('composer-2.5[fast=true]');
     });
+
+    it('prefers spawn-safe bare/SKU resolved ids over bracketed requests (#1428)', () => {
+        expect(
+            wireIdForCursorSessionState('gpt-5.3-codex[fast=false]', 'gpt-5.3-codex')
+        ).toBe('gpt-5.3-codex');
+    });
 });
 
 describe('applyCursorAcpModel', () => {
@@ -390,10 +396,10 @@ describe('resolveCursorAcpWireId', () => {
         );
     });
 
-    it('does not match partial ACP parameter requests against full config option wire ids', () => {
+    it('maps partial hub wires onto the nearest full ACP config option wire (#1428)', () => {
         expect(resolveCursorAcpWireId('claude-opus-4-8[effort=high]', [
             { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=low,fast=false]' },
             { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]' }
-        ])).toBe(null);
+        ])).toBe('claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]');
     });
 });

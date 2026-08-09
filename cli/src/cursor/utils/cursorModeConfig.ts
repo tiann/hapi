@@ -94,22 +94,30 @@ export type ApplyCursorAcpModelResult = {
 type ConfigOption = NonNullable<ReturnType<AcpSdkBackend['getConfigOptionByCategory']>>;
 type ParameterizedCursorModelResult = ApplyCursorAcpModelResult | 'unsupported' | 'failed';
 
-/** Wire id stored on session + keepalive (preserve explicit variant picks). */
+/**
+ * Wire id stored on session + keepalive.
+ * Prefer spawn-safe resolved ids (bare / CLI SKU) so the next resume does not
+ * re-pass a bracketed wire that `agent --model` rejects (#1428).
+ */
 export function wireIdForCursorSessionState(requested: string, resolved: string): string {
-    const trimmed = requested.trim();
-    if (trimmed.includes('[')) {
-        const legacyBase = resolveCursorLegacyModelBase(cursorModelBaseId(trimmed));
-        if (legacyBase !== cursorModelBaseId(trimmed)) {
-            return resolved;
-        }
-        return trimmed;
+    const trimmedRequested = requested.trim();
+    const trimmedResolved = resolved.trim();
+    if (trimmedResolved && !trimmedResolved.includes('[')) {
+        return trimmedResolved;
     }
-    return resolved;
+    if (trimmedRequested.includes('[')) {
+        const legacyBase = resolveCursorLegacyModelBase(cursorModelBaseId(trimmedRequested));
+        if (legacyBase !== cursorModelBaseId(trimmedRequested)) {
+            return trimmedResolved || trimmedRequested;
+        }
+        return trimmedRequested;
+    }
+    return trimmedResolved || trimmedRequested;
 }
 
 /**
  * Map a spawn / hub wire id onto a live ACP configOptions entry.
- * Exact wire ids only — no legacy alias, base-only, or nearest-variant fallback.
+ * Uses exact match, then SKU/wire remap (including non-legacy bracket strip).
  */
 export function resolveCursorAcpWireId(
     requested: string,

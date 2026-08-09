@@ -109,6 +109,43 @@ describe('remapStaleCursorModelId', () => {
             ])
         ).toBe('cursor-grok-4.5-high-fast');
     });
+
+    it('maps non-legacy bracket wires onto bare catalog bases (#1428)', () => {
+        const bareCatalog = [
+            { modelId: 'gpt-5.3-codex' },
+            { modelId: 'composer-2.5' },
+            { modelId: 'claude-opus-5' },
+            { modelId: 'grok-4.5' },
+        ];
+        expect(remapStaleCursorModelId('gpt-5.3-codex[fast=false]', bareCatalog)).toBe('gpt-5.3-codex');
+        expect(remapStaleCursorModelId('claude-opus-5[fast=false]', bareCatalog)).toBe('claude-opus-5');
+        expect(remapStaleCursorModelId('composer-2.5[fast=false]', bareCatalog)).toBe('composer-2.5');
+        expect(remapStaleCursorModelId('grok-4.5[fast=false]', bareCatalog)).toBe('grok-4.5');
+    });
+
+    it('maps bracket wires onto matching CLI SKUs from stderr-style catalogs', () => {
+        const skuCatalog = [
+            { modelId: 'gpt-5.3-codex' },
+            { modelId: 'gpt-5.3-codex-fast' },
+            { modelId: 'gpt-5.3-codex-high' },
+            { modelId: 'gpt-5.3-codex-high-fast' },
+        ];
+        expect(remapStaleCursorModelId('gpt-5.3-codex[fast=false]', skuCatalog)).toBe('gpt-5.3-codex');
+        expect(remapStaleCursorModelId('gpt-5.3-codex[fast=true]', skuCatalog)).toBe('gpt-5.3-codex-fast');
+    });
+
+    it('maps incomplete hub wires onto nearest live ACP configOption wires', () => {
+        const wireCatalog = [
+            { modelId: 'gpt-5.3-codex[reasoning=medium,fast=false]' },
+            { modelId: 'gpt-5.3-codex[reasoning=medium,fast=true]' },
+        ];
+        expect(remapStaleCursorModelId('gpt-5.3-codex[fast=false]', wireCatalog)).toBe(
+            'gpt-5.3-codex[reasoning=medium,fast=false]'
+        );
+        expect(remapStaleCursorModelId('gpt-5.3-codex[fast=true]', wireCatalog)).toBe(
+            'gpt-5.3-codex[reasoning=medium,fast=true]'
+        );
+    });
 });
 
 describe('parseCursorAvailableModelsFromRejection', () => {
