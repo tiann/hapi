@@ -331,11 +331,23 @@ function pickBestCatalogWire(
     const wireBase = cursorModelBaseId(requestedWire);
     const legacyBase = resolveCursorLegacyModelBase(wireBase);
     const acceptedBases = new Set([wireBase, legacyBase]);
+    const requestedParams = Object.entries(parseCursorWireParams(requestedWire));
     const wires = available.filter((entry) => {
         const modelId = entry.modelId.trim();
-        return modelId
-            && isCursorAcpWireModelId(modelId)
-            && acceptedBases.has(resolveCursorLegacyModelBase(cursorModelBaseId(modelId)));
+        if (
+            !modelId
+            || !isCursorAcpWireModelId(modelId)
+            || !acceptedBases.has(resolveCursorLegacyModelBase(cursorModelBaseId(modelId)))
+        ) {
+            return false;
+        }
+        // Every explicit request param must be present on the candidate (do not
+        // drop context/thinking/etc. via synthetic-SKU scoring alone).
+        if (requestedParams.length === 0) {
+            return true;
+        }
+        const candidateParams = parseCursorWireParams(modelId);
+        return requestedParams.every(([key, value]) => candidateParams[key] === value);
     });
     if (wires.length === 0) {
         return null;
@@ -378,7 +390,11 @@ export function remapStaleCursorModelId(
     const legacyWire = isCursorAcpWireModelId(trimmed)
         && resolveCursorLegacyModelBase(cursorModelBaseId(trimmed)) !== cursorModelBaseId(trimmed);
     if (exact && !legacyWire) {
-        return trimmed;
+        // Mixed caches often list the exact ACP wire *and* a CLI SKU. Prefer the
+        // spawn-safe id so `agent --model` does not receive a rejected bracket wire.
+        return isCursorAcpWireModelId(trimmed)
+            ? preferSpawnSafeCatalogId(trimmed, trimmed, available)
+            : trimmed;
     }
 
     if (isCursorAcpWireModelId(trimmed)) {
@@ -405,15 +421,11 @@ export function remapStaleCursorModelId(
             }
         }
 
-        // Wire-only catalogs (session configOptions): nearest same-base wire.
+        // Wire-only catalogs (session configOptions): nearest compatible same-base wire.
+        // Do not fall through to SKU→wire matching — that drops explicit params like
+        // thinking/context and can pick a contradictory variant.
         const fromWire = pickBestCatalogWire(trimmed, available);
-        if (fromWire) {
-            return preferSpawnSafeCatalogId(fromWire, trimmed, available);
-        }
-
-        // Last resort: SKU→wire match (may still be spawn-unsafe; caller retries on reject).
-        const fromMatch = matchCliSkuToAcpWireId(syntheticSku, available);
-        return fromMatch ? preferSpawnSafeCatalogId(fromMatch, trimmed, available) : null;
+        return fromWire ? preferSpawnSafeCatalogId(fromWire, trimmed, available) : null;
     }
 
     const legacyBase = resolveCursorLegacyModelBase(cursorCliSkuBaseId(trimmed));
@@ -423,8 +435,9 @@ export function remapStaleCursorModelId(
             ?? matchCliSkuToAcpWireId(rewritten, available);
     }
 
-    // Non-wire stale id: if a bare/SKU base still exists, keep nearest family member.
-    return pickBestCatalogSku(trimmed, available);
+    // Non-legacy, non-wire ids must remain exact; let Cursor report unavailability
+    // instead of silently downgrading e.g. gpt-5.5-high-fast → gpt-5.5-medium.
+    return null;
 }
 
 /**

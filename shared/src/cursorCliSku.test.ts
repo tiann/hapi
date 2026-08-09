@@ -146,6 +146,44 @@ describe('remapStaleCursorModelId', () => {
             'gpt-5.3-codex[reasoning=medium,fast=true]'
         );
     });
+
+    it('prefers CLI SKU over an exact cached ACP wire (mixed catalog spawn-safe)', () => {
+        expect(
+            remapStaleCursorModelId('gpt-5.3-codex[fast=false]', [
+                { modelId: 'gpt-5.3-codex[fast=false]' },
+                { modelId: 'gpt-5.3-codex' },
+                { modelId: 'gpt-5.3-codex-fast' },
+            ])
+        ).toBe('gpt-5.3-codex');
+        expect(
+            remapStaleCursorModelId('gpt-5.3-codex[fast=true]', [
+                { modelId: 'gpt-5.3-codex[fast=true]' },
+                { modelId: 'gpt-5.3-codex' },
+                { modelId: 'gpt-5.3-codex-fast' },
+            ])
+        ).toBe('gpt-5.3-codex-fast');
+    });
+
+    it('does not pick a wire that contradicts explicit request params', () => {
+        expect(
+            remapStaleCursorModelId('claude-opus-4-8[thinking=false,effort=high]', [
+                { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]' },
+                { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=low,fast=false]' },
+            ])
+        ).toBeNull();
+        expect(
+            remapStaleCursorModelId('claude-opus-4-8[thinking=true,effort=high]', [
+                { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=low,fast=false]' },
+                { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]' },
+            ])
+        ).toBe('claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]');
+    });
+
+    it('does not silently downgrade unavailable explicit CLI SKU variants', () => {
+        expect(
+            remapStaleCursorModelId('gpt-5.5-high-fast', [{ modelId: 'gpt-5.5-medium' }])
+        ).toBeNull();
+    });
 });
 
 describe('parseCursorAvailableModelsFromRejection', () => {
