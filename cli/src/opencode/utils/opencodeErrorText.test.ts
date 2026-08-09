@@ -33,15 +33,16 @@ describe('formatOpencodePromptError', () => {
         );
     });
 
-    it('strips only the JSON-RPC wrapper, keeping a message that never had one', () => {
-        expect(formatOpencodePromptError(new Error('Session not found')))
-            .toBe('OpenCode prompt failed: Session not found');
+    it('does not relay a rejection that arrives without the JSON-RPC wrapper', () => {
+        // The wrapper is the only evidence the text came back over the wire
+        // from OpenCode rather than being built locally by the transport.
+        expect(formatOpencodePromptError(new Error('Session not found'))).toBe(FALLBACK);
     });
 
-    it('does not mistake a reason that merely mentions an internal error for the wrapper', () => {
-        // The prefix is anchored, so text about an internal error survives.
+    it('does not mistake a message that merely mentions an internal error for the wrapper', () => {
+        // Anchored: only a message that starts with it is agent-authored.
         expect(formatOpencodePromptError(new Error('The provider reported an Internal error: upstream')))
-            .toBe('OpenCode prompt failed: The provider reported an Internal error: upstream');
+            .toBe(FALLBACK);
     });
 
     it('reads a rejection thrown as a bare string', () => {
@@ -76,6 +77,28 @@ describe('formatOpencodePromptError', () => {
     it('keeps the original wording when the wrapper is all there was', () => {
         // A bare "Internal error:" says nothing the fallback does not.
         expect(formatOpencodePromptError(new Error('Internal error: '))).toBe(FALLBACK);
+    });
+
+
+    it('does not relay a rejection OpenCode did not author', () => {
+        // AcpStdioTransport builds this one itself on process close and
+        // appends up to 4KB of raw subprocess stderr to the message. Relaying
+        // it would publish local stderr, credentials included, to the remote
+        // timeline.
+        const closeError = new Error(
+            'ACP process exited (code=1, signal=null). stderr: AWS_SECRET_ACCESS_KEY=wJalrXUt shutting down'
+        );
+
+        const formatted = formatOpencodePromptError(closeError);
+
+        expect(formatted).toBe(FALLBACK);
+        expect(formatted).not.toContain('AWS_SECRET_ACCESS_KEY');
+        expect(formatted).not.toContain('stderr');
+    });
+
+    it('does not relay the transport\'s own timeout', () => {
+        expect(formatOpencodePromptError(new Error("ACP request 'session/prompt' timed out after 1000ms")))
+            .toBe(FALLBACK);
     });
 
     it('keeps the original wording for a rejection that is not an error at all', () => {

@@ -1,7 +1,7 @@
 import { asNumber, asString, isObject } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
 import type { FetchLike } from './opencodeCompactBridge';
-import { truncateOpencodeProviderText } from './opencodeErrorText';
+import { collapseWhitespace, truncateOpencodeProviderText } from './opencodeErrorText';
 
 /**
  * `session.status` with `type: "retry"` — OpenCode announcing that it hit an
@@ -156,7 +156,11 @@ function parseRetryStatus(status: unknown): OpencodeRetryStatus | null {
     // the turn-boundary reset uses as its sentinel, so accepting it merges
     // "saw a retry" with "this turn has had none".
     const attempt = asNumber(status.attempt);
-    const message = asString(status.message);
+    // Collapsed before it is judged, not after: a provider message of "  \n  "
+    // is truthy but says nothing, and embedded newlines would survive into a
+    // status line this module promises to keep to one line. Truncating alone
+    // does neither.
+    const message = collapseWhitespace(asString(status.message) ?? '');
     // Only what is actually rendered is required: dropping a retry because a
     // field we never show is missing or malformed would hide the very report
     // this exists to deliver.

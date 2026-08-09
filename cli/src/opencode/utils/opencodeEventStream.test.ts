@@ -255,6 +255,35 @@ describe('subscribeToOpencodeEvents', () => {
         sse.close();
     });
 
+
+    it('drops a message that only looks like text, and flattens one that is not a single line', async () => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(sse.stream, { status: 200 }));
+        const messages: string[] = [];
+        const subscription = subscribe({ fetchImpl, onRetry: (retry) => messages.push(retry.message) });
+        await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+        // Whitespace only: truthy, but nothing a user could read.
+        sse.push({
+            id: 'evt_blank',
+            type: 'session.status',
+            properties: { sessionID: 'ses_ours', status: { type: 'retry', attempt: 1, message: '  \n  ', next: NOW } }
+        });
+        sse.push({
+            id: 'evt_multiline',
+            type: 'session.status',
+            properties: {
+                sessionID: 'ses_ours',
+                status: { type: 'retry', attempt: 2, message: 'Rate limit exceeded.\n\n  Try again later.', next: NOW }
+            }
+        });
+
+        await vi.waitFor(() => expect(messages).toEqual(['Rate limit exceeded. Try again later.']));
+
+        subscription.close();
+        sse.close();
+    });
+
     it('keeps reading when a consumer throws, and does not file that as a parse failure', async () => {
         const sse = createSseStream();
         const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(sse.stream, { status: 200 }));
