@@ -627,18 +627,28 @@ export class ApiClient {
 
     async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
         const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
-        const headers = new Headers({ 'content-type': 'application/json' })
-        const authToken = this.getToken ? this.getToken() : this.token
-        if (authToken) {
-            headers.set('authorization', `Bearer ${authToken}`)
+        const tryOnce = async (overrideToken: string | null): Promise<Response> => {
+            const headers = new Headers({ 'content-type': 'application/json' })
+            const liveToken = this.getToken ? this.getToken() : null
+            const authToken = overrideToken ?? liveToken ?? this.token
+            if (authToken) {
+                headers.set('authorization', `Bearer ${authToken}`)
+            }
+            return fetch(this.buildUrl(path), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ eventId })
+            })
         }
 
-        const res = await fetch(this.buildUrl(path), {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ eventId })
-        })
-
+        let res = await tryOnce(null)
+        if (res.status === 401 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                res = await tryOnce(refreshed)
+            }
+        }
         if (res.status === 401) {
             throw new Error('Session expired. Please sign in again.')
         }

@@ -125,8 +125,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private userAbortRequested = false;
     private lastUserMessage: string | null = null;
     private lastTurnMode: EnhancedMode | null = null;
+    /** Set only while the bridge prompt itself is the active turn. */
     private bridgingForEventId: string | null = null;
     private bridgingSource: 'auto' | 'manual' | null = null;
+    /** Enqueued but not yet started — must not attribute the current in-flight turn. */
+    private pendingBridgeEventId: string | null = null;
+    private pendingBridgeSource: 'auto' | 'manual' | null = null;
     private lastRecordedModelError: {
         eventId: string;
         atTs: number;
@@ -611,6 +615,21 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
                 break;
+            }
+
+            // Activate bridge attribution only when this batch is the bridge
+            // prompt — never while some other turn is still in flight.
+            const bridgeLocalId = batch.items
+                .map((item) => item.localId)
+                .find((id): id is string => typeof id === 'string' && id.startsWith('bridge:'));
+            if (bridgeLocalId) {
+                const eventId = bridgeLocalId.slice('bridge:'.length);
+                this.bridgingForEventId = eventId;
+                this.bridgingSource = this.pendingBridgeSource ?? 'manual';
+                if (this.pendingBridgeEventId === eventId) {
+                    this.pendingBridgeEventId = null;
+                    this.pendingBridgeSource = null;
+                }
             }
 
             const requestedModel = batch.mode.model === null
@@ -1155,8 +1174,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             return { ok: false, reason: 'no_model_error' };
         }
 
-        // Fail closed while a bridge for this eventId is already in flight.
-        if (this.bridgingForEventId === metadataError.eventId) {
+        // Fail closed while a bridge for this eventId is pending or active.
+        if (
+            this.bridgingForEventId === metadataError.eventId
+            || this.pendingBridgeEventId === metadataError.eventId
+        ) {
             return { ok: false, reason: 'not_bridgeable' };
         }
 
@@ -1188,11 +1210,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
 
         const bridgedEventId = metadataError.eventId;
-        this.bridgingForEventId = bridgedEventId;
-        this.bridgingSource = source;
-
-        // Do not persist bridgedForEventId / recovered UI until the bridge
-        // prompt succeeds. In-flight gating uses bridgingForEventId only.
+        // Attribution arms when the bridge batch starts, not at enqueue.
+        this.pendingBridgeEventId = bridgedEventId;
+        this.pendingBridgeSource = source;
 
         const mode = this.lastTurnMode ?? {
             permissionMode: this.session.getPermissionMode() as PermissionMode,
@@ -1200,7 +1220,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         };
 
         // Ahead of any already-queued user turns so retry attribution stays correct.
-        this.session.queue.unshiftIsolated(prompt, mode);
+        this.session.queue.unshiftIsolated(prompt, mode, `bridge:${bridgedEventId}`);
         logger.debug(`[cursor-acp] modelError bridge enqueued for eventId=${bridgedEventId} source=${source}`);
 
         return { ok: true };
