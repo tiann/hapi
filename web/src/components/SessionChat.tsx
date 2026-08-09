@@ -84,6 +84,7 @@ import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/c
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
 import { ModelErrorBanner, hasActiveModelError } from '@/components/ModelErrorBanner'
+import { readAutoBridgeTransientModelErrors } from '@/lib/modelErrorBridgePrefs'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
@@ -1278,6 +1279,19 @@ function SessionChatInner(props: SessionChatProps) {
             setIsBridgingModelError(false)
         }
     }, [isBridgingModelError, props.api, props.session.id, props.onRefresh])
+
+    // Push browser auto-bridge preference into the live Cursor CLI. Settings
+    // toggle only updates currently-active sessions; new/resumed sessions need
+    // this apply-on-open so UI ON matches process memory.
+    useEffect(() => {
+        if (!props.session.active || agentFlavor !== 'cursor') {
+            return
+        }
+        if (!readAutoBridgeTransientModelErrors()) {
+            return
+        }
+        void props.api.setModelErrorAutoBridge(props.session.id, true).catch(() => {})
+    }, [props.api, props.session.active, props.session.id, agentFlavor])
 
     // Voice assistant integration
     const voice = useVoiceOptional()

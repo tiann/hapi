@@ -1736,4 +1736,23 @@ describe('sessions routes', () => {
         })
     })
 
+    describe('POST /sessions/:id/model-error/bridge', () => {
+        it('returns 409 session_inactive when the session is not active', async () => {
+            const { app } = createApp(createSession({
+                active: false,
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/bridge', {
+                method: 'POST'
+            })
+
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Session is inactive',
+                code: 'session_inactive'
+            })
+        })
+    })
+
 })

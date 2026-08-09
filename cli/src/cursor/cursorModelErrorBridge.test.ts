@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     buildModelErrorBridgePrompt,
     canBridgeModelError,
+    mergeBridgeGateFields,
     MODEL_ERROR_BRIDGE_HEADER,
     truncateLastUserMessage
 } from './cursorModelErrorBridge';
@@ -76,6 +77,29 @@ describe('canBridgeModelError', () => {
             ...base,
             retriedAndFailed: true
         })).toBe(false);
+    });
+});
+
+describe('mergeBridgeGateFields', () => {
+    it('keeps prior bridgedForEventId when hub snapshot omits it', () => {
+        const merged = mergeBridgeGateFields(
+            { bridgedForEventId: 'evt-1000', retriedAndFailed: false },
+            { bridgedForEventId: undefined, retriedAndFailed: false }
+        );
+        expect(merged.bridgedForEventId).toBe('evt-1000');
+        expect(canBridgeModelError({
+            transient: true,
+            eventId: 'evt-1000',
+            ...merged
+        })).toBe(false);
+    });
+
+    it('preserves retriedAndFailed when hub sends false', () => {
+        const merged = mergeBridgeGateFields(
+            { bridgedForEventId: 'evt-1000', retriedAndFailed: true },
+            { bridgedForEventId: undefined, retriedAndFailed: false }
+        );
+        expect(merged.retriedAndFailed).toBe(true);
     });
 });
 

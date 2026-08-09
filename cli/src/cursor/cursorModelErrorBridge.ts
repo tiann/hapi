@@ -63,3 +63,14 @@ export function canBridgeModelError(gate: ModelErrorBridgeGate): boolean {
     }
     return true;
 }
+
+/** Merge hub RPC snapshot gates into local state without clobbering. */
+export function mergeBridgeGateFields(
+    prior: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed'> | null | undefined,
+    incoming: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed'>
+): Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed'> {
+    return {
+        bridgedForEventId: incoming.bridgedForEventId ?? prior?.bridgedForEventId,
+        retriedAndFailed: incoming.retriedAndFailed === true || prior?.retriedAndFailed === true
+    };
+}
