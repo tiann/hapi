@@ -170,6 +170,8 @@ export const MetadataSchema = z.object({
         /** Display / telemetry timestamp only — not used for notify/ack identity. */
         atTs: z.number(),
         priorAssistantClaimsDone: z.boolean(),
+        lastUserMessage: z.string().optional(),
+        bridgedForEventId: z.string().optional(),
         retriedAndFailed: z.boolean().optional(),
         acknowledgedAt: z.number().optional(),
         /** Hub-owned: successful push/FCM/Telegram delivery watermark. */

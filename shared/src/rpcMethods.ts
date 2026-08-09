@@ -50,7 +50,11 @@ export const RPC_METHODS = {
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
     ClearConversation: 'clear-conversation',
+<<<<<<< HEAD
     ImplementCodexPlan: 'implement-codex-plan',
+=======
+    BridgeModelError: 'bridge-model-error'
+>>>>>>> 0d6ed28ff (feat(cursor): bridge transient model errors with eventId gating)
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const

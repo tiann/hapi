@@ -50,6 +50,8 @@ export type SessionSummaryMetadata = {
         rawSnippet: string
         atTs: number
         priorAssistantClaimsDone: boolean
+        lastUserMessage?: string
+        bridgedForEventId?: string
         retriedAndFailed?: boolean
         acknowledgedAt?: number
         notifiedAt?: number
