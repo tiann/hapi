@@ -407,6 +407,7 @@ describe('cli session handlers', () => {
         ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
+        ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
     ] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field, forged) => {
@@ -438,6 +439,7 @@ describe('cli session handlers', () => {
             opencodeClearOperation: operation,
             jobsAcceptedFromSessionIds: ['old-session'],
             jobsTransferredToSessionId: 'merge-target',
+            jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -454,6 +456,7 @@ describe('cli session handlers', () => {
                 opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 },
                 jobsAcceptedFromSessionIds: ['forged-session'],
                 jobsTransferredToSessionId: 'forged-target',
+                jobKeyRedirects: { 'forged/beets': 'beets.forged' },
             }
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
@@ -461,6 +464,7 @@ describe('cli session handlers', () => {
             opencodeClearOperation: operation,
             jobsAcceptedFromSessionIds: ['old-session'],
             jobsTransferredToSessionId: 'merge-target',
+            jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
             lifecycleState: 'archived',
         })
     })

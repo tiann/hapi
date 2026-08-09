@@ -12,6 +12,7 @@ import {
     toAttachedJob,
     transferSessionJobs,
     upsertSessionJob,
+    type TransferSessionJobsResult,
     type UpsertSessionJobResult
 } from './sessionJobs'
 
@@ -61,7 +62,7 @@ export class SessionJobsStore {
         return deleteSessionJob(this.db, sessionId, jobKey)
     }
 
-    transfer(fromSessionId: string, toSessionId: string): { moved: number; collided: number } {
+    transfer(fromSessionId: string, toSessionId: string): TransferSessionJobsResult {
         return transferSessionJobs(this.db, fromSessionId, toSessionId)
     }
 }

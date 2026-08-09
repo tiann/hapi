@@ -15,10 +15,16 @@ describe('fresh-session clear schema contract', () => {
             path: '/tmp/project',
             host: 'host',
             jobsAcceptedFromSessionIds: ['old-session-id'],
-            jobsTransferredToSessionId: 'new-session-id'
+            jobsTransferredToSessionId: 'new-session-id',
+            jobKeyRedirects: {
+                'old-session-id/beets': 'beets.oldsess1',
+            },
         })
         expect(parsed.jobsAcceptedFromSessionIds).toEqual(['old-session-id'])
         expect(parsed.jobsTransferredToSessionId).toBe('new-session-id')
+        expect(parsed.jobKeyRedirects).toEqual({
+            'old-session-id/beets': 'beets.oldsess1',
+        })
     })
 
     it('accepts cleared as an additive session-end reason', () => {

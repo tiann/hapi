@@ -75,6 +75,7 @@ const HUB_OWNED_METADATA_KEYS = [
     'opencodeClearOperation',
     'jobsAcceptedFromSessionIds',
     'jobsTransferredToSessionId',
+    'jobKeyRedirects',
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {

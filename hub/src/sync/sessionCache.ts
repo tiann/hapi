@@ -1179,6 +1179,12 @@ export class SessionCache {
         // still exists; without this pointer, retained $HAPI_SESSION_ID hits
         // the emptied source and terminal PATCHes 404.
         this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
+        this.recordJobKeyRedirects(
+            newSessionId,
+            oldSessionId,
+            movedJobs.keyRedirects,
+            namespace
+        )
         if (movedJobs.moved > 0 || movedJobs.collided > 0) {
             this.emitAttachedJobChanged(
                 newSessionId,
@@ -1468,6 +1474,71 @@ export class SessionCache {
     }
 
     /**
+     * Persist key remaps from dual-running same-key merges, and inherit any
+     * redirects the source already held (A→B→C).
+     */
+    private recordJobKeyRedirects(
+        toSessionId: string,
+        fromSessionId: string,
+        redirects: Array<{ fromKey: string; toKey: string }>,
+        namespace: string
+    ): void {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
+            if (!latest) return
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            const prevRaw = meta.jobKeyRedirects
+            const next: Record<string, string> = {}
+            if (prevRaw && typeof prevRaw === 'object' && !Array.isArray(prevRaw)) {
+                for (const [k, v] of Object.entries(prevRaw as Record<string, unknown>)) {
+                    if (typeof v === 'string' && v.trim()) next[k] = v
+                }
+            }
+            const fromMeta = this.store.sessions
+                .getSessionByNamespace(fromSessionId, namespace)
+                ?.metadata as Record<string, unknown> | null | undefined
+            const inheritedRaw = fromMeta?.jobKeyRedirects
+            if (inheritedRaw && typeof inheritedRaw === 'object' && !Array.isArray(inheritedRaw)) {
+                for (const [k, v] of Object.entries(inheritedRaw as Record<string, unknown>)) {
+                    if (typeof v === 'string' && v.trim()) next[k] = v
+                }
+            }
+            for (const { fromKey, toKey } of redirects) {
+                next[`${fromSessionId}/${fromKey}`] = toKey
+            }
+            const prevKeys = Object.keys(
+                prevRaw && typeof prevRaw === 'object' && !Array.isArray(prevRaw)
+                    ? (prevRaw as Record<string, unknown>)
+                    : {}
+            )
+            const nextKeys = Object.keys(next)
+            const unchanged =
+                prevKeys.length === nextKeys.length
+                && nextKeys.every((k) => (prevRaw as Record<string, unknown> | undefined)?.[k] === next[k])
+            if (unchanged) return
+            if (nextKeys.length === 0) {
+                delete meta.jobKeyRedirects
+            } else {
+                meta.jobKeyRedirects = next
+            }
+            const result = this.store.sessions.updateSessionMetadata(
+                toSessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.refreshSession(toSessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
+    /**
      * Follow job-owner redirects after session merge/dedup so agents that still
      * hold the pre-merge `$HAPI_SESSION_ID` can heartbeat.
      */
@@ -1511,6 +1582,27 @@ export class SessionCache {
             }
         }
         return null
+    }
+
+    /**
+     * Map a pre-merge job key onto the post-merge owner key when dual-running
+     * same-key merge remapped the source row.
+     */
+    resolveAttachedJobKey(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string
+    ): string {
+        const access = this.resolveSessionAccess(ownerSessionId, namespace)
+        if (!access.ok) return jobKey
+        const meta = access.session.metadata as Record<string, unknown> | null | undefined
+        const redirects = meta?.jobKeyRedirects
+        if (!redirects || typeof redirects !== 'object' || Array.isArray(redirects)) {
+            return jobKey
+        }
+        const mapped = (redirects as Record<string, unknown>)[`${requestedSessionId}/${jobKey}`]
+        return typeof mapped === 'string' && mapped.trim() ? mapped : jobKey
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {

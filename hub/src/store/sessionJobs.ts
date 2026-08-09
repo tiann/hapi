@@ -240,6 +240,40 @@ export function deleteSessionJob(db: Database, sessionId: string, jobKey: string
     return result.changes > 0
 }
 
+export type SessionJobKeyRedirect = {
+    fromKey: string
+    toKey: string
+}
+
+export type TransferSessionJobsResult = {
+    moved: number
+    collided: number
+    /** Source keys remapped on the target so two live supervisors stay isolated. */
+    keyRedirects: SessionJobKeyRedirect[]
+}
+
+const JOB_KEY_MAX = 128
+
+/** Allocate `base.<fromShort>` (then `.N`) that fits JOB_KEY_MAX and is free on target. */
+export function allocateRemappedJobKey(
+    db: Database,
+    toSessionId: string,
+    fromSessionId: string,
+    fromKey: string
+): string {
+    const short = fromSessionId.replace(/-/g, '').slice(0, 8) || 'src'
+    const suffix0 = `.${short}`
+    const base = fromKey.slice(0, Math.max(1, JOB_KEY_MAX - suffix0.length))
+    let candidate = `${base}${suffix0}`
+    let n = 0
+    while (getSessionJob(db, toSessionId, candidate)) {
+        n += 1
+        const suffix = `.${short}.${n}`
+        candidate = `${fromKey.slice(0, Math.max(1, JOB_KEY_MAX - suffix.length))}${suffix}`
+    }
+    return candidate
+}
+
 /**
  * Re-point jobs during session merge (same contract as scratchlist transfer).
  * Call BEFORE deleteSession so CASCADE does not race the move.
@@ -248,27 +282,39 @@ export function transferSessionJobs(
     db: Database,
     fromSessionId: string,
     toSessionId: string
-): { moved: number; collided: number } {
+): TransferSessionJobsResult {
     if (fromSessionId === toSessionId) {
-        return { moved: 0, collided: 0 }
+        return { moved: 0, collided: 0, keyRedirects: [] }
     }
     const rows = listSessionJobs(db, fromSessionId)
     let moved = 0
     let collided = 0
+    const keyRedirects: SessionJobKeyRedirect[] = []
 
     for (const job of rows) {
         const existing = getSessionJob(db, toSessionId, job.key)
         if (existing) {
-            // Prefer a live source over a terminal target. When both are
-            // running or both terminal (incl. completed vs failed), prefer
-            // the newer updatedAt — otherwise a later terminal result loses
-            // to an older one with a different status. Redirected heartbeats
-            // omit status, so discarding a running source cannot be repaired.
             const sourceRunning = job.status === 'running'
             const targetRunning = existing.status === 'running'
+            // Two live supervisors still PATCH the pre-merge key via session
+            // redirect. Collapsing them would let the loser terminal-mark the
+            // winner — keep both under distinct keys and record a key remap.
+            if (sourceRunning && targetRunning) {
+                const toKey = allocateRemappedJobKey(db, toSessionId, fromSessionId, job.key)
+                db.prepare(
+                    `UPDATE session_jobs SET session_id = ?, job_key = ?
+                     WHERE session_id = ? AND job_key = ?`
+                ).run(toSessionId, toKey, fromSessionId, job.key)
+                keyRedirects.push({ fromKey: job.key, toKey })
+                moved += 1
+                collided += 1
+                continue
+            }
+            // Prefer a live source over a terminal target. When both are
+            // terminal (incl. completed vs failed), prefer the newer updatedAt.
             const sourceWins =
                 (sourceRunning && !targetRunning)
-                || (sourceRunning === targetRunning && job.updatedAt > existing.updatedAt)
+                || (!sourceRunning && !targetRunning && job.updatedAt > existing.updatedAt)
             if (sourceWins) {
                 db.prepare('DELETE FROM session_jobs WHERE session_id = ? AND job_key = ?')
                     .run(toSessionId, job.key)
@@ -291,5 +337,5 @@ export function transferSessionJobs(
         moved += 1
     }
 
-    return { moved, collided }
+    return { moved, collided, keyRedirects }
 }

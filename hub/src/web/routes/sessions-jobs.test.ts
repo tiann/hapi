@@ -36,6 +36,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         const engine = {
             resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
             resolveAttachedJobSessionId: (id: string) => id,
+            resolveAttachedJobKey: (_requested: string, _owner: string, jobKey: string) => jobKey,
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: () => new Map(),
             getNextScheduledAtBySessionIds: () => new Map(),
@@ -157,6 +158,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                 return { ok: false as const, reason: 'not-found' as const }
             },
             resolveAttachedJobSessionId: (id: string) => (id === deletedId ? owner.id : id),
+            resolveAttachedJobKey: (_requested: string, _owner: string, jobKey: string) => jobKey,
             listSessionJobs: (sid: string) => (sid === owner.id ? [...jobs.values()] : []),
             getPrimaryAttachedJob: (sid: string) => (sid === owner.id ? jobs.get('beets')! : null),
             upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
@@ -182,6 +184,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         const engine = {
             resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
             resolveAttachedJobSessionId: (id: string) => id,
+            resolveAttachedJobKey: (_requested: string, _owner: string, jobKey: string) => jobKey,
             listSessionJobs: () => [],
             getPrimaryAttachedJob: () => null,
             upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),

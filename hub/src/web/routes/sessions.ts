@@ -1259,17 +1259,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
     function resolveJobOwnerSession(
         c: Context<WebAppEnv>,
         engine: SyncEngine
-    ): { sessionId: string; session: Session } | Response {
+    ): { requestedSessionId: string; sessionId: string; session: Session } | Response {
+        const rawId = c.req.param('id') ?? ''
         const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             // Session may already be deleted after merge — still try acceptor redirect.
-            const rawId = c.req.param('id') ?? ''
             const namespace = c.get('namespace')
             const redirected = engine.resolveAttachedJobSessionId(rawId, namespace)
             if (redirected !== rawId) {
                 const access = engine.resolveSessionAccess(redirected, namespace)
                 if (access.ok) {
-                    return { sessionId: access.sessionId, session: access.session }
+                    return {
+                        requestedSessionId: rawId,
+                        sessionId: access.sessionId,
+                        session: access.session,
+                    }
                 }
             }
             return sessionResult
@@ -1277,13 +1281,39 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const namespace = c.get('namespace')
         const ownerId = engine.resolveAttachedJobSessionId(sessionResult.sessionId, namespace)
         if (ownerId === sessionResult.sessionId) {
-            return sessionResult
+            return {
+                requestedSessionId: sessionResult.sessionId,
+                sessionId: sessionResult.sessionId,
+                session: sessionResult.session,
+            }
         }
         const access = engine.resolveSessionAccess(ownerId, namespace)
         if (!access.ok) {
-            return sessionResult
+            return {
+                requestedSessionId: sessionResult.sessionId,
+                sessionId: sessionResult.sessionId,
+                session: sessionResult.session,
+            }
         }
-        return { sessionId: access.sessionId, session: access.session }
+        return {
+            requestedSessionId: sessionResult.sessionId,
+            sessionId: access.sessionId,
+            session: access.session,
+        }
+    }
+
+    function resolveJobKey(
+        c: Context<WebAppEnv>,
+        engine: SyncEngine,
+        owner: { requestedSessionId: string; sessionId: string },
+        jobKey: string
+    ): string {
+        return engine.resolveAttachedJobKey(
+            owner.requestedSessionId,
+            owner.sessionId,
+            jobKey,
+            c.get('namespace')
+        )
     }
 
     app.get('/sessions/:id/jobs', (c) => {
@@ -1310,10 +1340,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (sessionResult instanceof Response) {
             return sessionResult
         }
-        const jobKey = c.req.param('jobKey')
-        if (!jobKey || !JOB_KEY_RE.test(jobKey)) {
+        const rawJobKey = c.req.param('jobKey')
+        if (!rawJobKey || !JOB_KEY_RE.test(rawJobKey)) {
             return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
         }
+        const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
         const body = await c.req.json().catch(() => null)
         const parsed = AttachedJobUpsertSchema.safeParse(body)
         if (!parsed.success) {
@@ -1335,10 +1366,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (sessionResult instanceof Response) {
             return sessionResult
         }
-        const jobKey = c.req.param('jobKey')
-        if (!jobKey || !JOB_KEY_RE.test(jobKey)) {
+        const rawJobKey = c.req.param('jobKey')
+        if (!rawJobKey || !JOB_KEY_RE.test(rawJobKey)) {
             return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
         }
+        const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
         const body = await c.req.json().catch(() => null)
         const parsed = AttachedJobPatchSchema.safeParse(body)
         if (!parsed.success) {
@@ -1360,10 +1392,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (sessionResult instanceof Response) {
             return sessionResult
         }
-        const jobKey = c.req.param('jobKey')
-        if (!jobKey || !JOB_KEY_RE.test(jobKey)) {
+        const rawJobKey = c.req.param('jobKey')
+        if (!rawJobKey || !JOB_KEY_RE.test(rawJobKey)) {
             return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
         }
+        const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
         const removed = engine.deleteSessionJob(sessionResult.sessionId, jobKey)
         if (!removed) {
             return c.json({ error: 'Job not found' }, 404)

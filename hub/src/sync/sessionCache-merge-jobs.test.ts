@@ -188,4 +188,71 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
 
         expect(cache.resolveAttachedJobSessionId(oldSession.id, 'default')).toBe(newSession.id)
     })
+
+    it('remaps dual-running same-key jobs and routes PATCH via jobKeyRedirects', async () => {
+        const { store, cache } = setup()
+        const oldId = 'aaaaaaaa-1111-1111-1111-111111111111'
+        const newId = 'bbbbbbbb-2222-2222-2222-222222222222'
+        const oldSession = cache.getOrCreateSession(
+            'tag-dual-old',
+            { path: '/a', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            oldId
+        )
+        const newSession = cache.getOrCreateSession(
+            'tag-dual-new',
+            { path: '/b', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            newId
+        )
+        expect(oldSession.id).toBe(oldId)
+        expect(newSession.id).toBe(newId)
+
+        store.sessionJobs.upsert(newSession.id, 'beets', {
+            label: 'target-live',
+            status: 'running',
+            remaining: 9
+        }, 1_000)
+        store.sessionJobs.upsert(oldSession.id, 'beets', {
+            label: 'source-live',
+            status: 'running',
+            remaining: 3
+        }, 2_000)
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default', {
+            mergeAgentState: false
+        })
+
+        const onTarget = store.sessionJobs.list(newSession.id)
+        expect(onTarget).toHaveLength(2)
+        const refreshed = cache.refreshSession(newSession.id)
+        expect(refreshed?.metadata?.jobKeyRedirects).toEqual({
+            [`${oldId}/beets`]: 'beets.aaaaaaaa'
+        })
+        expect(
+            cache.resolveAttachedJobKey(oldId, newId, 'beets', 'default')
+        ).toBe('beets.aaaaaaaa')
+        expect(
+            cache.resolveAttachedJobKey(newId, newId, 'beets', 'default')
+        ).toBe('beets')
+
+        // Terminal update via pre-merge session id + original key touches only the remapped row.
+        const patched = store.sessionJobs.patch(
+            newId,
+            cache.resolveAttachedJobKey(oldId, newId, 'beets', 'default'),
+            { status: 'completed' },
+            3_000
+        )
+        expect(patched?.key).toBe('beets.aaaaaaaa')
+        expect(patched?.status).toBe('completed')
+        expect(store.sessionJobs.get(newId, 'beets')?.status).toBe('running')
+    })
 })

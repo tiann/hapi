@@ -95,4 +95,55 @@ describe('schema migration v22 to v26', () => {
         expect(store.sessionJobs.list(from.id)).toHaveLength(0)
         store.close()
     })
+
+    it('on dual-running same-key collision keeps both under remapped source key', () => {
+        const store = new Store(':memory:')
+        const fromId = 'aaaaaaaa-1111-1111-1111-111111111111'
+        const toId = 'bbbbbbbb-2222-2222-2222-222222222222'
+        const from = store.sessions.getOrCreateSession(
+            'tag-from-dual',
+            { path: '/a' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            fromId
+        )
+        const to = store.sessions.getOrCreateSession(
+            'tag-to-dual',
+            { path: '/b' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            toId
+        )
+        expect(from.id).toBe(fromId)
+        expect(to.id).toBe(toId)
+        store.sessionJobs.upsert(to.id, 'beets', {
+            label: 'target-live',
+            status: 'running',
+            remaining: 9
+        }, 1_000)
+        store.sessionJobs.upsert(from.id, 'beets', {
+            label: 'source-live',
+            status: 'running',
+            remaining: 3
+        }, 2_000)
+        const result = store.sessionJobs.transfer(from.id, to.id)
+        expect(result.collided).toBe(1)
+        expect(result.moved).toBe(1)
+        expect(result.keyRedirects).toEqual([
+            { fromKey: 'beets', toKey: 'beets.aaaaaaaa' }
+        ])
+        const onTarget = store.sessionJobs.list(to.id)
+        expect(onTarget).toHaveLength(2)
+        expect(onTarget.map((j) => j.key).sort()).toEqual(['beets', 'beets.aaaaaaaa'])
+        expect(store.sessionJobs.get(to.id, 'beets')?.label).toBe('target-live')
+        expect(store.sessionJobs.get(to.id, 'beets.aaaaaaaa')?.label).toBe('source-live')
+        expect(store.sessionJobs.list(from.id)).toHaveLength(0)
+        store.close()
+    })
 })

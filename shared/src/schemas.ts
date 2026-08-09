@@ -126,6 +126,10 @@ export const MetadataSchema = z.object({
     // Hub-owned: CLI update-metadata cannot forge/erase (HUB_OWNED_METADATA_KEYS).
     jobsAcceptedFromSessionIds: z.array(z.string()).optional(),
     jobsTransferredToSessionId: z.string().optional(),
+    // When merge remaps a live source job key (same-key dual-running), map
+    // `${fromSessionId}/${fromKey}` → toKey on the post-merge owner so
+    // pre-merge supervisors keep PATCHing the right row.
+    jobKeyRedirects: z.record(z.string(), z.string()).optional(),
     // Durable in-progress state for runner-backed OpenCode /clear.
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
