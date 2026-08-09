@@ -371,9 +371,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         await applyCursorAcpMode(backend, acpSessionId, session.getPermissionMode() as PermissionMode);
         const modelToApply = desiredModel ?? session.model;
         if (modelToApply) {
+            // If we remapped --model for spawn, restoring the original variant is
+            // mandatory — continuing on whatever ACP defaulted to silently changes
+            // capabilities/cost (#1430).
+            const mustRestoreDesiredModel = Boolean(
+                desiredModel
+                && spawnModel
+                && spawnModel !== desiredModel
+            );
             await this.applyLiveModel(backend, acpSessionId, modelToApply, previousSetModel, {
                 optimistic: false,
-                throwOnFailure: false
+                throwOnFailure: mustRestoreDesiredModel
             });
         } else if (this.currentBackendModel && !isSpawnDefaultModel(this.currentBackendModel)) {
             this.pushModelStatusLine(this.currentBackendModel);

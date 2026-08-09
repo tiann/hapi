@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
     initializeAttempts: 0,
     loadSessionError: null as Error | null,
     newSessionError: null as Error | null,
+    failSetConfigOption: false,
     supportsLoadSession: true,
     loadSessionCalled: false,
     newSessionCalled: false,
@@ -80,13 +81,20 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (configId === 'model-opt' && harness.deferSetConfigOption) {
                     await harness.deferSetConfigOption;
                 }
+                if (harness.failSetConfigOption && configId === 'model-opt') {
+                    throw new Error('set_config_option rejected');
+                }
                 harness.setConfigOptionCalls.push({ sessionId, configId, value });
             }),
             pinSessionModelWireId: vi.fn(),
             getSessionModelsMetadata: vi.fn(() => ({
                 availableModels: [
                     { modelId: 'composer-2.5[fast=true]' },
-                    { modelId: 'composer-2.5[fast=false]' }
+                    { modelId: 'composer-2.5[fast=false]' },
+                    { modelId: 'gpt-5.3-codex[reasoning=medium,fast=false]' },
+                    { modelId: 'gpt-5.3-codex[reasoning=medium,fast=true]' },
+                    { modelId: 'cursor-grok-4.5-medium' },
+                    { modelId: 'cursor-grok-4.5-medium-fast' },
                 ],
                 currentModelId: 'composer-2.5[fast=true]'
             })),
@@ -107,7 +115,11 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                         options: [
                             { value: 'default[]' },
                             { value: 'composer-2.5[fast=true]' },
-                            { value: 'composer-2.5[fast=false]' }
+                            { value: 'composer-2.5[fast=false]' },
+                            { value: 'gpt-5.3-codex[reasoning=medium,fast=false]' },
+                            { value: 'gpt-5.3-codex[reasoning=medium,fast=true]' },
+                            { value: 'cursor-grok-4.5-medium' },
+                            { value: 'cursor-grok-4.5-medium-fast' },
                         ]
                     };
                 }
@@ -229,6 +241,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.initializeAttempts = 0;
         harness.loadSessionError = null;
         harness.newSessionError = null;
+        harness.failSetConfigOption = false;
         harness.supportsLoadSession = true;
         harness.loadSessionCalled = false;
         harness.newSessionCalled = false;
@@ -377,13 +390,53 @@ describe('cursorAcpRemoteLauncher', () => {
 
         const runPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.newSessionAttempts).toBe(2));
-        expect(harness.backendArgs?.args).toEqual(['--model', 'gpt-5.3-codex', 'acp']);
-        // Desired bracket remains the apply target; mock ACP catalog is composer-only so
-        // post-apply session.model may fall back to the harness default wire.
-        expect(session.model === 'gpt-5.3-codex[fast=false]' || session.model === 'composer-2.5[fast=true]').toBe(true);
+        await vi.waitFor(() => {
+            expect(harness.backendArgs?.args).toEqual(['--model', 'gpt-5.3-codex', 'acp']);
+            expect(
+                harness.setConfigOptionCalls.some(
+                    (call) =>
+                        call.configId === 'model-opt'
+                        && call.value === 'gpt-5.3-codex[reasoning=medium,fast=false]'
+                )
+            ).toBe(true);
+            expect(session.model).toBe('gpt-5.3-codex[fast=false]');
+        });
 
         queue.close();
         await runPromise;
+    });
+
+    it('fails launch when remapped spawn cannot restore the desired variant (#1430)', async () => {
+        _resetSharedCursorModelsCacheForTests();
+        harness.failSetConfigOption = true;
+        harness.newSessionError = new Error(
+            'ACP process exited (code=1, signal=null). stderr: Cannot use this model: composer-2.5[fast=true]. Available models: auto, composer-2.5'
+        );
+
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = makeClient();
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'composer-2.5[fast=true]'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.close();
+
+        await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow(
+            /Cursor model is not available via ACP: composer-2\.5\[fast=true\]/
+        );
+        expect(harness.newSessionAttempts).toBe(2);
+        expect(harness.backendArgs?.args).toEqual(['--model', 'composer-2.5', 'acp']);
     });
 
     it('spawns bare remap but reapplies original fast=true variant via ACP (#1430)', async () => {
