@@ -79,8 +79,8 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                 const existing = jobs.get(key)
                 if (!existing) return { outcome: 'not-found' as const }
                 if (
-                    patch.expectedStartedAt !== undefined
-                    && existing.startedAt !== patch.expectedStartedAt
+                    patch.expectedRunId !== undefined
+                    && existing.runId !== patch.expectedRunId
                 ) {
                     return { outcome: 'run-mismatch' as const }
                 }

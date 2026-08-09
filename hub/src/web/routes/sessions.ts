@@ -1390,7 +1390,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
         if (result.outcome === 'run-mismatch') {
             return c.json({
-                error: 'Job run mismatch: expectedStartedAt does not match the current run (key was reused or clock corrected).'
+                error: 'Job run mismatch: expectedRunId does not match the current run (key was reused).'
             }, 409)
         }
         return c.json({ job: result.job })

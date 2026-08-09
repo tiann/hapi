@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { Database } from 'bun:sqlite'
 import type { AttachedJob, AttachedJobPatch, AttachedJobStatus, AttachedJobUpsert } from '@hapi/protocol'
 
@@ -20,12 +21,13 @@ type DbJobRow = {
     remaining: number | null
     unit: string | null
     detail: string | null
+    run_id: string | null
     heartbeat_at: number
     started_at: number
     updated_at: number
 }
 
-const JOB_COLUMNS = `session_id, job_key, label, status, done, total, remaining, unit, detail, heartbeat_at, started_at, updated_at`
+const JOB_COLUMNS = `session_id, job_key, label, status, done, total, remaining, unit, detail, run_id, heartbeat_at, started_at, updated_at`
 
 function toStored(row: DbJobRow): StoredSessionJob {
     return {
@@ -38,6 +40,7 @@ function toStored(row: DbJobRow): StoredSessionJob {
         remaining: row.remaining ?? undefined,
         unit: row.unit ?? undefined,
         detail: row.detail ?? undefined,
+        runId: row.run_id ?? undefined,
         heartbeatAt: row.heartbeat_at,
         startedAt: row.started_at,
         updatedAt: row.updated_at
@@ -54,6 +57,7 @@ export function toAttachedJob(job: StoredSessionJob): AttachedJob {
         ...(job.remaining !== undefined ? { remaining: job.remaining } : {}),
         ...(job.unit !== undefined ? { unit: job.unit } : {}),
         ...(job.detail !== undefined ? { detail: job.detail } : {}),
+        ...(job.runId !== undefined ? { runId: job.runId } : {}),
         heartbeatAt: job.heartbeatAt,
         startedAt: job.startedAt,
         updatedAt: job.updatedAt
@@ -140,14 +144,17 @@ export function upsertSessionJob(
     const startedAt = body.startedAt !== undefined
         ? body.startedAt
         : (existing?.startedAt ?? now)
+    // Every PUT gets a unique run generation unless the client supplies one
+    // (supervisors mint UUID; hub mints when omitted so key reuse still fences).
+    const runId = body.runId ?? randomUUID()
     const status = body.status ?? 'running'
 
     try {
         db.prepare(
             `INSERT INTO session_jobs (
                 session_id, job_key, label, status, done, total, remaining, unit, detail,
-                heartbeat_at, started_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, heartbeat_at, started_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(session_id, job_key) DO UPDATE SET
                 label = excluded.label,
                 status = excluded.status,
@@ -156,6 +163,7 @@ export function upsertSessionJob(
                 remaining = excluded.remaining,
                 unit = excluded.unit,
                 detail = excluded.detail,
+                run_id = excluded.run_id,
                 heartbeat_at = excluded.heartbeat_at,
                 started_at = excluded.started_at,
                 updated_at = excluded.updated_at`
@@ -169,6 +177,7 @@ export function upsertSessionJob(
             body.remaining ?? null,
             body.unit ?? null,
             body.detail ?? null,
+            runId,
             heartbeatAt,
             startedAt,
             now
@@ -204,8 +213,8 @@ export function patchSessionJob(
     if (!existing) return { outcome: 'not-found' }
 
     if (
-        patch.expectedStartedAt !== undefined
-        && existing.startedAt !== patch.expectedStartedAt
+        patch.expectedRunId !== undefined
+        && existing.runId !== patch.expectedRunId
     ) {
         return { outcome: 'run-mismatch' }
     }
@@ -229,7 +238,7 @@ export function patchSessionJob(
             label = ?, status = ?, done = ?, total = ?, remaining = ?, unit = ?, detail = ?,
             heartbeat_at = ?, updated_at = ?
          WHERE session_id = ? AND job_key = ?
-           AND (? IS NULL OR started_at = ?)`
+           AND (? IS NULL OR run_id = ?)`
     ).run(
         next.label,
         next.status,
@@ -242,17 +251,17 @@ export function patchSessionJob(
         next.updatedAt,
         sessionId,
         jobKey,
-        patch.expectedStartedAt ?? null,
-        patch.expectedStartedAt ?? null
+        patch.expectedRunId ?? null,
+        patch.expectedRunId ?? null
     )
 
     if (result.changes === 0) {
-        // Row vanished or started_at raced; distinguish for callers.
+        // Row vanished or run_id raced; distinguish for callers.
         const still = getSessionJob(db, sessionId, jobKey)
         if (!still) return { outcome: 'not-found' }
         if (
-            patch.expectedStartedAt !== undefined
-            && still.startedAt !== patch.expectedStartedAt
+            patch.expectedRunId !== undefined
+            && still.runId !== patch.expectedRunId
         ) {
             return { outcome: 'run-mismatch' }
         }

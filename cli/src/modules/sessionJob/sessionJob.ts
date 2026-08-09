@@ -347,7 +347,7 @@ export async function updateSessionJob(
                 throw new SessionJobError(
                     'run_mismatch',
                     data?.error
-                        ?? 'job run mismatch (expectedStartedAt); another run reused this key'
+                        ?? 'job run mismatch (expectedRunId); another run reused this key'
                 )
             }
             const data = response.data as { job?: AttachedJob; error?: string } | undefined

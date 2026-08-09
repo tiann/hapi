@@ -3,6 +3,7 @@
  * Fixes the idle-agent heartbeat gap (cold review #1404).
  */
 
+import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { constants as osConstants } from 'node:os'
 import type { AttachedJobUpsert } from '@hapi/protocol'
@@ -41,7 +42,7 @@ async function markTerminalWithRetry(options: {
     jobKey: string
     status: 'completed' | 'failed'
     detail?: string
-    expectedStartedAt: number
+    expectedRunId: string
     sleep: (ms: number) => Promise<void>
 }): Promise<void> {
     let lastError: unknown
@@ -52,7 +53,7 @@ async function markTerminalWithRetry(options: {
                 jobKey: options.jobKey,
                 body: {
                     status: options.status,
-                    expectedStartedAt: options.expectedStartedAt,
+                    expectedRunId: options.expectedRunId,
                     ...(options.detail !== undefined ? { detail: options.detail } : {}),
                 },
             })
@@ -79,12 +80,14 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
 
     // Supervised child: always this run's clock. Omitting startedAt would
     // sticky-reuse a prior completed/failed row's startedAt on key reuse.
-    // startedAt is also the run-generation fence on later PATCHes.
+    // runId is the unique generation fence (Date.now() is not unique enough).
     const startedAt = Date.now()
+    const runId = randomUUID()
     const body: AttachedJobUpsert = {
         label: options.label,
         status: 'running',
         startedAt,
+        runId,
         ...(options.done !== undefined ? { done: options.done } : {}),
         ...(options.total !== undefined ? { total: options.total } : {}),
         ...(options.remaining !== undefined ? { remaining: options.remaining } : {}),
@@ -126,12 +129,12 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const heartbeat = setIntervalFn(() => {
         // Never PATCH status:running on the heartbeat — a late in-flight
         // request must not resurrect running after the terminal write.
-        // Fence with startedAt so a superseded run cannot touch a key reuse.
+        // Fence with runId so a superseded run cannot touch a key reuse.
         inflightHeartbeat = updateSessionJob({
             ...clientOpts,
             jobKey: options.jobKey,
             body: {
-                expectedStartedAt: startedAt,
+                expectedRunId: runId,
                 ...(options.detail !== undefined ? { detail: options.detail } : {}),
             }
         }).catch((error: unknown) => {
@@ -192,7 +195,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
             clientOpts,
             jobKey: options.jobKey,
             status: terminalStatus,
-            expectedStartedAt: startedAt,
+            expectedRunId: runId,
             ...(spawnErrorDetail !== undefined ? { detail: spawnErrorDetail } : {}),
             sleep,
         })

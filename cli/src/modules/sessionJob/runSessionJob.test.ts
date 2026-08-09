@@ -86,13 +86,16 @@ describe('runSessionJob', () => {
         expect(timers.length).toBe(1)
         timers[0]!()
         await vi.waitFor(() => expect(http.patch).toHaveBeenCalled())
-        const putStartedAt = (http.put.mock.calls[0]?.[1] as { startedAt: number }).startedAt
+        const putRunId = (http.put.mock.calls[0]?.[1] as { runId: string }).runId
+        expect(putRunId).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        )
         const heartbeatBody = http.patch.mock.calls[0]?.[1] as {
             status?: string
-            expectedStartedAt?: number
+            expectedRunId?: string
         }
         expect(heartbeatBody.status).toBeUndefined()
-        expect(heartbeatBody.expectedStartedAt).toBe(putStartedAt)
+        expect(heartbeatBody.expectedRunId).toBe(putRunId)
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
 
@@ -101,10 +104,10 @@ describe('runSessionJob', () => {
         expect(exitCode).toBe(0)
         const lastPatch = http.patch.mock.calls.at(-1)?.[1] as {
             status?: string
-            expectedStartedAt?: number
+            expectedRunId?: string
         }
         expect(lastPatch.status).toBe('completed')
-        expect(lastPatch.expectedStartedAt).toBe(putStartedAt)
+        expect(lastPatch.expectedRunId).toBe(putRunId)
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
     })

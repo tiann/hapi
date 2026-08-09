@@ -22,6 +22,7 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         expect(cols).toContain('heartbeat_at')
         expect(cols).toContain('started_at')
         expect(cols).toContain('updated_at')
+        expect(cols).toContain('run_id')
         store.close()
     })
 
@@ -117,11 +118,14 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         expect(patched.job.startedAt).toBe(historical)
         expect(patched.job.remaining).toBe(8)
 
-        // Stale supervisor fence: wrong expectedStartedAt must not mutate the row.
+        const ownedRunId = store.sessionJobs.get(session.id, 'beets')!.runId!
+        expect(ownedRunId).toBeTruthy()
+
+        // Stale supervisor fence: wrong expectedRunId must not mutate the row.
         const stale = store.sessionJobs.patch(
             session.id,
             'beets',
-            { status: 'completed', expectedStartedAt: 2_000 },
+            { status: 'completed', expectedRunId: 'stale-run-id' },
             6_000
         )
         expect(stale.outcome).toBe('run-mismatch')
@@ -130,12 +134,42 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         const owned = store.sessionJobs.patch(
             session.id,
             'beets',
-            { status: 'completed', expectedStartedAt: historical },
+            { status: 'completed', expectedRunId: ownedRunId },
             7_000
         )
         expect(owned.outcome).toBe('patched')
         if (owned.outcome !== 'patched') throw new Error('unreachable')
         expect(owned.job.status).toBe('completed')
+        store.close()
+    })
+
+    it('mints distinct runIds even when startedAt collides', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const a = store.sessionJobs.upsert(session.id, 'drain', {
+            label: 'a',
+            status: 'running',
+            startedAt: 1_000,
+            runId: 'run-a'
+        }, 1_000)
+        expect(a.outcome).toBe('upserted')
+        const b = store.sessionJobs.upsert(session.id, 'drain', {
+            label: 'b',
+            status: 'running',
+            startedAt: 1_000,
+            runId: 'run-b'
+        }, 1_001)
+        expect(b.outcome).toBe('upserted')
+        if (b.outcome !== 'upserted') throw new Error('unreachable')
+        expect(b.job.runId).toBe('run-b')
+        expect(b.job.startedAt).toBe(1_000)
+
+        const stale = store.sessionJobs.patch(session.id, 'drain', {
+            status: 'completed',
+            expectedRunId: 'run-a'
+        }, 1_002)
+        expect(stale.outcome).toBe('run-mismatch')
+        expect(store.sessionJobs.get(session.id, 'drain')?.status).toBe('running')
         store.close()
     })
 
