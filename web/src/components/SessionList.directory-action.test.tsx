@@ -496,6 +496,48 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Pinned running task/ })).toBeInTheDocument()
     })
 
+    it('renders project-pin groups above In progress when pin-in-progress is on', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        const sessions = [
+            makeSession({
+                id: 'session-global',
+                globalPinned: true,
+                updatedAt: 300,
+                metadata: { path: '/work/global', name: 'Global pin', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-project-pin',
+                pinned: true,
+                updatedAt: 200,
+                metadata: { path: '/work/pinned-project', name: 'Project pin', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-floater',
+                active: true,
+                thinking: true,
+                updatedAt: 250,
+                metadata: { path: '/work/other', name: 'Unpinned floater', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-idle-other',
+                updatedAt: 50,
+                metadata: { path: '/work/other', name: 'Other idle', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        const globalSection = screen.getByTitle('Pinned sessions')
+        const projectPinGroup = screen.getByTitle('/work/pinned-project')
+        const inProgress = screen.getByTitle('In progress')
+        const otherGroup = screen.getByTitle('/work/other')
+
+        expect(globalSection).toAppearBefore(projectPinGroup)
+        expect(projectPinGroup).toAppearBefore(inProgress)
+        expect(inProgress).toAppearBefore(otherGroup)
+        expect(screen.getByRole('button', { name: /Project pin/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Unpinned floater/ })).toBeInTheDocument()
+    })
+
     it('does not label quiet active sessions as Idle', () => {
         const sessions = [
             makeSession({

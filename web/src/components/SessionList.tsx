@@ -1283,6 +1283,16 @@ export function SessionList(props: {
         ),
         [machineFilteredSessions, pinInProgressSessions]
     )
+    // Durable project pins beat ephemeral In progress floaters: pin-containing
+    // groups render above the running section; unpinned groups stay below.
+    const pinnedProjectGroups = useMemo(
+        () => groups.filter((group) => group.hasPinnedSession),
+        [groups]
+    )
+    const otherProjectGroups = useMemo(
+        () => groups.filter((group) => !group.hasPinnedSession),
+        [groups]
+    )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
@@ -1361,6 +1371,115 @@ export function SessionList(props: {
                 selectedSessionId,
                 limit: getGroupVisibleCount(group)
             }
+        )
+    }
+
+    const renderDirectoryGroup = (group: SessionGroup) => {
+        const isCollapsed = isGroupCollapsed(group)
+        const visibleGroupSessions = getVisibleGroupSessions(group)
+        const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
+        const currentLimit = Math.min(
+            getGroupVisibleCount(group),
+            group.sessions.length
+        )
+        const previousLimit = getPreviousSessionVisibleCount(currentLimit, sessionPreviewLimit)
+        const previousGroupSessions = getVisibleSessionPreview(group.sessions, {
+            selectedSessionId,
+            limit: previousLimit
+        })
+        const collapseCount = visibleGroupSessions.length - previousGroupSessions.length
+        const canShowFewerSessions = previousLimit < currentLimit && collapseCount > 0
+        const expandCount = Math.min(sessionPreviewLimit, hiddenSessionCount)
+        const canStartInGroupDirectory = group.directory !== 'Other'
+        // With multiple machines in the unfiltered view, disambiguate
+        // same-named directories by suffixing the machine label.
+        const groupTitle = showMachineFilterBar && activeMachineFilter === null
+            ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
+            : group.displayName
+        return (
+            <div key={group.key}>
+                <div
+                    className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
+                    onClick={() => toggleGroup(group.key, isCollapsed)}
+                    title={group.directory}
+                >
+                    <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
+                    <span className="font-medium text-sm truncate flex-1">
+                        {groupTitle}
+                    </span>
+                    <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
+                    {onNewSessionInDirectory && canStartInGroupDirectory ? (
+                        <button
+                            type="button"
+                            onClick={(event) => {
+                                event.stopPropagation()
+                                onNewSessionInDirectory({
+                                    machineId: group.machineId,
+                                    directory: group.directory
+                                })
+                            }}
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                            title={t('sessions.group.new')}
+                            aria-label={t('sessions.group.new')}
+                        >
+                            <PlusIcon className="h-3.5 w-3.5" />
+                        </button>
+                    ) : null}
+                    <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
+                        ({group.sessions.length})
+                    </span>
+                </div>
+
+                {/* Sessions */}
+                <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
+                    <div className="collapsible-inner">
+                    <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
+                        {visibleGroupSessions.map((s, index) => (
+                            <div key={s.id} className="contents">
+                                {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
+                                    <div
+                                        className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                                        aria-hidden="true"
+                                    />
+                                ) : null}
+                                <SessionItem
+                                    session={s}
+                                    onSelect={props.onSelect}
+                                    showPath={false}
+                                    api={api}
+                                    selected={s.id === selectedSessionId}
+                                    showDetailedStatus={showDetailedStatus}
+                                />
+                            </div>
+                        ))}
+                        {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                            <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
+                                {canShowFewerSessions ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => showFewerSessions(group)}
+                                        className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-dashed border-[var(--app-border)] px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                                    >
+                                        <SessionPreviewArrowIcon direction="up" className="h-3 w-3 shrink-0" />
+                                        {t('sessions.group.collapse', { n: collapseCount })}
+                                    </button>
+                                ) : null}
+                                {hiddenSessionCount > 0 ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => showMoreSessions(group)}
+                                        className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-dashed border-[var(--app-border)] px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                                    >
+                                        <SessionPreviewArrowIcon direction="down" className="h-3 w-3 shrink-0" />
+                                        {t('sessions.group.expand', { n: expandCount })}
+                                    </button>
+                                ) : null}
+                            </div>
+                        ) : null}
+                    </div>
+                    </div>
+                </div>
+            </div>
         )
     }
 
@@ -1702,6 +1821,8 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
+                {pinnedProjectGroups.map(renderDirectoryGroup)}
+
                 {runningSessionTotal > 0 ? (
                     <div key="running-section">
                         <div
@@ -1765,114 +1886,7 @@ export function SessionList(props: {
                         </div>
                     </div>
                 ) : null}
-                {groups.map((group) => {
-                    const isCollapsed = isGroupCollapsed(group)
-                    const visibleGroupSessions = getVisibleGroupSessions(group)
-                    const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
-                    const currentLimit = Math.min(
-                        getGroupVisibleCount(group),
-                        group.sessions.length
-                    )
-                    const previousLimit = getPreviousSessionVisibleCount(currentLimit, sessionPreviewLimit)
-                    const previousGroupSessions = getVisibleSessionPreview(group.sessions, {
-                        selectedSessionId,
-                        limit: previousLimit
-                    })
-                    const collapseCount = visibleGroupSessions.length - previousGroupSessions.length
-                    const canShowFewerSessions = previousLimit < currentLimit && collapseCount > 0
-                    const expandCount = Math.min(sessionPreviewLimit, hiddenSessionCount)
-                    const canStartInGroupDirectory = group.directory !== 'Other'
-                    // With multiple machines in the unfiltered view, disambiguate
-                    // same-named directories by suffixing the machine label.
-                    const groupTitle = showMachineFilterBar && activeMachineFilter === null
-                        ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
-                        : group.displayName
-                    return (
-                        <div key={group.key}>
-                            <div
-                                className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
-                                onClick={() => toggleGroup(group.key, isCollapsed)}
-                                title={group.directory}
-                            >
-                                <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
-                                <span className="font-medium text-sm truncate flex-1">
-                                    {groupTitle}
-                                </span>
-                                <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                                {onNewSessionInDirectory && canStartInGroupDirectory ? (
-                                    <button
-                                        type="button"
-                                        onClick={(event) => {
-                                            event.stopPropagation()
-                                            onNewSessionInDirectory({
-                                                machineId: group.machineId,
-                                                directory: group.directory
-                                            })
-                                        }}
-                                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
-                                        title={t('sessions.group.new')}
-                                        aria-label={t('sessions.group.new')}
-                                    >
-                                        <PlusIcon className="h-3.5 w-3.5" />
-                                    </button>
-                                ) : null}
-                                <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
-                                    ({group.sessions.length})
-                                </span>
-                            </div>
-
-                            {/* Sessions */}
-                            <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
-                                <div className="collapsible-inner">
-                                <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                                    {visibleGroupSessions.map((s, index) => (
-                                        <div key={s.id} className="contents">
-                                            {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
-                                                <div
-                                                    className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
-                                                    aria-hidden="true"
-                                                />
-                                            ) : null}
-                                            <SessionItem
-                                                session={s}
-                                                onSelect={props.onSelect}
-                                                showPath={false}
-                                                api={api}
-                                                selected={s.id === selectedSessionId}
-                                                showDetailedStatus={showDetailedStatus}
-                                            />
-                                        </div>
-                                    ))}
-                                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
-                                        <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
-                                            {canShowFewerSessions ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => showFewerSessions(group)}
-                                                    className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-dashed border-[var(--app-border)] px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
-                                                >
-                                                    <SessionPreviewArrowIcon direction="up" className="h-3 w-3 shrink-0" />
-                                                    {t('sessions.group.collapse', { n: collapseCount })}
-                                                </button>
-                                            ) : null}
-                                            {hiddenSessionCount > 0 ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => showMoreSessions(group)}
-                                                    className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-dashed border-[var(--app-border)] px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
-                                                >
-                                                    <SessionPreviewArrowIcon direction="down" className="h-3 w-3 shrink-0" />
-                                                    {t('sessions.group.expand', { n: expandCount })}
-                                                </button>
-                                            ) : null}
-                                        </div>
-                                    ) : null}
-                                </div>
-                                </div>
-                            </div>
-                        </div>
-                    )
-                })}
+                {otherProjectGroups.map(renderDirectoryGroup)}
             </div>
             </div>
             </div>
