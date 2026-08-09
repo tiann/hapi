@@ -209,7 +209,7 @@ function findNotifySummary(text: string): NotifySummaryMatch | null {
     while (lastIdx >= 0 && lines[lastIdx].trim() === '') lastIdx -= 1
     if (lastIdx < 0) return null
 
-    const line = lines[lastIdx].trim()
+    const line = lines[lastIdx].trimEnd()
     const match = matchNotifySummaryLine(line)
     if (match === null) return null
 

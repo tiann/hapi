@@ -243,6 +243,13 @@ describe('extractNotifySummary', () => {
         expect(result?.summary.summary).toBe('Done')
     })
 
+    test('preserves leading indentation when a footer is glued to Markdown prose', () => {
+        const text = '- item\n    nested line.AGENT_NOTIFY_SUMMARY {"summary":"Done"}'
+        const result = splitNotifySummary(text)
+
+        expect(result?.visibleText).toBe('- item\n    nested line.')
+    })
+
     test('returns null when the footer is not a compliant final line', () => {
         expect(splitNotifySummary('AGENT_NOTIFY_SUMMARY {"summary":"Done"}\nMore prose')).toBeNull()
         expect(splitNotifySummary('Plain prose')).toBeNull()
