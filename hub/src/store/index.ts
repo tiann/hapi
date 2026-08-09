@@ -36,7 +36,8 @@ export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
 export {
     WorkGraphNotFoundError,
-    WorkGraphPrincipalError
+    WorkGraphPrincipalError,
+    WorkGraphValidationError
 } from './workGraph'
 
 const SCHEMA_VERSION: number = 23

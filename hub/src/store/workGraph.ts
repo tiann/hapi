@@ -4,6 +4,7 @@ import {
     type WorkGraphArtifactRef,
     type WorkGraphEvent,
     type WorkGraphEventCreate,
+    WorkGraphEventCreateSchema,
     type WorkGraphEventLink,
     type WorkGraphEventLinkCreate,
     type WorkGraphPrincipal,
@@ -17,6 +18,15 @@ export class WorkGraphPrincipalError extends Error {
     constructor(message: string) {
         super(message)
         this.name = 'WorkGraphPrincipalError'
+    }
+}
+
+export class WorkGraphValidationError extends Error {
+    readonly code = 'invalid_event' as const
+
+    constructor(message: string) {
+        super(message)
+        this.name = 'WorkGraphValidationError'
     }
 }
 
@@ -140,18 +150,29 @@ export function insertWorkGraphEvent(
     input: WorkGraphEventCreate,
     options?: { id?: string; ts?: number }
 ): InsertWorkGraphEventResult {
-    if (!isPrincipalAccountable(input.principal)) {
+    // All writers (HTTP + notify ingest + future callers) share one ledger
+    // bound: schema max lengths / payload size. Typed callers can still
+    // bypass TypeScript with forged objects; this is the choke point.
+    const parsed = WorkGraphEventCreateSchema.safeParse(input)
+    if (!parsed.success) {
+        throw new WorkGraphValidationError(
+            parsed.error.issues[0]?.message ?? 'Invalid work-graph event'
+        )
+    }
+    const eventInput = parsed.data
+
+    if (!isPrincipalAccountable(eventInput.principal)) {
         throw new WorkGraphPrincipalError(
             'Non-human principal requires a resolvable human owner via on_behalf_of'
         )
     }
 
-    if (input.idempotency_key) {
+    if (eventInput.idempotency_key) {
         const existing = db.prepare(`
             SELECT * FROM events
             WHERE namespace = ? AND idempotency_key = ?
             LIMIT 1
-        `).get(namespace, input.idempotency_key) as EventRow | undefined
+        `).get(namespace, eventInput.idempotency_key) as EventRow | undefined
         if (existing) {
             return { event: toEvent(existing), inserted: false }
         }
@@ -159,12 +180,12 @@ export function insertWorkGraphEvent(
 
     const id = options?.id ?? randomUUID()
     const ts = options?.ts ?? Date.now()
-    const artifactRefs = JSON.stringify(input.artifact_refs ?? [])
-    const tags = JSON.stringify(input.tags ?? [])
-    const payloadJson = input.payload_json === undefined
+    const artifactRefs = JSON.stringify(eventInput.artifact_refs ?? [])
+    const tags = JSON.stringify(eventInput.tags ?? [])
+    const payloadJson = eventInput.payload_json === undefined
         ? null
-        : JSON.stringify(input.payload_json)
-    const principalJson = JSON.stringify(input.principal)
+        : JSON.stringify(eventInput.payload_json)
+    const principalJson = JSON.stringify(eventInput.principal)
 
     try {
         db.prepare(`
@@ -192,34 +213,34 @@ export function insertWorkGraphEvent(
         `).run({
             id,
             ts,
-            source_kind: input.source_kind,
-            source_ref: input.source_ref,
-            sink_kind: input.sink_kind ?? null,
-            sink_ref: input.sink_ref ?? null,
-            event_type: input.event_type,
-            summary: input.summary ?? null,
+            source_kind: eventInput.source_kind,
+            source_ref: eventInput.source_ref,
+            sink_kind: eventInput.sink_kind ?? null,
+            sink_ref: eventInput.sink_ref ?? null,
+            event_type: eventInput.event_type,
+            summary: eventInput.summary ?? null,
             payload_json: payloadJson,
             artifact_refs: artifactRefs,
             tags,
-            related_session_id: input.related_session_id ?? null,
-            related_event_id: input.related_event_id ?? null,
-            provenance: input.provenance ?? null,
-            idempotency_key: input.idempotency_key ?? null,
-            dedupe_key: input.dedupe_key ?? null,
-            confidence: input.confidence ?? null,
-            severity: input.severity ?? null,
-            expires_at: input.expires_at ?? null,
+            related_session_id: eventInput.related_session_id ?? null,
+            related_event_id: eventInput.related_event_id ?? null,
+            provenance: eventInput.provenance ?? null,
+            idempotency_key: eventInput.idempotency_key ?? null,
+            dedupe_key: eventInput.dedupe_key ?? null,
+            confidence: eventInput.confidence ?? null,
+            severity: eventInput.severity ?? null,
+            expires_at: eventInput.expires_at ?? null,
             namespace,
             principal_json: principalJson
         })
     } catch (error) {
         // Race on idempotency unique index: return the winner's row.
-        if (input.idempotency_key) {
+        if (eventInput.idempotency_key) {
             const existing = db.prepare(`
                 SELECT * FROM events
                 WHERE namespace = ? AND idempotency_key = ?
                 LIMIT 1
-            `).get(namespace, input.idempotency_key) as EventRow | undefined
+            `).get(namespace, eventInput.idempotency_key) as EventRow | undefined
             if (existing) {
                 return { event: toEvent(existing), inserted: false }
             }

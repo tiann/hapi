@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
 import type { SessionPatch, SyncEvent } from '@hapi/protocol/types'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
@@ -273,5 +274,48 @@ describe('SyncEngine.handleRealtimeEvent notify → work-graph ingest', () => {
             on_behalf_of: '7'
         })
         expect(rows[0]!.payloadJson).toMatchObject({ agent: 'forged-peer' })
+    })
+
+    it('does not persist footer summary beyond WORK_GRAPH_MAX_SUMMARY (S4)', () => {
+        const { engine, store } = makeEngine()
+        const session = store.sessions.getOrCreateSession(
+            'notify-wiring-bound',
+            { path: '/tmp', host: 'h', flavor: 'claude' },
+            null,
+            'default'
+        )
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+
+        const oversized = 'y'.repeat(WORK_GRAPH_MAX_SUMMARY + 1)
+        engine.handleRealtimeEvent({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'msg-wire-bound',
+                seq: 1,
+                localId: null,
+                createdAt: Date.now(),
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'assistant',
+                            message: {
+                                content: [{
+                                    type: 'text',
+                                    text: `Done.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":${JSON.stringify(oversized)}}`
+                                }]
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+        const rows = store.workGraph.listByRelatedSession('default', session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.summary?.length).toBe(WORK_GRAPH_MAX_SUMMARY)
+        expect(rows[0]!.summary?.length).toBeLessThan(oversized.length)
     })
 })

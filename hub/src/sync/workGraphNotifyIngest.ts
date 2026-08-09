@@ -1,4 +1,7 @@
 import {
+    WORK_GRAPH_MAX_STRING,
+    WORK_GRAPH_MAX_SUMMARY,
+    WORK_GRAPH_MAX_TAGS,
     extractAssistantPlainText,
     extractNotifySummary,
     unwrapRoleWrappedRecordEnvelope,
@@ -6,7 +9,19 @@ import {
     type WorkGraphEventCreate
 } from '@hapi/protocol'
 import type { Store } from '../store'
+import { WorkGraphValidationError } from '../store'
 import type { InsertWorkGraphEventResult } from '../store/workGraph'
+
+const WORK_GRAPH_MAX_TAG = 256
+
+function clampStr(value: string, max: number): string {
+    return value.length <= max ? value : value.slice(0, max)
+}
+
+function clampOpt(value: string | undefined, max: number): string | undefined {
+    if (value === undefined) return undefined
+    return clampStr(value, max)
+}
 
 /** WorkAd status vocabulary from the A2A RFC (P3 notify elevation). */
 export const WORK_AD_STATUSES = [
@@ -95,11 +110,12 @@ function isAgentMessageContent(content: unknown): boolean {
 function buildTags(notify: NotifySummary, flavor: string | null | undefined): string[] {
     // Project stays in tags + payload for now. Indexed `project` column /
     // project-scoped list query is deferred to #1374 / P4 (cold review M4).
+    // Tag strings are untrusted footer text — clamp to schema max before insert.
     const tags: string[] = ['notify_summary']
-    if (notify.project) tags.push(`project:${notify.project}`)
-    if (notify.agent) tags.push(`agent:${notify.agent}`)
-    if (flavor) tags.push(`flavor:${flavor}`)
-    return tags
+    if (notify.project) tags.push(clampStr(`project:${notify.project}`, WORK_GRAPH_MAX_TAG))
+    if (notify.agent) tags.push(clampStr(`agent:${notify.agent}`, WORK_GRAPH_MAX_TAG))
+    if (flavor) tags.push(clampStr(`flavor:${flavor}`, WORK_GRAPH_MAX_TAG))
+    return tags.slice(0, WORK_GRAPH_MAX_TAGS)
 }
 
 /**
@@ -117,19 +133,32 @@ export function buildWorkAdFromNotify(params: {
     expiresAt?: number
 }): WorkGraphEventCreate {
     const status = mapNotifyStatusToWorkAdStatus(params.notify.status)
+    // Footer fields are untrusted. Clamp to ledger schema bounds so elevation
+    // still lands; store insert also validates WorkGraphEventCreateSchema.
+    const summary = clampStr(buildWorkAdSummaryFromNotify(params.notify), WORK_GRAPH_MAX_SUMMARY)
+    const action = clampOpt(params.notify.action, WORK_GRAPH_MAX_STRING) ?? null
+    const project = clampOpt(params.notify.project, WORK_GRAPH_MAX_STRING) ?? null
+    const agent = clampOpt(params.notify.agent, WORK_GRAPH_MAX_STRING) ?? null
+    const notifySummary: NotifySummary = {
+        ...params.notify,
+        summary: clampOpt(params.notify.summary, WORK_GRAPH_MAX_SUMMARY),
+        action: clampOpt(params.notify.action, WORK_GRAPH_MAX_STRING),
+        project: clampOpt(params.notify.project, WORK_GRAPH_MAX_STRING),
+        agent: clampOpt(params.notify.agent, WORK_GRAPH_MAX_STRING)
+    }
     // Audit principal is always session-bound. notify.agent is untrusted
     // self-label text and stays advisory in payload/tags only.
     return {
         source_kind: 'session',
         source_ref: params.sessionId,
         event_type: 'work_ad',
-        summary: buildWorkAdSummaryFromNotify(params.notify),
+        summary,
         payload_json: {
             status,
-            action: params.notify.action ?? null,
-            project: params.notify.project ?? null,
-            agent: params.notify.agent ?? null,
-            notify_summary: params.notify,
+            action,
+            project,
+            agent,
+            notify_summary: notifySummary,
             messageId: params.messageId
         },
         tags: buildTags(params.notify, params.flavor),
@@ -178,5 +207,13 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
         ts: input.ts
     })
 
-    return input.store.workGraph.insertEvent(input.namespace, create, { ts: input.ts })
+    try {
+        return input.store.workGraph.insertEvent(input.namespace, create, { ts: input.ts })
+    } catch (error) {
+        // Best-effort capture: never break message ingest on ledger bounds.
+        if (error instanceof WorkGraphValidationError) {
+            return null
+        }
+        throw error
+    }
 }

@@ -7,7 +7,11 @@ import {
     principalMatchesAuthenticatedOwner
 } from '@hapi/protocol'
 import type { Store } from '../../store'
-import { WorkGraphNotFoundError, WorkGraphPrincipalError } from '../../store'
+import {
+    WorkGraphNotFoundError,
+    WorkGraphPrincipalError,
+    WorkGraphValidationError
+} from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
 const workGraphBodyLimit = bodyLimit({
@@ -46,6 +50,9 @@ export function createWorkGraphRoutes(store: Store): Hono<WebAppEnv> {
         } catch (error) {
             if (error instanceof WorkGraphPrincipalError) {
                 return c.json({ error: error.message, code: error.code }, 403)
+            }
+            if (error instanceof WorkGraphValidationError) {
+                return c.json({ error: error.message, code: error.code }, 400)
             }
             throw error
         }

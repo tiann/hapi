@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
 import { Store } from '../store'
 import {
     WORK_AD_DEFAULT_TTL_MS,
@@ -258,5 +259,26 @@ describe('ingestNotifySummaryFromMessage', () => {
         expect(listed).toHaveLength(1)
         expect(listed[0]!.summary).toBe('Survives delete')
         expect(listed[0]!.id).toBe(result!.event.id)
+    })
+
+    it('clamps oversized footer summary to WORK_GRAPH_MAX_SUMMARY (S4)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-bound', {}, null, 'default')
+        const oversized = 'x'.repeat(WORK_GRAPH_MAX_SUMMARY + 1)
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-bound',
+            content: assistantOutput(
+                `AGENT_NOTIFY_SUMMARY {"status":"done","summary":${JSON.stringify(oversized)}}`
+            ),
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+
+        expect(result?.inserted).toBe(true)
+        expect(result?.event.summary?.length).toBe(WORK_GRAPH_MAX_SUMMARY)
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(1)
     })
 })

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import { Store, WorkGraphPrincipalError } from './index'
+import { WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
+import { Store, WorkGraphPrincipalError, WorkGraphValidationError } from './index'
 
 const humanPrincipal = { kind: 'human' as const, id: '1' }
 
@@ -11,9 +12,22 @@ describe('WorkGraphStore', () => {
             source_ref: 'sess-a',
             event_type: 'work_ad',
             summary: 'no owner',
-            // Bypass Zod: construct an invalid principal object for the kill criterion.
-            principal: { kind: 'agent', id: 'worker', on_behalf_of: '' } as never
+            // Passes Zod min(1) but fails trim accountability (store choke point).
+            principal: { kind: 'agent', id: 'worker', on_behalf_of: '   ' }
         })).toThrow(WorkGraphPrincipalError)
+    })
+
+    it('rejects summary longer than WORK_GRAPH_MAX_SUMMARY at insert (S4)', () => {
+        const store = new Store(':memory:')
+        const oversized = 'x'.repeat(WORK_GRAPH_MAX_SUMMARY + 1)
+        expect(() => store.workGraph.insertEvent('default', {
+            source_kind: 'session',
+            source_ref: 'sess-a',
+            event_type: 'work_ad',
+            summary: oversized,
+            principal: humanPrincipal
+        })).toThrow(WorkGraphValidationError)
+        expect(store.workGraph.listByRelatedSession('default', 'sess-a')).toHaveLength(0)
     })
 
     it('isolates writes and queries by namespace', () => {
