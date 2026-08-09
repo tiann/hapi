@@ -331,7 +331,10 @@ function buildImportedAgentMessage(data: unknown): CodexImportedMessageContent {
     return { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data }, meta: { sentFrom: 'cli' } }
 }
 
-function convertCodexRecordToImportedMessage(record: Record<string, unknown>): CodexImportedMessageContent | null {
+function convertCodexRecordToImportedMessage(
+    record: Record<string, unknown>,
+    parentSessionId: string | null = null
+): CodexImportedMessageContent | null {
     const type = asString(record.type)
     const payload = asRecord(record.payload)
     if (!type || !payload) return null
@@ -346,8 +349,26 @@ function convertCodexRecordToImportedMessage(record: Record<string, unknown>): C
             return message ? buildImportedAgentMessage({ type: 'message', message, id: randomUUID() }) : null
         }
         if (eventType === 'token_count') {
-            const info = asRecord(payload.info)
-            return info ? buildImportedAgentMessage({ type: 'token_count', info, id: randomUUID() }) : null
+            const rawInfo = asRecord(payload.info)
+            const info = rawInfo ? { ...rawInfo } : null
+            if (!info) return null
+            if (info.rate_limits === undefined && info.rateLimits === undefined) {
+                const rateLimits = payload.rate_limits ?? payload.rateLimits
+                if (rateLimits !== undefined) info.rate_limits = rateLimits
+            }
+            const threadId = asString(record.thread_id ?? record.threadId)
+                ?? asString(payload.thread_id ?? payload.threadId)
+            const explicitScopeRole = asString(payload.scope_role ?? payload.scopeRole)
+                ?? asString(asRecord(payload.scope)?.role)
+            const scopeRole = explicitScopeRole
+                ?? (threadId && parentSessionId && threadId !== parentSessionId ? 'child' : null)
+            return buildImportedAgentMessage({
+                type: 'token_count',
+                info,
+                id: randomUUID(),
+                ...(threadId ? { thread_id: threadId, threadId } : {}),
+                ...(scopeRole ? { scope_role: scopeRole, scopeRole } : {})
+            })
         }
         return null
     }
@@ -435,11 +456,24 @@ function parseCodexLocalSession(
     const messages: CodexImportedMessageContent[] = []
 
     if (includeMessages) {
+        let parentSessionId: string | null = null
+        for (const line of lines) {
+            let record: Record<string, unknown> | null = null
+            try { record = asRecord(JSON.parse(line)) } catch { continue }
+            if (!record || record.type !== 'session_meta') continue
+            const payload = asRecord(record.payload)
+            if (typeof payload?.id === 'string') {
+                parentSessionId = payload.id
+                break
+            }
+        }
+        parentSessionId = parentSessionId ?? inferSessionIdFromFileName(filePath)
+
         for (const line of lines) {
             let record: Record<string, unknown> | null = null
             try { record = asRecord(JSON.parse(line)) } catch { continue }
             if (!record) continue
-            const message = convertCodexRecordToImportedMessage(record)
+            const message = convertCodexRecordToImportedMessage(record, parentSessionId)
             if (message) messages.push(message)
         }
     }

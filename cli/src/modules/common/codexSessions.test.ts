@@ -186,6 +186,63 @@ describe('listLocalCodexSessionSummaries', () => {
         rmSync(root, { recursive: true, force: true })
     })
 
+    it('stamps scope_role on imported foreign-thread token_count samples', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        writeFileSync(join(sessionsDir, 'parent.jsonl'), [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'parent-session-id', cwd: '/tmp/project' } }),
+            JSON.stringify({
+                type: 'event_msg',
+                thread_id: 'child-session-id',
+                payload: {
+                    type: 'token_count',
+                    info: {
+                        total_token_usage: { total_tokens: 77 },
+                        model_context_window: 128000
+                    }
+                }
+            }),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: {
+                        total_token_usage: { total_tokens: 42000 },
+                        model_context_window: 128000
+                    }
+                }
+            })
+        ].join('\n'))
+
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set(['parent-session-id']))
+        expect(sessions).toHaveLength(1)
+        const tokenMessages = (sessions[0]?.messages ?? [])
+            .filter((message) => message.role === 'agent')
+            .map((message) => message.content.data as Record<string, unknown>)
+            .filter((data) => data.type === 'token_count')
+
+        expect(tokenMessages).toHaveLength(2)
+        expect(tokenMessages[0]).toMatchObject({
+            type: 'token_count',
+            thread_id: 'child-session-id',
+            threadId: 'child-session-id',
+            scope_role: 'child',
+            scopeRole: 'child',
+            info: { total_token_usage: { total_tokens: 77 } }
+        })
+        expect(tokenMessages[1]).toMatchObject({
+            type: 'token_count',
+            info: { total_token_usage: { total_tokens: 42000 } }
+        })
+        expect(tokenMessages[1]).not.toHaveProperty('scope_role')
+        expect(tokenMessages[1]).not.toHaveProperty('thread_id')
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
     it('ignores filename UUID hits when session_meta id is not requested', () => {
         const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
         process.env.CODEX_HOME = root
