@@ -13,10 +13,10 @@ vi.mock('@/components/MarkdownRenderer', () => ({
     )
 }))
 
-function renderText(text: string) {
+function renderText(text: string, statusType: 'complete' | 'running' = 'complete') {
     return render(
         <I18nProvider>
-            <NotifySummaryText type="text" text={text} status={{ type: 'complete' }} />
+            <NotifySummaryText type="text" text={text} status={{ type: statusType }} />
         </I18nProvider>
     )
 }
@@ -51,6 +51,13 @@ describe('NotifySummaryText', () => {
 
     it('uses the normal markdown renderer when there is no valid footer', () => {
         renderText('Plain assistant prose.')
+
+        expect(screen.getByTestId('raw-markdown')).toBeInTheDocument()
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+    })
+
+    it('keeps a complete-looking footer in markdown while the message is streaming', () => {
+        renderText('Still working.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}', 'running')
 
         expect(screen.getByTestId('raw-markdown')).toBeInTheDocument()
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()

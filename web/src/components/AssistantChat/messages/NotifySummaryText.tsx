@@ -98,7 +98,9 @@ export function NotifySummaryFooter({ summary }: { summary: NotifySummary }) {
 }
 
 /** Render the machine footer as a compact, user-facing message tail. */
-export const NotifySummaryText: TextMessagePartComponent = ({ text }) => {
+export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) => {
+    if (status.type !== 'complete') return <MarkdownText />
+
     const display = splitNotifySummary(text)
     const hasDisplayableSummary = Boolean(
         display?.summary.summary?.trim()
