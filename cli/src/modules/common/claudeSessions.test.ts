@@ -146,6 +146,154 @@ describe('local Claude sessions', () => {
         expect(sessions.map((session) => session.id)).toEqual([SESSION_ID])
     })
 
+    it('imports only the active branch after a Claude rewind', () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        const transcript = [
+            {
+                parentUuid: null,
+                isSidechain: false,
+                userType: 'external',
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'user',
+                message: { role: 'user', content: 'Shared prompt' },
+                uuid: 'user-1'
+            },
+            {
+                parentUuid: 'user-1',
+                isSidechain: false,
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [
+                        { type: 'text', text: 'Shared answer' },
+                        { type: 'tool_use', id: 'tool-active', name: 'Task', input: {} }
+                    ]
+                },
+                uuid: 'assistant-1'
+            },
+            {
+                parentUuid: null,
+                isSidechain: true,
+                parentToolUseId: 'tool-active',
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'Active sidechain' }] },
+                uuid: 'sidechain-active'
+            },
+            {
+                parentUuid: 'assistant-1',
+                isSidechain: false,
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'attachment',
+                attachment: { filePath: '/tmp/context.txt' },
+                uuid: 'attachment-common'
+            },
+            {
+                parentUuid: 'attachment-common',
+                isSidechain: false,
+                userType: 'external',
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'user',
+                message: { role: 'user', content: 'Abandoned prompt' },
+                uuid: 'user-old'
+            },
+            {
+                parentUuid: 'user-old',
+                isSidechain: false,
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [
+                        { type: 'text', text: 'Abandoned answer' },
+                        { type: 'tool_use', id: 'tool-old', name: 'Task', input: {} }
+                    ]
+                },
+                uuid: 'assistant-old'
+            },
+            {
+                parentUuid: 'assistant-old',
+                isSidechain: true,
+                parentToolUseId: 'tool-old',
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'Abandoned sidechain' }] },
+                uuid: 'sidechain-old'
+            },
+            {
+                parentUuid: 'attachment-common',
+                isSidechain: false,
+                userType: 'external',
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'user',
+                message: { role: 'user', content: 'Replacement prompt' },
+                uuid: 'user-new'
+            },
+            {
+                parentUuid: 'user-new',
+                isSidechain: false,
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'Replacement answer' }] },
+                uuid: 'assistant-new'
+            }
+        ]
+        writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), transcript.map(line).join('\n'))
+
+        const [session] = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
+        expect(session?.messages.map((message) => message.localId)).toEqual([
+            `claude:${SESSION_ID}:user-1`,
+            `claude:${SESSION_ID}:assistant-1`,
+            `claude:${SESSION_ID}:sidechain-active`,
+            `claude:${SESSION_ID}:user-new`,
+            `claude:${SESSION_ID}:assistant-new`
+        ])
+        expect(session).toMatchObject({
+            lastUserMessage: 'Replacement prompt',
+            messageCount: 5
+        })
+    })
+
+    it('keeps linear history when legacy records have no parent links', () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        writeFileSync(
+            join(projectDir, `${SESSION_ID}.jsonl`),
+            [
+                line({
+                    userType: 'external',
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'user',
+                    message: { role: 'user', content: 'Legacy prompt' },
+                    uuid: 'legacy-user'
+                }),
+                line({
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'Legacy answer' }] },
+                    uuid: 'legacy-assistant'
+                })
+            ].join('\n')
+        )
+
+        const [session] = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
+        expect(session?.messages.map((message) => message.localId)).toEqual([
+            `claude:${SESSION_ID}:legacy-user`,
+            `claude:${SESSION_ID}:legacy-assistant`
+        ])
+    })
+
     it('does not miss cwd when the first transcript record exceeds the old pre-read window', () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const longPrompt = `Start ${'x'.repeat(70 * 1024)}`

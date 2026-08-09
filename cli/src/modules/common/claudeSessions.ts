@@ -24,6 +24,15 @@ type ParsedClaudeSession = {
     messages: ClaudeImportedMessage[]
 }
 
+type ClaudeTranscriptRecord = {
+    event: RawJSONLines | null
+    uuid: string | null
+    parentUuid: string | null
+    isSidechain: boolean
+    parentToolUseId: string | null
+    customTitle: string | null
+}
+
 function truncateText(value: string, maxLength: number): string {
     return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value
 }
@@ -93,6 +102,108 @@ function importedAgent(data: RawJSONLines): ClaudeImportedMessageContent {
     }
 }
 
+function parseTranscriptRecords(content: string): ClaudeTranscriptRecord[] {
+    const records: ClaudeTranscriptRecord[] = []
+    for (const line of content.split(/\r?\n/)) {
+        if (!line.trim()) continue
+        let raw: unknown
+        try {
+            raw = JSON.parse(line)
+        } catch {
+            continue
+        }
+        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
+        const rawRecord = raw as Record<string, unknown>
+        const parsed = RawJSONLinesSchema.safeParse(raw)
+        records.push({
+            event: parsed.success ? parsed.data : null,
+            uuid: typeof rawRecord.uuid === 'string' ? rawRecord.uuid : null,
+            parentUuid: typeof rawRecord.parentUuid === 'string' ? rawRecord.parentUuid : null,
+            isSidechain: rawRecord.isSidechain === true,
+            parentToolUseId: typeof rawRecord.parentToolUseId === 'string' ? rawRecord.parentToolUseId : null,
+            customTitle: rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string'
+                ? rawRecord.customTitle
+                : null
+        })
+    }
+    return records
+}
+
+function isImportableConversationRecord(record: ClaudeTranscriptRecord): record is ClaudeTranscriptRecord & { event: RawJSONLines; uuid: string } {
+    const event = record.event
+    return Boolean(
+        event &&
+        record.uuid &&
+        !event.isMeta &&
+        !event.isCompactSummary &&
+        isClaudeChatVisibleMessage(event)
+    )
+}
+
+function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> | null {
+    const topology = new Map<string, ClaudeTranscriptRecord>()
+    for (const record of records) {
+        if (record.uuid) topology.set(record.uuid, record)
+    }
+    let leaf: ClaudeTranscriptRecord | null = null
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+        const record = records[index]!
+        if (!record.isSidechain && isImportableConversationRecord(record)) {
+            leaf = record
+            break
+        }
+    }
+    if (!leaf?.uuid) return null
+
+    const activeMainIds = new Set<string>()
+    const visited = new Set<string>()
+    let currentUuid: string | null = leaf.uuid
+    let followedKnownParent = false
+    while (currentUuid && !visited.has(currentUuid)) {
+        visited.add(currentUuid)
+        activeMainIds.add(currentUuid)
+        const current = topology.get(currentUuid)
+        const parentUuid = current?.parentUuid ?? null
+        if (parentUuid && topology.has(parentUuid)) followedKnownParent = true
+        currentUuid = parentUuid
+    }
+    if (!followedKnownParent) return null
+
+    const activeToolUseIds = new Set<string>()
+    for (const record of records) {
+        if (!record.uuid || !activeMainIds.has(record.uuid) || record.event?.type !== 'assistant') continue
+        const content = record.event.message?.content
+        if (!Array.isArray(content)) continue
+        for (const block of content) {
+            if (block === null || typeof block !== 'object' || Array.isArray(block)) continue
+            const toolUse = block as Record<string, unknown>
+            if (toolUse.type === 'tool_use' && typeof toolUse.id === 'string') activeToolUseIds.add(toolUse.id)
+        }
+    }
+
+    const activeIds = new Set(activeMainIds)
+    for (const record of records) {
+        if (!record.uuid || !record.isSidechain || !isImportableConversationRecord(record)) continue
+        const sidechainVisited = new Set<string>()
+        let sidechainUuid: string | null = record.uuid
+        while (sidechainUuid && !sidechainVisited.has(sidechainUuid)) {
+            if (activeMainIds.has(sidechainUuid)) {
+                activeIds.add(record.uuid)
+                break
+            }
+            sidechainVisited.add(sidechainUuid)
+            const current = topology.get(sidechainUuid)
+            if (current && !current.isSidechain) break
+            if (current?.parentToolUseId && activeToolUseIds.has(current.parentToolUseId)) {
+                activeIds.add(record.uuid)
+                break
+            }
+            sidechainUuid = current?.parentUuid ?? null
+        }
+    }
+    return activeIds
+}
+
 function parseClaudeLocalSession(filePath: string, knownModifiedAt?: number): ParsedClaudeSession | null {
     let content: string
     let modifiedAt: number
@@ -114,26 +225,16 @@ function parseClaudeLocalSession(filePath: string, knownModifiedAt?: number): Pa
     let lastUserMessage: string | null = null
     let model: string | null = null
     const messages: ClaudeImportedMessage[] = []
+    const records = parseTranscriptRecords(content)
+    const activeRecordIds = activeClaudeRecordIds(records)
 
-    for (const line of content.split(/\r?\n/)) {
-        if (!line.trim()) continue
-        let raw: unknown
-        try {
-            raw = JSON.parse(line)
-            const record = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
-                ? raw as Record<string, unknown>
-                : null
-            if (record?.type === 'custom-title' && typeof record.customTitle === 'string') {
-                customTitle = record.customTitle.trim() || customTitle
-                continue
-            }
-            const parsed = RawJSONLinesSchema.safeParse(raw)
-            if (!parsed.success) continue
-            raw = parsed.data
-        } catch {
+    for (const record of records) {
+        if (record.customTitle !== null) {
+            customTitle = record.customTitle.trim() || customTitle
             continue
         }
-        const event = raw as RawJSONLines
+        const event = record.event
+        if (!event) continue
 
         cwd ??= event.cwd?.trim() || null
         if (event.type === 'ai-title') {
@@ -144,10 +245,10 @@ function parseClaudeLocalSession(filePath: string, knownModifiedAt?: number): Pa
             summary = event.summary.trim() || summary
             continue
         }
-        if (event.isMeta || event.isCompactSummary || !isClaudeChatVisibleMessage(event)) continue
+        if (!isImportableConversationRecord(record)) continue
 
-        const uuid = event.uuid
-        if (!uuid) continue
+        const uuid = record.uuid
+        if (activeRecordIds && !activeRecordIds.has(uuid)) continue
         const createdAt = parseTimestamp(event.timestamp, modifiedAt)
         if (isExternalUserMessage(event)) {
             const text = extractRawUserTextContent(event.message.content)?.trim()

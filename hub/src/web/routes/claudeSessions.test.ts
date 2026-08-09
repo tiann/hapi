@@ -190,7 +190,9 @@ describe('Claude session import', () => {
                 claudeSessionId: 'native-1'
             },
             {},
-            'default'
+            'default',
+            'claude-haiku-4-5',
+            'low'
         )
 
         const result = importClaudeSession({
@@ -198,7 +200,12 @@ describe('Claude session import', () => {
             engine,
             namespace: 'default',
             machine: machine(),
-            transcript: transcript('native-1', ['already observed'])
+            transcript: transcript('native-1', ['already observed']),
+            launchSettings: {
+                model: 'claude-opus-4-1',
+                effort: 'high',
+                permissionMode: 'bypassPermissions'
+            }
         })
 
         expect(result).toMatchObject({
@@ -207,6 +214,22 @@ describe('Claude session import', () => {
             appended: 0
         })
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(0)
+        expect(store.sessions.getSession(existing.id)).toMatchObject({
+            model: 'claude-opus-4-1',
+            effort: 'high',
+            metadata: expect.objectContaining({ preferredPermissionMode: 'bypassPermissions' })
+        })
+
+        importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: transcript('native-1', ['already observed']),
+            launchSettings: { model: null, effort: null }
+        })
+        expect(store.sessions.getSession(existing.id)).toMatchObject({ model: null, effort: null })
     })
 
     it('marks rewritten imported history as diverged', () => {

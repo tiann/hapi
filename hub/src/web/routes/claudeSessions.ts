@@ -123,6 +123,28 @@ function updateMetadataWithRetry(
     throw new Error('Claude import metadata changed concurrently')
 }
 
+function applyClaudeLaunchSettings(
+    store: Store,
+    sessionId: string,
+    namespace: string,
+    launchSettings: ClaudeImportLaunchSettings
+): void {
+    if (launchSettings.permissionMode !== undefined) {
+        updateMetadataWithRetry(
+            store,
+            sessionId,
+            namespace,
+            (metadata) => ({ ...metadata, preferredPermissionMode: launchSettings.permissionMode }) as Metadata
+        )
+    }
+    if (launchSettings.model !== undefined) {
+        store.sessions.setSessionModel(sessionId, launchSettings.model, namespace, { touchUpdatedAt: false })
+    }
+    if (launchSettings.effort !== undefined) {
+        store.sessions.setSessionEffort(sessionId, launchSettings.effort, namespace, { touchUpdatedAt: false })
+    }
+}
+
 function emitImportedMessages(engine: SyncEngine, sessionId: string, messages: StoredMessage[]): void {
     for (const message of messages) {
         engine.handleRealtimeEvent({
@@ -252,6 +274,8 @@ export function importClaudeSession(options: {
     // A normal HAPI-created Claude row already contains the history it observed live.
     // Reuse it instead of duplicating the same native conversation into an import row.
     if (stored && !asRecord(stored.metadata)?.claudeImportState) {
+        applyClaudeLaunchSettings(store, stored.id, namespace, launchSettings)
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
         return {
             claudeSessionId: transcript.id,
             hapiSessionId: stored.id,
@@ -305,6 +329,8 @@ export function importClaudeSession(options: {
                     error: { code: 'session_active', message }
                 }
             }
+            applyClaudeLaunchSettings(store, stored.id, namespace, launchSettings)
+            engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
             return {
                 claudeSessionId: transcript.id,
                 hapiSessionId: stored.id,
