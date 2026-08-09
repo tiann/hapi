@@ -496,6 +496,69 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.post('/sessions/:id/model-error/bridge', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'cursor') {
+            return c.json({ error: 'Model error bridge is only supported for Cursor sessions' }, 400)
+        }
+
+        try {
+            const result = await engine.bridgeModelError(sessionResult.sessionId)
+            if (!result.ok) {
+                return c.json({ ok: false, reason: result.reason ?? 'not_bridgeable' }, 409)
+            }
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to bridge model error'
+            if (message.includes('not active') || message.includes('not transient') || message.includes('already bridged') || message.includes('already failed')) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/model-error/auto-bridge-setting', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'cursor') {
+            return c.json({ error: 'Model error auto-bridge is only supported for Cursor sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        if (!body || typeof body !== 'object' || typeof body.enabled !== 'boolean') {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, {
+                autoBridgeTransientModelErrors: body.enabled
+            })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply auto-bridge setting'
+            return c.json({ error: message }, 409)
+        }
+    })
+
     app.post('/sessions/:id/migrate-to-acp', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

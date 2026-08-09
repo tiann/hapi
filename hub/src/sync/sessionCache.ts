@@ -914,6 +914,48 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
+    async markModelErrorBridged(sessionId: string, eventId: string): Promise<void> {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata ?? { path: '', host: '' }
+        const currentError = currentMetadata.lastModelError
+        if (!currentError || currentError.eventId !== eventId) {
+            return
+        }
+        if (currentError.bridgedForEventId === eventId) {
+            return
+        }
+
+        const newMetadata = {
+            ...currentMetadata,
+            lastModelError: {
+                ...currentError,
+                bridgedForEventId: eventId
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
     async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
         // Bind dismiss to the error the client actually showed. If a newer
         // lastModelError replaced it between render and click, refuse so we
@@ -1515,7 +1557,9 @@ export class SessionCache {
                 ...oldError,
                 ...newError,
                 acknowledgedAt: newError.acknowledgedAt ?? oldError.acknowledgedAt,
-                notifiedAt: newError.notifiedAt ?? oldError.notifiedAt
+                notifiedAt: newError.notifiedAt ?? oldError.notifiedAt,
+                bridgedForEventId: newError.bridgedForEventId ?? oldError.bridgedForEventId,
+                lastUserMessage: newError.lastUserMessage ?? oldError.lastUserMessage
             }
             changed = true
         }

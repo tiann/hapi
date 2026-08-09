@@ -159,6 +159,14 @@ function preserveModelErrorHubFields(
         preserved.notifiedAt = oldError.notifiedAt
         changed = true
     }
+    if (typeof oldError.bridgedForEventId === 'string' && newError.bridgedForEventId === undefined) {
+        preserved.bridgedForEventId = oldError.bridgedForEventId
+        changed = true
+    }
+    if (typeof oldError.lastUserMessage === 'string' && newError.lastUserMessage === undefined) {
+        preserved.lastUserMessage = oldError.lastUserMessage
+        changed = true
+    }
     if (!changed) {
         return merged
     }
