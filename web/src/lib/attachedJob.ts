@@ -28,21 +28,33 @@ export function formatAttachedJobElapsed(job: AttachedJob, now: number = Date.no
     return formatCompactElapsed(now - job.startedAt)
 }
 
+/** How long since the last heartbeat (for stale chrome). */
+export function formatAttachedJobHeartbeatAge(job: AttachedJob, now: number = Date.now()): string {
+    return formatCompactElapsed(Math.max(0, now - job.heartbeatAt))
+}
+
 /**
  * Progress label for the session row.
  * Always appends elapsed from startedAt — honest wall time, not an ETA.
+ * When stale, appends an explicit "no heartbeat · Xm" so a frozen done/total
+ * is not mistaken for a healthy live job (wardrobe dogfood).
  */
 export function formatAttachedJobProgress(job: AttachedJob, now: number = Date.now()): string {
     const elapsed = formatAttachedJobElapsed(job, now)
+    let base: string
     if (job.remaining !== undefined) {
         const unit = job.unit ? ` ${job.unit}` : ''
-        return `${job.remaining}${unit} left · ${elapsed}`
-    }
-    if (job.done !== undefined && job.total !== undefined && job.total > 0) {
+        base = `${job.remaining}${unit} left · ${elapsed}`
+    } else if (job.done !== undefined && job.total !== undefined && job.total > 0) {
         const pct = Math.min(100, Math.round((job.done / job.total) * 100))
-        return `${pct}% · ${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''} · ${elapsed}`
+        base = `${pct}% · ${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''} · ${elapsed}`
+    } else {
+        base = `running · ${elapsed}`
     }
-    return `running · ${elapsed}`
+    if (isAttachedJobStale(job, now)) {
+        return `${base} · no heartbeat · ${formatAttachedJobHeartbeatAge(job, now)}`
+    }
+    return base
 }
 
 export function attachedJobFraction(job: AttachedJob): number | null {

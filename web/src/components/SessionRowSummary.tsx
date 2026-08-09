@@ -311,7 +311,11 @@ export function SessionRowSummary(props: {
                             ? 'text-[var(--app-badge-warning-text)]'
                             : 'text-[var(--app-badge-success-text)]'
                     }`}
-                    title={attachedJob.detail ?? attachedJob.label}
+                    title={
+                        jobStale
+                            ? `${attachedJob.detail ?? attachedJob.label} — progress may be frozen (no heartbeat)`
+                            : (attachedJob.detail ?? attachedJob.label)
+                    }
                 >
                     <span
                         className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${jobStale ? '' : 'animate-pulse'}`}
@@ -319,6 +323,9 @@ export function SessionRowSummary(props: {
                     />
                     <span className="min-w-0 truncate font-medium">
                         {attachedJob.label}
+                        {jobStale ? (
+                            <span className="font-semibold"> · stale</span>
+                        ) : null}
                         <span className="font-normal opacity-80"> · {jobProgressLabel}</span>
                     </span>
                     {jobFraction !== null ? (

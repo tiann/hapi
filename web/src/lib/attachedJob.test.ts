@@ -35,21 +35,23 @@ describe('attachedJob helpers', () => {
 
     it('formats remaining count with elapsed', () => {
         const now = 1_000 + 2 * 60 * 60_000
-        expect(formatAttachedJobProgress(job({ remaining: 120, unit: 'tracks' }), now)).toBe(
-            '120 tracks left · 2h'
-        )
+        expect(formatAttachedJobProgress(
+            job({ remaining: 120, unit: 'tracks', heartbeatAt: now - 60_000 }),
+            now
+        )).toBe('120 tracks left · 2h')
     })
 
     it('formats done/total with derived percent and elapsed', () => {
         const now = 1_000 + 45 * 60_000
-        expect(formatAttachedJobProgress(job({ done: 800, total: 900, unit: 'tracks' }), now)).toBe(
-            '89% · 800/900 tracks · 45m'
-        )
+        expect(formatAttachedJobProgress(
+            job({ done: 800, total: 900, unit: 'tracks', heartbeatAt: now - 60_000 }),
+            now
+        )).toBe('89% · 800/900 tracks · 45m')
     })
 
     it('falls back to running + elapsed when only heartbeat', () => {
         const now = 1_000 + 90_000
-        expect(formatAttachedJobProgress(job(), now)).toBe('running · 1m')
+        expect(formatAttachedJobProgress(job({ heartbeatAt: now - 30_000 }), now)).toBe('running · 1m')
         expect(formatAttachedJobElapsed(job(), now)).toBe('1m')
     })
 
@@ -61,5 +63,16 @@ describe('attachedJob helpers', () => {
         const now = 1_000 + ATTACHED_JOB_STALE_MS + 1
         expect(isAttachedJobStale(job({ heartbeatAt: 1_000 }), now)).toBe(true)
         expect(isAttachedJobStale(job({ heartbeatAt: now - 60_000 }), now)).toBe(false)
+    })
+
+    it('appends no-heartbeat age when stale so frozen counts are obvious', () => {
+        const heartbeatAt = 1_000
+        const now = heartbeatAt + ATTACHED_JOB_STALE_MS + 60 * 60_000
+        expect(
+            formatAttachedJobProgress(
+                job({ done: 3700, total: 4441, heartbeatAt, startedAt: heartbeatAt }),
+                now
+            )
+        ).toBe('83% · 3700/4441 · 1h 15m · no heartbeat · 1h 15m')
     })
 })

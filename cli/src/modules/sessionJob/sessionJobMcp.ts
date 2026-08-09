@@ -1,50 +1,64 @@
 /**
  * MCP surface for session-attached jobs (tiann/hapi#1404).
  * Same discovery class as ping_peer / inspect_peer — tool catalog, not docs-only.
+ *
+ * Hard contract: MCP cannot create a long-lived bar (action=set is refused).
+ * Create meters with Shell + `hapi job run` (babysitter). MCP is for
+ * update / clear / list after a supervisor or CLI wrapper owns heartbeats.
  */
 
 import { z } from 'zod'
-import type { AttachedJob, AttachedJobPatch, AttachedJobUpsert } from '@hapi/protocol'
+import type { AttachedJob, AttachedJobPatch } from '@hapi/protocol'
 import {
     SessionJobError,
     clearSessionJob,
     listSessionJobs,
-    setSessionJob,
     updateSessionJob
 } from './sessionJob'
 
 export const SESSION_JOB_TOOL_NAME = 'session_job'
+
+/** Exact Shell recipe agents should run instead of MCP set. */
+export const SESSION_JOB_RUN_RECIPE =
+    'hapi job run "$HAPI_SESSION_ID" <job-key> --label "<label>" [--done N --total M|--remaining N] [--unit …] -- <cmd>…'
+
+export const SESSION_JOB_SET_REFUSED_TEXT = [
+    'action=set is refused over MCP.',
+    'Creating a progress meter for work that outlives this turn requires a babysitter',
+    'that heartbeats while the agent is idle — use the Shell tool:',
+    SESSION_JOB_RUN_RECIPE,
+    'MCP session_job is only for action=update (progress/heartbeat/terminal status),',
+    'action=clear, or action=list on a job that job run (or CLI set + self-heartbeat wrapper) already created.',
+    'Bare set + nohup freezes the bar when the agent goes idle (wardrobe dogfood).',
+].join(' ')
 
 /**
  * Self-contained tool description — agents select by matching intent to this text.
  * Write for selection, not for humans browsing a README.
  */
 export const SESSION_JOB_TOOL_DESCRIPTION = [
-    'Attach or update a hub-persisted progress meter on THIS HAPI session for work that',
-    'OUTLIVES this agent turn (nohup / batch import / rclone / compile / long drain /',
-    'external daemon). Own-session only (auto-approved) — not for injecting meters onto',
-    'peer sessions (use CLI hapi job for that). The session list shows the meter while',
-    'the agent is idle (active:false). Prefer CLI for process-shaped work:',
-    'hapi job run "$HAPI_SESSION_ID" <job-key> --label … -- <cmd> (auto-heartbeats).',
-    'Manual: action=set BEFORE starting the process, then action=update at least every',
-    '~10 minutes from a self-heartbeating wrapper — an idle agent cannot. Prefer honest',
-    'remaining or done+total; omit counts when unknown (UI shows "running" + elapsed).',
-    'Never invent a percent or ETA. Finish with action=update status=completed|failed',
-    'or action=clear. Not for in-agent todos, thinking progress, or short tool calls.',
+    'Progress meter on THIS HAPI session for work that OUTLIVES the agent turn.',
+    'Own-session only. CRITICAL: do NOT use action=set — it is refused.',
+    'To START a long job, use the Shell tool with:',
+    SESSION_JOB_RUN_RECIPE,
+    '(auto-heartbeats + completed/failed on exit). Idle agents cannot heartbeat.',
+    'This MCP tool: action=update (progress/status), action=clear, action=list only.',
+    'Prefer honest remaining or done+total; omit counts when unknown.',
+    'Never invent a percent or ETA. Not for todos, thinking, or short tool calls.',
 ].join(' ')
 
 export const sessionJobInputSchema: z.ZodTypeAny = z.object({
     action: z.enum(['set', 'update', 'clear', 'list']).describe(
-        'set=register/upsert running job; update=heartbeat/progress/status; clear=remove; list=show jobs'
+        'set=REFUSED (use Shell hapi job run). update=heartbeat/progress/status; clear=remove; list=show jobs'
     ),
     jobKey: z.string().trim().min(1).max(128).optional().describe(
-        'Stable job key (alnum . _ -). Required for set/update/clear.'
+        'Stable job key (alnum . _ -). Required for update/clear.'
     ),
     label: z.string().trim().min(1).max(200).optional().describe(
-        'Short human label for the list chrome. Required for set.'
+        'Ignored for MCP set (refused). Optional on update.'
     ),
     status: z.enum(['running', 'completed', 'failed']).optional().describe(
-        'Job status. Default running on set.'
+        'Job status on update (completed|failed to finish).'
     ),
     done: z.number().nonnegative().optional().describe('Units completed (pair with total when known).'),
     total: z.number().positive().optional().describe('Total units when both ends of a fraction exist.'),
@@ -52,7 +66,7 @@ export const sessionJobInputSchema: z.ZodTypeAny = z.object({
     unit: z.string().trim().min(1).max(64).optional().describe('Unit label (tracks, folders, files, …).'),
     detail: z.string().max(500).optional().describe('Stage / current item text (not an ETA).'),
     startedAt: z.number().optional().describe(
-        'Epoch ms process start. Only on set/upsert; omit on heartbeats. Correct late attach with explicit value.'
+        'Not used over MCP (set is refused). Correct clocks via CLI job set --started-at.'
     )
 })
 
@@ -94,6 +108,11 @@ export async function handleSessionJobTool(
         }
     }
 
+    // Hard footgun close: MCP must not create orphan meters (set + idle agent).
+    if (args.action === 'set') {
+        return { text: SESSION_JOB_SET_REFUSED_TEXT, isError: true }
+    }
+
     try {
         if (args.action === 'list') {
             const result = await listSessionJobs({ sessionIdPrefix })
@@ -108,38 +127,20 @@ export async function handleSessionJobTool(
         }
 
         if (!args.jobKey?.trim()) {
-            return { text: 'jobKey is required for set/update/clear', isError: true }
+            return { text: 'jobKey is required for update/clear', isError: true }
         }
         const jobKey = args.jobKey.trim()
 
-        if (args.startedAt !== undefined && args.action !== 'set') {
-            return { text: 'startedAt is only valid with action=set', isError: true }
+        if (args.startedAt !== undefined) {
+            return {
+                text: 'startedAt is not valid over MCP (set is refused; use CLI job set --started-at)',
+                isError: true
+            }
         }
 
         if (args.action === 'clear') {
             const result = await clearSessionJob({ sessionIdPrefix, jobKey })
             return { text: `cleared ${jobKey} on ${result.sessionId}`, isError: false }
-        }
-
-        if (args.action === 'set') {
-            if (!args.label?.trim()) {
-                return { text: 'label is required for action=set', isError: true }
-            }
-            const body: AttachedJobUpsert = {
-                label: args.label.trim(),
-                status: args.status ?? 'running',
-                ...(args.done !== undefined ? { done: args.done } : {}),
-                ...(args.total !== undefined ? { total: args.total } : {}),
-                ...(args.remaining !== undefined ? { remaining: args.remaining } : {}),
-                ...(args.unit !== undefined ? { unit: args.unit } : {}),
-                ...(args.detail !== undefined ? { detail: args.detail } : {}),
-                ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {})
-            }
-            const result = await setSessionJob({ sessionIdPrefix, jobKey, body })
-            return {
-                text: `set ${formatJobLine(result.job)} on ${result.sessionId}`,
-                isError: false
-            }
         }
 
         // update

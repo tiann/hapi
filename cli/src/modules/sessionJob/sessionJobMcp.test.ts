@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { handleSessionJobTool, SESSION_JOB_TOOL_DESCRIPTION } from './sessionJobMcp'
+import {
+    handleSessionJobTool,
+    SESSION_JOB_RUN_RECIPE,
+    SESSION_JOB_SET_REFUSED_TEXT,
+    SESSION_JOB_TOOL_DESCRIPTION
+} from './sessionJobMcp'
 
 vi.mock('./sessionJob', () => ({
     SessionJobError: class SessionJobError extends Error {
@@ -9,18 +14,9 @@ vi.mock('./sessionJob', () => ({
             this.code = code
         }
     },
-    setSessionJob: vi.fn(async () => ({
-        sessionId: 'sid-1',
-        job: {
-            key: 'beets',
-            label: 'beets import',
-            status: 'running',
-            remaining: 12,
-            heartbeatAt: 1,
-            startedAt: 1,
-            updatedAt: 1
-        }
-    })),
+    setSessionJob: vi.fn(async () => {
+        throw new Error('setSessionJob must not be called from MCP')
+    }),
     updateSessionJob: vi.fn(async () => ({
         sessionId: 'sid-1',
         job: {
@@ -38,27 +34,23 @@ vi.mock('./sessionJob', () => ({
 }))
 
 describe('sessionJobMcp', () => {
-    it('description steers outliving batch work and honest progress', () => {
+    it('description steers to job run and forbids MCP set', () => {
         expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/OUTLIVES/i)
-        expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/Never invent a percent/i)
+        expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/do NOT use action=set/i)
         expect(SESSION_JOB_TOOL_DESCRIPTION).toContain('hapi job run')
+        expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/Own-session only/i)
     })
 
-    it('set requires label and always targets the caller session id', async () => {
+    it('hard-refuses action=set and never calls setSessionJob', async () => {
         const { setSessionJob } = await import('./sessionJob')
         const result = await handleSessionJobTool(
             { action: 'set', jobKey: 'beets', label: 'beets import', remaining: 12 },
             'sid-1'
         )
-        expect(result.isError).toBe(false)
-        expect(result.text).toContain('set beets')
-        expect(setSessionJob).toHaveBeenCalledWith(
-            expect.objectContaining({ sessionIdPrefix: 'sid-1' })
-        )
-    })
-
-    it('description claims own-session only', () => {
-        expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/Own-session only/i)
+        expect(result.isError).toBe(true)
+        expect(result.text).toBe(SESSION_JOB_SET_REFUSED_TEXT)
+        expect(result.text).toContain(SESSION_JOB_RUN_RECIPE)
+        expect(setSessionJob).not.toHaveBeenCalled()
     })
 
     it('treats empty update as a heartbeat-only patch', async () => {
@@ -84,6 +76,6 @@ describe('sessionJobMcp', () => {
             'sid-1'
         )
         expect(result.isError).toBe(true)
-        expect(result.text).toMatch(/startedAt is only valid with action=set/)
+        expect(result.text).toMatch(/startedAt is not valid over MCP/)
     })
 })
