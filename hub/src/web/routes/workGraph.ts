@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import {
+    WORK_GRAPH_MAX_BODY_BYTES,
     WorkGraphEventCreateSchema,
     WorkGraphEventLinkCreateSchema,
     principalMatchesAuthenticatedOwner
@@ -8,6 +10,11 @@ import type { Store } from '../../store'
 import { WorkGraphNotFoundError, WorkGraphPrincipalError } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
+const workGraphBodyLimit = bodyLimit({
+    maxSize: WORK_GRAPH_MAX_BODY_BYTES,
+    onError: (c) => c.json({ error: 'Request body too large' }, 413)
+})
+
 /**
  * Minimal HTTP surface for the A2A work-graph ledger (P1 / #1374).
  * Path is intentionally NOT `/api/events` — that route is the SSE stream.
@@ -15,7 +22,7 @@ import type { WebAppEnv } from '../middleware/auth'
 export function createWorkGraphRoutes(store: Store): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    app.post('/work-graph/events', async (c) => {
+    app.post('/work-graph/events', workGraphBodyLimit, async (c) => {
         const json = await c.req.json().catch(() => null)
         const parsed = WorkGraphEventCreateSchema.safeParse(json)
         if (!parsed.success) {
@@ -71,7 +78,7 @@ export function createWorkGraphRoutes(store: Store): Hono<WebAppEnv> {
         return c.json({ event })
     })
 
-    app.post('/work-graph/event-links', async (c) => {
+    app.post('/work-graph/event-links', workGraphBodyLimit, async (c) => {
         const json = await c.req.json().catch(() => null)
         const parsed = WorkGraphEventLinkCreateSchema.safeParse(json)
         if (!parsed.success) {

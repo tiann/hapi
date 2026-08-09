@@ -109,7 +109,16 @@ export function extractAssistantPlainText(content: unknown): string | null {
 
     if (content.type === 'output') {
         const data = isObject(content.data) ? content.data : null
-        if (!data || data.type !== 'assistant') return null
+        if (!data) return null
+
+        // AGY planner prose (cli wraps PLANNER_RESPONSE as agy_message).
+        if (data.type === 'agy_message') {
+            return typeof data.content === 'string' && data.content.trim().length > 0
+                ? data.content
+                : null
+        }
+
+        if (data.type !== 'assistant') return null
         const message = isObject(data.message) ? data.message : null
         const blocks = Array.isArray(message?.content) ? message.content : null
         if (!blocks) return null

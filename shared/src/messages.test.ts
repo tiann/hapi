@@ -87,6 +87,21 @@ describe('extractAssistantPlainText', () => {
         expect(extractAssistantPlainText(content)).toBeNull()
     })
 
+    test('extracts AGY agy_message prose', () => {
+        const content = {
+            type: 'output',
+            data: { type: 'agy_message', content: 'PINGOK\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok"}' }
+        }
+        expect(extractAssistantPlainText(content)).toContain('AGENT_NOTIFY_SUMMARY')
+    })
+
+    test('returns null for empty AGY agy_message', () => {
+        expect(extractAssistantPlainText({
+            type: 'output',
+            data: { type: 'agy_message', content: '   ' }
+        })).toBeNull()
+    })
+
     test('returns null for unknown content shapes', () => {
         expect(extractAssistantPlainText({ type: 'event', data: {} })).toBeNull()
         expect(extractAssistantPlainText({ type: 'text' })).toBeNull()

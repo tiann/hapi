@@ -233,4 +233,45 @@ describe('SyncEngine.handleRealtimeEvent notify → work-graph ingest', () => {
         })
         expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(0)
     })
+
+    it('captures notify footers from AGY agy_message envelopes', () => {
+        const { engine, store } = makeEngine()
+        const session = store.sessions.getOrCreateSession(
+            'notify-wiring-agy',
+            { path: '/tmp', host: 'h', flavor: 'agy' },
+            null,
+            'default'
+        )
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+        engine.handleRealtimeEvent({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'msg-wire-agy',
+                seq: 1,
+                localId: null,
+                createdAt: 1_670_000_000_000,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'agy_message',
+                            content: 'PINGOK\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"AGY footer","agent":"forged-peer"}'
+                        }
+                    }
+                }
+            }
+        })
+
+        const rows = store.workGraph.listByRelatedSession('default', session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.summary).toBe('AGY footer')
+        expect(rows[0]!.principal).toEqual({
+            kind: 'agent',
+            id: `session:${session.id}`,
+            on_behalf_of: '7'
+        })
+        expect(rows[0]!.payloadJson).toMatchObject({ agent: 'forged-peer' })
+    })
 })

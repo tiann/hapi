@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
+    WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES,
+    WorkGraphEventCreateSchema,
     WorkGraphPrincipalSchema,
     isPrincipalAccountable,
     principalMatchesAuthenticatedOwner
@@ -51,5 +53,30 @@ describe('principal accountability helpers', () => {
             id: 'worker',
             on_behalf_of: '99'
         }, 1)).toBe(false)
+    })
+})
+
+describe('WorkGraphEventCreateSchema bounds', () => {
+    const base = {
+        source_kind: 'session',
+        source_ref: 'sess-1',
+        event_type: 'work_ad',
+        principal: { kind: 'human' as const, id: '1' }
+    }
+
+    it('rejects oversized payload_json', () => {
+        const parsed = WorkGraphEventCreateSchema.safeParse({
+            ...base,
+            payload_json: { blob: 'x'.repeat(WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES) }
+        })
+        expect(parsed.success).toBe(false)
+    })
+
+    it('rejects too many tags', () => {
+        const parsed = WorkGraphEventCreateSchema.safeParse({
+            ...base,
+            tags: Array.from({ length: 33 }, (_, i) => `t${i}`)
+        })
+        expect(parsed.success).toBe(false)
     })
 })

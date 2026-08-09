@@ -7,27 +7,36 @@ import { z } from 'zod'
 export const WorkGraphPrincipalSchema = z.discriminatedUnion('kind', [
     z.object({
         kind: z.literal('human'),
-        id: z.string().min(1)
+        id: z.string().min(1).max(256)
     }),
     z.object({
         kind: z.literal('agent'),
-        id: z.string().min(1),
-        on_behalf_of: z.string().min(1)
+        id: z.string().min(1).max(256),
+        on_behalf_of: z.string().min(1).max(256)
     }),
     z.object({
         kind: z.literal('service'),
-        id: z.string().min(1),
-        on_behalf_of: z.string().min(1)
+        id: z.string().min(1).max(256),
+        on_behalf_of: z.string().min(1).max(256)
     })
 ])
 export type WorkGraphPrincipal = z.infer<typeof WorkGraphPrincipalSchema>
 
+/** Caps for HTTP write bodies (paired with route bodyLimit). */
+export const WORK_GRAPH_MAX_STRING = 8_192
+export const WORK_GRAPH_MAX_SUMMARY = 2_048
+export const WORK_GRAPH_MAX_TAGS = 32
+export const WORK_GRAPH_MAX_ARTIFACT_REFS = 32
+export const WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES = 32 * 1024
+/** Hono bodyLimit for POST /work-graph/* (JSON + overhead). */
+export const WORK_GRAPH_MAX_BODY_BYTES = 64 * 1024
+
 export const WorkGraphArtifactRefSchema = z.object({
-    kind: z.string().min(1),
-    url: z.string().optional(),
-    title: z.string().optional(),
-    ref: z.string().nullable().optional(),
-    source: z.string().optional(),
+    kind: z.string().min(1).max(128),
+    url: z.string().max(WORK_GRAPH_MAX_STRING).optional(),
+    title: z.string().max(512).optional(),
+    ref: z.string().max(WORK_GRAPH_MAX_STRING).nullable().optional(),
+    source: z.string().max(128).optional(),
     created_at: z.number().optional()
 }).passthrough()
 export type WorkGraphArtifactRef = z.infer<typeof WorkGraphArtifactRefSchema>
@@ -35,33 +44,46 @@ export type WorkGraphArtifactRef = z.infer<typeof WorkGraphArtifactRefSchema>
 /** Open vocabulary; common Layer 1 types listed for docs, not enforced as enum. */
 export const WORK_GRAPH_EVENT_TYPES = ['work_ad', 'handoff', 'handoff_receipt'] as const
 
+function payloadJsonWithinLimit(value: unknown): boolean {
+    if (value === undefined) return true
+    try {
+        return JSON.stringify(value).length <= WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES
+    } catch {
+        return false
+    }
+}
+
 export const WorkGraphEventCreateSchema = z.object({
-    source_kind: z.string().min(1),
-    source_ref: z.string().min(1),
-    sink_kind: z.string().min(1).optional(),
-    sink_ref: z.string().min(1).optional(),
-    event_type: z.string().min(1),
-    summary: z.string().optional(),
-    payload_json: z.unknown().optional(),
-    artifact_refs: z.array(WorkGraphArtifactRefSchema).optional(),
-    tags: z.array(z.string()).optional(),
-    related_session_id: z.string().min(1).optional(),
-    related_event_id: z.string().min(1).optional(),
-    provenance: z.string().optional(),
-    idempotency_key: z.string().min(1).optional(),
-    dedupe_key: z.string().min(1).optional(),
+    source_kind: z.string().min(1).max(128),
+    source_ref: z.string().min(1).max(WORK_GRAPH_MAX_STRING),
+    sink_kind: z.string().min(1).max(128).optional(),
+    sink_ref: z.string().min(1).max(WORK_GRAPH_MAX_STRING).optional(),
+    event_type: z.string().min(1).max(128),
+    summary: z.string().max(WORK_GRAPH_MAX_SUMMARY).optional(),
+    payload_json: z.unknown().optional().refine(payloadJsonWithinLimit, {
+        message: `payload_json exceeds ${WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES} bytes`
+    }),
+    artifact_refs: z.array(WorkGraphArtifactRefSchema).max(WORK_GRAPH_MAX_ARTIFACT_REFS).optional(),
+    tags: z.array(z.string().max(256)).max(WORK_GRAPH_MAX_TAGS).optional(),
+    related_session_id: z.string().min(1).max(256).optional(),
+    related_event_id: z.string().min(1).max(256).optional(),
+    provenance: z.string().max(512).optional(),
+    idempotency_key: z.string().min(1).max(512).optional(),
+    dedupe_key: z.string().min(1).max(512).optional(),
     confidence: z.number().optional(),
-    severity: z.string().optional(),
+    severity: z.string().max(64).optional(),
     expires_at: z.number().optional(),
     principal: WorkGraphPrincipalSchema
 })
 export type WorkGraphEventCreate = z.infer<typeof WorkGraphEventCreateSchema>
 
 export const WorkGraphEventLinkCreateSchema = z.object({
-    from_event_id: z.string().min(1),
-    to_event_id: z.string().min(1),
-    relation_type: z.string().min(1),
-    metadata_json: z.unknown().optional()
+    from_event_id: z.string().min(1).max(256),
+    to_event_id: z.string().min(1).max(256),
+    relation_type: z.string().min(1).max(128),
+    metadata_json: z.unknown().optional().refine(payloadJsonWithinLimit, {
+        message: `metadata_json exceeds ${WORK_GRAPH_MAX_PAYLOAD_JSON_BYTES} bytes`
+    })
 })
 export type WorkGraphEventLinkCreate = z.infer<typeof WorkGraphEventLinkCreateSchema>
 

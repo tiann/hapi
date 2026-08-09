@@ -5,7 +5,7 @@ import type { WebAppEnv } from '../middleware/auth'
 import { createAuthMiddleware } from '../middleware/auth'
 import { Store } from '../../store'
 import { createWorkGraphRoutes } from './workGraph'
-import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { PROTOCOL_VERSION, WORK_GRAPH_MAX_BODY_BYTES } from '@hapi/protocol'
 
 const JWT_SECRET = new TextEncoder().encode('test-secret')
 
@@ -159,5 +159,22 @@ describe('work-graph routes', () => {
         expect(secondJson.inserted).toBe(false)
         expect(secondJson.event.id).toBe(firstJson.event.id)
         expect(secondJson.event.summary).toBe('once')
+    })
+
+    it('rejects oversized POST bodies with 413', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store)
+        const headers = await authHeaders('default')
+        const oversized = 'x'.repeat(WORK_GRAPH_MAX_BODY_BYTES + 1)
+        const response = await app.request('/api/work-graph/events', {
+            method: 'POST',
+            headers: {
+                ...headers,
+                'content-type': 'application/json',
+                'content-length': String(oversized.length)
+            },
+            body: oversized
+        })
+        expect(response.status).toBe(413)
     })
 })

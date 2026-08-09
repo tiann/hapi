@@ -30,24 +30,29 @@ export const WORK_AD_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 /**
  * Map AGENT_NOTIFY_SUMMARY.status → WorkAd payload status.
  * Notify contract uses needs_review / stalled; ledger uses RFC WorkAd vocab.
+ *
+ * Policy: RFC `stale` is derived from `expires_at`, never from a fresh
+ * self-report. `stalled` means the worker believes it is stuck → `blocked`.
+ * An agent emitting status "stale" is treated as `unknown`.
  */
 export function mapNotifyStatusToWorkAdStatus(status: string | undefined): WorkAdStatus {
     switch (status) {
         case 'done':
             return 'done'
         case 'blocked':
+        case 'stalled':
             return 'blocked'
         case 'needs_decision':
         case 'needs_review':
             return 'needs_decision'
         case 'failed':
             return 'failed'
-        case 'stalled':
-            return 'stale'
         case 'in_progress':
             return 'in_progress'
+        case 'stale':
+            return 'unknown'
         default:
-            return status && WORK_AD_STATUSES.includes(status as WorkAdStatus)
+            return status && WORK_AD_STATUSES.includes(status as WorkAdStatus) && status !== 'stale'
                 ? status as WorkAdStatus
                 : 'unknown'
     }
@@ -112,7 +117,8 @@ export function buildWorkAdFromNotify(params: {
     expiresAt?: number
 }): WorkGraphEventCreate {
     const status = mapNotifyStatusToWorkAdStatus(params.notify.status)
-    const agentId = params.notify.agent?.trim() || `session:${params.sessionId}`
+    // Audit principal is always session-bound. notify.agent is untrusted
+    // self-label text and stays advisory in payload/tags only.
     return {
         source_kind: 'session',
         source_ref: params.sessionId,
@@ -122,6 +128,7 @@ export function buildWorkAdFromNotify(params: {
             status,
             action: params.notify.action ?? null,
             project: params.notify.project ?? null,
+            agent: params.notify.agent ?? null,
             notify_summary: params.notify,
             messageId: params.messageId
         },
@@ -132,7 +139,7 @@ export function buildWorkAdFromNotify(params: {
         expires_at: params.expiresAt ?? (params.ts + WORK_AD_DEFAULT_TTL_MS),
         principal: {
             kind: 'agent',
-            id: agentId,
+            id: `session:${params.sessionId}`,
             on_behalf_of: String(params.ownerUserId)
         }
     }

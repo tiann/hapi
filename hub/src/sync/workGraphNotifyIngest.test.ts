@@ -29,7 +29,8 @@ describe('mapNotifyStatusToWorkAdStatus', () => {
         expect(mapNotifyStatusToWorkAdStatus('needs_decision')).toBe('needs_decision')
         expect(mapNotifyStatusToWorkAdStatus('needs_review')).toBe('needs_decision')
         expect(mapNotifyStatusToWorkAdStatus('failed')).toBe('failed')
-        expect(mapNotifyStatusToWorkAdStatus('stalled')).toBe('stale')
+        expect(mapNotifyStatusToWorkAdStatus('stalled')).toBe('blocked')
+        expect(mapNotifyStatusToWorkAdStatus('stale')).toBe('unknown')
         expect(mapNotifyStatusToWorkAdStatus('in_progress')).toBe('in_progress')
         expect(mapNotifyStatusToWorkAdStatus(undefined)).toBe('unknown')
         expect(mapNotifyStatusToWorkAdStatus('weird')).toBe('unknown')
@@ -63,7 +64,7 @@ describe('buildWorkAdFromNotify field mapping', () => {
         expect(create.expires_at).toBe(ts + WORK_AD_DEFAULT_TTL_MS)
         expect(create.principal).toEqual({
             kind: 'agent',
-            id: 'peer-a',
+            id: 'session:sess-1',
             on_behalf_of: '42'
         })
         expect(create.tags).toContain('project:hapi')
@@ -72,23 +73,25 @@ describe('buildWorkAdFromNotify field mapping', () => {
             status: 'done',
             action: 'review diff',
             project: 'hapi',
+            agent: 'peer-a',
             messageId: 'msg-1'
         })
     })
 
-    it('uses session: prefix when notify.agent is omitted', () => {
+    it('never trusts notify.agent as principal.id', () => {
         const create = buildWorkAdFromNotify({
             sessionId: 'sess-xyz',
             messageId: 'msg-1',
             ownerUserId: 1,
             ts: 1000,
-            notify: { status: 'done', summary: 'ok' }
+            notify: { status: 'done', summary: 'ok', agent: 'forged-peer' }
         })
         expect(create.principal).toEqual({
             kind: 'agent',
             id: 'session:sess-xyz',
             on_behalf_of: '1'
         })
+        expect(create.payload_json).toMatchObject({ agent: 'forged-peer' })
     })
 })
 
