@@ -183,6 +183,7 @@ export class RpcGateway {
             transient: boolean
             bridgedForEventId?: string
             retriedAndFailed?: boolean
+            supersededByUserTurn?: boolean
         }
     ): Promise<{ ok: boolean; reason?: string }> {
         return await this.sessionRpc(sessionId, RPC_METHODS.BridgeModelError, payload) as {

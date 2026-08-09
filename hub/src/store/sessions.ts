@@ -163,6 +163,14 @@ function preserveModelErrorHubFields(
         preserved.bridgedForEventId = oldError.bridgedForEventId
         changed = true
     }
+    if (oldError.retriedAndFailed === true && newError.retriedAndFailed !== true) {
+        preserved.retriedAndFailed = true
+        changed = true
+    }
+    if (oldError.supersededByUserTurn === true && newError.supersededByUserTurn !== true) {
+        preserved.supersededByUserTurn = true
+        changed = true
+    }
     if (typeof oldError.lastUserMessage === 'string' && newError.lastUserMessage === undefined) {
         preserved.lastUserMessage = oldError.lastUserMessage
         changed = true

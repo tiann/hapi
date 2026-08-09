@@ -15,6 +15,7 @@ export type ModelErrorBridgeGate = {
     eventId: string;
     bridgedForEventId?: string;
     retriedAndFailed?: boolean;
+    supersededByUserTurn?: boolean;
 };
 
 export function truncateLastUserMessage(message: string): string {
@@ -58,6 +59,9 @@ export function canBridgeModelError(gate: ModelErrorBridgeGate): boolean {
     if (gate.retriedAndFailed) {
         return false;
     }
+    if (gate.supersededByUserTurn) {
+        return false;
+    }
     if (gate.bridgedForEventId === gate.eventId) {
         return false;
     }
@@ -66,11 +70,13 @@ export function canBridgeModelError(gate: ModelErrorBridgeGate): boolean {
 
 /** Merge hub RPC snapshot gates into local state without clobbering. */
 export function mergeBridgeGateFields(
-    prior: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed'> | null | undefined,
-    incoming: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed'>
-): Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed'> {
+    prior: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn'> | null | undefined,
+    incoming: Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn'>
+): Pick<ModelErrorBridgeGate, 'bridgedForEventId' | 'retriedAndFailed' | 'supersededByUserTurn'> {
     return {
         bridgedForEventId: incoming.bridgedForEventId ?? prior?.bridgedForEventId,
-        retriedAndFailed: incoming.retriedAndFailed === true || prior?.retriedAndFailed === true
+        retriedAndFailed: incoming.retriedAndFailed === true || prior?.retriedAndFailed === true,
+        supersededByUserTurn: incoming.supersededByUserTurn === true
+            || prior?.supersededByUserTurn === true
     };
 }

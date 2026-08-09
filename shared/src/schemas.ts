@@ -173,6 +173,11 @@ export const MetadataSchema = z.object({
         lastUserMessage: z.string().optional(),
         bridgedForEventId: z.string().optional(),
         retriedAndFailed: z.boolean().optional(),
+        /**
+         * Set when a non-bridge user turn starts after this error was recorded.
+         * Blocks Bridge so a later retry cannot replay work the newer turn already handled.
+         */
+        supersededByUserTurn: z.boolean().optional(),
         acknowledgedAt: z.number().optional(),
         /** Hub-owned: successful push/FCM/Telegram delivery watermark. */
         notifiedAt: z.number().optional()

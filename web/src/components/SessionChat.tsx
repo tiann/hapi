@@ -1928,7 +1928,9 @@ function SessionChatInner(props: SessionChatProps) {
             <ModelErrorBanner
                 metadata={props.session.metadata}
                 onDismiss={handleAcknowledgeModelError}
-                onBridge={agentFlavor === 'cursor' ? handleBridgeModelError : undefined}
+                onBridge={agentFlavor === 'cursor' && props.session.active
+                    ? handleBridgeModelError
+                    : undefined}
                 isBridging={isBridgingModelError}
                 bridgeErrorReason={bridgeModelErrorReason}
             />

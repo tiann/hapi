@@ -2296,6 +2296,90 @@ describe('cursorAcpRemoteLauncher', () => {
         await launchPromise;
     });
 
+    it('rejects bridge after a newer normal turn succeeds', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            updateMetadata: ReturnType<typeof vi.fn>
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        const readLastModelError = (): {
+            eventId?: string
+            supersededByUserTurn?: boolean
+        } | undefined => {
+            for (let i = client.updateMetadata.mock.calls.length - 1; i >= 0; i -= 1) {
+                const updater = client.updateMetadata.mock.calls[i]?.[0] as
+                    | ((m: Record<string, unknown>) => Record<string, unknown>)
+                    | undefined;
+                if (typeof updater !== 'function') continue;
+                const err = updater({}).lastModelError as {
+                    eventId?: string
+                    supersededByUserTurn?: boolean
+                } | undefined;
+                if (typeof err?.eventId === 'string') {
+                    return err;
+                }
+            }
+            return undefined;
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        // Idle structural stderr records a durable modelError (no auto-bridge).
+        expect(harness.stderrErrorHandler).toBeTypeOf('function');
+        harness.stderrErrorHandler!({
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        });
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const eventId = readLastModelError()?.eventId;
+        expect(eventId).toEqual(expect.any(String));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        // Newer normal turn starts → durable supersededByUserTurn gate.
+        session.queue.push('continue without bridging', { permissionMode: 'default' });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        await vi.waitFor(() => readLastModelError()?.supersededByUserTurn === true);
+
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
     it('cancels a pending bridge when a newer modelError supersedes it', async () => {
         const session = makeSession(null, { keepQueueOpen: true });
         const client = session.client as unknown as {

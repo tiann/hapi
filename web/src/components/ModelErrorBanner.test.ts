@@ -52,6 +52,12 @@ describe('model error UI states', () => {
         expect(getModelErrorUiState(metadata)).toBeNull()
         expect(hasActiveModelError(metadata)).toBe(false)
     })
+
+    it('hides Bridge when a newer turn superseded the error', () => {
+        const metadata = holder({ ...base, supersededByUserTurn: true })
+        expect(getModelErrorUiState(metadata)).toBe('unrecovered')
+        expect(canShowModelErrorBridge(metadata)).toBe(false)
+    })
 })
 
 describe('model error chat event labels', () => {

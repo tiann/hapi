@@ -78,6 +78,13 @@ describe('canBridgeModelError', () => {
             retriedAndFailed: true
         })).toBe(false);
     });
+
+    it('blocks when a newer normal turn superseded the error', () => {
+        expect(canBridgeModelError({
+            ...base,
+            supersededByUserTurn: true
+        })).toBe(false);
+    });
 });
 
 describe('mergeBridgeGateFields', () => {
@@ -100,6 +107,19 @@ describe('mergeBridgeGateFields', () => {
             { bridgedForEventId: undefined, retriedAndFailed: false }
         );
         expect(merged.retriedAndFailed).toBe(true);
+    });
+
+    it('preserves supersededByUserTurn when hub omits it', () => {
+        const merged = mergeBridgeGateFields(
+            { supersededByUserTurn: true },
+            { bridgedForEventId: undefined, retriedAndFailed: false, supersededByUserTurn: undefined }
+        );
+        expect(merged.supersededByUserTurn).toBe(true);
+        expect(canBridgeModelError({
+            transient: true,
+            eventId: 'evt-1000',
+            ...merged
+        })).toBe(false);
     });
 });
 
