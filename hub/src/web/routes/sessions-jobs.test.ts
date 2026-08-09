@@ -219,4 +219,38 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         )
         expect(badBody.status).toBe(400)
     })
+
+    it('refuses DELETE /sessions/:id while a primary attached job is running', async () => {
+        const session = createSession({ active: false })
+        let deleted = false
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
+            getPrimaryAttachedJob: () => ({
+                key: 'beets',
+                label: 'beets import',
+                status: 'running' as const,
+                heartbeatAt: 1,
+                startedAt: 1,
+                updatedAt: 1
+            }),
+            deleteSession: async () => {
+                deleted = true
+            }
+        } as unknown as SyncEngine
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine))
+
+        const res = await app.request(`http://localhost/api/sessions/${session.id}`, {
+            method: 'DELETE'
+        })
+        expect(res.status).toBe(409)
+        expect(deleted).toBe(false)
+        const body = await res.json() as { error: string }
+        expect(body.error).toMatch(/attached job is running/i)
+    })
 })

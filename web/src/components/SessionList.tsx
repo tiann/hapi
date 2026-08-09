@@ -248,7 +248,15 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
             if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
             return b.updatedAt - a.updatedAt
         })
-        result.push(group[0])
+        const winner = group[0]!
+        result.push(winner)
+        // Hub skips merge when two rows stay active — keep job-bearing losers so the
+        // outliving meter is not hidden behind a jobless duplicate winner.
+        for (const duplicate of group.slice(1)) {
+            if (hasRunningAttachedJob(duplicate)) {
+                result.push(duplicate)
+            }
+        }
     }
 
     return result

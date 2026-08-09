@@ -900,6 +900,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Cannot delete active session. Archive it first.' }, 409)
         }
 
+        // Attached jobs outlive active=false; CASCADE would erase the live meter and
+        // leave supervisors PATCHing a deleted session (404 forever).
+        if (engine.getPrimaryAttachedJob(sessionResult.sessionId)) {
+            return c.json({
+                error: 'Cannot delete a session while an attached job is running. Complete or clear it first.'
+            }, 409)
+        }
+
         try {
             await engine.deleteSession(sessionResult.sessionId)
             return c.json({ ok: true })
