@@ -74,6 +74,7 @@ function createApp(session: Session, opts?: {
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
+    namespace?: string
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -176,7 +177,7 @@ function createApp(session: Session, opts?: {
 
     const app = new Hono<WebAppEnv>()
     app.use('*', async (c, next) => {
-        c.set('namespace', 'default')
+        c.set('namespace', opts?.namespace ?? 'default')
         await next()
     })
     app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
@@ -1768,6 +1769,44 @@ describe('sessions routes', () => {
             })
 
             expect(response.status).toBe(400)
+        })
+    })
+
+    describe('POST /sessions/:id/model-error/auto-bridge-setting', () => {
+        it('rejects non-default namespaces with 403 and does not apply config', async () => {
+            const { app, applySessionConfigCalls } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }), { namespace: 'tenant-a' })
+
+            const response = await app.request('/api/sessions/session-1/model-error/auto-bridge-setting', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ enabled: true })
+            })
+
+            expect(response.status).toBe(403)
+            expect(await response.json()).toEqual({
+                error: 'Model error auto-bridge is only available to the hub owner'
+            })
+            expect(applySessionConfigCalls).toEqual([])
+        })
+
+        it('applies the setting for the default namespace', async () => {
+            const { app, applySessionConfigCalls } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/auto-bridge-setting', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ enabled: true })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(applySessionConfigCalls).toEqual([
+                ['session-1', { autoBridgeTransientModelErrors: true }]
+            ])
         })
     })
 
