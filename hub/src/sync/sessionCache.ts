@@ -1240,24 +1240,27 @@ export class SessionCache {
             this.emitScratchlistChanged(oldSessionId)
         }
 
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
-        if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-                if (!latest) break
-                const result = this.store.sessions.updateSessionMetadata(
-                    newSessionId,
-                    mergedMetadata,
-                    latest.metadataVersion,
-                    namespace,
-                    { touchUpdatedAt: false }
-                )
-                if (result.result === 'success') {
-                    break
-                }
-                if (result.result === 'error') {
-                    break
-                }
+        // Merge from the *latest* target metadata (not the pre-transfer snapshot).
+        // recordJobKeyRedirects already wrote onto the target; rebuilding from
+        // stale newStored.metadata would drop jobKeyRedirects whenever the
+        // source contributes name/summary/path/etc.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            if (!latest) break
+            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+            if (mergedMetadata === null || mergedMetadata === latest.metadata) break
+            const result = this.store.sessions.updateSessionMetadata(
+                newSessionId,
+                mergedMetadata,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                break
+            }
+            if (result.result === 'error') {
+                break
             }
         }
 
@@ -1499,10 +1502,18 @@ export class SessionCache {
             const fromMeta = this.store.sessions
                 .getSessionByNamespace(fromSessionId, namespace)
                 ?.metadata as Record<string, unknown> | null | undefined
+            // Compose inherited A→B redirects through this merge's remaps so an
+            // A→B→C chain where the intermediate remapped key collides again on
+            // C does not leave A pointing at C's unrelated live job.
+            const currentRemaps = new Map(
+                redirects.map(({ fromKey, toKey }) => [fromKey, toKey])
+            )
             const inheritedRaw = fromMeta?.jobKeyRedirects
             if (inheritedRaw && typeof inheritedRaw === 'object' && !Array.isArray(inheritedRaw)) {
                 for (const [k, v] of Object.entries(inheritedRaw as Record<string, unknown>)) {
-                    if (typeof v === 'string' && v.trim()) next[k] = v
+                    if (typeof v === 'string' && v.trim()) {
+                        next[k] = currentRemaps.get(v) ?? v
+                    }
                 }
             }
             for (const { fromKey, toKey } of redirects) {

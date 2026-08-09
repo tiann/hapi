@@ -255,4 +255,128 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         expect(patched?.status).toBe('completed')
         expect(store.sessionJobs.get(newId, 'beets')?.status).toBe('running')
     })
+
+    it('keeps jobKeyRedirects when source contributes metadata during merge', async () => {
+        const { store, cache } = setup()
+        const oldId = 'cccccccc-3333-3333-3333-333333333333'
+        const newId = 'dddddddd-4444-4444-4444-444444444444'
+        const oldSession = cache.getOrCreateSession(
+            'tag-meta-old',
+            { path: '/a', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            oldId
+        )
+        const newSession = cache.getOrCreateSession(
+            'tag-meta-new',
+            { path: '/b', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            newId
+        )
+
+        // Source-only name forces mergeSessionMetadata to write (the clobber path).
+        store.sessions.updateSessionMetadata(
+            oldSession.id,
+            { ...(oldSession.metadata as object), name: 'source-name-wins' },
+            oldSession.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+
+        store.sessionJobs.upsert(newSession.id, 'beets', {
+            label: 'target-live',
+            status: 'running',
+            remaining: 9
+        }, 1_000)
+        store.sessionJobs.upsert(oldSession.id, 'beets', {
+            label: 'source-live',
+            status: 'running',
+            remaining: 3
+        }, 2_000)
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default', {
+            mergeAgentState: false
+        })
+
+        const refreshed = cache.refreshSession(newSession.id)
+        expect(refreshed?.metadata?.name).toBe('source-name-wins')
+        expect(refreshed?.metadata?.jobKeyRedirects).toEqual({
+            [`${oldId}/beets`]: 'beets.cccccccc'
+        })
+        expect(
+            cache.resolveAttachedJobKey(oldId, newId, 'beets', 'default')
+        ).toBe('beets.cccccccc')
+    })
+
+    it('composes inherited jobKeyRedirects through a second dual-running remap (A→B→C)', async () => {
+        const { store, cache } = setup()
+        const aId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        const bId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        const cId = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+        const a = cache.getOrCreateSession(
+            'tag-chain-a',
+            { path: '/a', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            aId
+        )
+        const b = cache.getOrCreateSession(
+            'tag-chain-b',
+            { path: '/b', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            bId
+        )
+        const c = cache.getOrCreateSession(
+            'tag-chain-c',
+            { path: '/c', host: 'local', flavor: 'codex' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            cId
+        )
+
+        store.sessionJobs.upsert(a.id, 'beets', { label: 'a-live', status: 'running' }, 1_000)
+        store.sessionJobs.upsert(b.id, 'beets', { label: 'b-live', status: 'running' }, 2_000)
+
+        await cache.mergeSessionHistory(a.id, b.id, 'default', { mergeAgentState: false })
+        expect(cache.refreshSession(b.id)?.metadata?.jobKeyRedirects).toEqual({
+            [`${aId}/beets`]: 'beets.aaaaaaaa'
+        })
+
+        // C already owns the intermediate remapped key — second collision.
+        store.sessionJobs.upsert(c.id, 'beets.aaaaaaaa', {
+            label: 'c-live-on-intermediate',
+            status: 'running'
+        }, 3_000)
+
+        await cache.mergeSessionHistory(b.id, c.id, 'default', { mergeAgentState: false })
+
+        const redirects = cache.refreshSession(c.id)?.metadata?.jobKeyRedirects as
+            | Record<string, string>
+            | undefined
+        expect(redirects?.[`${bId}/beets.aaaaaaaa`]).toBe('beets.aaaaaaaa.bbbbbbbb')
+        // A must follow the composed remap, not C's pre-existing intermediate key.
+        expect(redirects?.[`${aId}/beets`]).toBe('beets.aaaaaaaa.bbbbbbbb')
+        expect(
+            cache.resolveAttachedJobKey(aId, cId, 'beets', 'default')
+        ).toBe('beets.aaaaaaaa.bbbbbbbb')
+        expect(store.sessionJobs.get(cId, 'beets.aaaaaaaa')?.label).toBe('c-live-on-intermediate')
+        expect(store.sessionJobs.get(cId, 'beets.aaaaaaaa.bbbbbbbb')?.label).toBe('a-live')
+    })
 })
