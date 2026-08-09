@@ -74,21 +74,32 @@ export default function SettingsChatPage() {
     const autoBridgeMutation = useMutation({
         mutationFn: async (enabled: boolean) => {
             if (!api) throw new Error('API unavailable')
+            const previous = hubSettingsQuery.data?.autoBridgeTransientModelErrors ?? false
             const next = await api.updateHubSettings({ autoBridgeTransientModelErrors: enabled })
-            writeAutoBridgeTransientModelErrors(enabled)
             const response = await api.getSessions()
             const activeCursor = (response.sessions ?? []).filter(
                 (s) => s.active && s.metadata?.flavor === 'cursor'
             )
-            await Promise.all(
-                activeCursor.map((s) =>
-                    api.setModelErrorAutoBridge(s.id, enabled).catch(() => {})
-                )
+            const results = await Promise.allSettled(
+                activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, enabled))
             )
+            if (results.some((result) => result.status === 'rejected')) {
+                await Promise.allSettled(
+                    activeCursor.map((s) => api.setModelErrorAutoBridge(s.id, previous))
+                )
+                await api.updateHubSettings({ autoBridgeTransientModelErrors: previous })
+                writeAutoBridgeTransientModelErrors(previous)
+                throw new Error('Failed to update every active Cursor session')
+            }
+            writeAutoBridgeTransientModelErrors(enabled)
             return next
         },
         onSuccess: (data) => {
             queryClient.setQueryData(queryKeys.hubSettings, data)
+        },
+        onError: async () => {
+            // Reconcile UI with hub truth after a rolled-back / failed sync.
+            await queryClient.invalidateQueries({ queryKey: queryKeys.hubSettings })
         },
     })
 
@@ -129,15 +140,22 @@ export default function SettingsChatPage() {
             </SettingsSection>
             <SettingsSection title={t('settings.chat.modelErrors')}>
                 {hubSettingsQuery.data ? (
-                    <SettingsSwitch
-                        label={t('settings.chat.autoBridgeTransientModelErrors')}
-                        description={t('settings.chat.autoBridgeTransientModelErrors.description')}
-                        checked={hubSettingsQuery.data.autoBridgeTransientModelErrors}
-                        onChange={(next) => {
-                            if (autoBridgeMutation.isPending) return
-                            autoBridgeMutation.mutate(next)
-                        }}
-                    />
+                    <>
+                        <SettingsSwitch
+                            label={t('settings.chat.autoBridgeTransientModelErrors')}
+                            description={t('settings.chat.autoBridgeTransientModelErrors.description')}
+                            checked={hubSettingsQuery.data.autoBridgeTransientModelErrors}
+                            onChange={(next) => {
+                                if (autoBridgeMutation.isPending) return
+                                autoBridgeMutation.mutate(next)
+                            }}
+                        />
+                        {autoBridgeMutation.isError ? (
+                            <p className="px-3 pb-2 text-sm text-[var(--app-danger)]" role="alert">
+                                {t('settings.chat.autoBridgeTransientModelErrors.syncFailed')}
+                            </p>
+                        ) : null}
+                    </>
                 ) : null}
             </SettingsSection>
         </SettingsPageContent>

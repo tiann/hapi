@@ -918,6 +918,7 @@ export default {
   'settings.chat.modelErrors': 'Model errors',
   'settings.chat.autoBridgeTransientModelErrors': 'Automatically bridge transient model errors',
   'settings.chat.autoBridgeTransientModelErrors.description': 'When enabled, Cursor sessions in the default namespace re-send your last message once after a recoverable model error. Owner hub setting (default off); other namespaces stay off.',
+  'settings.chat.autoBridgeTransientModelErrors.syncFailed': 'Could not update every active Cursor session. Setting was left unchanged.',
   'settings.chat.enterBehavior': 'Enter Key',
   'settings.chat.enterBehavior.send': 'Send message',
   'settings.chat.enterBehavior.newline': 'Insert newline',

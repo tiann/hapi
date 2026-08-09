@@ -916,6 +916,7 @@ export default {
   'settings.chat.modelErrors': '模型错误',
   'settings.chat.autoBridgeTransientModelErrors': '自动桥接暂时性模型错误',
   'settings.chat.autoBridgeTransientModelErrors.description': '启用后，默认命名空间下的 Cursor 会话在可恢复的模型错误后会自动重发上一条用户消息一次。属 owner 的 hub 设置（默认关闭）；其他命名空间保持关闭。',
+  'settings.chat.autoBridgeTransientModelErrors.syncFailed': '未能同步到所有活跃的 Cursor 会话，设置未更改。',
   'settings.chat.enterBehavior': '回车键行为',
   'settings.chat.enterBehavior.send': '发送消息',
   'settings.chat.enterBehavior.newline': '插入换行',
