@@ -277,11 +277,64 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     'Cursor ACP session/load is not supported by this agent build. Start a new Cursor session.'
                 );
             } else {
-                acpSessionId = await backend.newSession({
-                    cwd: session.path,
-                    mcpServers: mcpServerList,
-                });
-                break;
+                try {
+                    acpSessionId = await backend.newSession({
+                        cwd: session.path,
+                        mcpServers: mcpServerList,
+                    });
+                    break;
+                } catch (error) {
+                    // Cursor often accepts initialize then rejects at session/new when
+                    // --model is a stale bracket wire and the shared cache was empty.
+                    const errMsg = error instanceof Error ? error.message : String(error);
+                    const remapped = tryRemapCursorSpawnModelFromConnectError(
+                        spawnModel,
+                        requestedSpawnModel,
+                        errMsg,
+                        recentStderrHint
+                    );
+                    if (remapped && loadAttempt === 0) {
+                        logger.info(`[cursor-acp] Remapping stale spawn model ${spawnModel} → ${remapped}`);
+                        spawnModel = remapped;
+                        this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
+                        await backend.disconnect();
+                        backend = createCursorAcpBackend({
+                            cwd: session.path,
+                            model: spawnModel,
+                            autoReview,
+                            worktree: session.cursorWorktree,
+                            addDirs: session.cursorAddDirs
+                        });
+                        this.backend = backend;
+                        registerAcpSessionTitleSync(backend, session.client);
+                        backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
+                        recentStderrHint = null;
+                        this.wireStderrErrorListener(backend, (hint) => {
+                            recentStderrHint = hint;
+                        });
+                        await backend.initialize();
+                        await backend.authenticateIfAvailable('cursor_login');
+                        this.extensionAdapter = new CursorExtensionAdapter(
+                            session.client,
+                            backend,
+                            (message) => this.handleAgentMessage(message),
+                            () => this.handleCreatePlanAccepted()
+                        );
+                        this.permissionAdapter = new PermissionAdapter(
+                            session.client,
+                            backend,
+                            () => session.getPermissionMode(),
+                            (response) => this.extensionAdapter!.handlePermissionResponse(response)
+                        );
+                        continue;
+                    }
+
+                    logger.warn('[cursor-acp] session/new failed', formatAcpLoadError(error));
+                    throw new Error(classifyCursorAcpLoadError(error, {
+                        recentStderr: recentStderrHint,
+                        action: 'start'
+                    }));
+                }
             }
         }
         if (!acpSessionId) {

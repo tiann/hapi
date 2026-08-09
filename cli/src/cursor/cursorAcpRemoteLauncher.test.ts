@@ -6,9 +6,11 @@ const harness = vi.hoisted(() => ({
     initializeError: null as Error | null,
     initializeAttempts: 0,
     loadSessionError: null as Error | null,
+    newSessionError: null as Error | null,
     supportsLoadSession: true,
     loadSessionCalled: false,
     newSessionCalled: false,
+    newSessionAttempts: 0,
     promptCalls: 0,
     prompts: [] as unknown[][],
     backendArgs: null as { command: string; args?: string[] } | null,
@@ -60,7 +62,16 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 return 'loaded-acp-session';
             }),
             newSession: vi.fn(async () => {
+                harness.newSessionAttempts += 1;
                 harness.newSessionCalled = true;
+                if (harness.newSessionError && harness.newSessionAttempts === 1) {
+                    harness.stderrErrorHandler?.({
+                        type: 'model_not_found',
+                        message: harness.newSessionError.message,
+                        raw: harness.newSessionError.message
+                    });
+                    throw harness.newSessionError;
+                }
                 return 'new-acp-session';
             }),
             setMode: vi.fn(async () => {}),
@@ -217,9 +228,11 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.initializeError = null;
         harness.initializeAttempts = 0;
         harness.loadSessionError = null;
+        harness.newSessionError = null;
         harness.supportsLoadSession = true;
         harness.loadSessionCalled = false;
         harness.newSessionCalled = false;
+        harness.newSessionAttempts = 0;
         harness.promptCalls = 0;
         harness.prompts = [];
         harness.setConfigOptionCalls = [];
@@ -326,6 +339,51 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.loadSessionCalled).toBe(true);
         expect(harness.newSessionCalled).toBe(false);
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('retries session/new once after remapping a rejected bracket wire (#1430)', async () => {
+        _resetSharedCursorModelsCacheForTests();
+        harness.newSessionError = new Error(
+            'ACP process exited (code=1, signal=null). stderr: Cannot use this model: gpt-5.3-codex[fast=false]. Available models: auto, gpt-5.3-codex, gpt-5.3-codex-fast'
+        );
+
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'gpt-5.3-codex[fast=false]'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionAttempts).toBe(2));
+        expect(harness.backendArgs?.args).toEqual(['--model', 'gpt-5.3-codex', 'acp']);
+        // Desired bracket remains the apply target; mock ACP catalog is composer-only so
+        // post-apply session.model may fall back to the harness default wire.
+        expect(session.model === 'gpt-5.3-codex[fast=false]' || session.model === 'composer-2.5[fast=true]').toBe(true);
+
+        queue.close();
+        await runPromise;
     });
 
     it('spawns bare remap but reapplies original fast=true variant via ACP (#1430)', async () => {
