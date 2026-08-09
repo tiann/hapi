@@ -6,6 +6,7 @@ import type { NotificationChannel } from './notifications/notificationTypes'
 import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './config/jwtSecret'
+import { getOrCreateOwnerId } from './config/ownerId'
 import { createSocketServer } from './socket/server'
 import { SSEManager } from './sse/sseManager'
 import { getOrCreateVapidKeys } from './config/vapidKeys'
@@ -199,6 +200,8 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
+    // Accountable principal for A2A work-graph notify ingest (P3).
+    syncEngine.setHubOwnerUserId(await getOrCreateOwnerId())
 
     const fcmConfig = resolveFcmConfig()
 

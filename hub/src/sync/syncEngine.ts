@@ -51,6 +51,7 @@ import {
     type RpcUploadFileResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -185,6 +186,11 @@ export class SyncEngine {
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /**
+     * Hub owner id for accountable work-graph principals (A2A P1/P3).
+     * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
+     */
+    private hubOwnerUserId: string = '1'
 
     constructor(
         private readonly store: Store,
@@ -204,6 +210,10 @@ export class SyncEngine {
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
+    }
+
+    setHubOwnerUserId(ownerUserId: string | number): void {
+        this.hubOwnerUserId = String(ownerUserId)
     }
 
     stop(): void {
@@ -459,6 +469,27 @@ export class SyncEngine {
         if (event.type === 'message-received' && event.sessionId) {
             if (!this.getSession(event.sessionId)) {
                 this.sessionCache.refreshSession(event.sessionId)
+            }
+            // A2A P3: well-formed AGENT_NOTIFY_SUMMARY → work-graph work_ad.
+            // Capture is independent of chat display settings (#1462/#1464).
+            if ('message' in event && event.message) {
+                const session = this.getSession(event.sessionId)
+                if (session) {
+                    try {
+                        ingestNotifySummaryFromMessage({
+                            store: this.store,
+                            namespace: session.namespace,
+                            sessionId: session.id,
+                            messageId: event.message.id,
+                            content: event.message.content,
+                            ts: event.message.createdAt,
+                            ownerUserId: this.hubOwnerUserId,
+                            flavor: session.metadata?.flavor ?? null
+                        })
+                    } catch (error) {
+                        console.error('[work-graph] notify ingest failed', error)
+                    }
+                }
             }
         }
 
