@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CLAUDE_IMPORT_MIN_PAGE_BYTES } from '@hapi/protocol/apiTypes'
+import {
+    CLAUDE_IMPORT_MIN_PAGE_BYTES,
+    type ClaudeImportedMessage,
+    type ClaudeLocalSessionSummary,
+    type ClaudeLocalSessionWithMessages
+} from '@hapi/protocol/apiTypes'
 import {
     listLocalClaudeSessionMessagesPageById,
-    listLocalClaudeSessionSummaries,
-    listLocalClaudeSessionsWithMessagesByIds
+    listLocalClaudeSessionSummaries
 } from './claudeSessions'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
@@ -14,6 +18,24 @@ const CWD = '/tmp/claude-import-project'
 
 function line(value: Record<string, unknown>): string {
     return JSON.stringify(value)
+}
+
+async function readSession(sessionId: string): Promise<ClaudeLocalSessionWithMessages | null> {
+    let cursor = 0
+    let summary: ClaudeLocalSessionSummary | null = null
+    const messages: ClaudeImportedMessage[] = []
+    while (true) {
+        const page = await listLocalClaudeSessionMessagesPageById(
+            sessionId,
+            cursor,
+            CLAUDE_IMPORT_MIN_PAGE_BYTES
+        )
+        if (!page) return null
+        summary ??= page.session
+        messages.push(...page.messages)
+        if (page.nextCursor === null) return { ...summary, messages }
+        cursor = page.nextCursor
+    }
 }
 
 describe('local Claude sessions', () => {
@@ -35,7 +57,7 @@ describe('local Claude sessions', () => {
         rmSync(tempDir, { recursive: true, force: true })
     })
 
-    it('lists main transcripts, converts visible history, and ignores subagent files', () => {
+    it('lists main transcripts, converts visible history, and ignores subagent files', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         writeFileSync(
             join(projectDir, `${SESSION_ID}.jsonl`),
@@ -101,7 +123,7 @@ describe('local Claude sessions', () => {
             })
         )
 
-        expect(listLocalClaudeSessionSummaries()).toEqual([
+        expect(await listLocalClaudeSessionSummaries()).toEqual([
             expect.objectContaining({
                 id: SESSION_ID,
                 title: 'Renamed imported work',
@@ -112,9 +134,8 @@ describe('local Claude sessions', () => {
             })
         ])
 
-        const full = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
-        expect(full).toHaveLength(1)
-        expect(full[0]?.messages).toEqual([
+        const full = await readSession(SESSION_ID)
+        expect(full?.messages).toEqual([
             expect.objectContaining({
                 localId: `claude:${SESSION_ID}:user-1`,
                 createdAt: Date.parse('2026-08-08T01:00:00.000Z'),
@@ -128,7 +149,7 @@ describe('local Claude sessions', () => {
         ])
     })
 
-    it('returns only requested session transcripts', () => {
+    it('returns only requested session transcripts', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         for (const id of [SESSION_ID, '22222222-2222-4222-8222-222222222222']) {
             writeFileSync(
@@ -147,11 +168,11 @@ describe('local Claude sessions', () => {
             )
         }
 
-        const sessions = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
-        expect(sessions.map((session) => session.id)).toEqual([SESSION_ID])
+        const session = await readSession(SESSION_ID)
+        expect(session?.id).toBe(SESSION_ID)
     })
 
-    it('pages one transcript below a byte budget without losing message order', () => {
+    it('streams a large CRLF transcript below a byte budget without losing message order', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const records: Record<string, unknown>[] = [{
             parentUuid: null,
@@ -172,18 +193,22 @@ describe('local Claude sessions', () => {
                 cwd: CWD,
                 sessionId: SESSION_ID,
                 type: 'assistant',
-                message: { role: 'assistant', content: [{ type: 'text', text: `${index}:${'x'.repeat(40 * 1024)}` }] },
+                message: { role: 'assistant', content: [{ type: 'text', text: `${index}:${'界'.repeat(40 * 1024)}` }] },
                 uuid
             })
             parentUuid = uuid
         }
-        writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), records.map(line).join('\n'))
+        writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), records.map(line).join('\r\n'))
+
+        expect(await listLocalClaudeSessionSummaries()).toEqual([
+            expect.objectContaining({ id: SESSION_ID, messageCount: 5 })
+        ])
 
         const localIds: string[] = []
         let cursor = 0
         let pageCount = 0
         while (true) {
-            const page = listLocalClaudeSessionMessagesPageById(SESSION_ID, cursor, CLAUDE_IMPORT_MIN_PAGE_BYTES)
+            const page = await listLocalClaudeSessionMessagesPageById(SESSION_ID, cursor, CLAUDE_IMPORT_MIN_PAGE_BYTES)
             expect(page).not.toBeNull()
             pageCount += 1
             localIds.push(...page!.messages.map((message) => message.localId))
@@ -204,7 +229,7 @@ describe('local Claude sessions', () => {
         ])
     })
 
-    it('replaces a single aggregate-oversized agent record before transport', () => {
+    it('replaces a single aggregate-oversized agent record before transport', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         writeFileSync(
             join(projectDir, `${SESSION_ID}.jsonl`),
@@ -225,7 +250,7 @@ describe('local Claude sessions', () => {
             })
         )
 
-        const page = listLocalClaudeSessionMessagesPageById(SESSION_ID, 0, CLAUDE_IMPORT_MIN_PAGE_BYTES)
+        const page = await listLocalClaudeSessionMessagesPageById(SESSION_ID, 0, CLAUDE_IMPORT_MIN_PAGE_BYTES)
 
         expect(page?.nextCursor).toBeNull()
         expect(JSON.stringify(page?.messages[0]?.content)).toContain('oversized imported Claude message omitted')
@@ -233,7 +258,7 @@ describe('local Claude sessions', () => {
             .toBeLessThanOrEqual(CLAUDE_IMPORT_MIN_PAGE_BYTES)
     })
 
-    it('imports only the active branch after a Claude rewind', () => {
+    it('imports only the active branch after a Claude rewind', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const transcript = [
             {
@@ -337,7 +362,7 @@ describe('local Claude sessions', () => {
         ]
         writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), transcript.map(line).join('\n'))
 
-        const [session] = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
+        const session = await readSession(SESSION_ID)
         expect(session?.messages.map((message) => message.localId)).toEqual([
             `claude:${SESSION_ID}:user-1`,
             `claude:${SESSION_ID}:assistant-1`,
@@ -351,7 +376,7 @@ describe('local Claude sessions', () => {
         })
     })
 
-    it('keeps linear history when legacy records have no parent links', () => {
+    it('keeps linear history when legacy records have no parent links', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         writeFileSync(
             join(projectDir, `${SESSION_ID}.jsonl`),
@@ -374,14 +399,14 @@ describe('local Claude sessions', () => {
             ].join('\n')
         )
 
-        const [session] = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
+        const session = await readSession(SESSION_ID)
         expect(session?.messages.map((message) => message.localId)).toEqual([
             `claude:${SESSION_ID}:legacy-user`,
             `claude:${SESSION_ID}:legacy-assistant`
         ])
     })
 
-    it('does not miss cwd when the first transcript record exceeds the old pre-read window', () => {
+    it('does not miss cwd when the first transcript record exceeds the old pre-read window', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const longPrompt = `Start ${'x'.repeat(70 * 1024)}`
         writeFileSync(
@@ -399,7 +424,7 @@ describe('local Claude sessions', () => {
             })
         )
 
-        expect(listLocalClaudeSessionSummaries()).toEqual([
+        expect(await listLocalClaudeSessionSummaries()).toEqual([
             expect.objectContaining({
                 id: SESSION_ID,
                 cwd: CWD,

@@ -1,46 +1,64 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { createReadStream, type Dirent } from 'node:fs'
+import { open, readdir, stat, type FileHandle } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
     ClaudeImportedMessage,
     ClaudeImportedMessageContent,
     ClaudeLocalSessionMessagesPage,
-    ClaudeLocalSessionSummary,
-    ClaudeLocalSessionWithMessages
+    ClaudeLocalSessionSummary
 } from '@hapi/protocol/apiTypes'
 import { DISPLAY_HISTORY_STRING_LIMIT, isClaudeChatVisibleMessage, truncateOversizedAgentMessageContent } from '@hapi/protocol/messages'
 import { RawJSONLinesSchema, type RawJSONLines } from '@/claude/types'
 import { extractRawUserTextContent, isExternalUserMessage } from '@/claude/utils/transcriptMessages'
 
 const DEFAULT_CLAUDE_SESSION_SCAN_LIMIT = 200
+const CLAUDE_TRANSCRIPT_INDEX_CACHE_LIMIT = 16
 const IMPORTED_USER_TRUNCATION_MARKER = '\n…[hapi: oversized imported prompt truncated]…'
 const OVERSIZED_AGENT_MESSAGE = '[hapi: oversized imported Claude message omitted]'
 
 type SessionFileCandidate = {
     file: string
     modifiedAt: number
+    size: number
     discoveryIndex: number
 }
 
-type ParsedClaudeSession = {
-    summary: ClaudeLocalSessionSummary
-    messages: ClaudeImportedMessage[]
-}
-
-let pagedSessionCache: {
-    file: string
-    modifiedAt: number
-    parsed: ParsedClaudeSession
-} | null = null
-
 type ClaudeTranscriptRecord = {
-    event: RawJSONLines | null
     uuid: string | null
     parentUuid: string | null
     isSidechain: boolean
     parentToolUseId: string | null
-    customTitle: string | null
+    importableConversation: boolean
+    messageKind: 'user' | 'agent' | null
+    userPreview: string | null
+    assistantModel: string | null
+    assistantToolUseIds: string[]
+    offset: number
+    length: number
 }
+
+type ClaudeTranscriptLocation = {
+    uuid: string
+    offset: number
+    length: number
+}
+
+type ClaudeTranscriptIndex = {
+    summary: ClaudeLocalSessionSummary
+    messageLocations: ClaudeTranscriptLocation[]
+    modifiedAt: number
+    size: number
+}
+
+type ClaudeTranscriptIndexCacheEntry = {
+    file: string
+    modifiedAt: number
+    size: number
+    index: Promise<ClaudeTranscriptIndex | null>
+}
+
+const transcriptIndexCache = new Map<string, ClaudeTranscriptIndexCacheEntry>()
 
 function truncateText(value: string, maxLength: number): string {
     return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value
@@ -57,12 +75,10 @@ export function getClaudeProjectsRoot(): string {
     return join(configDir, 'projects')
 }
 
-function collectClaudeSessionFiles(): SessionFileCandidate[] {
-    let projectEntries: import('node:fs').Dirent[]
+async function collectClaudeSessionFiles(): Promise<SessionFileCandidate[]> {
+    let projectEntries: Dirent[]
     try {
-        projectEntries = readdirSync(getClaudeProjectsRoot(), {
-            withFileTypes: true
-        })
+        projectEntries = await readdir(getClaudeProjectsRoot(), { withFileTypes: true })
     } catch {
         return []
     }
@@ -71,9 +87,9 @@ function collectClaudeSessionFiles(): SessionFileCandidate[] {
     for (const projectEntry of projectEntries) {
         if (!projectEntry.isDirectory()) continue
         const projectDir = join(getClaudeProjectsRoot(), projectEntry.name)
-        let sessionEntries: import('node:fs').Dirent[]
+        let sessionEntries: Dirent[]
         try {
-            sessionEntries = readdirSync(projectDir, { withFileTypes: true })
+            sessionEntries = await readdir(projectDir, { withFileTypes: true })
         } catch {
             continue
         }
@@ -84,15 +100,66 @@ function collectClaudeSessionFiles(): SessionFileCandidate[] {
         }
     }
 
-    return files
-        .flatMap((file, discoveryIndex) => {
-            try {
-                return [{ file, modifiedAt: statSync(file).mtimeMs, discoveryIndex }]
-            } catch {
-                return []
-            }
-        })
+    const candidates = await Promise.all(files.map(async (file, discoveryIndex): Promise<SessionFileCandidate | null> => {
+        try {
+            const fileStat = await stat(file)
+            return { file, modifiedAt: fileStat.mtimeMs, size: fileStat.size, discoveryIndex }
+        } catch {
+            return null
+        }
+    }))
+    return candidates
+        .filter((candidate): candidate is SessionFileCandidate => candidate !== null)
         .sort((a, b) => b.modifiedAt - a.modifiedAt || a.discoveryIndex - b.discoveryIndex)
+}
+
+type JsonLine = {
+    text: string
+    offset: number
+    length: number
+}
+
+async function* streamJsonLines(filePath: string): AsyncGenerator<JsonLine> {
+    const fragments: Buffer[] = []
+    let fragmentBytes = 0
+    let lineOffset = 0
+    let fileOffset = 0
+
+    const takeLine = (): JsonLine => {
+        const buffer = fragments.length === 1
+            ? fragments[0]!
+            : Buffer.concat(fragments, fragmentBytes)
+        const length = buffer.at(-1) === 0x0d ? buffer.length - 1 : buffer.length
+        const result = {
+            text: buffer.toString('utf8', 0, length),
+            offset: lineOffset,
+            length
+        }
+        fragments.length = 0
+        fragmentBytes = 0
+        return result
+    }
+
+    for await (const rawChunk of createReadStream(filePath)) {
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk)
+        let cursor = 0
+        while (cursor < chunk.length) {
+            const newline = chunk.indexOf(0x0a, cursor)
+            const end = newline === -1 ? chunk.length : newline
+            const fragment = chunk.subarray(cursor, end)
+            if (fragment.length > 0) {
+                fragments.push(fragment)
+                fragmentBytes += fragment.length
+            }
+            if (newline === -1) break
+            yield takeLine()
+            cursor = newline + 1
+            lineOffset = fileOffset + cursor
+        }
+        fileOffset += chunk.length
+    }
+
+    if (fragmentBytes > 0) yield takeLine()
 }
 
 function importedUser(text: string): ClaudeImportedMessageContent {
@@ -114,42 +181,8 @@ function importedAgent(data: RawJSONLines): ClaudeImportedMessageContent {
     }
 }
 
-function parseTranscriptRecords(content: string): ClaudeTranscriptRecord[] {
-    const records: ClaudeTranscriptRecord[] = []
-    for (const line of content.split(/\r?\n/)) {
-        if (!line.trim()) continue
-        let raw: unknown
-        try {
-            raw = JSON.parse(line)
-        } catch {
-            continue
-        }
-        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
-        const rawRecord = raw as Record<string, unknown>
-        const parsed = RawJSONLinesSchema.safeParse(raw)
-        records.push({
-            event: parsed.success ? parsed.data : null,
-            uuid: typeof rawRecord.uuid === 'string' ? rawRecord.uuid : null,
-            parentUuid: typeof rawRecord.parentUuid === 'string' ? rawRecord.parentUuid : null,
-            isSidechain: rawRecord.isSidechain === true,
-            parentToolUseId: typeof rawRecord.parentToolUseId === 'string' ? rawRecord.parentToolUseId : null,
-            customTitle: rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string'
-                ? rawRecord.customTitle
-                : null
-        })
-    }
-    return records
-}
-
-function isImportableConversationRecord(record: ClaudeTranscriptRecord): record is ClaudeTranscriptRecord & { event: RawJSONLines; uuid: string } {
-    const event = record.event
-    return Boolean(
-        event &&
-        record.uuid &&
-        !event.isMeta &&
-        !event.isCompactSummary &&
-        isClaudeChatVisibleMessage(event)
-    )
+function isImportableConversationRecord(record: ClaudeTranscriptRecord): boolean {
+    return record.importableConversation
 }
 
 function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> | null {
@@ -183,14 +216,8 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
 
     const activeToolUseIds = new Set<string>()
     for (const record of records) {
-        if (!record.uuid || !activeMainIds.has(record.uuid) || record.event?.type !== 'assistant') continue
-        const content = record.event.message?.content
-        if (!Array.isArray(content)) continue
-        for (const block of content) {
-            if (block === null || typeof block !== 'object' || Array.isArray(block)) continue
-            const toolUse = block as Record<string, unknown>
-            if (toolUse.type === 'tool_use' && typeof toolUse.id === 'string') activeToolUseIds.add(toolUse.id)
-        }
+        if (!record.uuid || !activeMainIds.has(record.uuid)) continue
+        for (const toolUseId of record.assistantToolUseIds) activeToolUseIds.add(toolUseId)
     }
 
     const activeIds = new Set(activeMainIds)
@@ -216,122 +243,205 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
     return activeIds
 }
 
-function parseClaudeLocalSession(filePath: string, knownModifiedAt?: number): ParsedClaudeSession | null {
-    let content: string
-    let modifiedAt: number
-    try {
-        content = readFileSync(filePath, 'utf-8')
-        modifiedAt = knownModifiedAt ?? statSync(filePath).mtimeMs
-    } catch {
-        return null
+function assistantToolUseIds(event: RawJSONLines): string[] {
+    if (event.type !== 'assistant' || !Array.isArray(event.message?.content)) return []
+    const ids: string[] = []
+    for (const block of event.message.content) {
+        if (block === null || typeof block !== 'object' || Array.isArray(block)) continue
+        const toolUse = block as Record<string, unknown>
+        if (toolUse.type === 'tool_use' && typeof toolUse.id === 'string') ids.push(toolUse.id)
     }
+    return ids
+}
 
-    const sessionId = basename(filePath, '.jsonl')
+async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<ClaudeTranscriptIndex | null> {
+    const sessionId = basename(candidate.file, '.jsonl')
     if (!sessionId) return null
 
     let cwd: string | null = null
     let customTitle: string | null = null
     let aiTitle: string | null = null
-    let summary: string | null = null
-    let firstUserMessage: string | null = null
-    let lastUserMessage: string | null = null
-    let model: string | null = null
-    const messages: ClaudeImportedMessage[] = []
-    const records = parseTranscriptRecords(content)
-    const activeRecordIds = activeClaudeRecordIds(records)
+    let summaryText: string | null = null
+    const records: ClaudeTranscriptRecord[] = []
 
-    for (const record of records) {
-        if (record.customTitle !== null) {
-            customTitle = record.customTitle.trim() || customTitle
+    for await (const line of streamJsonLines(candidate.file)) {
+        if (!line.text.trim()) continue
+        let raw: unknown
+        try {
+            raw = JSON.parse(line.text)
+        } catch {
             continue
         }
-        const event = record.event
-        if (!event) continue
+        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
+        const rawRecord = raw as Record<string, unknown>
+        const uuid = typeof rawRecord.uuid === 'string' ? rawRecord.uuid : null
+        const parentUuid = typeof rawRecord.parentUuid === 'string' ? rawRecord.parentUuid : null
+        const isSidechain = rawRecord.isSidechain === true
+        const parentToolUseId = typeof rawRecord.parentToolUseId === 'string' ? rawRecord.parentToolUseId : null
+        const parsed = RawJSONLinesSchema.safeParse(raw)
+        let importableConversation = false
+        let messageKind: ClaudeTranscriptRecord['messageKind'] = null
+        let userPreview: string | null = null
+        let assistantModel: string | null = null
+        let toolUseIds: string[] = []
 
-        cwd ??= event.cwd?.trim() || null
-        if (event.type === 'ai-title') {
-            aiTitle = event.aiTitle.trim() || aiTitle
-            continue
-        }
-        if (event.type === 'summary') {
-            summary = event.summary.trim() || summary
-            continue
-        }
-        if (!isImportableConversationRecord(record)) continue
+        if (rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string') {
+            customTitle = rawRecord.customTitle.trim() || customTitle
+        } else if (parsed.success) {
+            const event = parsed.data
+            cwd ??= event.cwd?.trim() || null
+            if (event.type === 'ai-title') {
+                aiTitle = event.aiTitle.trim() || aiTitle
+            } else if (event.type === 'summary') {
+                summaryText = event.summary.trim() || summaryText
+            }
 
-        const uuid = record.uuid
-        if (activeRecordIds && !activeRecordIds.has(uuid)) continue
-        const createdAt = parseTimestamp(event.timestamp, modifiedAt)
-        if (isExternalUserMessage(event)) {
-            const text = extractRawUserTextContent(event.message.content)?.trim()
-            if (!text) continue
-            firstUserMessage ??= text
-            lastUserMessage = text
-            messages.push({
-                localId: `claude:${sessionId}:${uuid}`,
-                createdAt,
-                content: importedUser(text)
-            })
-            continue
+            importableConversation = Boolean(
+                uuid &&
+                !event.isMeta &&
+                !event.isCompactSummary &&
+                isClaudeChatVisibleMessage(event)
+            )
+            if (event.type === 'assistant') {
+                assistantModel = event.message?.model?.trim() || null
+                toolUseIds = assistantToolUseIds(event)
+            }
+            if (importableConversation) {
+                if (isExternalUserMessage(event)) {
+                    const text = extractRawUserTextContent(event.message.content)?.trim()
+                    if (text) {
+                        messageKind = 'user'
+                        userPreview = truncateText(text, 140)
+                    }
+                } else {
+                    messageKind = 'agent'
+                }
+            }
         }
 
-        if (event.type === 'assistant' && event.message?.model) model = event.message.model
-        messages.push({
-            localId: `claude:${sessionId}:${uuid}`,
-            createdAt,
-            content: importedAgent(event)
+        records.push({
+            uuid,
+            parentUuid,
+            isSidechain,
+            parentToolUseId,
+            importableConversation,
+            messageKind,
+            userPreview,
+            assistantModel,
+            assistantToolUseIds: toolUseIds,
+            offset: line.offset,
+            length: line.length
         })
     }
 
-    if (!cwd || messages.length === 0) return null
+    const finalStat = await stat(candidate.file)
+    if (finalStat.mtimeMs !== candidate.modifiedAt || finalStat.size !== candidate.size) {
+        throw new Error('Claude transcript changed while paging')
+    }
+
+    const activeRecordIds = activeClaudeRecordIds(records)
+    const messageLocations: ClaudeTranscriptLocation[] = []
+    let firstUserMessage: string | null = null
+    let lastUserMessage: string | null = null
+    let model: string | null = null
+    for (const record of records) {
+        if (!record.uuid || !record.messageKind) continue
+        if (activeRecordIds && !activeRecordIds.has(record.uuid)) continue
+        messageLocations.push({ uuid: record.uuid, offset: record.offset, length: record.length })
+        if (record.messageKind === 'user' && record.userPreview) {
+            firstUserMessage ??= record.userPreview
+            lastUserMessage = record.userPreview
+        }
+        if (record.assistantModel) model = record.assistantModel
+    }
+
+    if (!cwd || messageLocations.length === 0) return null
     const displayTitle =
-        customTitle ?? aiTitle ?? (firstUserMessage ? truncateText(firstUserMessage, 80) : null) ?? summary ?? basename(cwd) ?? sessionId.slice(0, 8)
+        customTitle ?? aiTitle ?? (firstUserMessage ? truncateText(firstUserMessage, 80) : null) ?? summaryText ?? basename(cwd) ?? sessionId.slice(0, 8)
 
     return {
         summary: {
             id: sessionId,
             title: displayTitle,
-            lastUserMessage: lastUserMessage ? truncateText(lastUserMessage, 140) : null,
+            lastUserMessage,
             cwd,
-            file: filePath,
-            modifiedAt,
+            file: candidate.file,
+            modifiedAt: candidate.modifiedAt,
             model,
-            messageCount: messages.length
+            messageCount: messageLocations.length
         },
-        messages
+        messageLocations,
+        modifiedAt: candidate.modifiedAt,
+        size: candidate.size
     }
 }
 
-export function listLocalClaudeSessionSummaries(limit = DEFAULT_CLAUDE_SESSION_SCAN_LIMIT): ClaudeLocalSessionSummary[] {
+async function getTranscriptIndex(
+    candidate: SessionFileCandidate,
+    cacheOnMiss = true
+): Promise<ClaudeTranscriptIndex | null> {
+    const cached = transcriptIndexCache.get(candidate.file)
+    if (
+        cached &&
+        cached.modifiedAt === candidate.modifiedAt &&
+        cached.size === candidate.size
+    ) {
+        transcriptIndexCache.delete(candidate.file)
+        transcriptIndexCache.set(candidate.file, cached)
+        return await cached.index
+    }
+    if (cached) transcriptIndexCache.delete(candidate.file)
+    if (!cacheOnMiss) return await indexClaudeTranscript(candidate)
+
+    const entry: ClaudeTranscriptIndexCacheEntry = {
+        file: candidate.file,
+        modifiedAt: candidate.modifiedAt,
+        size: candidate.size,
+        index: indexClaudeTranscript(candidate)
+    }
+    transcriptIndexCache.set(candidate.file, entry)
+    while (transcriptIndexCache.size > CLAUDE_TRANSCRIPT_INDEX_CACHE_LIMIT) {
+        const oldestKey = transcriptIndexCache.keys().next().value
+        if (typeof oldestKey !== 'string') break
+        transcriptIndexCache.delete(oldestKey)
+    }
+    try {
+        return await entry.index
+    } catch (error) {
+        if (transcriptIndexCache.get(candidate.file) === entry) {
+            transcriptIndexCache.delete(candidate.file)
+        }
+        throw error
+    }
+}
+
+export async function listLocalClaudeSessionSummaries(
+    limit = DEFAULT_CLAUDE_SESSION_SCAN_LIMIT
+): Promise<ClaudeLocalSessionSummary[]> {
     if (limit <= 0) return []
     const summaries: ClaudeLocalSessionSummary[] = []
     const seenIds = new Set<string>()
-    for (const candidate of collectClaudeSessionFiles()) {
+    let candidateIndex = 0
+    for (const candidate of await collectClaudeSessionFiles()) {
         const sessionId = basename(candidate.file, '.jsonl')
         if (!sessionId || seenIds.has(sessionId)) continue
-        const parsed = parseClaudeLocalSession(candidate.file, candidate.modifiedAt)
-        if (!parsed) continue
+        let index: ClaudeTranscriptIndex | null
+        try {
+            index = await getTranscriptIndex(
+                candidate,
+                candidateIndex < CLAUDE_TRANSCRIPT_INDEX_CACHE_LIMIT
+            )
+        } catch {
+            candidateIndex += 1
+            continue
+        }
+        candidateIndex += 1
+        if (!index) continue
         seenIds.add(sessionId)
-        summaries.push(parsed.summary)
+        summaries.push(index.summary)
         if (summaries.length >= limit) break
     }
     return summaries
-}
-
-export function listLocalClaudeSessionsWithMessagesByIds(ids: Set<string>): ClaudeLocalSessionWithMessages[] {
-    if (ids.size === 0) return []
-    const unresolved = new Set(ids)
-    const sessions: ClaudeLocalSessionWithMessages[] = []
-    for (const candidate of collectClaudeSessionFiles()) {
-        const sessionId = basename(candidate.file, '.jsonl')
-        if (!unresolved.has(sessionId)) continue
-        const parsed = parseClaudeLocalSession(candidate.file, candidate.modifiedAt)
-        if (!parsed) continue
-        unresolved.delete(sessionId)
-        sessions.push({ ...parsed.summary, messages: parsed.messages })
-        if (unresolved.size === 0) break
-    }
-    return sessions
 }
 
 function serializedBytes(value: unknown): number {
@@ -406,28 +516,70 @@ function fitMessageOnEmptyPage(message: ClaudeImportedMessage, maxBytes: number)
     return fitted && serializedBytes(fitted) <= maxBytes ? fitted : null
 }
 
-export function listLocalClaudeSessionMessagesPageById(
+async function readAt(file: FileHandle, offset: number, length: number): Promise<string> {
+    const buffer = Buffer.allocUnsafe(length)
+    let bytesRead = 0
+    while (bytesRead < length) {
+        const result = await file.read(buffer, bytesRead, length - bytesRead, offset + bytesRead)
+        if (result.bytesRead === 0) throw new Error('Claude transcript changed while paging')
+        bytesRead += result.bytesRead
+    }
+    return buffer.toString('utf8')
+}
+
+async function readImportedMessage(
+    file: FileHandle,
+    location: ClaudeTranscriptLocation,
+    sessionId: string,
+    modifiedAt: number
+): Promise<ClaudeImportedMessage> {
+    let raw: unknown
+    try {
+        raw = JSON.parse(await readAt(file, location.offset, location.length))
+    } catch {
+        throw new Error('Claude transcript changed while paging')
+    }
+    const parsed = RawJSONLinesSchema.safeParse(raw)
+    if (!parsed.success || parsed.data.uuid !== location.uuid) {
+        throw new Error('Claude transcript changed while paging')
+    }
+    const event = parsed.data
+    const createdAt = parseTimestamp(event.timestamp, modifiedAt)
+    if (isExternalUserMessage(event)) {
+        const text = extractRawUserTextContent(event.message.content)?.trim()
+        if (!text) throw new Error('Claude transcript changed while paging')
+        return {
+            localId: `claude:${sessionId}:${location.uuid}`,
+            createdAt,
+            content: importedUser(text)
+        }
+    }
+    return {
+        localId: `claude:${sessionId}:${location.uuid}`,
+        createdAt,
+        content: importedAgent(event)
+    }
+}
+
+export async function listLocalClaudeSessionMessagesPageById(
     sessionId: string,
     cursor: number,
     maxBytes: number
-): ClaudeLocalSessionMessagesPage | null {
-    const candidate = collectClaudeSessionFiles().find((entry) => basename(entry.file, '.jsonl') === sessionId)
+): Promise<ClaudeLocalSessionMessagesPage | null> {
+    const candidate = (await collectClaudeSessionFiles())
+        .find((entry) => basename(entry.file, '.jsonl') === sessionId)
     if (!candidate) return null
-    const cached = pagedSessionCache?.file === candidate.file && pagedSessionCache.modifiedAt === candidate.modifiedAt
-        ? pagedSessionCache.parsed
-        : null
-    const parsed = cached ?? parseClaudeLocalSession(candidate.file, candidate.modifiedAt)
-    if (!parsed) return null
-    if (!cached) pagedSessionCache = { file: candidate.file, modifiedAt: candidate.modifiedAt, parsed }
-    if (cursor > parsed.messages.length) throw new Error('Claude transcript changed while paging')
+    const index = await getTranscriptIndex(candidate)
+    if (!index) return null
+    if (cursor > index.messageLocations.length) throw new Error('Claude transcript changed while paging')
 
     const responseWithCursor = (nextCursor: number | null) => ({
         success: true,
         mode: 'messages',
-        page: { session: parsed.summary, messages: [], nextCursor }
+        page: { session: index.summary, messages: [], nextCursor }
     })
     const baseBytes = Math.max(
-        serializedBytes(responseWithCursor(parsed.messages.length)),
+        serializedBytes(responseWithCursor(index.messageLocations.length)),
         serializedBytes(responseWithCursor(null))
     )
     if (baseBytes >= maxBytes) throw new Error('Claude transcript metadata exceeds the page budget')
@@ -435,28 +587,44 @@ export function listLocalClaudeSessionMessagesPageById(
     const messages: ClaudeImportedMessage[] = []
     let pageBytes = baseBytes
     let nextIndex = cursor
-    while (nextIndex < parsed.messages.length) {
-        const normalized = normalizeImportedMessageForTransport(parsed.messages[nextIndex]!)
-        const separatorBytes = messages.length > 0 ? 1 : 0
-        const messageBytes = serializedBytes(normalized)
-        if (pageBytes + separatorBytes + messageBytes <= maxBytes) {
-            messages.push(normalized)
-            pageBytes += separatorBytes + messageBytes
-            nextIndex += 1
-            continue
-        }
-        if (messages.length > 0) break
+    const file = await open(candidate.file, 'r')
+    try {
+        while (nextIndex < index.messageLocations.length) {
+            const imported = await readImportedMessage(
+                file,
+                index.messageLocations[nextIndex]!,
+                sessionId,
+                index.modifiedAt
+            )
+            const normalized = normalizeImportedMessageForTransport(imported)
+            const separatorBytes = messages.length > 0 ? 1 : 0
+            const messageBytes = serializedBytes(normalized)
+            if (pageBytes + separatorBytes + messageBytes <= maxBytes) {
+                messages.push(normalized)
+                pageBytes += separatorBytes + messageBytes
+                nextIndex += 1
+                continue
+            }
+            if (messages.length > 0) break
 
-        const fitted = fitMessageOnEmptyPage(normalized, maxBytes - baseBytes)
-        if (!fitted) throw new Error('Claude transcript message exceeds the page budget')
-        messages.push(fitted)
-        nextIndex += 1
-        break
+            const fitted = fitMessageOnEmptyPage(normalized, maxBytes - baseBytes)
+            if (!fitted) throw new Error('Claude transcript message exceeds the page budget')
+            messages.push(fitted)
+            nextIndex += 1
+            break
+        }
+
+        const finalStat = await file.stat()
+        if (finalStat.mtimeMs !== index.modifiedAt || finalStat.size !== index.size) {
+            throw new Error('Claude transcript changed while paging')
+        }
+    } finally {
+        await file.close()
     }
 
     return {
-        session: parsed.summary,
+        session: index.summary,
         messages,
-        nextCursor: nextIndex < parsed.messages.length ? nextIndex : null
+        nextCursor: nextIndex < index.messageLocations.length ? nextIndex : null
     }
 }
