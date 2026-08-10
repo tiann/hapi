@@ -114,12 +114,17 @@ export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) =>
     }
 
     const display = splitNotifySummary(text)
+    if (!display) return <MarkdownText />
+
     const hasDisplayableSummary = Boolean(
-        display?.summary.summary?.trim()
-        || display?.summary.action?.trim()
-        || display?.summary.status?.trim()
+        display.summary.summary?.trim()
+        || display.summary.action?.trim()
+        || display.summary.status?.trim()
     )
-    if (!display || !hasDisplayableSummary) return <MarkdownText />
+    if (!hasDisplayableSummary) {
+        if (!display.visibleText) return null
+        return <MarkdownRenderer content={display.visibleText} />
+    }
 
     return (
         <>

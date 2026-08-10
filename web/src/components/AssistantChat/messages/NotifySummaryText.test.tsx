@@ -90,6 +90,14 @@ describe('NotifySummaryText', () => {
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
     })
 
+    it('hides a recognized footer with no displayable fields instead of raw JSON', () => {
+        renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"agent":"codex"}')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
     it('keeps a complete-looking footer in markdown while the message is streaming', () => {
         renderText('Still working.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}', 'running')
 

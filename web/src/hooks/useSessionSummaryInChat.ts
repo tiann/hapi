@@ -17,6 +17,7 @@ export function useSessionSummaryInChat(): boolean {
         },
         enabled: Boolean(api),
         staleTime: 30_000,
+        refetchInterval: 30_000,
         retry: false,
     })
     return query.data?.sessionSummaryInChat === true
