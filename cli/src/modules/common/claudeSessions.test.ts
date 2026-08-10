@@ -384,6 +384,15 @@ describe('local Claude sessions', () => {
                 type: 'assistant',
                 message: { role: 'assistant', content: [{ type: 'text', text: 'Replacement answer' }] },
                 uuid: 'assistant-new'
+            },
+            {
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'system',
+                subtype: 'turn_duration',
+                durationMs: 1234,
+                messageId: 'assistant-new',
+                uuid: 'duration-new'
             }
         ]
         writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), transcript.map(line).join('\n'))
@@ -394,11 +403,12 @@ describe('local Claude sessions', () => {
             `claude:${SESSION_ID}:assistant-1`,
             `claude:${SESSION_ID}:sidechain-active`,
             `claude:${SESSION_ID}:user-new`,
-            `claude:${SESSION_ID}:assistant-new`
+            `claude:${SESSION_ID}:assistant-new`,
+            `claude:${SESSION_ID}:duration-new`
         ])
         expect(session).toMatchObject({
             lastUserMessage: 'Replacement prompt',
-            messageCount: 5
+            messageCount: 6
         })
     })
 

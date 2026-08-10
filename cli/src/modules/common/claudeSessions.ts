@@ -27,6 +27,7 @@ type SessionFileCandidate = {
 type ClaudeTranscriptRecord = {
     uuid: string | null
     parentUuid: string | null
+    relatedMessageId: string | null
     isSidechain: boolean
     parentToolUseId: string | null
     importableConversation: boolean
@@ -185,6 +186,10 @@ function isImportableConversationRecord(record: ClaudeTranscriptRecord): boolean
     return record.importableConversation
 }
 
+function canAnchorClaudeBranch(record: ClaudeTranscriptRecord): boolean {
+    return record.messageKind === 'user' || record.parentUuid !== null
+}
+
 function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> | null {
     const topology = new Map<string, ClaudeTranscriptRecord>()
     for (const record of records) {
@@ -193,7 +198,11 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
     let leaf: ClaudeTranscriptRecord | null = null
     for (let index = records.length - 1; index >= 0; index -= 1) {
         const record = records[index]!
-        if (!record.isSidechain && isImportableConversationRecord(record)) {
+        if (
+            !record.isSidechain &&
+            isImportableConversationRecord(record) &&
+            canAnchorClaudeBranch(record)
+        ) {
             leaf = record
             break
         }
@@ -240,6 +249,11 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
             sidechainUuid = current?.parentUuid ?? null
         }
     }
+    for (const record of records) {
+        if (record.uuid && record.relatedMessageId && activeMainIds.has(record.relatedMessageId)) {
+            activeIds.add(record.uuid)
+        }
+    }
     return activeIds
 }
 
@@ -284,6 +298,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
         let userPreview: string | null = null
         let assistantModel: string | null = null
         let toolUseIds: string[] = []
+        let relatedMessageId: string | null = null
 
         if (rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string') {
             customTitle = rawRecord.customTitle.trim() || customTitle
@@ -305,6 +320,8 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
             if (event.type === 'assistant') {
                 assistantModel = event.message?.model?.trim() || null
                 toolUseIds = assistantToolUseIds(event)
+            } else if (event.type === 'system') {
+                relatedMessageId = event.messageId ?? null
             }
             if (importableConversation) {
                 if (isExternalUserMessage(event)) {
@@ -322,6 +339,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
         records.push({
             uuid,
             parentUuid,
+            relatedMessageId,
             isSidechain,
             parentToolUseId,
             importableConversation,
