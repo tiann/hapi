@@ -66,20 +66,20 @@ export function createHubSettingsRoutes(
         }
         if (parsed.data.autoBridgeTransientModelErrors !== undefined) {
             const enabled = parsed.data.autoBridgeTransientModelErrors
-            const previous = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
-            await writeAutoBridgeTransientModelErrorsEnabled(dataDir, enabled)
             const engine = getSyncEngine?.() ?? null
             if (engine) {
                 try {
-                    await engine.fanoutAutoBridgeTransientModelErrors(enabled)
+                    // Disk write + fanout + rollback share SyncEngine's lock so
+                    // concurrent PUTs cannot leave CLI prefs ahead of settings.json.
+                    await engine.applyAutoBridgeTransientModelErrorsSetting(dataDir, enabled)
                 } catch (error) {
-                    await writeAutoBridgeTransientModelErrorsEnabled(dataDir, previous)
-                    await engine.fanoutAutoBridgeTransientModelErrors(previous).catch(() => {})
                     const message = error instanceof Error
                         ? error.message
                         : 'Failed to update every active Cursor session'
                     return c.json({ error: message }, 409)
                 }
+            } else {
+                await writeAutoBridgeTransientModelErrorsEnabled(dataDir, enabled)
             }
         }
         c.header('Cache-Control', 'no-store')

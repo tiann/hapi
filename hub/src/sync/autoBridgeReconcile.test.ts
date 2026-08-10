@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { writeAutoBridgeTransientModelErrorsEnabled } from '../config/autoBridgeTransientModelErrors'
+import {
+    readAutoBridgeTransientModelErrorsEnabled,
+    writeAutoBridgeTransientModelErrorsEnabled
+} from '../config/autoBridgeTransientModelErrors'
 import { SyncEngine } from './syncEngine'
 
 const directories: string[] = []
@@ -13,9 +16,19 @@ afterEach(async () => {
     await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-async function flushAsyncWork(): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    await new Promise((resolve) => setTimeout(resolve, 0))
+async function waitUntil(
+    predicate: () => boolean,
+    label: string,
+    timeoutMs = 2_000
+): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+        if (predicate()) {
+            return
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    throw new Error(`timed out waiting for ${label}`)
 }
 
 describe('cursor auto-bridge reconcile on session-ready', () => {
@@ -68,7 +81,7 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
 
         engine.handleSessionReady({ sid: session.id, time: Date.now() })
-        await flushAsyncWork()
+        await waitUntil(() => configCalls.length >= 1, 'session-ready enable fanout')
 
         expect(configCalls).toEqual([
             {
@@ -84,7 +97,7 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
 
         engine.handleSessionReady({ sid: session.id, time: Date.now() })
-        await flushAsyncWork()
+        await waitUntil(() => configCalls.length >= 1, 'session-ready disable fanout')
 
         expect(configCalls).toEqual([
             {
@@ -98,13 +111,14 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         const tenant = await setup({ namespace: 'tenant-a' })
         await writeAutoBridgeTransientModelErrorsEnabled(tenant.dataDir, true)
         tenant.engine.handleSessionReady({ sid: tenant.session.id, time: Date.now() })
-        await flushAsyncWork()
+        // Fire-and-forget skip path: wait long enough for a mistaken RPC, then assert none.
+        await new Promise((resolve) => setTimeout(resolve, 50))
         expect(tenant.configCalls).toEqual([])
 
         const claude = await setup({ flavor: 'claude' })
         await writeAutoBridgeTransientModelErrorsEnabled(claude.dataDir, true)
         claude.engine.handleSessionReady({ sid: claude.session.id, time: Date.now() })
-        await flushAsyncWork()
+        await new Promise((resolve) => setTimeout(resolve, 50))
         expect(claude.configCalls).toEqual([])
     })
 
@@ -114,7 +128,7 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
 
         engine.handleSessionAlive({ sid: session.id, time: Date.now() })
-        await flushAsyncWork()
+        await waitUntil(() => configCalls.length >= 1, 'first-active enable fanout')
 
         expect(configCalls).toEqual([
             {
@@ -147,8 +161,7 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         }
 
         const reconcilePromise = engine.reconcileCursorAutoBridgeSetting(session.id)
-        await flushAsyncWork()
-        expect(firstRpc.release).toBeTypeOf('function')
+        await waitUntil(() => typeof firstRpc.release === 'function', 'first RPC hold')
 
         // Become active while the first reconcile still holds the lock, then
         // toggle + fanout so the serialized tail sees the new value.
@@ -158,9 +171,51 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
 
         firstRpc.release?.()
         await Promise.all([reconcilePromise, fanoutPromise])
-        await flushAsyncWork()
+        await waitUntil(
+            () => configCalls.at(-1)?.config?.autoBridgeTransientModelErrors === true,
+            'serialized fanout true'
+        )
 
         expect(configCalls.some((call) => call.config.autoBridgeTransientModelErrors === true)).toBe(true)
         expect(configCalls.at(-1)?.config).toEqual({ autoBridgeTransientModelErrors: true })
+    })
+
+    it('serializes concurrent apply so a failed PUT cannot clobber a later success', async () => {
+        const { engine, session, dataDir, configCalls } = await setup()
+        engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
+
+        const failHold = { release: null as (() => void) | null }
+        let failArmed = true
+        ;(engine as unknown as {
+            rpcGateway: {
+                requestSessionConfig: (
+                    sessionId: string,
+                    config: Record<string, unknown>
+                ) => Promise<unknown>
+            }
+        }).rpcGateway.requestSessionConfig = async (sessionId, config) => {
+            configCalls.push({ sessionId, config })
+            if (failArmed && config.autoBridgeTransientModelErrors === true) {
+                failArmed = false
+                await new Promise<void>((resolve) => {
+                    failHold.release = resolve
+                })
+                throw new Error('simulated fanout failure')
+            }
+            return { applied: config }
+        }
+
+        const failing = engine.applyAutoBridgeTransientModelErrorsSetting(dataDir, true)
+        await waitUntil(() => typeof failHold.release === 'function', 'failing apply hold')
+
+        const succeeding = engine.applyAutoBridgeTransientModelErrorsSetting(dataDir, false)
+        failHold.release?.()
+
+        await expect(failing).rejects.toThrow('Failed to update every active Cursor session')
+        await succeeding
+
+        expect(await readAutoBridgeTransientModelErrorsEnabled(dataDir)).toBe(false)
+        expect(configCalls.at(-1)?.config).toEqual({ autoBridgeTransientModelErrors: false })
     })
 })
