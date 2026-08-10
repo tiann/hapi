@@ -189,6 +189,52 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         expect(cache.resolveAttachedJobSessionId(oldSession.id, 'default')).toBe(newSession.id)
     })
 
+    it('follows seven OpenCode clear replacements (no five-hop cap) for PATCH', async () => {
+        const { store, cache } = setup()
+        const sessions = Array.from({ length: 8 }, (_, i) =>
+            cache.getOrCreateSession(
+                `agent-clear-chain-${i}-` + Math.random().toString(36).slice(2, 8),
+                { path: '/tmp/project', host: 'localhost', flavor: 'opencode' },
+                null,
+                'default'
+            )
+        )
+        // s0→s1→…→s7 via supersededBySessionId (retained /clear archives).
+        for (let i = 0; i < sessions.length - 1; i += 1) {
+            const cur = sessions[i]!
+            const next = sessions[i + 1]!
+            const stored = store.sessions.getSessionByNamespace(cur.id, 'default')!
+            const meta = {
+                ...(stored.metadata as Record<string, unknown>),
+                supersededBySessionId: next.id,
+                lifecycleState: 'archived',
+                archiveReason: 'Cleared by /clear'
+            }
+            store.sessions.updateSessionMetadata(cur.id, meta, stored.metadataVersion, 'default')
+            cache.refreshSession(cur.id)
+        }
+
+        const origin = sessions[0]!
+        const tip = sessions[sessions.length - 1]!
+        const upserted = store.sessionJobs.upsert(tip.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 9
+        })
+        expect(upserted.outcome).toBe('upserted')
+        const runId = upserted.outcome === 'upserted' ? upserted.job.runId : undefined
+
+        expect(cache.resolveAttachedJobSessionId(origin.id, 'default')).toBe(tip.id)
+
+        const ownerId = cache.resolveAttachedJobSessionId(origin.id, 'default')
+        const patched = store.sessionJobs.patch(ownerId, 'beets', {
+            remaining: 2,
+            expectedRunId: runId
+        })
+        expect(patched.outcome).toBe('patched')
+        expect(store.sessionJobs.get(tip.id, 'beets')?.remaining).toBe(2)
+    })
+
     it('clears stale jobsTransferredToSessionId when A reclaims jobs from B (A→B then B→A)', async () => {
         const { store, cache } = setup()
         const a = cache.getOrCreateSession(

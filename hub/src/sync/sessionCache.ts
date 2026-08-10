@@ -1622,12 +1622,16 @@ export class SessionCache {
     }
 
     /**
-     * Follow job-owner redirects after session merge/dedup so agents that still
-     * hold the pre-merge `$HAPI_SESSION_ID` can heartbeat.
+     * Follow job-owner redirects after session merge/dedup / OpenCode /clear so
+     * agents that still hold the pre-merge `$HAPI_SESSION_ID` can heartbeat.
+     * Cycle detection (not a hop cap): each /clear retains the archived source,
+     * so a long-lived supervisor can accumulate more than five replacements.
      */
     resolveAttachedJobSessionId(sessionId: string, namespace: string): string {
         let current = sessionId
-        for (let hop = 0; hop < 5; hop += 1) {
+        const visited = new Set<string>()
+        while (!visited.has(current)) {
+            visited.add(current)
             const access = this.resolveSessionAccess(current, namespace)
             if (access.ok) {
                 const meta = access.session.metadata as Record<string, unknown> | null | undefined
