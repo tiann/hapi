@@ -168,9 +168,11 @@ function matchNotifySummaryLine(line: string): NotifySummaryLineMatch | null {
         idx >= 0;
         idx = line.indexOf(NOTIFY_SUMMARY_PREFIX, idx + NOTIFY_SUMMARY_PREFIX.length)
     ) {
-        // Keep glued footers (`Done.AGENT_NOTIFY_SUMMARY ...`) but reject
-        // ordinary prose-delimited mentions (`Example: AGENT_NOTIFY_SUMMARY ...`).
-        if (idx > 0 && /\s/.test(line[idx - 1]!)) continue
+        // Keep glued footers (`Done.AGENT_NOTIFY_SUMMARY ...`) and indented
+        // standalone footers, but reject ordinary prose-delimited mentions
+        // (`Example: AGENT_NOTIFY_SUMMARY ...`).
+        const prefix = line.slice(0, idx)
+        if (prefix.trim().length > 0 && /\s/.test(line[idx - 1]!)) continue
         const jsonPart = line.slice(idx + NOTIFY_SUMMARY_PREFIX.length).trim()
         if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) continue
         try {

@@ -156,6 +156,14 @@ describe('extractNotifySummary', () => {
         expect(stripNotifySummaryFooter(example)).toBe(example)
     })
 
+    test('accepts a standalone footer with leading indentation', () => {
+        const indented = '    AGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+        const r = extractNotifySummary(indented)
+        expect(r?.summary).toBe('Done')
+        expect(r?.status).toBe('done')
+        expect(stripNotifySummaryFooter(`Prose.\n${indented}`)).toBe('Prose.')
+    })
+
     test('parses glued token after multi-line prose (token still on last line)', () => {
         const text = `Did the work.\n\nOwnership session pinged.AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"ok"}`
         const r = extractNotifySummary(text)
