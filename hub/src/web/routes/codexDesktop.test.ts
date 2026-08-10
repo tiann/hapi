@@ -1356,6 +1356,56 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('defers no-engine merge when the source still has attached jobs', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-with-history',
+            { codexSessionId: 'codex-thread-jobs' },
+            {},
+            'default'
+        )
+        const source = store.sessions.getOrCreateSession(
+            'source-with-job',
+            { codexSessionId: 'codex-thread-jobs' },
+            {},
+            'default'
+        )
+        store.messages.addMessage(canonical.id, { type: 'text', text: 'keep me canonical' }, 'canon-1')
+        const upserted = store.sessionJobs.upsert(source.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 5
+        })
+        expect(upserted.outcome).toBe('upserted')
+
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-jobs'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: false; error: string }
+            expect(body.success).toBe(false)
+            expect(body.error).toMatch(/attached-job redirects/i)
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
+            expect(store.sessions.getSessionByNamespace(canonical.id, 'default')).not.toBeNull()
+            expect(store.sessionJobs.getPrimaryRunning(source.id)?.key).toBe('beets')
+        } finally {
+            store.close()
+        }
+    })
+
     it('treats source and fork ids as the same duplicate-sessions group', async () => {
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {

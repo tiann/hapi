@@ -1336,11 +1336,17 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         }
 
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
+        // Without SyncEngine we cannot persist jobsAcceptedFromSessionIds / key remaps,
+        // so refuse rather than orphan a supervisor still holding the source session id.
         if (engine) {
             engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
             await engine.deleteSession(source.sessionId)
         } else {
-            options.store.sessionJobs.transfer(source.sessionId, canonical.sessionId)
+            if (options.store.sessionJobs.list(source.sessionId).length > 0) {
+                throw new Error(
+                    'Sync engine unavailable; retry merge so attached-job redirects are preserved'
+                )
+            }
             const deleted = options.store.sessions.deleteSession(source.sessionId, options.namespace)
             if (!deleted) {
                 throw new Error(`Failed to delete duplicate Hapi session: ${source.sessionId}`)
