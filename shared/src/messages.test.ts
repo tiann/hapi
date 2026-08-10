@@ -149,6 +149,13 @@ describe('extractNotifySummary', () => {
         expect(r?.summary).toBe('ok')
     })
 
+    test('rejects whitespace-delimited contract examples on the last line', () => {
+        const example = 'Example: AGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+        expect(extractNotifySummary(example)).toBeNull()
+        expect(splitNotifySummary(example)).toBeNull()
+        expect(stripNotifySummaryFooter(example)).toBe(example)
+    })
+
     test('parses glued token after multi-line prose (token still on last line)', () => {
         const text = `Did the work.\n\nOwnership session pinged.AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"ok"}`
         const r = extractNotifySummary(text)

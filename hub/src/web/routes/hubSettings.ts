@@ -23,10 +23,9 @@ async function readHubSettings(dataDir: string): Promise<HubSettingsResponse> {
 export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
+    // Authenticated readers (any namespace) can observe hub-wide display/emit
+    // flags. Mutations stay owner-only below.
     app.get('/hub-settings', async (c) => {
-        if (c.get('namespace') !== 'default') {
-            return c.json({ error: OWNER_ONLY_ERROR }, 403)
-        }
         c.header('Cache-Control', 'no-store')
         return c.json(await readHubSettings(dataDir))
     })

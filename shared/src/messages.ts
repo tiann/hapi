@@ -150,11 +150,12 @@ export type NotifySummary = {
 /**
  * Match a well-formed `AGENT_NOTIFY_SUMMARY {...}` footer on a single line.
  *
- * Allows an optional prose prefix on the same line (agents sometimes glue
- * trailing text and the token without a newline). Scans left-to-right and
- * returns the first token occurrence whose remainder is valid JSON through
- * end of line - so a literal `AGENT_NOTIFY_SUMMARY ` inside a JSON string
- * value does not steal the match from the real footer.
+ * Allows an optional *glued* prose prefix on the same line (agents sometimes
+ * omit the newline: `Done.AGENT_NOTIFY_SUMMARY {...}`). Whitespace-delimited
+ * mentions (`Example: AGENT_NOTIFY_SUMMARY {...}`) are not treated as footers.
+ * Scans left-to-right and returns the first token occurrence whose remainder
+ * is valid JSON through end of line - so a literal `AGENT_NOTIFY_SUMMARY `
+ * inside a JSON string value does not steal the match from the real footer.
  */
 type NotifySummaryLineMatch = {
     jsonPart: string
@@ -167,6 +168,9 @@ function matchNotifySummaryLine(line: string): NotifySummaryLineMatch | null {
         idx >= 0;
         idx = line.indexOf(NOTIFY_SUMMARY_PREFIX, idx + NOTIFY_SUMMARY_PREFIX.length)
     ) {
+        // Keep glued footers (`Done.AGENT_NOTIFY_SUMMARY ...`) but reject
+        // ordinary prose-delimited mentions (`Example: AGENT_NOTIFY_SUMMARY ...`).
+        if (idx > 0 && /\s/.test(line[idx - 1]!)) continue
         const jsonPart = line.slice(idx + NOTIFY_SUMMARY_PREFIX.length).trim()
         if (!jsonPart.startsWith('{') || !jsonPart.endsWith('}')) continue
         try {
@@ -225,9 +229,9 @@ function findNotifySummary(text: string): NotifySummaryMatch | null {
  *
  * End-anchor: trailing blank lines are fine, but prose on a later
  * non-empty line is non-compliant and returns null. Mid-body quotes of
- * the token are ignored for the same reason. An optional prose prefix on
- * the last line itself is tolerated when the line still ends with a
- * well-formed `AGENT_NOTIFY_SUMMARY {…}` payload.
+ * the token are ignored for the same reason. An optional *glued* prose prefix
+ * on the last line itself is tolerated (`Done.AGENT_NOTIFY_SUMMARY {…}`);
+ * whitespace-delimited examples on that line are not.
  *
  * Returns the parsed object on success, `null` on any deviation. The
  * shape is intentionally loose - we only trust `summary`, `action`, and

@@ -94,12 +94,25 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.status).toBe(400)
     })
 
-    it('rejects non-default namespaces', async () => {
-        const { app } = await createApp('tenant')
-        const get = await app.request('/api/hub-settings')
-        expect(get.status).toBe(403)
+    it('rejects non-default namespaces for PUT but allows GET', async () => {
+        const { app, dataDir } = await createApp('default')
+        await writeSessionSummaryInChatEnabled(dataDir, true)
 
-        const put = await app.request('/api/hub-settings', {
+        const tenantApp = new Hono<WebAppEnv>()
+        tenantApp.use('*', async (c, next) => {
+            c.set('namespace', 'tenant')
+            await next()
+        })
+        tenantApp.route('/api', createHubSettingsRoutes(dataDir))
+
+        const get = await tenantApp.request('/api/hub-settings')
+        expect(get.status).toBe(200)
+        expect(await get.json()).toEqual({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: true
+        })
+
+        const put = await tenantApp.request('/api/hub-settings', {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ sessionSummaryContract: true })
