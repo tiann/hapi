@@ -1,7 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { NotifySummaryText } from './NotifySummaryText'
+
+const { mockUseSessionSummaryInChat } = vi.hoisted(() => ({
+    mockUseSessionSummaryInChat: vi.fn(() => true)
+}))
+
+vi.mock('@/hooks/useSessionSummaryInChat', () => ({
+    useSessionSummaryInChat: () => mockUseSessionSummaryInChat()
+}))
 
 vi.mock('@/components/assistant-ui/markdown-text', () => ({
     MarkdownText: () => <div data-testid="raw-markdown">raw assistant text</div>
@@ -22,6 +30,10 @@ function renderText(text: string, statusType: 'complete' | 'running' = 'complete
 }
 
 describe('NotifySummaryText', () => {
+    beforeEach(() => {
+        mockUseSessionSummaryInChat.mockReturnValue(true)
+    })
+
     it('renders the prose and compact summary footer instead of raw JSON', () => {
         renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done","action":"Review it"}')
 
@@ -31,6 +43,15 @@ describe('NotifySummaryText', () => {
         expect(screen.getByTestId('notify-summary-status')).toHaveAttribute('aria-label', 'Done')
         expect(screen.getByTestId('notify-summary-status')).not.toHaveTextContent('Done')
         expect(screen.getByTestId('notify-summary-status').querySelector('svg')).toBeInTheDocument()
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
+    it('strips the footer when chat display is off', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
         expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
     })
 

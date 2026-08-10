@@ -4,6 +4,7 @@ import {
     extractNotifySummary,
     isRedundantGoalStatusEventContent,
     splitNotifySummary,
+    stripNotifySummaryFooter,
     type NotifySummary
 } from './messages'
 
@@ -253,6 +254,42 @@ describe('extractNotifySummary', () => {
     test('returns null when the footer is not a compliant final line', () => {
         expect(splitNotifySummary('AGENT_NOTIFY_SUMMARY {"summary":"Done"}\nMore prose')).toBeNull()
         expect(splitNotifySummary('Plain prose')).toBeNull()
+    })
+})
+
+describe('stripNotifySummaryFooter', () => {
+    const FOOTER = 'AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"ok","action":"Ship it"}'
+
+    test('removes a trailing well-formed footer and keeps prose', () => {
+        expect(stripNotifySummaryFooter(`Here is the answer.\n\n${FOOTER}`)).toBe('Here is the answer.')
+    })
+
+    test('keeps glued last-line prose when stripping the footer', () => {
+        expect(stripNotifySummaryFooter(`Ownership session pinged.${FOOTER}`)).toBe(
+            'Ownership session pinged.'
+        )
+    })
+
+    test('tolerates trailing whitespace after the footer line', () => {
+        expect(stripNotifySummaryFooter(`Done.\n${FOOTER}\n\n`)).toBe('Done.')
+    })
+
+    test('leaves malformed or truncated footers untouched', () => {
+        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"summary":'
+        const bogus = 'Done.\nAGENT_NOTIFY_SUMMARY {bogus}'
+        expect(stripNotifySummaryFooter(truncated)).toBe(truncated)
+        expect(stripNotifySummaryFooter(bogus)).toBe(bogus)
+    })
+
+    test('leaves mid-body mentions and non-final footers untouched', () => {
+        const mid = 'See AGENT_NOTIFY_SUMMARY {"status":"done","summary":"mid"} for the contract.'
+        const nonFinal = `${FOOTER}\nMore prose`
+        expect(stripNotifySummaryFooter(mid)).toBe(mid)
+        expect(stripNotifySummaryFooter(nonFinal)).toBe(nonFinal)
+    })
+
+    test('returns empty string when the message is only a footer', () => {
+        expect(stripNotifySummaryFooter(FOOTER)).toBe('')
     })
 })
 

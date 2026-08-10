@@ -268,4 +268,14 @@ export function splitNotifySummary(text: unknown): NotifySummaryDisplay | null {
     }
 }
 
+/**
+ * Render/copy helper: remove a valid trailing AGENT_NOTIFY_SUMMARY footer.
+ * Leaves malformed, mid-body, and non-final occurrences unchanged. Store and
+ * parse/FCM paths must keep using the raw text.
+ */
+export function stripNotifySummaryFooter(text: string): string {
+    if (typeof text !== 'string' || text.length === 0) return text
+    return splitNotifySummary(text)?.visibleText ?? text
+}
+
 export type { RoleWrappedRecord }

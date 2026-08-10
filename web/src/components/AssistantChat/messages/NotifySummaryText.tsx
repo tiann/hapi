@@ -1,8 +1,9 @@
 import type { TextMessagePartComponent } from '@assistant-ui/react'
-import { splitNotifySummary, type NotifySummary } from '@hapi/protocol/messages'
+import { splitNotifySummary, stripNotifySummaryFooter, type NotifySummary } from '@hapi/protocol/messages'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { CheckIcon } from '@/components/icons'
+import { useSessionSummaryInChat } from '@/hooks/useSessionSummaryInChat'
 import { useTranslation } from '@/lib/use-translation'
 
 type SummaryStatusPresentation = {
@@ -99,9 +100,18 @@ export function NotifySummaryFooter({ summary }: { summary: NotifySummary }) {
     )
 }
 
-/** Render the machine footer as a compact, user-facing message tail. */
+/** Render the machine footer as a compact row when display is on; otherwise strip it. */
 export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) => {
+    const showInChat = useSessionSummaryInChat()
+
     if (status.type !== 'complete') return <MarkdownText />
+
+    if (!showInChat) {
+        const stripped = stripNotifySummaryFooter(text)
+        if (!stripped) return null
+        if (stripped === text) return <MarkdownText />
+        return <MarkdownRenderer content={stripped} />
+    }
 
     const display = splitNotifySummary(text)
     const hasDisplayableSummary = Boolean(

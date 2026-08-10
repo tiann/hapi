@@ -4,9 +4,21 @@ import {
     readSessionSummaryContractEnabled,
     writeSessionSummaryContractEnabled
 } from '../../config/sessionSummaryContract'
+import {
+    readSessionSummaryInChatEnabled,
+    writeSessionSummaryInChatEnabled
+} from '../../config/sessionSummaryInChat'
 import type { WebAppEnv } from '../middleware/auth'
 
 const OWNER_ONLY_ERROR = 'Hub settings are only available to the hub owner'
+
+async function readHubSettings(dataDir: string): Promise<HubSettingsResponse> {
+    const [sessionSummaryContract, sessionSummaryInChat] = await Promise.all([
+        readSessionSummaryContractEnabled(dataDir),
+        readSessionSummaryInChatEnabled(dataDir)
+    ])
+    return { sessionSummaryContract, sessionSummaryInChat }
+}
 
 export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -16,9 +28,7 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
             return c.json({ error: OWNER_ONLY_ERROR }, 403)
         }
         c.header('Cache-Control', 'no-store')
-        const enabled = await readSessionSummaryContractEnabled(dataDir)
-        const response: HubSettingsResponse = { sessionSummaryContract: enabled }
-        return c.json(response)
+        return c.json(await readHubSettings(dataDir))
     })
 
     app.put('/hub-settings', async (c) => {
@@ -30,13 +40,14 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
-        const enabled = await writeSessionSummaryContractEnabled(
-            dataDir,
-            parsed.data.sessionSummaryContract
-        )
+        if (parsed.data.sessionSummaryContract !== undefined) {
+            await writeSessionSummaryContractEnabled(dataDir, parsed.data.sessionSummaryContract)
+        }
+        if (parsed.data.sessionSummaryInChat !== undefined) {
+            await writeSessionSummaryInChatEnabled(dataDir, parsed.data.sessionSummaryInChat)
+        }
         c.header('Cache-Control', 'no-store')
-        const response: HubSettingsResponse = { sessionSummaryContract: enabled }
-        return c.json(response)
+        return c.json(await readHubSettings(dataDir))
     })
 
     return app

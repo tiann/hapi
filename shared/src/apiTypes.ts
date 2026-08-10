@@ -58,14 +58,22 @@ export const CreateSessionResponseSchema = z.object({
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 
 export const HubSettingsResponseSchema = z.object({
-    sessionSummaryContract: z.boolean()
+    sessionSummaryContract: z.boolean(),
+    /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
+    sessionSummaryInChat: z.boolean()
 })
 
 export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
 
-export const UpdateHubSettingsRequestSchema = z.object({
-    sessionSummaryContract: z.boolean()
-})
+export const UpdateHubSettingsRequestSchema = z
+    .object({
+        sessionSummaryContract: z.boolean().optional(),
+        sessionSummaryInChat: z.boolean().optional()
+    })
+    .refine(
+        (data) => data.sessionSummaryContract !== undefined || data.sessionSummaryInChat !== undefined,
+        { message: 'At least one hub setting field is required' }
+    )
 
 export type UpdateHubSettingsRequest = z.infer<typeof UpdateHubSettingsRequestSchema>
 

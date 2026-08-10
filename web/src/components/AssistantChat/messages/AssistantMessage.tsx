@@ -9,6 +9,7 @@ import { CodexReviewCard } from '@/components/AssistantChat/messages/CodexReview
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { NotifySummaryText } from '@/components/AssistantChat/messages/NotifySummaryText'
+import { useSessionSummaryInChat } from '@/hooks/useSessionSummaryInChat'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -23,6 +24,7 @@ const MESSAGE_PART_COMPONENTS = {
 
 export function HappyAssistantMessage() {
     const ctx = useHappyChatContext()
+    const showSessionSummaryInChat = useSessionSummaryInChat()
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
     const isCliOutput = useAuiState((s) => {
@@ -45,7 +47,9 @@ export function HappyAssistantMessage() {
     })
     const copyText = useAuiState((s) => {
         if (s.message.role !== 'assistant') return ''
-        return getAssistantCopyText(s.message.content)
+        return getAssistantCopyText(s.message.content, {
+            stripNotifySummary: !showSessionSummaryInChat
+        })
     })
 
     const durationMs = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.durationMs)

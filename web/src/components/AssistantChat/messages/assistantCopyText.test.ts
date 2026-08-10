@@ -22,4 +22,16 @@ describe('getAssistantCopyText', () => {
 
         expect(getAssistantCopyText(parts)).toBe('')
     })
+
+    it('strips trailing AGENT_NOTIFY_SUMMARY when stripNotifySummary is on', () => {
+        const parts = [
+            {
+                type: 'text',
+                text: 'Did the work.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+            }
+        ] satisfies ThreadAssistantMessagePart[]
+
+        expect(getAssistantCopyText(parts, { stripNotifySummary: true })).toBe('Did the work.')
+        expect(getAssistantCopyText(parts)).toContain('AGENT_NOTIFY_SUMMARY')
+    })
 })
