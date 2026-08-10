@@ -118,12 +118,20 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
-        const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionRecords.map((session) => session.id))
+        // Watermark BEFORE reading jobs. If a mutation lands between read and
+        // allocate, SSE gets version V with the new value while this response
+        // would return the older value labeled V+1 — useSSE then rejects the
+        // real patch as stale. Allocate first so concurrent emits always win.
+        const sessionIds = sessionRecords.map((session) => session.id)
+        const attachedJobVersions = new Map(
+            sessionIds.map((id) => [id, engine.allocateAttachedJobVersion(id)])
+        )
+        const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionIds)
         const sessions = sessionRecords.map((session) => {
             const summary = toSessionSummary(session, {
                 attachedJob: attachedJobs.get(session.id) ?? null,
                 // Same allocator as SSE emits — equal-ms terminal patches stay applyable.
-                attachedJobUpdatedAt: engine.allocateAttachedJobVersion(session.id)
+                attachedJobUpdatedAt: attachedJobVersions.get(session.id) ?? 0
             })
             return {
                 ...summary,

@@ -1570,4 +1570,58 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+    it('allocates attachedJob watermark before reading jobs (SSE race)', async () => {
+        const session = createSession({ id: 'session-watermark' })
+        const callOrder: string[] = []
+        let watermark = 0
+        const runningJob = {
+            key: 'beets',
+            label: 'beets',
+            status: 'running' as const,
+            remaining: 3,
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        }
+        let primary: typeof runningJob | null = runningJob
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            allocateAttachedJobVersion: (id: string) => {
+                expect(id).toBe(session.id)
+                callOrder.push('allocate')
+                watermark += 1
+                return watermark
+            },
+            getPrimaryAttachedJobsBySessionIds: (ids: string[]) => {
+                callOrder.push('read')
+                // Concurrent terminal mutation in the old read→allocate gap:
+                // SSE would allocate the next watermark with the cleared job.
+                primary = null
+                watermark += 1
+                return new Map(ids.map((id) => [id, primary]))
+            },
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions')
+        expect(response.status).toBe(200)
+        expect(callOrder).toEqual(['allocate', 'read'])
+        const body = await response.json() as {
+            sessions: Array<{ id: string; attachedJob: unknown; attachedJobUpdatedAt: number }>
+        }
+        const row = body.sessions.find((s) => s.id === session.id)
+        expect(row?.attachedJobUpdatedAt).toBe(1)
+        // Snapshot watermark must stay behind the concurrent SSE emit so useSSE applies it.
+        expect(row?.attachedJobUpdatedAt).toBeLessThan(watermark)
+    })
+
 })
