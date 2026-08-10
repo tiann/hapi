@@ -72,14 +72,21 @@ const MARKDOWN_PLUGIN_TAIL_STANDALONE = [
     [remarkFilePathLinks, { rewriteExplicitLinks: false }],
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
-export const MARKDOWN_PLUGINS = [
+// A single tilde is common in shell prompts (for example, `user@host:~$`).
+// Keep it literal while preserving GFM strikethrough via double tildes.
+const REMARK_GFM_PLUGIN = [
     remarkGfm,
+    { singleTilde: false },
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>[number]
+
+export const MARKDOWN_PLUGINS = [
+    REMARK_GFM_PLUGIN,
     remarkRepairTables,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_PLUGINS_STANDALONE = [
-    remarkGfm,
+    REMARK_GFM_PLUGIN,
     remarkRepairTables,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
@@ -87,14 +94,14 @@ export const MARKDOWN_PLUGINS_STANDALONE = [
 // User-authored prompts should preserve Shift+Enter/newline intent without
 // changing assistant/tool markdown behavior globally.
 export const MARKDOWN_PLUGINS_WITH_BREAKS = [
-    remarkGfm,
+    REMARK_GFM_PLUGIN,
     remarkRepairTables,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS = [
-    remarkGfm,
+    REMARK_GFM_PLUGIN,
     remarkRepairTables,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
