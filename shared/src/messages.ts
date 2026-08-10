@@ -7,8 +7,15 @@ type RoleWrappedRecord = {
 }
 
 export const DISPLAY_HISTORY_STRING_LIMIT = 64 * 1024
+export const CLAUDE_IMPORTED_USER_TRUNCATION_MARKER = '\n…[hapi: oversized imported prompt truncated]…'
 const DISPLAY_HISTORY_TRUNCATE_HEAD = 48 * 1024
 const DISPLAY_HISTORY_TRUNCATE_TAIL = 12 * 1024
+
+export function normalizeClaudeImportedUserText(value: string): string {
+    return value.length > DISPLAY_HISTORY_STRING_LIMIT
+        ? `${value.slice(0, DISPLAY_HISTORY_STRING_LIMIT - CLAUDE_IMPORTED_USER_TRUNCATION_MARKER.length)}${CLAUDE_IMPORTED_USER_TRUNCATION_MARKER}`
+        : value
+}
 
 function truncateDisplayHistoryString(value: string): string {
     const removed = value.length - DISPLAY_HISTORY_TRUNCATE_HEAD - DISPLAY_HISTORY_TRUNCATE_TAIL

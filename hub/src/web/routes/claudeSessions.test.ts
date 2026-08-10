@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { ClaudeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
+import { normalizeClaudeImportedUserText } from '@hapi/protocol/messages'
 import { Store } from '../../store'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -364,6 +365,46 @@ describe('Claude session import', () => {
 
         expect(repeated).toMatchObject({ action: 'unchanged', appended: 0 })
         expect(store.messages.getAllMessages(initial.hapiSessionId!)).toHaveLength(3)
+    })
+
+    it('does not duplicate or truncate an oversized trailing live user message', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-live-user-oversized'
+        const initialTranscript = transcript(sessionId, ['one'])
+        initialTranscript.messages.push(assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        initialTranscript.messageCount = initialTranscript.messages.length
+        const initial = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: initialTranscript
+        })
+
+        const prompt = 'x'.repeat(70 * 1024)
+        const expandedTranscript = transcript(sessionId, ['one', normalizeClaudeImportedUserText(prompt)])
+        expandedTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        expandedTranscript.messageCount = expandedTranscript.messages.length
+        const sourceTail = expandedTranscript.messages.at(-1)!
+        if (sourceTail.content.role !== 'user') throw new Error('expected user tail')
+        const liveContent = {
+            ...sourceTail.content,
+            content: { ...sourceTail.content.content, text: prompt }
+        }
+        store.messages.addMessage(initial.hapiSessionId!, liveContent, 'web-user-oversized')
+
+        const repeated = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: expandedTranscript
+        })
+
+        const stored = store.messages.getAllMessages(initial.hapiSessionId!)
+        expect(repeated).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(stored).toHaveLength(3)
+        expect((stored.at(-1)?.content as typeof liveContent).content.text).toBe(prompt)
     })
 
     it('reuses a normal HAPI session and imports only its newer native tail', async () => {

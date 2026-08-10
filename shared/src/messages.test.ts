@@ -1,12 +1,26 @@
 import { describe, expect, test } from 'bun:test'
 import {
+    CLAUDE_IMPORTED_USER_TRUNCATION_MARKER,
+    DISPLAY_HISTORY_STRING_LIMIT,
     extractAssistantPlainText,
     extractNotifySummary,
     isRedundantGoalStatusEventContent,
+    normalizeClaudeImportedUserText,
     splitNotifySummary,
     stripNotifySummaryFooter,
     type NotifySummary
 } from './messages'
+
+describe('normalizeClaudeImportedUserText', () => {
+    test('truncates oversized prompts deterministically and idempotently', () => {
+        const prompt = 'x'.repeat(DISPLAY_HISTORY_STRING_LIMIT + 1)
+        const normalized = normalizeClaudeImportedUserText(prompt)
+
+        expect(normalized).toHaveLength(DISPLAY_HISTORY_STRING_LIMIT)
+        expect(normalized.endsWith(CLAUDE_IMPORTED_USER_TRUNCATION_MARKER)).toBe(true)
+        expect(normalizeClaudeImportedUserText(normalized)).toBe(normalized)
+    })
+})
 
 describe('extractAssistantPlainText', () => {
     test('returns null for non-objects', () => {

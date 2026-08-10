@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
 import { Hono } from 'hono'
 import { CLAUDE_IMPORT_PAGE_BYTES } from '@hapi/protocol/apiTypes'
+import { normalizeClaudeImportedUserText } from '@hapi/protocol/messages'
 import type {
     ClaudeImportedMessage,
     ClaudeLocalSessionSummary,
@@ -211,7 +212,12 @@ class ClaudeImportStreamError extends Error {
 }
 
 function canonicalContent(value: unknown): unknown {
-    return truncateOversizedMessageContent(value)
+    const content = truncateOversizedMessageContent(value)
+    const envelope = asRecord(content)
+    const body = asRecord(envelope?.content)
+    if (envelope?.role !== 'user' || body?.type !== 'text' || typeof body.text !== 'string') return content
+    const text = normalizeClaudeImportedUserText(body.text)
+    return text === body.text ? content : { ...envelope, content: { ...body, text } }
 }
 
 function contentDigest(value: unknown): string {

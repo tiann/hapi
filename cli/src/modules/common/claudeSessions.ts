@@ -8,13 +8,17 @@ import type {
     ClaudeLocalSessionMessagesPage,
     ClaudeLocalSessionSummary
 } from '@hapi/protocol/apiTypes'
-import { DISPLAY_HISTORY_STRING_LIMIT, isClaudeChatVisibleMessage, truncateOversizedAgentMessageContent } from '@hapi/protocol/messages'
+import {
+    CLAUDE_IMPORTED_USER_TRUNCATION_MARKER,
+    isClaudeChatVisibleMessage,
+    normalizeClaudeImportedUserText,
+    truncateOversizedAgentMessageContent
+} from '@hapi/protocol/messages'
 import { RawJSONLinesSchema, type RawJSONLines } from '@/claude/types'
 import { extractRawUserTextContent, isExternalUserMessage } from '@/claude/utils/transcriptMessages'
 
 const DEFAULT_CLAUDE_SESSION_SCAN_LIMIT = 200
 const CLAUDE_TRANSCRIPT_INDEX_CACHE_LIMIT = 16
-const IMPORTED_USER_TRUNCATION_MARKER = '\n…[hapi: oversized imported prompt truncated]…'
 const OVERSIZED_AGENT_MESSAGE = '[hapi: oversized imported Claude message omitted]'
 
 type SessionFileCandidate = {
@@ -28,6 +32,7 @@ type ClaudeTranscriptRecord = {
     uuid: string | null
     parentUuid: string | null
     relatedMessageId: string | null
+    systemSubtype: string | null
     isSidechain: boolean
     parentToolUseId: string | null
     importableConversation: boolean
@@ -164,12 +169,9 @@ async function* streamJsonLines(filePath: string): AsyncGenerator<JsonLine> {
 }
 
 function importedUser(text: string): ClaudeImportedMessageContent {
-    const displayText = text.length > DISPLAY_HISTORY_STRING_LIMIT
-        ? `${text.slice(0, DISPLAY_HISTORY_STRING_LIMIT - IMPORTED_USER_TRUNCATION_MARKER.length)}${IMPORTED_USER_TRUNCATION_MARKER}`
-        : text
     return {
         role: 'user',
-        content: { type: 'text', text: displayText },
+        content: { type: 'text', text: normalizeClaudeImportedUserText(text) },
         meta: { sentFrom: 'cli' }
     }
 }
@@ -250,7 +252,13 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
         }
     }
     for (const record of records) {
-        if (record.uuid && record.relatedMessageId && activeMainIds.has(record.relatedMessageId)) {
+        if (
+            record.uuid &&
+            (
+                (record.relatedMessageId && activeMainIds.has(record.relatedMessageId)) ||
+                record.systemSubtype === 'away_summary'
+            )
+        ) {
             activeIds.add(record.uuid)
         }
     }
@@ -299,6 +307,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
         let assistantModel: string | null = null
         let toolUseIds: string[] = []
         let relatedMessageId: string | null = null
+        let systemSubtype: string | null = null
 
         if (rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string') {
             customTitle = rawRecord.customTitle.trim() || customTitle
@@ -322,6 +331,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
                 toolUseIds = assistantToolUseIds(event)
             } else if (event.type === 'system') {
                 relatedMessageId = event.messageId ?? null
+                systemSubtype = event.subtype ?? null
             }
             if (importableConversation) {
                 if (isExternalUserMessage(event)) {
@@ -340,6 +350,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
             uuid,
             parentUuid,
             relatedMessageId,
+            systemSubtype,
             isSidechain,
             parentToolUseId,
             importableConversation,
@@ -487,7 +498,7 @@ function fitUserMessage(message: ClaudeImportedMessage, maxBytes: number): Claud
     while (low <= high) {
         const middle = Math.floor((low + high) / 2)
         const candidate = middle < original.length
-            ? `${original.slice(0, middle)}${IMPORTED_USER_TRUNCATION_MARKER}`
+            ? `${original.slice(0, middle)}${CLAUDE_IMPORTED_USER_TRUNCATION_MARKER}`
             : original
         if (Buffer.byteLength(candidate, 'utf8') <= available) {
             best = candidate
