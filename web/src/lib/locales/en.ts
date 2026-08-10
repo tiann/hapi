@@ -728,6 +728,7 @@ export default {
   'toast.permission.title': 'Permission Request',
   'toast.task.completed': 'Task completed',
   'toast.task.failed': 'Task failed',
+  'toast.session.completed': 'Session completed',
 
   // Install prompt
   'install.title': 'Install HAPI',
