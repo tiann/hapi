@@ -546,8 +546,10 @@ async function readImportedMessage(
     const event = parsed.data
     const createdAt = parseTimestamp(event.timestamp, modifiedAt)
     if (isExternalUserMessage(event)) {
-        const text = extractRawUserTextContent(event.message.content)?.trim()
-        if (!text) throw new Error('Claude transcript changed while paging')
+        const text = extractRawUserTextContent(event.message.content)
+        if (text === null || text.trim().length === 0) {
+            throw new Error('Claude transcript changed while paging')
+        }
         return {
             localId: `claude:${sessionId}:${location.uuid}`,
             createdAt,

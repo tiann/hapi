@@ -348,7 +348,7 @@ describe('Claude session import', () => {
             transcript: initialTranscript
         })
 
-        const expandedTranscript = transcript(sessionId, ['one', 'trailing user'])
+        const expandedTranscript = transcript(sessionId, ['one', '  trailing user\n'])
         expandedTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
         expandedTranscript.messageCount = expandedTranscript.messages.length
         const liveUser = expandedTranscript.messages.at(-1)!

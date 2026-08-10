@@ -172,6 +172,32 @@ describe('local Claude sessions', () => {
         expect(session?.id).toBe(SESSION_ID)
     })
 
+    it('preserves user prompt whitespace when reading transcript pages', async () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        const prompt = '  indented prompt\n'
+        writeFileSync(
+            join(projectDir, `${SESSION_ID}.jsonl`),
+            line({
+                parentUuid: null,
+                isSidechain: false,
+                userType: 'external',
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'user',
+                message: { role: 'user', content: prompt },
+                uuid: 'user-whitespace',
+                timestamp: '2026-08-08T01:00:00.000Z'
+            })
+        )
+
+        const session = await readSession(SESSION_ID)
+
+        expect(session?.messages[0]?.content).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: prompt }
+        })
+    })
+
     it('streams a large CRLF transcript below a byte budget without losing message order', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const records: Record<string, unknown>[] = [{
