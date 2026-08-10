@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
+import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { HappyRuntimeExtras } from '@/lib/assistant-runtime'
 import type { Session, SessionMetadataSummary } from '@/types/api'
@@ -31,6 +32,7 @@ import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
+import { queryKeys } from '@/lib/query-keys'
 
 type ScrollAnchor = {
     id: string
@@ -515,6 +517,15 @@ export function HappyThread(props: {
         })
     }, [headerMetadata, locale, machineLabelsById, props.serviceTier, props.session, shareDialogOpen, shareRelativeTimeTick, t])
     const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const hubSettingsQuery = useQuery({
+        queryKey: queryKeys.hubSettings,
+        queryFn: async () => props.api.getHubSettings(),
+        enabled: Boolean(props.api),
+        staleTime: 30_000,
+        refetchInterval: 30_000,
+        retry: false,
+    })
+    const showSessionSummaryInChat = hubSettingsQuery.data?.sessionSummaryInChat === true
     const runtimeExtras = useAuiState((s) => s.thread.extras) as HappyRuntimeExtras | undefined
     const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
@@ -1569,6 +1580,7 @@ export function HappyThread(props: {
             sessionId: props.sessionId,
             metadata: props.metadata,
             terminalToolDisplayMode,
+            showSessionSummaryInChat,
             disabled: props.disabled,
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage,

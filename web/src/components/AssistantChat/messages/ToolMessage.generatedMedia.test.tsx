@@ -16,6 +16,7 @@ function renderCard(options: {
         sessionId: 'session-1',
         metadata: null,
         terminalToolDisplayMode: 'compact',
+        showSessionSummaryInChat: false,
         disabled: false,
         onRefresh: () => {},
         hasMoreMessages: false,

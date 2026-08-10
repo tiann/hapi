@@ -104,14 +104,14 @@ export function NotifySummaryFooter({ summary }: { summary: NotifySummary }) {
 export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) => {
     const showInChat = useSessionSummaryInChat()
 
-    if (status.type !== 'complete') return <MarkdownText />
-
     if (!showInChat) {
         const stripped = stripNotifySummaryFooter(text)
         if (!stripped) return null
         if (stripped === text) return <MarkdownText />
         return <MarkdownRenderer content={stripped} />
     }
+
+    if (status.type !== 'complete') return <MarkdownText />
 
     const display = splitNotifySummary(text)
     if (!display) return <MarkdownText />

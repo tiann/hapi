@@ -99,9 +99,18 @@ describe('NotifySummaryText', () => {
     })
 
     it('keeps a complete-looking footer in markdown while the message is streaming', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(true)
         renderText('Still working.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}', 'running')
 
         expect(screen.getByTestId('raw-markdown')).toBeInTheDocument()
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+    })
+
+    it('strips a well-formed footer while streaming when display is off', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        renderText('Still working.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}', 'running')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Still working.')
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
     })
 })

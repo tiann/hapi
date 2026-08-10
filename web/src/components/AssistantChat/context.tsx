@@ -11,6 +11,8 @@ export type HappyChatContextValue = {
     sessionId: string
     metadata: SessionMetadataSummary | null
     terminalToolDisplayMode: TerminalToolDisplayMode
+    /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */
+    showSessionSummaryInChat: boolean
     disabled: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
