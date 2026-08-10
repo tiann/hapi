@@ -2478,6 +2478,96 @@ describe('cursorAcpRemoteLauncher', () => {
         await launchPromise;
     });
 
+    it('drops an already-queued Bridge when a newer user turn arrives before dequeue', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const recorded = metadata.lastModelError as {
+            eventId?: string
+            kind?: string
+            rawSnippet?: string
+        } | undefined;
+        expect(recorded?.eventId).toBeTypeOf('string');
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: recorded?.kind ?? 'rate_limited',
+            transient: true,
+            rawSnippet: recorded?.rawSnippet ?? 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+        expect(session.queue.pendingLocalIds()).toContain(`bridge:${recorded?.eventId}`);
+
+        // Newer user intent arrives after Bridge is already at the head.
+        session.queue.push('correction instead of retry', { permissionMode: 'default' });
+        harness.emitStderrOnPrompt = null;
+        nextWait.release?.();
+
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        const secondPrompt = JSON.stringify(harness.prompts[1] ?? []);
+        expect(secondPrompt).toContain('correction instead of retry');
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge')).toBe(false);
+        // Bridge was dropped (not executed); subsequent Bridge RPC must fail closed.
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: recorded?.kind ?? 'rate_limited',
+            transient: true,
+            rawSnippet: recorded?.rawSnippet ?? 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
     it('records idle stderr as non-bridgeable so it cannot replay a finished turn', async () => {
         const session = makeSession(null, { keepQueueOpen: true });
         const client = session.client as unknown as {

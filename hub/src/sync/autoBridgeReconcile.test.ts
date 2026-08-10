@@ -180,6 +180,95 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         expect(configCalls.at(-1)?.config).toEqual({ autoBridgeTransientModelErrors: true })
     })
 
+    it('heartbeats repair a CLI left enabled after partial fanout + failed rollback', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'hapi-auto-bridge-reconcile-'))
+        directories.push(dataDir)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
+
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        engine.setSettingsDataDirForTests(dataDir)
+
+        const sessionA = engine.getOrCreateSession(
+            'session-cursor-a',
+            { path: '/tmp/a', host: 'localhost', machineId: 'm1', flavor: 'cursor' },
+            null,
+            'default'
+        )
+        const sessionB = engine.getOrCreateSession(
+            'session-cursor-b',
+            { path: '/tmp/b', host: 'localhost', machineId: 'm1', flavor: 'cursor' },
+            null,
+            'default'
+        )
+
+        const configCalls: Array<{ sessionId: string; config: Record<string, unknown> }> = []
+        // Fail B on enable (partial forward) and A on the first post-forward disable
+        // (failed rollback). Later heartbeats must repair A to persisted false.
+        let sawForwardEnableForA = false
+        let applyFinished = false
+        ;(engine as unknown as {
+            rpcGateway: {
+                requestSessionConfig: (
+                    sessionId: string,
+                    config: Record<string, unknown>
+                ) => Promise<unknown>
+            }
+        }).rpcGateway.requestSessionConfig = async (sessionId, config) => {
+            configCalls.push({ sessionId, config })
+            const enabled = config.autoBridgeTransientModelErrors === true
+            if (enabled && sessionId === sessionA.id) {
+                sawForwardEnableForA = true
+            }
+            if (!applyFinished && enabled && sessionId === sessionB.id) {
+                throw new Error('forward fanout B failed')
+            }
+            if (
+                !applyFinished
+                && sawForwardEnableForA
+                && !enabled
+                && sessionId === sessionA.id
+            ) {
+                throw new Error('rollback fanout A failed')
+            }
+            return { applied: config }
+        }
+
+        engine.handleSessionAlive({ sid: sessionA.id, time: Date.now() })
+        engine.handleSessionAlive({ sid: sessionB.id, time: Date.now() })
+        await waitUntil(
+            () => configCalls.filter((call) => call.sessionId === sessionA.id).length >= 1
+                && configCalls.filter((call) => call.sessionId === sessionB.id).length >= 1,
+            'first-active reconciles'
+        )
+
+        await expect(
+            engine.applyAutoBridgeTransientModelErrorsSetting(dataDir, true)
+        ).rejects.toThrow('Failed to update every active Cursor session')
+        applyFinished = true
+        expect(await readAutoBridgeTransientModelErrorsEnabled(dataDir)).toBe(false)
+        expect(configCalls.some((call) => (
+            call.sessionId === sessionA.id
+            && call.config.autoBridgeTransientModelErrors === true
+        ))).toBe(true)
+
+        const beforeRepair = configCalls.length
+        // Already active — heartbeat must still retry pending reconcile.
+        engine.handleSessionAlive({ sid: sessionA.id, time: Date.now() + 1 })
+        await waitUntil(
+            () => configCalls.slice(beforeRepair).some((call) => (
+                call.sessionId === sessionA.id
+                && call.config.autoBridgeTransientModelErrors === false
+            )),
+            'heartbeat repair to false'
+        )
+    })
+
     it('serializes concurrent apply so a failed PUT cannot clobber a later success', async () => {
         const { engine, session, dataDir, configCalls } = await setup()
         engine.handleSessionAlive({ sid: session.id, time: Date.now() })

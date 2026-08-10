@@ -631,6 +631,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             );
             if (bridgeItem?.internal?.kind === 'model-error-bridge') {
                 const eventId = bridgeItem.internal.eventId;
+                // Enqueue-time queue check can go stale: a normal turn may arrive
+                // after Bridge is already at the head. Drop Bridge and let the
+                // newer user intent run next (isolated batch already dequeued).
+                if (this.session.queue.hasPendingNonBridgeTurn()) {
+                    if (this.pendingBridgeEventId === eventId) {
+                        this.pendingBridgeEventId = null;
+                        this.pendingBridgeSource = null;
+                    }
+                    this.markModelErrorSupersededByUserTurn();
+                    continue;
+                }
                 this.bridgingForEventId = eventId;
                 this.bridgingSource = this.pendingBridgeSource ?? 'manual';
                 if (this.pendingBridgeEventId === eventId) {

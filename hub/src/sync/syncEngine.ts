@@ -214,6 +214,11 @@ export class SyncEngine {
     private settingsDataDirForTests: string | null = null
     /** Serialize settings write/fanout with first-activation / session-ready reconcile. */
     private autoBridgeConfigTail: Promise<unknown> = Promise.resolve()
+    /**
+     * Active Cursor sessions whose last auto-bridge Settings RPC failed.
+     * Heartbeats retry persisted desired state until reconcile succeeds.
+     */
+    private readonly pendingAutoBridgeReconcile = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -550,9 +555,9 @@ export class SyncEngine {
         this.sessionCache.handleSessionAlive(payload)
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
-        // First inactive → active transition: catch toggles that happened while
-        // the row was still inactive (Settings fanout is active-only).
-        if (!wasActive) {
+        // First inactive → active: catch toggles while inactive (fanout is
+        // active-only). Also retry sessions whose prior fanout/rollback RPC failed.
+        if (!wasActive || this.pendingAutoBridgeReconcile.has(payload.sid)) {
             void this.reconcileCursorAutoBridgeSetting(payload.sid)
         }
     }
@@ -621,6 +626,14 @@ export class SyncEngine {
                 autoBridgeTransientModelErrors: enabled
             }))
         )
+        results.forEach((result, index) => {
+            const id = targets[index]!.id
+            if (result.status === 'rejected') {
+                this.pendingAutoBridgeReconcile.add(id)
+            } else {
+                this.pendingAutoBridgeReconcile.delete(id)
+            }
+        })
         if (results.some((result) => result.status === 'rejected')) {
             throw new Error('Failed to update every active Cursor session')
         }
@@ -649,8 +662,10 @@ export class SyncEngine {
                 await this.rpcGateway.requestSessionConfig(sessionId, {
                     autoBridgeTransientModelErrors: enabled
                 })
+                this.pendingAutoBridgeReconcile.delete(sessionId)
             })
         } catch (error) {
+            this.pendingAutoBridgeReconcile.add(sessionId)
             console.warn(
                 `[sync] failed to reconcile auto-bridge setting for session ${sessionId}`,
                 error
