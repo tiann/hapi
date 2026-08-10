@@ -1245,6 +1245,105 @@ describe('AcpSdkBackend', () => {
         expect(turn1.some((m) => m.type === 'text' && m.text === 'tail reply')).toBe(true);
     });
 
+    it('flushes the previous turn\'s handler tail when the pre-prompt settle times out', async () => {
+        // Regression for the pr-review finding: the pre-swap waitForQueueSettled()
+        // result was ignored before messageHandler was drained and replaced. If the
+        // deadline expires while the queue is still being replaced, pending callbacks
+        // captured against the old handler (enqueue-time capture in
+        // handleSessionUpdate) keep writing into it after the swap — with no drain
+        // reachable, the previous turn's tail is permanently lost. The deadline path
+        // must chain a terminal drain after those callbacks instead of swapping past
+        // them.
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 5;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 5;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 500;
+        backendStatics.BETWEEN_TURN_DRAIN_DEBOUNCE_MS = 30;
+
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+            sessionUpdateQueue: Promise<void>;
+        };
+        let interval: ReturnType<typeof setInterval> | undefined;
+        backendInternal.transport = {
+            // Runs right after the pre-swap handler swap. Stop churning the
+            // queue here so the drain chained at the deadline is the last link
+            // and only its explicit release (below) advances it — otherwise
+            // the interval would free it before the gated tail is written.
+            sendRequest: async () => {
+                if (interval) clearInterval(interval);
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const turn1: AgentMessage[] = [];
+        const turn2: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => turn1.push(m));
+
+        // Pre-swap tail: enqueued while messageHandler is still turn 1's
+        // handler, gated so its content lands in the old handler only after
+        // the swap. scheduleBetweenTurnDrain() arms a timer here (the prompt
+        // has not started), but runBetweenTurnDrain() no-ops on the churning
+        // queue's identity check — only the chained drain can flush it.
+        // Chain the tail onto the settled turn-1 queue BEFORE the churn
+        // starts: armQueue() overwrites the queue reference, and the interval
+        // tick's prevRelease() would resolve whichever promise releaseQueue
+        // pointed at when the tail was enqueued — stranding the tail chain.
+        let releaseQueue!: () => void;
+        const armQueue = () => {
+            backendInternal.sessionUpdateQueue = new Promise<void>((resolve) => {
+                releaseQueue = resolve;
+            });
+        };
+        let releaseTail!: () => void;
+        const tailGate = new Promise<void>((resolve) => {
+            releaseTail = resolve;
+        });
+        backendInternal.sessionUpdateQueue = backendInternal.sessionUpdateQueue.then(() => tailGate);
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text: 'pre-swap tail' }
+            }
+        });
+        // Now start the churn; the tail chain above is already detached from
+        // the queue reference, so replacing it cannot strand the tail.
+        armQueue();
+        interval = setInterval(() => {
+            const prevRelease = releaseQueue;
+            armQueue();
+            prevRelease();
+        }, 5);
+
+        // Turn 2: the pre-swap settle churns to its deadline (~50ms), then the
+        // handler swap. releaseTail() first (tail writes into the old handler),
+        // then releaseQueue() (the chained terminal drain flushes it) — order
+        // matters, since the drain runs after whatever is already in the chain.
+        const prompt2 = backend.prompt('session-1', [{ type: 'text', text: 'again' }], (m) => turn2.push(m));
+        await sleep(60);
+        // Resolve the gate first and give its adoption microtasks a tick so the
+        // tail's handleUpdate buffers into the old handler; only then release
+        // the queue the terminal drain is chained on — otherwise the drain's
+        // continuation (already queued) runs before the tail is buffered.
+        releaseTail();
+        await sleep(10);
+        releaseQueue();
+        await prompt2;
+
+        expect(turn1.some((m) => m.type === 'text' && m.text === 'pre-swap tail')).toBe(true);
+        expect(turn2.some((m) => m.type === 'text' && m.text === 'pre-swap tail')).toBe(false);
+    });
+
     it('re-arms the between-turn drain after suppressUpdatesDuring consumed the pending timer', async () => {
         // Regression for the pr-review finding: a straggler that armed the
         // debounced between-turn drain right before suppressUpdatesDuring()

@@ -522,8 +522,38 @@ export class AcpSdkBackend implements AgentBackend {
         );
         // Bounded by the same pre-prompt drain timeout so a sustained async
         // update stream cannot wedge prompt() before the handler swap.
-        await this.waitForQueueSettled(AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS);
-        this.messageHandler?.drainBuffers();
+        const previousHandler = this.messageHandler;
+        const queueSettled = await this.waitForQueueSettled(
+            AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
+        );
+        if (queueSettled) {
+            // Normal path: the queue stabilized, so every update captured
+            // against the previous handler has run. Drain it directly.
+            previousHandler?.drainBuffers();
+        } else {
+            // Deadline path: the queue is still being replaced, and
+            // handleSessionUpdate captured previousHandler at enqueue time —
+            // its pending callbacks keep writing into it even after the swap
+            // below. Draining now would emit a partial buffer (splitting a
+            // fragmented delta-mode internal envelope) and the later writes
+            // would still be orphaned. Instead chain a terminal drain after
+            // every callback that captured previousHandler: the swap below is
+            // synchronous, so no new old-handler capture can slip in, and any
+            // update after the swap captures the new handler and chains after
+            // this drain. Order: old callbacks → drain old handler → new
+            // callbacks. Nothing is stranded, nothing is split, prompt() is
+            // not wedged (the settle deadline already elapsed).
+            this.sessionUpdateQueue = this.sessionUpdateQueue
+                .then(() => {
+                    previousHandler?.drainBuffers();
+                })
+                .catch((error) => {
+                    logger.debug(
+                        '[AcpSdkBackend] pre-swap stale handler drain failed:',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                });
+        }
         this.messageHandler = new AcpMessageHandler(onUpdate, {
             textChunkMode: this.options.textChunkMode,
             flavor: this.options.flavor,
