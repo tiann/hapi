@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -32,33 +33,38 @@ import type { Session } from '@/types/api'
 const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo')
 
 function renderThread(onViewModeChange = vi.fn()) {
+    const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } }
+    })
     const renderHappyThread = (forceScrollToken: number) => (
-        <I18nProvider>
-            <HappyThread
-                api={{} as ApiClient}
-                session={{ metadata: {} } as Session}
-                sessionId="mobile-scroll-session"
-                metadata={null}
-                disabled={false}
-                onRefresh={vi.fn()}
-                onViewModeChange={onViewModeChange}
-                isSyncingTail={false}
-                messagesWarning={null}
-                hasMoreMessages={false}
-                isLoadingMoreMessages={false}
-                onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
-                onCancelLoadMore={vi.fn()}
-                unseenCount={0}
-                rawMessagesCount={1}
-                normalizedMessagesCount={1}
-                messagesVersion={1}
-                historyVersion={0}
-                forceScrollToken={forceScrollToken}
-                outlineOpen={false}
-                outlineItems={[]}
-                onOutlineOpenChange={vi.fn()}
-            />
-        </I18nProvider>
+        <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+                <HappyThread
+                    api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                    session={{ metadata: {} } as Session}
+                    sessionId="mobile-scroll-session"
+                    metadata={null}
+                    disabled={false}
+                    onRefresh={vi.fn()}
+                    onViewModeChange={onViewModeChange}
+                    isSyncingTail={false}
+                    messagesWarning={null}
+                    hasMoreMessages={false}
+                    isLoadingMoreMessages={false}
+                    onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
+                    onCancelLoadMore={vi.fn()}
+                    unseenCount={0}
+                    rawMessagesCount={1}
+                    normalizedMessagesCount={1}
+                    messagesVersion={1}
+                    historyVersion={0}
+                    forceScrollToken={forceScrollToken}
+                    outlineOpen={false}
+                    outlineItems={[]}
+                    onOutlineOpenChange={vi.fn()}
+                />
+            </I18nProvider>
+        </QueryClientProvider>
     )
     const result = render(renderHappyThread(0))
     const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
