@@ -399,6 +399,11 @@ function getSuffixPrefixOverlap(base: string, next: string): number {
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
     private bufferedText = '';
+    // Tracks how much of the cumulative dedupe snapshot has already been
+    // emitted by artificial drains (late-flush polls, between-turn drains).
+    // Those drains preserve the snapshot as the baseline so the next drain
+    // can emit only the new suffix; real boundaries reset it with the buffer.
+    private emittedTextPrefix = '';
     // Array buffer avoids the O(N²) string concatenation that per-token
     // ACP streams (OpenCode/Zen emits one chunk per generated token) would
     // otherwise incur — a 10k-token reasoning trace allocates 10k full-buffer
@@ -418,10 +423,13 @@ export class AcpMessageHandler {
     }
 
     /**
-     * Emits any buffered assistant text as a single message and clears the
-     * buffer. Callers must treat this as a text-segment boundary: it is
-     * invoked internally before tool_call / plan events and externally at
-     * turn boundaries by AcpSdkBackend.
+     * Emits any buffered assistant text as a single message. In dedupe mode
+     * `bufferedText` holds the cumulative streaming snapshot ("Hello" grows
+     * to "Hello world"), so only the suffix beyond the already-emitted
+     * baseline is emitted. With `preserveBaseline` the snapshot stays as the
+     * baseline for the next drain (artificial drains: late-flush polls,
+     * between-turn drains); without it the segment closes and the buffer
+     * clears (real boundaries: tool_call, plan, turn swap, disconnect).
      *
      * The internal-event check in `handleUpdate` only sees one chunk at a
      * time, so it cannot recognise an envelope that arrived in pieces — in
@@ -431,16 +439,39 @@ export class AcpMessageHandler {
      * be caught. Re-checking here is what makes the filter complete rather
      * than merely likely to fire.
      */
-    flushText(): void {
+    flushText(preserveBaseline = false): void {
         if (!this.bufferedText) {
             return;
         }
         const text = this.bufferedText;
-        this.bufferedText = '';
         if (isInternalEventJson(text)) {
+            this.bufferedText = '';
+            this.emittedTextPrefix = '';
             return;
         }
-        this.onMessage({ type: 'text', text });
+        // Only the suffix not already emitted by an earlier artificial
+        // drain. A stale prefix (segment boundary crossed without a flush)
+        // falls back to the full text rather than a wrong suffix.
+        const suffix = text.startsWith(this.emittedTextPrefix)
+            ? text.slice(this.emittedTextPrefix.length)
+            : text;
+        // Retaining the cumulative snapshot as a baseline only makes sense
+        // for dedupe streams. In delta mode (OpenCode) chunks are
+        // incremental, so there is nothing to dedupe — and retaining the
+        // visible prefix would corrupt the isInternalEventJson check above:
+        // a later fragmented internal envelope appends to the prefix and the
+        // reassembled "Hello{...envelope}" no longer parses as JSON, leaking
+        // the envelope as visible text.
+        const keepBaseline = preserveBaseline && this.textChunkMode === 'dedupe';
+        if (keepBaseline) {
+            this.emittedTextPrefix = text;
+        } else {
+            this.bufferedText = '';
+            this.emittedTextPrefix = '';
+        }
+        if (suffix) {
+            this.onMessage({ type: 'text', text: suffix });
+        }
     }
 
     /**
@@ -482,10 +513,16 @@ export class AcpMessageHandler {
      * text before reasoning within a single turn. Callers in
      * `AcpSdkBackend` must use this rather than the individual flush
      * methods to keep the order invariant enforced in one place.
+     *
+     * `preserveTextBaseline` marks the drain as artificial: it emits the
+     * text suffix since the previous drain but keeps the cumulative dedupe
+     * snapshot as the baseline for the next drain. Real boundaries (turn
+     * swap, disconnect) leave it unset so the segment closes and the buffer
+     * clears.
      */
-    drainBuffers(): void {
+    drainBuffers(options?: { preserveTextBaseline?: boolean }): void {
         this.flushReasoning();
-        this.flushText();
+        this.flushText(options?.preserveTextBaseline ?? false);
     }
 
     private appendTextChunk(text: string): void {
@@ -624,6 +661,7 @@ export class AcpMessageHandler {
                 if (rateLimit) {
                     if (hadBufferedPrefix) {
                         this.bufferedText = '';
+                        this.emittedTextPrefix = '';
                     }
                     if (rateLimit.suppress) {
                         return;
@@ -638,6 +676,7 @@ export class AcpMessageHandler {
                 if (isInternalEventJson(text)) {
                     if (hadBufferedPrefix) {
                         this.bufferedText = '';
+                        this.emittedTextPrefix = '';
                     }
                     return;
                 }

@@ -84,6 +84,7 @@ export class AcpSdkBackend implements AgentBackend {
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
     private sessionUpdateQueue: Promise<void> = Promise.resolve();
+    private betweenTurnDrainTimer: ReturnType<typeof setTimeout> | null = null;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -115,6 +116,14 @@ export class AcpSdkBackend implements AgentBackend {
     private static readonly LATE_FLUSH_INTERVAL_MS = 50;
     private static readonly LATE_FLUSH_QUIET_PERIOD_MS = 250;
     private static readonly LATE_FLUSH_WINDOW_MS = 6000;
+    // A slow-tailing model can emit the final answer text after drainLateBuffers
+    // gave up (its reasoning→answer pause exceeded LATE_FLUSH_QUIET_PERIOD_MS).
+    // Nothing drains the previous turn's handler until the next prompt()
+    // pre-swap drain, so on the web the reply only appeared after the user sent
+    // another message. Debounce-flush on between-turn updates so stragglers
+    // stream to the previous turn's onUpdate promptly; 200ms coalesces a burst
+    // into one segment (preserving the delta-mode internal-event filter).
+    private static readonly BETWEEN_TURN_DRAIN_DEBOUNCE_MS = 200;
 
     constructor(private readonly options: {
         command: string;
@@ -511,7 +520,9 @@ export class AcpSdkBackend implements AgentBackend {
             AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
-        await this.sessionUpdateQueue;
+        // Bounded by the same pre-prompt drain timeout so a sustained async
+        // update stream cannot wedge prompt() before the handler swap.
+        await this.waitForQueueSettled(AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS);
         this.messageHandler?.drainBuffers();
         this.messageHandler = new AcpMessageHandler(onUpdate, {
             textChunkMode: this.options.textChunkMode,
@@ -524,6 +535,13 @@ export class AcpSdkBackend implements AgentBackend {
         this.promptUsageCallback = onUpdate;
         let stopReason: string | null = null;
         let promptUsage: AcpPromptUsage | null = null;
+        // Set when the final queue-settle wait expires with the queue still
+        // being replaced: draining as if stable would emit turn_complete
+        // while updates enqueued during the prompt (which skipped the
+        // between-turn timer) are still pending. The between-turn drain is
+        // re-armed once the turn clears so the abandoned tail still reaches
+        // this turn's onUpdate instead of stranding until the next prompt.
+        let needsBetweenTurnDrain = false;
 
         try {
             // No timeout for prompt requests - they can run for extended periods
@@ -547,7 +565,10 @@ export class AcpSdkBackend implements AgentBackend {
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
             );
             await this.sessionUpdateQueue;
-            this.messageHandler?.drainBuffers();
+            // Artificial drain: emit the text suffix since the last drain but
+            // keep the cumulative dedupe snapshot as the baseline — a later
+            // straggler snapshot then grows from it instead of re-emitting.
+            this.messageHandler?.drainBuffers({ preserveTextBaseline: true });
             // Block here until the model truly stops streaming straggler
             // chunks (or LATE_FLUSH_WINDOW_MS elapses), so turn_complete and
             // the launcher's ready signal only fire once every chunk has been
@@ -555,8 +576,26 @@ export class AcpSdkBackend implements AgentBackend {
             await this.drainLateBuffers();
             // Late window can enqueue async image registration; drain again
             // before turn_complete so generated_image precedes turn boundary.
-            await this.sessionUpdateQueue;
-            this.messageHandler?.drainBuffers();
+            // waitForQueueSettled() (not a bare queue await) because an update
+            // arriving while this awaits sees isProcessingMessage === true and
+            // scheduleBetweenTurnDrain() returns without re-arming its timer —
+            // a stale-snapshot drain here would strand the late content until
+            // the next prompt.
+            const queueSettled = await this.waitForQueueSettled(AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS);
+            if (queueSettled) {
+                // Artificial drain (see the comment at the earlier drainBuffers
+                // call): keep the cumulative dedupe snapshot as the baseline so a
+                // straggler arriving after turn_complete grows from it instead of
+                // re-emitting the full snapshot.
+                this.messageHandler?.drainBuffers({ preserveTextBaseline: true });
+            } else {
+                // The settle deadline expired with the queue still being
+                // replaced — updates enqueued during the prompt skipped the
+                // between-turn timer, so draining now would emit turn_complete
+                // with the abandoned tail still buffered. Defer to the
+                // between-turn drain re-armed once the turn clears.
+                needsBetweenTurnDrain = true;
+            }
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 if (promptUsage) {
@@ -596,6 +635,9 @@ export class AcpSdkBackend implements AgentBackend {
             } finally {
                 this.promptUsageCallback = null;
                 this.isProcessingMessage = false;
+                if (needsBetweenTurnDrain) {
+                    this.scheduleBetweenTurnDrain();
+                }
                 this.notifyResponseComplete();
             }
         }
@@ -701,6 +743,13 @@ export class AcpSdkBackend implements AgentBackend {
             );
             if (this.messageHandler === null) {
                 this.messageHandler = previousHandler;
+                // A between-turn drain armed before suppression could have
+                // fired while messageHandler was null, where
+                // runBetweenTurnDrain's guards all pass but the drain itself
+                // no-ops on the null handler (and the timer is consumed).
+                // Re-arm so content buffered before suppression still flushes
+                // via the previous turn's onUpdate.
+                this.scheduleBetweenTurnDrain();
             }
         }
     }
@@ -742,6 +791,10 @@ export class AcpSdkBackend implements AgentBackend {
             clearTimeout(timer);
         }
         this.sessionInfoRefreshTimers.clear();
+        if (this.betweenTurnDrainTimer) {
+            clearTimeout(this.betweenTurnDrainTimer);
+            this.betweenTurnDrainTimer = null;
+        }
         await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
@@ -786,6 +839,7 @@ export class AcpSdkBackend implements AgentBackend {
                     error instanceof Error ? error.message : String(error)
                 );
             });
+        this.scheduleBetweenTurnDrain();
     }
 
     private forwardSessionInfoUpdate(sessionId: string | null, update: unknown): void {
@@ -900,7 +954,108 @@ export class AcpSdkBackend implements AgentBackend {
             const remainingBudget = deadline - Date.now();
             const waitMs = Math.max(1, Math.min(AcpSdkBackend.LATE_FLUSH_INTERVAL_MS, remainingBudget));
             await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
-            this.messageHandler?.drainBuffers();
+            // Artificial drain: emit the suffix since the last poll but keep
+            // the cumulative dedupe snapshot as the baseline for the next
+            // poll, so a growing snapshot streams as suffixes instead of
+            // re-emitting its full text every tick.
+            this.messageHandler?.drainBuffers({ preserveTextBaseline: true });
+        }
+    }
+
+    /**
+     * Flushes text buffered in the previous turn's handler when a session
+     * update arrives while no prompt() is active. drainLateBuffers() exits
+     * once the model is quiet for LATE_FLUSH_QUIET_PERIOD_MS; a slow-tailing
+     * model (e.g. DeepSeek V4 Flash) can pause longer than that between its
+     * reasoning phase and the answer text, so the final chunks can arrive
+     * after the turn resolved. Without this they sit in the handler until the
+     * next prompt() pre-swap drain — the web only shows the reply after the
+     * user sends another message.
+     *
+     * Debounced so a straggler burst coalesces into a single segment;
+     * per-chunk flushing would break the delta-mode internal-event envelope
+     * detection (see AcpMessageHandler.flushText).
+     */
+    private scheduleBetweenTurnDrain(): void {
+        if (this.isProcessingMessage || this.promptRequestInFlight) {
+            return;
+        }
+        if (!this.messageHandler) {
+            return;
+        }
+        // True debounce: every update resets the deadline. A throttled
+        // deadline (first update wins) could fire mid-envelope — the first
+        // fragment of a fragmented delta-mode internal event would then be
+        // flushed alone, fail the reassembly-only isInternalEventJson filter,
+        // and leak as visible session metadata.
+        if (this.betweenTurnDrainTimer) {
+            clearTimeout(this.betweenTurnDrainTimer);
+        }
+        this.betweenTurnDrainTimer = setTimeout(() => {
+            this.betweenTurnDrainTimer = null;
+            void this.runBetweenTurnDrain();
+        }, AcpSdkBackend.BETWEEN_TURN_DRAIN_DEBOUNCE_MS);
+        this.betweenTurnDrainTimer.unref();
+    }
+
+    private async runBetweenTurnDrain(): Promise<void> {
+        if (this.isProcessingMessage || this.promptRequestInFlight) {
+            return;
+        }
+        const queuedUpdates = this.sessionUpdateQueue;
+        await queuedUpdates;
+        // A later update replaced the queue while we waited. It also reset
+        // the debounce timer, so its own drain will flush the newer content.
+        // Draining now would flush a stale buffer snapshot and could split a
+        // fragmented delta-mode internal envelope (first fragment leaks as
+        // visible text).
+        if (queuedUpdates !== this.sessionUpdateQueue) {
+            return;
+        }
+        if (this.isProcessingMessage || this.promptRequestInFlight) {
+            return;
+        }
+        // Artificial drain: this is the previous turn's handler and more
+        // cumulative snapshots may still arrive, so keep the snapshot as the
+        // dedupe baseline and emit only the suffix since the last drain.
+        this.messageHandler?.drainBuffers({ preserveTextBaseline: true });
+    }
+
+    /**
+     * Awaits the session-update queue until it is stable — no update
+     * replaced it while we were awaiting. prompt()'s pre-swap drain must
+     * then see every update that was enqueued: the handler is swapped
+     * immediately after, so a straggler that replaced the queue mid-await
+     * would otherwise be flushed against a stale snapshot (splitting a
+     * fragmented delta-mode internal envelope) or stranded in the old
+     * handler entirely.
+     *
+     * Unlike runBetweenTurnDrain(), this cannot defer to the newer update's
+     * own debounced drain — the pre-swap drain is a required step — so it
+     * loops until the queue reference stops changing or the timeout elapses.
+     * The preceding waitForSessionUpdateQuiet() ensures the model is quiet,
+     * so this loop exits quickly in practice; the deadline bounds the
+     * pathological case of a sustained async update stream (every
+     * handleSessionUpdate replaces the queue) that would otherwise keep the
+     * loop alive forever and wedge prompt() past turn_complete.
+     *
+     * Returns true when the queue settled normally. Returns false only when
+     * the deadline elapsed with the queue still being replaced — the caller
+     * must then treat the pending tail as abandoned rather than drain as if
+     * the queue were stable.
+     */
+    private async waitForQueueSettled(timeoutMs: number): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        let queuedUpdates = this.sessionUpdateQueue;
+        while (true) {
+            await queuedUpdates;
+            if (queuedUpdates === this.sessionUpdateQueue) {
+                return true;
+            }
+            if (Date.now() >= deadline) {
+                return false;
+            }
+            queuedUpdates = this.sessionUpdateQueue;
         }
     }
 
