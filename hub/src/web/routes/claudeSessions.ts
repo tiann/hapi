@@ -271,19 +271,6 @@ export function importClaudeSession(options: {
             ? (importedClaudeSessionsById(store, namespace, machine.id).get(transcript.id) ?? null)
             : existingSession
 
-    // A normal HAPI-created Claude row already contains the history it observed live.
-    // Reuse it instead of duplicating the same native conversation into an import row.
-    if (stored && !asRecord(stored.metadata)?.claudeImportState) {
-        applyClaudeLaunchSettings(store, stored.id, namespace, launchSettings)
-        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
-        return {
-            claudeSessionId: transcript.id,
-            hapiSessionId: stored.id,
-            action: 'unchanged',
-            appended: 0
-        }
-    }
-
     const created = !stored
     if (!stored) {
         const metadata = buildClaudeMetadata(

@@ -178,8 +178,12 @@ describe('Claude session import', () => {
         expect(store.messages.getAllMessages(initial.hapiSessionId!)).toHaveLength(4)
     })
 
-    it('reuses a normal HAPI session with the same Claude session id', () => {
+    it('reuses a normal HAPI session and imports only its newer native tail', () => {
         const { store, engine } = setup()
+        const nativeTranscript = transcript('native-1', ['already observed', 'native tail'])
+        nativeTranscript.messages.splice(1, 0, assistantMessage('native-1', 'assistant-1', 'first answer', 1_500))
+        nativeTranscript.messages.push(assistantMessage('native-1', 'assistant-2', 'second answer', 2_500))
+        nativeTranscript.messageCount = nativeTranscript.messages.length
         const existing = store.sessions.getOrCreateSession(
             'existing-claude',
             {
@@ -194,13 +198,15 @@ describe('Claude session import', () => {
             'claude-haiku-4-5',
             'low'
         )
+        store.messages.addMessage(existing.id, nativeTranscript.messages[0]!.content, 'web-user-1')
+        store.messages.addMessage(existing.id, nativeTranscript.messages[1]!.content)
 
         const result = importClaudeSession({
             store,
             engine,
             namespace: 'default',
             machine: machine(),
-            transcript: transcript('native-1', ['already observed']),
+            transcript: nativeTranscript,
             launchSettings: {
                 model: 'claude-opus-4-1',
                 effort: 'high',
@@ -210,11 +216,13 @@ describe('Claude session import', () => {
 
         expect(result).toMatchObject({
             hapiSessionId: existing.id,
-            action: 'unchanged',
-            appended: 0
+            action: 'updated',
+            appended: 2
         })
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
-        expect(store.messages.getAllMessages(existing.id)).toHaveLength(0)
+        expect(store.messages.getAllMessages(existing.id).map((message) => message.content)).toEqual(
+            nativeTranscript.messages.map((message) => message.content)
+        )
         expect(store.sessions.getSession(existing.id)).toMatchObject({
             model: 'claude-opus-4-1',
             effort: 'high',
@@ -226,10 +234,37 @@ describe('Claude session import', () => {
             engine,
             namespace: 'default',
             machine: machine(),
-            transcript: transcript('native-1', ['already observed']),
+            transcript: nativeTranscript,
             launchSettings: { model: null, effort: null }
         })
         expect(store.sessions.getSession(existing.id)).toMatchObject({ model: null, effort: null })
+    })
+
+    it('does not import a native tail while the matching HAPI session is active', () => {
+        const { store, engine } = setup()
+        const existing = store.sessions.getOrCreateSession(
+            'active-claude',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: 'native-active'
+            },
+            {},
+            'default'
+        )
+        store.sessions.setSessionActive(existing.id, true, Date.now(), 'default')
+
+        const result = importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: transcript('native-active', ['native tail'])
+        })
+
+        expect(result.error?.code).toBe('session_active')
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(0)
     })
 
     it('marks rewritten imported history as diverged', () => {
