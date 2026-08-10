@@ -1,6 +1,7 @@
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { Hono } from 'hono'
+import { CLAUDE_IMPORT_PAGE_BYTES } from '@hapi/protocol/apiTypes'
 import type { ClaudeLocalSessionSummary, ClaudeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import type { Metadata } from '@hapi/protocol/types'
 import type { Store, StoredMessage, StoredSession } from '../../store'
@@ -420,7 +421,7 @@ export function importClaudeSession(options: {
     }
 }
 
-async function importWithLock(key: string, work: () => ClaudeImportResult): Promise<ClaudeImportResult> {
+async function importWithLock(key: string, work: () => ClaudeImportResult | Promise<ClaudeImportResult>): Promise<ClaudeImportResult> {
     const prior = importLocks.get(key)
     if (prior) return prior
     const current = Promise.resolve().then(work)
@@ -430,6 +431,71 @@ async function importWithLock(key: string, work: () => ClaudeImportResult): Prom
     } finally {
         if (importLocks.get(key) === current) importLocks.delete(key)
     }
+}
+
+function isSameTranscriptSnapshot(first: ClaudeLocalSessionSummary, next: ClaudeLocalSessionSummary): boolean {
+    return first.id === next.id
+        && first.file === next.file
+        && first.modifiedAt === next.modifiedAt
+        && first.messageCount === next.messageCount
+}
+
+type ClaudeTranscriptLoadResult =
+    | { success: true; transcript: ClaudeLocalSessionWithMessages }
+    | { success: false; code: 'not_found' | 'transcript_changed' | 'import_failed'; error: string }
+
+async function loadClaudeTranscriptForImport(options: {
+    engine: SyncEngine
+    machineId: string
+    cwd?: string | null
+    sessionId: string
+}): Promise<ClaudeTranscriptLoadResult> {
+    let cursor = 0
+    let summary: ClaudeLocalSessionSummary | null = null
+    const messages: ClaudeLocalSessionWithMessages['messages'] = []
+
+    while (true) {
+        const remote = await options.engine.listClaudeSessionPageForMachine(options.machineId, {
+            cwd: options.cwd,
+            sessionId: options.sessionId,
+            cursor,
+            maxBytes: CLAUDE_IMPORT_PAGE_BYTES
+        })
+        if (!remote.success) {
+            return {
+                success: false,
+                code: remote.error.toLowerCase().includes('not found') ? 'not_found' : 'import_failed',
+                error: remote.error
+            }
+        }
+        if (remote.mode !== 'messages' || remote.page.session.id !== options.sessionId) {
+            return { success: false, code: 'import_failed', error: 'Invalid Claude transcript page response' }
+        }
+
+        const page = remote.page
+        if (summary && !isSameTranscriptSnapshot(summary, page.session)) {
+            return {
+                success: false,
+                code: 'transcript_changed',
+                error: 'Claude transcript changed while it was being imported; retry the import'
+            }
+        }
+        summary ??= page.session
+        messages.push(...page.messages)
+
+        if (page.nextCursor === null) break
+        const expectedCursor = cursor + page.messages.length
+        if (page.nextCursor !== expectedCursor || page.nextCursor > page.session.messageCount) {
+            return { success: false, code: 'import_failed', error: 'Invalid Claude transcript page cursor' }
+        }
+        cursor = page.nextCursor
+    }
+
+    if (!summary) return { success: false, code: 'not_found', error: 'Claude session transcript not found' }
+    if (messages.length !== summary.messageCount) {
+        return { success: false, code: 'import_failed', error: 'Incomplete Claude transcript page sequence' }
+    }
+    return { success: true, transcript: { ...summary, messages } }
 }
 
 export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine: () => SyncEngine | null }): Hono<WebAppEnv> {
@@ -448,12 +514,12 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
                 },
                 503
             )
-        const result = await engine.listClaudeSessionsForMachine(machine.id, c.req.query('cwd')?.trim() || null)
-        if (!result.success)
+        const result = await engine.listClaudeSessionSummariesForMachine(machine.id, c.req.query('cwd')?.trim() || null)
+        if (!result.success || result.mode !== 'summaries')
             return c.json(
                 {
                     success: false,
-                    error: result.error,
+                    error: result.success ? 'Invalid Claude session list response' : result.error,
                     sessions: [],
                     machineId: machine.id
                 },
@@ -495,52 +561,26 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
                 },
                 503
             )
-        const remote = await engine.listClaudeSessionsForMachine(
-            machine.id,
-            typeof body?.cwd === 'string' ? body.cwd.trim() : null,
-            uniqueSessionIds
-        )
-        if (!remote.success)
-            return c.json(
-                {
-                    success: false,
-                    error: remote.error,
-                    results: [],
-                    machineId: machine.id
-                },
-                503
-            )
-        const byId = new Map(
-            remote.sessions
-                .filter((session): session is ClaudeLocalSessionWithMessages => 'messages' in session)
-                .map((session) => [session.id, session])
-        )
         const importedByClaudeId = importedClaudeSessionsById(options.store, namespace, machine.id)
         const results: ClaudeImportResult[] = []
+        const cwd = typeof body?.cwd === 'string' ? body.cwd.trim() : null
         for (const sessionId of uniqueSessionIds) {
-            const transcript = byId.get(sessionId)
-            if (!transcript) {
-                results.push({
-                    claudeSessionId: sessionId,
-                    error: {
-                        code: 'not_found',
-                        message: 'Claude session transcript not found'
-                    }
-                })
-                continue
-            }
             results.push(
-                await importWithLock(`${namespace}:${machine.id}:${sessionId}`, () =>
-                    importClaudeSession({
+                await importWithLock(`${namespace}:${machine.id}:${sessionId}`, async () => {
+                    const loaded = await loadClaudeTranscriptForImport({ engine, machineId: machine.id, cwd, sessionId })
+                    if (!loaded.success) {
+                        return { claudeSessionId: sessionId, error: { code: loaded.code, message: loaded.error } }
+                    }
+                    return importClaudeSession({
                         store: options.store,
                         engine,
                         namespace,
                         machine,
-                        transcript,
+                        transcript: loaded.transcript,
                         existingSession: importedByClaudeId.get(sessionId) ?? null,
                         launchSettings
                     })
-                )
+                })
             )
         }
         return c.json({

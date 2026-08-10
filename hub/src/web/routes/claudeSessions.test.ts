@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test'
+import { Hono } from 'hono'
 import type { ClaudeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import { Store } from '../../store'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
-import { importClaudeSession } from './claudeSessions'
+import type { WebAppEnv } from '../middleware/auth'
+import { createClaudeSessionRoutes, importClaudeSession } from './claudeSessions'
 
 function machine(id = 'machine-1'): Machine {
     return {
@@ -87,6 +89,124 @@ describe('Claude session import', () => {
         } as unknown as SyncEngine
         return { store, engine, events }
     }
+
+    it('imports a deduplicated batch through bounded per-session pages', async () => {
+        const { store } = setup()
+        const selectedMachine = machine()
+        const transcripts = new Map([
+            ['native-batch-1', transcript('native-batch-1', ['one', 'two', 'three'])],
+            ['native-batch-2', transcript('native-batch-2', ['four', 'five'])]
+        ])
+        const requests: Array<{ sessionId: string; cursor: number }> = []
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async (_machineId: string, options: { sessionId: string; cursor: number }) => {
+                requests.push({ sessionId: options.sessionId, cursor: options.cursor })
+                const source = transcripts.get(options.sessionId)
+                if (!source) return { success: false as const, error: 'Claude session transcript not found' }
+                const messages = source.messages.slice(options.cursor, options.cursor + 1)
+                const next = options.cursor + messages.length
+                return {
+                    success: true as const,
+                    mode: 'messages' as const,
+                    page: {
+                        session: {
+                            id: source.id,
+                            title: source.title,
+                            lastUserMessage: source.lastUserMessage,
+                            cwd: source.cwd,
+                            file: source.file,
+                            modifiedAt: source.modifiedAt,
+                            model: source.model,
+                            messageCount: source.messageCount
+                        },
+                        messages,
+                        nextCursor: next < source.messages.length ? next : null
+                    }
+                }
+            },
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                machineId: selectedMachine.id,
+                sessionIds: ['native-batch-1', 'native-batch-2', 'native-batch-1']
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({
+            success: true,
+            results: [
+                { claudeSessionId: 'native-batch-1', action: 'created', appended: 3 },
+                { claudeSessionId: 'native-batch-2', action: 'created', appended: 2 }
+            ]
+        })
+        expect(requests).toEqual([
+            { sessionId: 'native-batch-1', cursor: 0 },
+            { sessionId: 'native-batch-1', cursor: 1 },
+            { sessionId: 'native-batch-1', cursor: 2 },
+            { sessionId: 'native-batch-2', cursor: 0 },
+            { sessionId: 'native-batch-2', cursor: 1 }
+        ])
+    })
+
+    it('rejects pages from different transcript snapshots before persisting', async () => {
+        const { store } = setup()
+        const selectedMachine = machine()
+        const source = transcript('native-changing', ['one', 'two'])
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => ({
+                success: true as const,
+                mode: 'messages' as const,
+                page: {
+                    session: {
+                        id: source.id,
+                        title: source.title,
+                        cwd: source.cwd,
+                        file: source.file,
+                        modifiedAt: source.modifiedAt + options.cursor,
+                        messageCount: source.messageCount
+                    },
+                    messages: source.messages.slice(options.cursor, options.cursor + 1),
+                    nextCursor: options.cursor === 0 ? 1 : null
+                }
+            }),
+            recordSessionActivity: () => {},
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ machineId: selectedMachine.id, sessionIds: [source.id] })
+        })
+
+        expect(await response.json()).toMatchObject({
+            success: false,
+            results: [{ claudeSessionId: source.id, error: { code: 'transcript_changed' } }]
+        })
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
+    })
 
     it('imports idempotently and appends new native history', () => {
         const { store, engine } = setup()

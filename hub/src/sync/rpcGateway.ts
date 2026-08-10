@@ -2,6 +2,7 @@ import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionM
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
+    CLAUDE_IMPORT_PAGE_BYTES,
     CursorChatStoreStatusSchema,
     ListClaudeSessionsRpcResponseSchema,
     ListCodexSessionsRpcResponseSchema,
@@ -366,8 +367,27 @@ export class RpcGateway {
         return ListCodexSessionsRpcResponseSchema.parse(result)
     }
 
-    async listClaudeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListClaudeSessionsResponse> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.ListClaudeSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS)
+    async listClaudeSessionSummariesForMachine(machineId: string, cwd?: string | null): Promise<RpcListClaudeSessionsResponse> {
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListClaudeSessions,
+            { mode: 'summaries', cwd: cwd ?? null },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return ListClaudeSessionsRpcResponseSchema.parse(result)
+    }
+
+    async listClaudeSessionPageForMachine(
+        machineId: string,
+        options: { cwd?: string | null; sessionId: string; cursor: number; maxBytes?: number }
+    ): Promise<RpcListClaudeSessionsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ListClaudeSessions, {
+            mode: 'messages',
+            cwd: options.cwd ?? null,
+            sessionId: options.sessionId,
+            cursor: options.cursor,
+            maxBytes: options.maxBytes ?? CLAUDE_IMPORT_PAGE_BYTES
+        }, MODEL_LIST_RPC_TIMEOUT_MS)
         return ListClaudeSessionsRpcResponseSchema.parse(result)
     }
 

@@ -4,14 +4,17 @@ import { basename, join } from 'node:path'
 import type {
     ClaudeImportedMessage,
     ClaudeImportedMessageContent,
+    ClaudeLocalSessionMessagesPage,
     ClaudeLocalSessionSummary,
     ClaudeLocalSessionWithMessages
 } from '@hapi/protocol/apiTypes'
-import { isClaudeChatVisibleMessage } from '@hapi/protocol/messages'
+import { DISPLAY_HISTORY_STRING_LIMIT, isClaudeChatVisibleMessage, truncateOversizedAgentMessageContent } from '@hapi/protocol/messages'
 import { RawJSONLinesSchema, type RawJSONLines } from '@/claude/types'
 import { extractRawUserTextContent, isExternalUserMessage } from '@/claude/utils/transcriptMessages'
 
 const DEFAULT_CLAUDE_SESSION_SCAN_LIMIT = 200
+const IMPORTED_USER_TRUNCATION_MARKER = '\n…[hapi: oversized imported prompt truncated]…'
+const OVERSIZED_AGENT_MESSAGE = '[hapi: oversized imported Claude message omitted]'
 
 type SessionFileCandidate = {
     file: string
@@ -23,6 +26,12 @@ type ParsedClaudeSession = {
     summary: ClaudeLocalSessionSummary
     messages: ClaudeImportedMessage[]
 }
+
+let pagedSessionCache: {
+    file: string
+    modifiedAt: number
+    parsed: ParsedClaudeSession
+} | null = null
 
 type ClaudeTranscriptRecord = {
     event: RawJSONLines | null
@@ -87,9 +96,12 @@ function collectClaudeSessionFiles(): SessionFileCandidate[] {
 }
 
 function importedUser(text: string): ClaudeImportedMessageContent {
+    const displayText = text.length > DISPLAY_HISTORY_STRING_LIMIT
+        ? `${text.slice(0, DISPLAY_HISTORY_STRING_LIMIT - IMPORTED_USER_TRUNCATION_MARKER.length)}${IMPORTED_USER_TRUNCATION_MARKER}`
+        : text
     return {
         role: 'user',
-        content: { type: 'text', text },
+        content: { type: 'text', text: displayText },
         meta: { sentFrom: 'cli' }
     }
 }
@@ -320,4 +332,131 @@ export function listLocalClaudeSessionsWithMessagesByIds(ids: Set<string>): Clau
         if (unresolved.size === 0) break
     }
     return sessions
+}
+
+function serializedBytes(value: unknown): number {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
+function normalizeImportedMessageForTransport(message: ClaudeImportedMessage): ClaudeImportedMessage {
+    const content = truncateOversizedAgentMessageContent(message.content) as ClaudeImportedMessageContent
+    return content === message.content ? message : { ...message, content }
+}
+
+function fitUserMessage(message: ClaudeImportedMessage, maxBytes: number): ClaudeImportedMessage | null {
+    if (message.content.role !== 'user') return null
+    const original = message.content.content.text
+    const empty = {
+        ...message,
+        content: { ...message.content, content: { ...message.content.content, text: '' } }
+    }
+    const available = maxBytes - serializedBytes(empty)
+    if (available <= 0) return null
+
+    let low = 0
+    let high = original.length
+    let best = ''
+    while (low <= high) {
+        const middle = Math.floor((low + high) / 2)
+        const candidate = middle < original.length
+            ? `${original.slice(0, middle)}${IMPORTED_USER_TRUNCATION_MARKER}`
+            : original
+        if (Buffer.byteLength(candidate, 'utf8') <= available) {
+            best = candidate
+            low = middle + 1
+        } else {
+            high = middle - 1
+        }
+    }
+    if (!best) return null
+    return {
+        ...message,
+        content: { ...message.content, content: { ...message.content.content, text: best } }
+    }
+}
+
+function compactAgentMessage(message: ClaudeImportedMessage): ClaudeImportedMessage | null {
+    if (message.content.role !== 'agent') return null
+    const data = message.content.content.data
+    const source = data !== null && typeof data === 'object' && !Array.isArray(data)
+        ? data as Record<string, unknown>
+        : {}
+    return {
+        ...message,
+        content: {
+            ...message.content,
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    ...(typeof source.uuid === 'string' ? { uuid: source.uuid } : {}),
+                    ...(typeof source.sessionId === 'string' ? { sessionId: source.sessionId } : {}),
+                    ...(typeof source.timestamp === 'string' ? { timestamp: source.timestamp } : {}),
+                    message: { role: 'assistant', content: [{ type: 'text', text: OVERSIZED_AGENT_MESSAGE }] }
+                }
+            }
+        }
+    }
+}
+
+function fitMessageOnEmptyPage(message: ClaudeImportedMessage, maxBytes: number): ClaudeImportedMessage | null {
+    const fitted = message.content.role === 'user'
+        ? fitUserMessage(message, maxBytes)
+        : compactAgentMessage(message)
+    return fitted && serializedBytes(fitted) <= maxBytes ? fitted : null
+}
+
+export function listLocalClaudeSessionMessagesPageById(
+    sessionId: string,
+    cursor: number,
+    maxBytes: number
+): ClaudeLocalSessionMessagesPage | null {
+    const candidate = collectClaudeSessionFiles().find((entry) => basename(entry.file, '.jsonl') === sessionId)
+    if (!candidate) return null
+    const cached = pagedSessionCache?.file === candidate.file && pagedSessionCache.modifiedAt === candidate.modifiedAt
+        ? pagedSessionCache.parsed
+        : null
+    const parsed = cached ?? parseClaudeLocalSession(candidate.file, candidate.modifiedAt)
+    if (!parsed) return null
+    if (!cached) pagedSessionCache = { file: candidate.file, modifiedAt: candidate.modifiedAt, parsed }
+    if (cursor > parsed.messages.length) throw new Error('Claude transcript changed while paging')
+
+    const responseWithCursor = (nextCursor: number | null) => ({
+        success: true,
+        mode: 'messages',
+        page: { session: parsed.summary, messages: [], nextCursor }
+    })
+    const baseBytes = Math.max(
+        serializedBytes(responseWithCursor(parsed.messages.length)),
+        serializedBytes(responseWithCursor(null))
+    )
+    if (baseBytes >= maxBytes) throw new Error('Claude transcript metadata exceeds the page budget')
+
+    const messages: ClaudeImportedMessage[] = []
+    let pageBytes = baseBytes
+    let nextIndex = cursor
+    while (nextIndex < parsed.messages.length) {
+        const normalized = normalizeImportedMessageForTransport(parsed.messages[nextIndex]!)
+        const separatorBytes = messages.length > 0 ? 1 : 0
+        const messageBytes = serializedBytes(normalized)
+        if (pageBytes + separatorBytes + messageBytes <= maxBytes) {
+            messages.push(normalized)
+            pageBytes += separatorBytes + messageBytes
+            nextIndex += 1
+            continue
+        }
+        if (messages.length > 0) break
+
+        const fitted = fitMessageOnEmptyPage(normalized, maxBytes - baseBytes)
+        if (!fitted) throw new Error('Claude transcript message exceeds the page budget')
+        messages.push(fitted)
+        nextIndex += 1
+        break
+    }
+
+    return {
+        session: parsed.summary,
+        messages,
+        nextCursor: nextIndex < parsed.messages.length ? nextIndex : null
+    }
 }

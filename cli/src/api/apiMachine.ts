@@ -49,7 +49,7 @@ import {
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
-import { listLocalClaudeSessionSummaries, listLocalClaudeSessionsWithMessagesByIds } from '../modules/common/claudeSessions'
+import { listLocalClaudeSessionMessagesPageById, listLocalClaudeSessionSummaries } from '../modules/common/claudeSessions'
 import { listLocalPiSessionSummaries, listLocalPiSessionsWithMessagesByIds } from '../modules/common/piSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
@@ -350,15 +350,26 @@ export class ApiMachineClient {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
-                const requestedIds = parsed.data.sessionIds ? new Set(parsed.data.sessionIds) : null
-                const allSessions = requestedIds
-                    ? listLocalClaudeSessionsWithMessagesByIds(requestedIds)
-                    : listLocalClaudeSessionSummaries()
-                const sessions = []
-                for (const session of allSessions) {
-                    if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)
+                if (parsed.data.mode === 'summaries') {
+                    const sessions = []
+                    for (const session of listLocalClaudeSessionSummaries()) {
+                        if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)
+                    }
+                    return { success: true, mode: 'summaries', sessions }
                 }
-                return { success: true, sessions }
+                try {
+                    const page = listLocalClaudeSessionMessagesPageById(parsed.data.sessionId, parsed.data.cursor, parsed.data.maxBytes)
+                    if (!page) return { success: false, error: 'Claude session transcript not found' }
+                    if (!await this.isLocalSessionWithinWorkspaceRoots(page.session)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                    return { success: true, mode: 'messages', page }
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error instanceof Error ? error.message : 'Failed to page Claude session transcript'
+                    }
+                }
             }
         )
 

@@ -3916,8 +3916,15 @@ export class SyncEngine {
         return await this.rpcGateway.listCodexSessionsForMachine(machineId, cwd, sessionIds)
     }
 
-    async listClaudeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListClaudeSessionsResponse> {
-        return await this.rpcGateway.listClaudeSessionsForMachine(machineId, cwd, sessionIds)
+    async listClaudeSessionSummariesForMachine(machineId: string, cwd?: string | null): Promise<RpcListClaudeSessionsResponse> {
+        return await this.rpcGateway.listClaudeSessionSummariesForMachine(machineId, cwd)
+    }
+
+    async listClaudeSessionPageForMachine(
+        machineId: string,
+        options: { cwd?: string | null; sessionId: string; cursor: number; maxBytes?: number }
+    ): Promise<RpcListClaudeSessionsResponse> {
+        return await this.rpcGateway.listClaudeSessionPageForMachine(machineId, options)
     }
 
     async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListPiSessionsResponse> {

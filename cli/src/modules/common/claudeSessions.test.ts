@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listLocalClaudeSessionSummaries, listLocalClaudeSessionsWithMessagesByIds } from './claudeSessions'
+import { CLAUDE_IMPORT_MIN_PAGE_BYTES } from '@hapi/protocol/apiTypes'
+import {
+    listLocalClaudeSessionMessagesPageById,
+    listLocalClaudeSessionSummaries,
+    listLocalClaudeSessionsWithMessagesByIds
+} from './claudeSessions'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 const CWD = '/tmp/claude-import-project'
@@ -144,6 +149,88 @@ describe('local Claude sessions', () => {
 
         const sessions = listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
         expect(sessions.map((session) => session.id)).toEqual([SESSION_ID])
+    })
+
+    it('pages one transcript below a byte budget without losing message order', () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        const records: Record<string, unknown>[] = [{
+            parentUuid: null,
+            isSidechain: false,
+            userType: 'external',
+            cwd: CWD,
+            sessionId: SESSION_ID,
+            type: 'user',
+            message: { role: 'user', content: 'Start' },
+            uuid: 'user-0'
+        }]
+        let parentUuid = 'user-0'
+        for (let index = 1; index <= 4; index += 1) {
+            const uuid = `assistant-${index}`
+            records.push({
+                parentUuid,
+                isSidechain: false,
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'text', text: `${index}:${'x'.repeat(40 * 1024)}` }] },
+                uuid
+            })
+            parentUuid = uuid
+        }
+        writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), records.map(line).join('\n'))
+
+        const localIds: string[] = []
+        let cursor = 0
+        let pageCount = 0
+        while (true) {
+            const page = listLocalClaudeSessionMessagesPageById(SESSION_ID, cursor, CLAUDE_IMPORT_MIN_PAGE_BYTES)
+            expect(page).not.toBeNull()
+            pageCount += 1
+            localIds.push(...page!.messages.map((message) => message.localId))
+            expect(Buffer.byteLength(JSON.stringify({ success: true, mode: 'messages', page }), 'utf8'))
+                .toBeLessThanOrEqual(CLAUDE_IMPORT_MIN_PAGE_BYTES)
+            if (page!.nextCursor === null) break
+            expect(page!.nextCursor).toBeGreaterThan(cursor)
+            cursor = page!.nextCursor
+        }
+
+        expect(pageCount).toBeGreaterThan(1)
+        expect(localIds).toEqual([
+            `claude:${SESSION_ID}:user-0`,
+            `claude:${SESSION_ID}:assistant-1`,
+            `claude:${SESSION_ID}:assistant-2`,
+            `claude:${SESSION_ID}:assistant-3`,
+            `claude:${SESSION_ID}:assistant-4`
+        ])
+    })
+
+    it('replaces a single aggregate-oversized agent record before transport', () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        writeFileSync(
+            join(projectDir, `${SESSION_ID}.jsonl`),
+            line({
+                parentUuid: null,
+                isSidechain: false,
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: Array.from({ length: 4 }, (_, index) => ({
+                        type: 'text',
+                        text: `${index}:${'x'.repeat(60 * 1024)}`
+                    }))
+                },
+                uuid: 'assistant-large'
+            })
+        )
+
+        const page = listLocalClaudeSessionMessagesPageById(SESSION_ID, 0, CLAUDE_IMPORT_MIN_PAGE_BYTES)
+
+        expect(page?.nextCursor).toBeNull()
+        expect(JSON.stringify(page?.messages[0]?.content)).toContain('oversized imported Claude message omitted')
+        expect(Buffer.byteLength(JSON.stringify({ success: true, mode: 'messages', page }), 'utf8'))
+            .toBeLessThanOrEqual(CLAUDE_IMPORT_MIN_PAGE_BYTES)
     })
 
     it('imports only the active branch after a Claude rewind', () => {

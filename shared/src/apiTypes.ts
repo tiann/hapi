@@ -258,13 +258,30 @@ export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySch
     messages: z.array(ClaudeImportedMessageSchema)
 })
 
-export const ListClaudeSessionsRpcRequestSchema = z.object({
-    cwd: z.string().nullable().optional(),
-    sessionIds: z.array(z.string().min(1)).optional()
+export const CLAUDE_IMPORT_PAGE_BYTES = 4 * 1024 * 1024
+export const CLAUDE_IMPORT_MIN_PAGE_BYTES = 64 * 1024
+export const CLAUDE_IMPORT_MAX_PAGE_BYTES = 8 * 1024 * 1024
+
+export const ClaudeLocalSessionMessagesPageSchema = z.object({
+    session: ClaudeLocalSessionSummarySchema,
+    messages: z.array(ClaudeImportedMessageSchema),
+    nextCursor: z.number().int().nonnegative().nullable()
 })
 
+export const ListClaudeSessionsRpcRequestSchema = z.discriminatedUnion('mode', [
+    z.object({ mode: z.literal('summaries'), cwd: z.string().nullable().optional() }),
+    z.object({
+        mode: z.literal('messages'),
+        cwd: z.string().nullable().optional(),
+        sessionId: z.string().min(1),
+        cursor: z.number().int().nonnegative().default(0),
+        maxBytes: z.number().int().min(CLAUDE_IMPORT_MIN_PAGE_BYTES).max(CLAUDE_IMPORT_MAX_PAGE_BYTES).default(CLAUDE_IMPORT_PAGE_BYTES)
+    })
+])
+
 export const ListClaudeSessionsRpcResponseSchema = z.union([
-    z.object({ success: z.literal(true), sessions: z.array(z.union([ClaudeLocalSessionWithMessagesSchema, ClaudeLocalSessionSummarySchema])) }),
+    z.object({ success: z.literal(true), mode: z.literal('summaries'), sessions: z.array(ClaudeLocalSessionSummarySchema) }),
+    z.object({ success: z.literal(true), mode: z.literal('messages'), page: ClaudeLocalSessionMessagesPageSchema }),
     z.object({ success: z.literal(false), error: z.string() })
 ])
 
@@ -272,6 +289,7 @@ export type ClaudeImportedMessageContent = z.infer<typeof ClaudeImportedMessageC
 export type ClaudeImportedMessage = z.infer<typeof ClaudeImportedMessageSchema>
 export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
 export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
+export type ClaudeLocalSessionMessagesPage = z.infer<typeof ClaudeLocalSessionMessagesPageSchema>
 export type ListClaudeSessionsRpcRequest = z.infer<typeof ListClaudeSessionsRpcRequestSchema>
 export type ListClaudeSessionsRpcResponse = z.infer<typeof ListClaudeSessionsRpcResponseSchema>
 
