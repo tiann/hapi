@@ -143,6 +143,40 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         store.close()
     })
 
+    it('stamps hub startedAt when a new supervised runId omits startedAt', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const first = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'completed',
+            runId: '11111111-1111-1111-1111-111111111111'
+        }, 1_000)
+        expect(first.outcome).toBe('upserted')
+        if (first.outcome !== 'upserted') throw new Error('unreachable')
+        expect(first.job.startedAt).toBe(1_000)
+
+        const relaunch = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'running',
+            runId: '22222222-2222-2222-2222-222222222222'
+        }, 9_000)
+        expect(relaunch.outcome).toBe('upserted')
+        if (relaunch.outcome !== 'upserted') throw new Error('unreachable')
+        expect(relaunch.job.startedAt).toBe(9_000)
+
+        // Explicit startedAt still corrects late attach even on a new runId.
+        const corrected = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'running',
+            runId: '33333333-3333-3333-3333-333333333333',
+            startedAt: 1_785_304_595_000
+        }, 10_000)
+        expect(corrected.outcome).toBe('upserted')
+        if (corrected.outcome !== 'upserted') throw new Error('unreachable')
+        expect(corrected.job.startedAt).toBe(1_785_304_595_000)
+        store.close()
+    })
+
     it('stamps heartbeatAt from hub now on upsert and patch', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')

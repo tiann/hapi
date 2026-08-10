@@ -78,15 +78,12 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         throw new SessionJobError('bad_args', 'run requires a command after --')
     }
 
-    // Supervised child: always this run's clock. Omitting startedAt would
-    // sticky-reuse a prior completed/failed row's startedAt on key reuse.
-    // runId is the unique generation fence (Date.now() is not unique enough).
-    const startedAt = Date.now()
+    // Hub stamps startedAt when runId starts a new generation (runner/hub
+    // clocks may skew). runId is the unique generation fence.
     const runId = randomUUID()
     const body: AttachedJobUpsert = {
         label: options.label,
         status: 'running',
-        startedAt,
         runId,
         ...(options.done !== undefined ? { done: options.done } : {}),
         ...(options.total !== undefined ? { total: options.total } : {}),

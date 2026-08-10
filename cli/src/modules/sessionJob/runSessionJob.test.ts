@@ -76,8 +76,9 @@ describe('runSessionJob', () => {
         await vi.waitFor(() => expect(http.put).toHaveBeenCalled())
         expect(http.put.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
             status: 'running',
-            startedAt: expect.any(Number)
+            runId: expect.any(String)
         }))
+        expect((http.put.mock.calls[0]?.[1] as { startedAt?: number }).startedAt).toBeUndefined()
         expect(http.post).toHaveBeenCalledTimes(1)
         expect(http.get).toHaveBeenCalledTimes(1)
 

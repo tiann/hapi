@@ -140,14 +140,17 @@ export function upsertSessionJob(
     const existing = getSessionJob(db, sessionId, jobKey)
     // Hub clock only — never trust client heartbeatAt (skew / future-stamp stale chrome).
     const heartbeatAt = now
-    // Explicit startedAt wins (late-attach correction). Omitted → keep existing clock,
-    // else stamp now. PATCH never accepts startedAt — use PUT or clear+PUT.
-    const startedAt = body.startedAt !== undefined
-        ? body.startedAt
-        : (existing?.startedAt ?? now)
     // Every PUT gets a unique run generation unless the client supplies one
     // (supervisors mint UUID; hub mints when omitted so key reuse still fences).
     const runId = body.runId ?? randomUUID()
+    // Explicit startedAt wins (late-attach correction). A new supervised runId
+    // without startedAt uses hub now (not the sticky prior generation clock).
+    // Manual PUT without runId still preserves existing.startedAt when omitted.
+    const startsNewSupervisedRun =
+        body.runId !== undefined && body.runId !== existing?.runId
+    const startedAt = body.startedAt !== undefined
+        ? body.startedAt
+        : (startsNewSupervisedRun ? now : (existing?.startedAt ?? now))
     const status = body.status ?? 'running'
 
     try {
