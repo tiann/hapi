@@ -62,8 +62,8 @@ export class KimiSession extends AgentSessionBase<KimiMode> {
         this.localLaunchFailure = { message, exitReason };
     };
 
-    sendAgentMessage = (message: unknown): void => {
-        this.client.sendAgentMessage(message);
+    sendAgentMessage = (message: unknown, createdAt?: number): void => {
+        this.client.sendAgentMessage(message, createdAt);
     };
 
     sendUserMessage = (text: string): void => {

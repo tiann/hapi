@@ -87,8 +87,8 @@ export class GrokSession extends AgentSessionBase<GrokMode> {
         this.localLaunchFailure = { message, exitReason }
     }
 
-    sendAgentMessage = (message: unknown): void => {
-        this.client.sendAgentMessage(message)
+    sendAgentMessage = (message: unknown, createdAt?: number): void => {
+        this.client.sendAgentMessage(message, createdAt)
     }
 
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {

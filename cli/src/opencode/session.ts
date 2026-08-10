@@ -88,8 +88,8 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         this.localLaunchFailure = { message, exitReason };
     };
 
-    sendAgentMessage = (message: unknown): void => {
-        this.client.sendAgentMessage(message);
+    sendAgentMessage = (message: unknown, createdAt?: number): void => {
+        this.client.sendAgentMessage(message, createdAt);
     };
 
     sendUserMessage = (text: string): void => {

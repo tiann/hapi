@@ -129,3 +129,66 @@ describe('sendClaudeSessionMessage createdAt propagation', () => {
         expect(payload).not.toHaveProperty('createdAt')
     })
 })
+
+describe('sendAgentMessage createdAt propagation (ACP path)', () => {
+    const now = 1_710_000_000_000
+
+    function makeClient() {
+        const fakeSocket = {
+            on: vi.fn(),
+            connect: vi.fn(),
+            emit: vi.fn(),
+            volatile: { emit: vi.fn() }
+        }
+        ioMock.mockReturnValue(fakeSocket)
+        const client = new ApiSessionClient('cli-token', {
+            id: 'session-1',
+            namespace: 'default',
+            seq: 1,
+            createdAt: now,
+            updatedAt: now,
+            active: true,
+            activeAt: now,
+            metadata: null,
+            metadataVersion: 0,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: now,
+            todos: [],
+            model: null,
+            modelReasoningEffort: null,
+            effort: null,
+            serviceTier: null,
+            permissionMode: undefined,
+            collaborationMode: undefined
+        })
+        return { client, fakeSocket }
+    }
+
+    beforeEach(() => {
+        configuration._setApiUrl('https://hapi.example.com')
+        ioMock.mockReset()
+    })
+
+    it('forwards the caller-provided createdAt onto the socket emit', () => {
+        const { client, fakeSocket } = makeClient()
+
+        client.sendAgentMessage({ type: 'text', text: 'hi' }, 1_710_000_123_456)
+
+        expect(fakeSocket.emit).toHaveBeenCalledWith('message', expect.objectContaining({
+            sid: 'session-1',
+            createdAt: 1_710_000_123_456
+        }))
+    })
+
+    it('omits createdAt when no timestamp is given (hub falls back to Date.now())', () => {
+        const { client, fakeSocket } = makeClient()
+
+        client.sendAgentMessage({ type: 'text', text: 'hi' })
+
+        const [, payload] = fakeSocket.emit.mock.calls[0] as [string, Record<string, unknown>]
+        expect(payload.sid).toBe('session-1')
+        expect(payload).not.toHaveProperty('createdAt')
+    })
+})

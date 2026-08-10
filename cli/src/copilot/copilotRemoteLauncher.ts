@@ -189,8 +189,10 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
+                let turnOutputAt: number | undefined;
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    this.handleAgentMessage(message);
+                    if (turnOutputAt === undefined) turnOutputAt = Date.now();
+                    this.handleAgentMessage(message, turnOutputAt);
                 });
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
@@ -232,10 +234,10 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private handleAgentMessage(message: AgentMessage): void {
+    private handleAgentMessage(message: AgentMessage, turnOutputAt?: number): void {
         const converted = convertAgentMessage(message, this.currentBackendModel);
         if (converted) {
-            this.session.sendAgentMessage(converted);
+            this.session.sendAgentMessage(converted, turnOutputAt);
         }
 
         switch (message.type) {

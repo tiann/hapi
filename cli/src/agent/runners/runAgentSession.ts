@@ -187,11 +187,13 @@ export async function runAgentSession(opts: {
             syncKeepAlive();
 
             try {
+                let turnOutputAt: number | undefined;
                 await backend.prompt(agentSessionId, promptContent, (message) => {
+                    if (turnOutputAt === undefined) turnOutputAt = Date.now();
                     const model = backend.getSessionModelsMetadata?.(agentSessionId)?.currentModelId;
                     const converted = convertAgentMessage(message, model);
                     if (converted) {
-                        session.sendAgentMessage(converted);
+                        session.sendAgentMessage(converted, turnOutputAt);
                     }
                 });
             } catch (error) {

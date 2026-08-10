@@ -51,10 +51,13 @@ describe('CopilotRemoteLauncher.applyAgentMode', () => {
             totalTokens: 12
         });
 
-        expect(session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
-            type: 'token_count',
-            model: 'gpt-5.6'
-        }));
+        expect(session.sendAgentMessage).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'token_count',
+                model: 'gpt-5.6'
+            }),
+            undefined
+        );
     });
 
     it('does not update the acknowledged or displayed mode when setMode fails', async () => {

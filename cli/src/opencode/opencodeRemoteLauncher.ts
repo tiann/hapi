@@ -610,8 +610,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
+                let turnOutputAt: number | undefined;
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    this.handleAgentMessage(message);
+                    // Capture per-turn origin timestamp so between-turn drain
+                    // stragglers (emitted via this turn's closure) carry this
+                    // turn's position instead of stamping at arrival time.
+                    if (turnOutputAt === undefined) turnOutputAt = Date.now();
+                    this.handleAgentMessage(message, turnOutputAt);
                 });
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
@@ -983,10 +988,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private handleAgentMessage(message: AgentMessage): void {
+    private handleAgentMessage(message: AgentMessage, turnOutputAt?: number): void {
         const converted = convertAgentMessage(message, this.currentBackendModel);
         if (converted) {
-            this.session.sendAgentMessage(converted);
+            this.session.sendAgentMessage(converted, turnOutputAt);
         }
 
         switch (message.type) {
