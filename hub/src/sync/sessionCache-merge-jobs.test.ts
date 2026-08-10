@@ -189,6 +189,53 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         expect(cache.resolveAttachedJobSessionId(oldSession.id, 'default')).toBe(newSession.id)
     })
 
+    it('clears stale jobsTransferredToSessionId when A reclaims jobs from B (A→B then B→A)', async () => {
+        const { store, cache } = setup()
+        const a = cache.getOrCreateSession(
+            'agent-jobs-reclaim-a-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const b = cache.getOrCreateSession(
+            'agent-jobs-reclaim-b-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        store.sessionJobs.upsert(a.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 7
+        })
+
+        // A→B (kept-alive source keeps jobsTransferredToSessionId = B)
+        await cache.mergeSessionHistory(a.id, b.id, 'default', { mergeAgentState: false })
+        expect(cache.resolveAttachedJobSessionId(a.id, 'default')).toBe(b.id)
+        expect(cache.refreshSession(a.id)?.metadata?.jobsTransferredToSessionId).toBe(b.id)
+
+        // B→A reclaim: A becomes canonical again; must clear A's outgoing pointer
+        // so resolve(A) does not hop A→B after B is deleted.
+        await cache.mergeSessions(b.id, a.id, 'default')
+        expect(store.sessions.getSession(b.id)).toBeNull()
+        expect(store.sessionJobs.getPrimaryRunning(a.id)?.key).toBe('beets')
+
+        const refreshedA = cache.refreshSession(a.id)
+        expect(refreshedA?.metadata?.jobsTransferredToSessionId).toBeUndefined()
+        expect(cache.resolveAttachedJobSessionId(a.id, 'default')).toBe(a.id)
+        expect(cache.resolveAttachedJobSessionId(b.id, 'default')).toBe(a.id)
+
+        // Original supervisor still holding A's HAPI_SESSION_ID remains patchable.
+        const patched = store.sessionJobs.upsert(
+            cache.resolveAttachedJobSessionId(a.id, 'default'),
+            'beets',
+            { label: 'beets import', status: 'running', remaining: 3, runId: store.sessionJobs.get(a.id, 'beets')?.runId }
+        )
+        expect(patched.outcome).toBe('upserted')
+        expect(store.sessionJobs.get(a.id, 'beets')?.remaining).toBe(3)
+    })
+
     it('remaps dual-running same-key jobs and routes PATCH via jobKeyRedirects', async () => {
         const { store, cache } = setup()
         const oldId = 'aaaaaaaa-1111-1111-1111-111111111111'
