@@ -184,7 +184,7 @@ function storedClaudeLocalId(message: StoredMessage, sessionId: string): string 
 
 type ClaudeImportBoundary = {
     exact: { localId: string; contentDigest: string } | null
-    trailingUserDigest: string | null
+    trailingUserTexts: string[]
 }
 
 type ClaudeImportCursor = {
@@ -251,20 +251,22 @@ function storedImportCursor(session: StoredSession): ClaudeImportCursor | null {
 
 function findClaudeImportBoundary(store: Store, session: StoredSession, claudeSessionId: string): ClaudeImportBoundary {
     let beforeSeq = Number.MAX_SAFE_INTEGER
-    let trailingUserDigest: string | null = null
+    const trailingUserTexts: string[] = []
     while (true) {
         const page = store.messages.getMessagesBeforeSeq(session.id, beforeSeq)
-        if (page.length === 0) return { exact: null, trailingUserDigest }
+        if (page.length === 0) return { exact: null, trailingUserTexts: trailingUserTexts.reverse() }
         for (const message of page) {
             const localId = storedClaudeLocalId(message, claudeSessionId)
             if (localId) {
                 return {
                     exact: { localId, contentDigest: contentDigest(message.content) },
-                    trailingUserDigest
+                    trailingUserTexts: trailingUserTexts.reverse()
                 }
             }
-            if (trailingUserDigest === null && asRecord(message.content)?.role === 'user') {
-                trailingUserDigest = contentDigest(message.content)
+            const envelope = asRecord(message.content)
+            const body = asRecord(envelope?.content)
+            if (envelope?.role === 'user' && body?.type === 'text' && typeof body.text === 'string') {
+                trailingUserTexts.push(body.text)
             }
         }
         beforeSeq = page.at(-1)!.seq
@@ -333,6 +335,7 @@ async function analyzeClaudeTranscript(options: {
     let exactBoundaryIndex: number | null = null
     let exactBoundaryChanged = false
     let trailingUserIndex: number | null = null
+    let matchedTrailingUsers = 0
 
     const summary = await visitClaudeTranscriptPages({
         loadPage: options.loadPage,
@@ -349,14 +352,21 @@ async function analyzeClaudeTranscript(options: {
                 exactBoundaryChanged = contentDigest(message.content) !== options.boundary.exact.contentDigest
                 return
             }
-            const trailingTarget = exactBoundaryIndex === null ? 0 : exactBoundaryIndex + 1
-            if (
-                options.boundary.trailingUserDigest &&
-                index === trailingTarget &&
-                message.content.role === 'user' &&
-                contentDigest(message.content) === options.boundary.trailingUserDigest
-            ) {
-                trailingUserIndex = index
+            if (options.boundary.exact && exactBoundaryIndex === null) return
+            const trailingTarget = trailingUserIndex === null
+                ? (exactBoundaryIndex === null ? 0 : exactBoundaryIndex + 1)
+                : trailingUserIndex + 1
+            if (index !== trailingTarget || message.content.role !== 'user') return
+
+            let batch = ''
+            for (let end = matchedTrailingUsers + 1; end <= options.boundary.trailingUserTexts.length; end += 1) {
+                const text = options.boundary.trailingUserTexts[end - 1]!
+                batch = batch.length === 0 ? text : `${batch}\n${text}`
+                if (message.content.content.text === normalizeClaudeImportedUserText(batch)) {
+                    matchedTrailingUsers = end
+                    trailingUserIndex = index
+                    break
+                }
             }
         }
     })
@@ -439,7 +449,7 @@ async function importClaudeSessionFromPages(options: {
             : existingSession
     const boundary = stored
         ? findClaudeImportBoundary(store, stored, claudeSessionId)
-        : { exact: null, trailingUserDigest: null }
+        : { exact: null, trailingUserTexts: [] }
     let analysis: ClaudeTranscriptAnalysis
     try {
         analysis = await analyzeClaudeTranscript({

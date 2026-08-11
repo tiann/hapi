@@ -407,6 +407,40 @@ describe('Claude session import', () => {
         expect((stored.at(-1)?.content as typeof liveContent).content.text).toBe(prompt)
     })
 
+    it('matches separately stored user rows to one newline-batched native prompt', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-live-user-batch'
+        const initialTranscript = transcript(sessionId, ['one'])
+        initialTranscript.messages.push(assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        initialTranscript.messageCount = initialTranscript.messages.length
+        const initial = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: initialTranscript
+        })
+
+        const first = transcript(sessionId, ['first queued']).messages[0]!.content
+        const second = transcript(sessionId, ['second queued']).messages[0]!.content
+        store.messages.addMessage(initial.hapiSessionId!, first, 'web-user-first')
+        store.messages.addMessage(initial.hapiSessionId!, second, 'web-user-second')
+
+        const expandedTranscript = transcript(sessionId, ['one', 'first queued\nsecond queued'])
+        expandedTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        expandedTranscript.messageCount = expandedTranscript.messages.length
+        const repeated = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: expandedTranscript
+        })
+
+        expect(repeated).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.messages.getAllMessages(initial.hapiSessionId!)).toHaveLength(4)
+    })
+
     it('reuses a normal HAPI session and imports only its newer native tail', async () => {
         const { store, engine } = setup()
         const nativeTranscript = transcript('native-1', ['already observed', 'native tail'])

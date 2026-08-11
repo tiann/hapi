@@ -32,7 +32,6 @@ type ClaudeTranscriptRecord = {
     uuid: string | null
     parentUuid: string | null
     relatedMessageId: string | null
-    systemSubtype: string | null
     isSidechain: boolean
     parentToolUseId: string | null
     importableConversation: boolean
@@ -252,13 +251,7 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
         }
     }
     for (const record of records) {
-        if (
-            record.uuid &&
-            (
-                (record.relatedMessageId && activeMainIds.has(record.relatedMessageId)) ||
-                record.systemSubtype === 'away_summary'
-            )
-        ) {
+        if (record.uuid && record.relatedMessageId && activeMainIds.has(record.relatedMessageId)) {
             activeIds.add(record.uuid)
         }
     }
@@ -284,6 +277,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
     let customTitle: string | null = null
     let aiTitle: string | null = null
     let summaryText: string | null = null
+    let latestMainRecordUuid: string | null = null
     const records: ClaudeTranscriptRecord[] = []
 
     for await (const line of streamJsonLines(candidate.file)) {
@@ -307,7 +301,6 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
         let assistantModel: string | null = null
         let toolUseIds: string[] = []
         let relatedMessageId: string | null = null
-        let systemSubtype: string | null = null
 
         if (rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string') {
             customTitle = rawRecord.customTitle.trim() || customTitle
@@ -330,8 +323,9 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
                 assistantModel = event.message?.model?.trim() || null
                 toolUseIds = assistantToolUseIds(event)
             } else if (event.type === 'system') {
-                relatedMessageId = event.messageId ?? null
-                systemSubtype = event.subtype ?? null
+                relatedMessageId = event.messageId ?? (
+                    event.subtype === 'away_summary' ? latestMainRecordUuid : null
+                )
             }
             if (importableConversation) {
                 if (isExternalUserMessage(event)) {
@@ -346,11 +340,10 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
             }
         }
 
-        records.push({
+        const record: ClaudeTranscriptRecord = {
             uuid,
             parentUuid,
             relatedMessageId,
-            systemSubtype,
             isSidechain,
             parentToolUseId,
             importableConversation,
@@ -360,7 +353,11 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
             assistantToolUseIds: toolUseIds,
             offset: line.offset,
             length: line.length
-        })
+        }
+        records.push(record)
+        if (record.uuid && !record.isSidechain && canAnchorClaudeBranch(record)) {
+            latestMainRecordUuid = record.uuid
+        }
     }
 
     const finalStat = await stat(candidate.file)

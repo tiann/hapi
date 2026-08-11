@@ -367,6 +367,14 @@ describe('local Claude sessions', () => {
                 uuid: 'sidechain-old'
             },
             {
+                cwd: CWD,
+                sessionId: SESSION_ID,
+                type: 'system',
+                subtype: 'away_summary',
+                content: 'Abandoned branch recap',
+                uuid: 'recap-old'
+            },
+            {
                 parentUuid: 'attachment-common',
                 isSidechain: false,
                 userType: 'external',
