@@ -176,15 +176,18 @@ function importedPrefix(sessionId: string): string {
 function storedClaudeLocalId(message: StoredMessage, sessionId: string): string | null {
     if (message.localId?.startsWith(importedPrefix(sessionId))) return message.localId
     const envelope = asRecord(message.content)
-    const output = asRecord(envelope?.content)
-    const event = asRecord(output?.data)
-    if (envelope?.role !== 'agent' || output?.type !== 'output' || typeof event?.uuid !== 'string') return null
-    return `${importedPrefix(sessionId)}${event.uuid}`
+    const meta = asRecord(envelope?.meta)
+    const localId = meta?.claudeTranscriptLocalId
+    return typeof localId === 'string' && localId.startsWith(importedPrefix(sessionId)) ? localId : null
 }
+
+type ClaudeImportBoundaryEntry =
+    | { type: 'user'; text: string }
+    | { type: 'agent'; contentDigest: string }
 
 type ClaudeImportBoundary = {
     exact: { localId: string; contentDigest: string } | null
-    trailingUserTexts: string[]
+    trailingEntries: ClaudeImportBoundaryEntry[]
 }
 
 type ClaudeImportCursor = {
@@ -213,15 +216,42 @@ class ClaudeImportStreamError extends Error {
 
 function canonicalContent(value: unknown): unknown {
     const content = truncateOversizedMessageContent(value)
-    const envelope = asRecord(content)
+    const sourceEnvelope = asRecord(content)
+    if (!sourceEnvelope) return content
+    const meta = asRecord(sourceEnvelope.meta)
+    let envelope = sourceEnvelope
+    if (typeof meta?.claudeTranscriptLocalId === 'string') {
+        const canonicalMeta = { ...meta }
+        delete canonicalMeta.claudeTranscriptLocalId
+        envelope = { ...sourceEnvelope, meta: canonicalMeta }
+    }
     const body = asRecord(envelope?.content)
-    if (envelope?.role !== 'user' || body?.type !== 'text' || typeof body.text !== 'string') return content
+    if (envelope.role !== 'user' || body?.type !== 'text' || typeof body.text !== 'string') return envelope
     const text = normalizeClaudeImportedUserText(body.text)
-    return text === body.text ? content : { ...envelope, content: { ...body, text } }
+    return text === body.text ? envelope : { ...envelope, content: { ...body, text } }
 }
 
 function contentDigest(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(canonicalContent(value))).digest('hex')
+}
+
+function stableClaudeAgentDigest(value: unknown, sessionId: string): string | null {
+    const envelope = asRecord(value)
+    const output = asRecord(envelope?.content)
+    const event = asRecord(output?.data)
+    if (
+        envelope?.role !== 'agent' ||
+        output?.type !== 'output' ||
+        typeof event?.type !== 'string' ||
+        event.sessionId !== sessionId
+    ) {
+        return null
+    }
+    const stableEvent = { ...event }
+    delete stableEvent.uuid
+    delete stableEvent.parentUuid
+    delete stableEvent.timestamp
+    return contentDigest({ ...envelope, content: { ...output, data: stableEvent } })
 }
 
 function nextTranscriptDigest(previous: string, message: ClaudeImportedMessage): string {
@@ -251,23 +281,26 @@ function storedImportCursor(session: StoredSession): ClaudeImportCursor | null {
 
 function findClaudeImportBoundary(store: Store, session: StoredSession, claudeSessionId: string): ClaudeImportBoundary {
     let beforeSeq = Number.MAX_SAFE_INTEGER
-    const trailingUserTexts: string[] = []
+    const trailingEntries: ClaudeImportBoundaryEntry[] = []
     while (true) {
         const page = store.messages.getMessagesBeforeSeq(session.id, beforeSeq)
-        if (page.length === 0) return { exact: null, trailingUserTexts: trailingUserTexts.reverse() }
+        if (page.length === 0) return { exact: null, trailingEntries: trailingEntries.reverse() }
         for (const message of page) {
             const localId = storedClaudeLocalId(message, claudeSessionId)
             if (localId) {
                 return {
                     exact: { localId, contentDigest: contentDigest(message.content) },
-                    trailingUserTexts: trailingUserTexts.reverse()
+                    trailingEntries: trailingEntries.reverse()
                 }
             }
             const envelope = asRecord(message.content)
             const body = asRecord(envelope?.content)
             if (envelope?.role === 'user' && body?.type === 'text' && typeof body.text === 'string') {
-                trailingUserTexts.push(body.text)
+                trailingEntries.push({ type: 'user', text: body.text })
+                continue
             }
+            const agentDigest = stableClaudeAgentDigest(message.content, claudeSessionId)
+            if (agentDigest) trailingEntries.push({ type: 'agent', contentDigest: agentDigest })
         }
         beforeSeq = page.at(-1)!.seq
     }
@@ -334,8 +367,8 @@ async function analyzeClaudeTranscript(options: {
     let priorCursorVerified = options.priorCursor === null || options.priorCursor.messageCount === 0
     let exactBoundaryIndex: number | null = null
     let exactBoundaryChanged = false
-    let trailingUserIndex: number | null = null
-    let matchedTrailingUsers = 0
+    let trailingEntryIndex: number | null = null
+    let matchedTrailingEntries = 0
 
     const summary = await visitClaudeTranscriptPages({
         loadPage: options.loadPage,
@@ -353,18 +386,32 @@ async function analyzeClaudeTranscript(options: {
                 return
             }
             if (options.boundary.exact && exactBoundaryIndex === null) return
-            const trailingTarget = trailingUserIndex === null
+            const trailingTarget = trailingEntryIndex === null
                 ? (exactBoundaryIndex === null ? 0 : exactBoundaryIndex + 1)
-                : trailingUserIndex + 1
-            if (index !== trailingTarget || message.content.role !== 'user') return
+                : trailingEntryIndex + 1
+            if (index !== trailingTarget) return
+
+            const nextEntry = options.boundary.trailingEntries[matchedTrailingEntries]
+            if (message.content.role === 'agent') {
+                if (
+                    nextEntry?.type === 'agent' &&
+                    stableClaudeAgentDigest(message.content, options.sessionId) === nextEntry.contentDigest
+                ) {
+                    matchedTrailingEntries += 1
+                    trailingEntryIndex = index
+                }
+                return
+            }
+            if (nextEntry?.type !== 'user') return
 
             let batch = ''
-            for (let end = matchedTrailingUsers + 1; end <= options.boundary.trailingUserTexts.length; end += 1) {
-                const text = options.boundary.trailingUserTexts[end - 1]!
-                batch = batch.length === 0 ? text : `${batch}\n${text}`
+            for (let end = matchedTrailingEntries; end < options.boundary.trailingEntries.length; end += 1) {
+                const entry = options.boundary.trailingEntries[end]!
+                if (entry.type !== 'user') break
+                batch = batch.length === 0 ? entry.text : `${batch}\n${entry.text}`
                 if (message.content.content.text === normalizeClaudeImportedUserText(batch)) {
-                    matchedTrailingUsers = end
-                    trailingUserIndex = index
+                    matchedTrailingEntries = end + 1
+                    trailingEntryIndex = index
                     break
                 }
             }
@@ -373,7 +420,7 @@ async function analyzeClaudeTranscript(options: {
 
     const priorCount = options.priorCursor?.messageCount ?? 0
     const exactCount = exactBoundaryIndex === null ? 0 : exactBoundaryIndex + 1
-    const trailingCount = trailingUserIndex === null ? 0 : trailingUserIndex + 1
+    const trailingCount = trailingEntryIndex === null ? 0 : trailingEntryIndex + 1
     let error: string | undefined
     if (priorCount > summary.messageCount || !priorCursorVerified) {
         error = 'Local Claude transcript no longer extends the previously imported history'
@@ -449,7 +496,7 @@ async function importClaudeSessionFromPages(options: {
             : existingSession
     const boundary = stored
         ? findClaudeImportBoundary(store, stored, claudeSessionId)
-        : { exact: null, trailingUserTexts: [] }
+        : { exact: null, trailingEntries: [] }
     let analysis: ClaudeTranscriptAnalysis
     try {
         analysis = await analyzeClaudeTranscript({

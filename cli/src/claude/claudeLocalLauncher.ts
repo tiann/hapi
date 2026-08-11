@@ -34,7 +34,13 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             if (!isClaudeChatVisibleMessage(message)) {
                 return
             }
-            session.client.sendClaudeSessionMessage(message)
+            const nativeSessionId = message.sessionId ?? session.sessionId
+            const nativeLocalId = nativeSessionId && 'uuid' in message
+                ? `claude:${nativeSessionId}:${message.uuid}`
+                : undefined
+            session.client.sendClaudeSessionMessage(message, {
+                ...(nativeLocalId ? { claudeTranscriptLocalId: nativeLocalId } : {})
+            })
         }
     });
 

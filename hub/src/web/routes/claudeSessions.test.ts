@@ -71,6 +71,16 @@ function assistantMessage(sessionId: string, uuid: string, text: string, created
     }
 }
 
+function nativeObservedContent(message: ReturnType<typeof assistantMessage>) {
+    return {
+        ...message.content,
+        meta: {
+            ...message.content.meta,
+            claudeTranscriptLocalId: message.localId
+        }
+    }
+}
+
 describe('Claude session import', () => {
     const stores: Store[] = []
 
@@ -321,7 +331,74 @@ describe('Claude session import', () => {
         const liveUser = expandedTranscript.messages[2]!
         const liveAssistant = expandedTranscript.messages[3]!
         store.messages.addMessage(initial.hapiSessionId!, liveUser.content, 'web-user-2')
-        store.messages.addMessage(initial.hapiSessionId!, liveAssistant.content)
+        store.messages.addMessage(
+            initial.hapiSessionId!,
+            nativeObservedContent(liveAssistant as ReturnType<typeof assistantMessage>)
+        )
+
+        const repeated = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: expandedTranscript
+        })
+
+        expect(repeated).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.messages.getAllMessages(initial.hapiSessionId!)).toHaveLength(4)
+    })
+
+    it('ignores an SDK-generated UUID when re-importing an unchanged transcript', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-sdk-unchanged'
+        const source = transcript(sessionId, ['one'])
+        source.messages.push(assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        source.messageCount = source.messages.length
+        const initial = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: source
+        })
+        const sdkAgent = assistantMessage(sessionId, 'synthetic-sdk-uuid', 'remote-only answer', 2_500)
+        store.messages.addMessage(initial.hapiSessionId!, sdkAgent.content)
+
+        const repeated = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: source
+        })
+
+        expect(repeated).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.sessions.getSession(initial.hapiSessionId!)?.metadata).toMatchObject({
+            claudeImportState: { state: 'complete' }
+        })
+    })
+
+    it('matches an SDK agent tail when the corresponding native turn reaches disk', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-sdk-tail'
+        const initialTranscript = transcript(sessionId, ['one'])
+        initialTranscript.messages.push(assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        initialTranscript.messageCount = initialTranscript.messages.length
+        const initial = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: initialTranscript
+        })
+
+        const expandedTranscript = transcript(sessionId, ['one', 'two'])
+        expandedTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
+        expandedTranscript.messages.push(assistantMessage(sessionId, 'assistant-native-2', 'second answer', 2_500))
+        expandedTranscript.messageCount = expandedTranscript.messages.length
+        store.messages.addMessage(initial.hapiSessionId!, expandedTranscript.messages[2]!.content, 'web-user-2')
+        const sdkAgent = assistantMessage(sessionId, 'synthetic-sdk-2', 'second answer', 9_000)
+        store.messages.addMessage(initial.hapiSessionId!, sdkAgent.content)
 
         const repeated = await importClaudeSession({
             store,

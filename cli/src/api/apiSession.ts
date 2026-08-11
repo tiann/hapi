@@ -820,7 +820,7 @@ export class ApiSessionClient extends EventEmitter {
         await this.backfillInFlight
     }
 
-    sendClaudeSessionMessage(body: RawJSONLines): void {
+    sendClaudeSessionMessage(body: RawJSONLines, options?: { claudeTranscriptLocalId?: string }): void {
         let content: MessageContent
         // Origin timestamp (epoch ms) from the transcript entry's own `timestamp`,
         // forwarded only for agent messages so the hub can stamp created_at/invoked_at
@@ -842,7 +842,10 @@ export class ApiSessionClient extends EventEmitter {
                 },
                 meta: {
                     sentFrom: 'cli',
-                    ...(isTranscriptEcho ? { isTranscriptEcho: true } : {})
+                    ...(isTranscriptEcho ? { isTranscriptEcho: true } : {}),
+                    ...(options?.claudeTranscriptLocalId
+                        ? { claudeTranscriptLocalId: options.claudeTranscriptLocalId }
+                        : {})
                 }
             }
         } else {
@@ -853,7 +856,10 @@ export class ApiSessionClient extends EventEmitter {
                     data: body
                 },
                 meta: {
-                    sentFrom: 'cli'
+                    sentFrom: 'cli',
+                    ...(options?.claudeTranscriptLocalId
+                        ? { claudeTranscriptLocalId: options.claudeTranscriptLocalId }
+                        : {})
                 }
             }
             if (body.timestamp) {
