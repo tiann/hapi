@@ -34,28 +34,17 @@ function hasRuntimeWrapper(preArgs: string[], execPath: string, execBase: string
     return isEntrypointPath(preArgs[1], bunMain);
 }
 
-export function normalizeCliArgs(rawArgv: string[]): string[] {
-    if (!Array.isArray(rawArgv) || rawArgv.length === 0) {
-        return [];
-    }
-
-    const execPath = process.execPath;
-    const execBase = basename(execPath);
-    const bunMain = globalThis.Bun?.main ?? '';
-    const dashIndex = rawArgv.indexOf('--');
-    let argv = rawArgv.slice();
-    if (dashIndex >= 0) {
-        const preArgs = rawArgv.slice(0, dashIndex);
-        const postArgs = rawArgv.slice(dashIndex + 1);
-        argv = hasRuntimeWrapper(preArgs, execPath, execBase, bunMain)
-            ? postArgs
-            : [...preArgs, ...postArgs];
-    }
-
+/** Drop bun/exec/entrypoint prefix so we can see if a HAPI command already follows. */
+function stripRuntimePrefix(
+    args: string[],
+    execPath: string,
+    execBase: string,
+    bunMain: string
+): string[] {
     let startIndex = 0;
-    while (startIndex < argv.length) {
-        const value = argv[startIndex] || '';
-        const nextValue = argv[startIndex + 1] || '';
+    while (startIndex < args.length) {
+        const value = args[startIndex] || '';
+        const nextValue = args[startIndex + 1] || '';
         if (
             value === 'bun' &&
             (nextValue === bunMain || nextValue === execPath || nextValue === execBase || isEntrypointPath(nextValue, bunMain))
@@ -69,8 +58,36 @@ export function normalizeCliArgs(rawArgv: string[]): string[] {
         }
         break;
     }
+    return args.slice(startIndex);
+}
 
-    return argv.slice(startIndex);
+export function normalizeCliArgs(rawArgv: string[]): string[] {
+    if (!Array.isArray(rawArgv) || rawArgv.length === 0) {
+        return [];
+    }
+
+    const execPath = process.execPath;
+    const execBase = basename(execPath);
+    const bunMain = globalThis.Bun?.main ?? '';
+    const dashIndex = rawArgv.indexOf('--');
+    let argv = rawArgv.slice();
+    if (dashIndex >= 0) {
+        const preArgs = rawArgv.slice(0, dashIndex);
+        const postArgs = rawArgv.slice(dashIndex + 1);
+        // `bun src/index.ts -- auth login` → only postArgs (runtime handoff).
+        // `bun src/index.ts job run … -- cmd` → keep `--` (subcommand child sep).
+        // Installed `hapi job run … -- cmd` → keep `--` as well.
+        if (
+            hasRuntimeWrapper(preArgs, execPath, execBase, bunMain)
+            && stripRuntimePrefix(preArgs, execPath, execBase, bunMain).length === 0
+        ) {
+            argv = postArgs;
+        } else {
+            argv = [...preArgs, '--', ...postArgs];
+        }
+    }
+
+    return stripRuntimePrefix(argv, execPath, execBase, bunMain);
 }
 
 export function getCliArgs(): string[] {
