@@ -740,8 +740,10 @@ export async function importClaudeSession(options: {
 
 async function importWithLock(key: string, work: () => ClaudeImportResult | Promise<ClaudeImportResult>): Promise<ClaudeImportResult> {
     const prior = importLocks.get(key)
-    if (prior) return prior
-    const current = Promise.resolve().then(work)
+    const current = (prior
+        ? prior.then(() => undefined, () => undefined)
+        : Promise.resolve()
+    ).then(work)
     importLocks.set(key, current)
     try {
         return await current
@@ -820,7 +822,6 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
                 },
                 503
             )
-        const importedByClaudeId = importedClaudeSessionsById(options.store, namespace, machine.id)
         const results: ClaudeImportResult[] = []
         const cwd = typeof body?.cwd === 'string' ? body.cwd.trim() : null
         for (const sessionId of uniqueSessionIds) {
@@ -838,7 +839,7 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
                             cursor,
                             maxBytes: CLAUDE_IMPORT_PAGE_BYTES
                         }),
-                        existingSession: importedByClaudeId.get(sessionId) ?? null,
+                        existingSession: importedClaudeSessionsById(options.store, namespace, machine.id).get(sessionId) ?? null,
                         launchSettings
                     })
                 })

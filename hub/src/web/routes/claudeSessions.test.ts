@@ -210,6 +210,102 @@ describe('Claude session import', () => {
         ])
     })
 
+    it('queues concurrent imports and applies each request launch settings in order', async () => {
+        const { store } = setup()
+        const selectedMachine = machine()
+        const source = transcript('native-concurrent', ['one'])
+        let pageCalls = 0
+        let signalFirstPageStarted!: () => void
+        let releaseFirstPage!: () => void
+        const firstPageStarted = new Promise<void>((resolve) => {
+            signalFirstPageStarted = resolve
+        })
+        const firstPageBlocked = new Promise<void>((resolve) => {
+            releaseFirstPage = resolve
+        })
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => {
+                pageCalls += 1
+                if (pageCalls === 1) {
+                    signalFirstPageStarted()
+                    await firstPageBlocked
+                }
+                const messages = source.messages.slice(options.cursor, options.cursor + 1)
+                return {
+                    success: true as const,
+                    mode: 'messages' as const,
+                    page: {
+                        session: {
+                            id: source.id,
+                            title: source.title,
+                            lastUserMessage: source.lastUserMessage,
+                            cwd: source.cwd,
+                            file: source.file,
+                            modifiedAt: source.modifiedAt,
+                            model: source.model,
+                            messageCount: source.messageCount
+                        },
+                        messages,
+                        nextCursor: null
+                    }
+                }
+            },
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const request = (settings: { model: string; effort: string; permissionMode: string }) =>
+            app.request('/api/claude/import-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    machineId: selectedMachine.id,
+                    sessionIds: [source.id],
+                    ...settings
+                })
+            })
+        const firstResponse = request({
+            model: 'first-model',
+            effort: 'high',
+            permissionMode: 'bypassPermissions'
+        })
+        await firstPageStarted
+        const secondResponse = request({
+            model: 'second-model',
+            effort: 'low',
+            permissionMode: 'default'
+        })
+        await Promise.resolve()
+        expect(pageCalls).toBe(1)
+
+        releaseFirstPage()
+        expect(await (await firstResponse).json()).toMatchObject({
+            success: true,
+            results: [{ action: 'created', appended: 1 }]
+        })
+        expect(await (await secondResponse).json()).toMatchObject({
+            success: true,
+            results: [{ action: 'unchanged', appended: 0 }]
+        })
+
+        expect(pageCalls).toBe(3)
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+        expect(store.sessions.getSessionsByNamespace('default')[0]).toMatchObject({
+            model: 'second-model',
+            effort: 'low',
+            metadata: expect.objectContaining({ preferredPermissionMode: 'default' })
+        })
+    })
+
     it('rejects pages from different transcript snapshots before persisting', async () => {
         const { store } = setup()
         const selectedMachine = machine()
