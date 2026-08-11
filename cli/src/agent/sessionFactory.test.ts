@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '@/api/types'
 
 const {
@@ -56,6 +56,7 @@ import {
     bootstrapExistingSession,
     bootstrapLazySession,
     bootstrapSession,
+    buildMachineMetadata,
     buildSessionMetadata
 } from './sessionFactory'
 
@@ -362,5 +363,35 @@ describe('bootstrapSession HAPI_SESSION_ID export', () => {
 
         expect(result.sessionInfo.id).toBe('hub-session-42')
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hub-session-42')
+    })
+})
+
+describe('buildMachineMetadata runner-only capabilities', () => {
+    const originalSupervised = process.env.HAPI_RUNNER_SUPERVISED
+
+    afterEach(() => {
+        if (originalSupervised === undefined) {
+            delete process.env.HAPI_RUNNER_SUPERVISED
+        } else {
+            process.env.HAPI_RUNNER_SUPERVISED = originalSupervised
+        }
+    })
+
+    it('omits machine RPC capabilities for terminal bootstrap metadata', () => {
+        delete process.env.HAPI_RUNNER_SUPERVISED
+        const metadata = buildMachineMetadata()
+        expect(metadata.capabilities).toBeUndefined()
+        expect(metadata.startedCliMtimeMs).toBeUndefined()
+        expect(metadata.installedCliMtimeMs).toBeUndefined()
+        expect(metadata.supervisedRestart).toBeUndefined()
+    })
+
+    it('advertises capabilities and supervisedRestart only for asRunner', () => {
+        process.env.HAPI_RUNNER_SUPERVISED = '1'
+        const metadata = buildMachineMetadata({ asRunner: true, startedCliMtimeMs: 42 })
+        expect(metadata.capabilities).toEqual(expect.arrayContaining(['cursor-chat-store-status', 'stop-runner']))
+        expect(metadata.startedCliMtimeMs).toBe(42)
+        expect(metadata.installedCliMtimeMs).toBe(1_700_000_000_000)
+        expect(metadata.supervisedRestart).toBe(true)
     })
 })

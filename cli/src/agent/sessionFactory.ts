@@ -45,10 +45,17 @@ export type SessionBootstrapResult = {
 export function buildMachineMetadata(options?: {
     workspaceRoots?: string[]
     startedCliMtimeMs?: number
+    /**
+     * Only the long-lived runner daemon may advertise machine RPC capabilities
+     * and CLI mtimes. Terminal/lazy/existing session bootstraps must omit this
+     * so a newer CLI session cannot paint an old connected runner as current
+     * (#1108 bot Major).
+     */
+    asRunner?: boolean
 }): MachineMetadata {
     const installedCliMtimeMs = getInstalledCliMtimeMs()
     const startedCliMtimeMs = options?.startedCliMtimeMs ?? installedCliMtimeMs
-    return {
+    const base: MachineMetadata = {
         host: process.env.HAPI_HOSTNAME || os.hostname(),
         platform: os.platform(),
         happyCliVersion: packageJson.version,
@@ -56,9 +63,18 @@ export function buildMachineMetadata(options?: {
         happyHomeDir: configuration.happyHomeDir,
         happyLibDir: runtimePath(),
         workspaceRoots: options?.workspaceRoots,
+    }
+    if (!options?.asRunner) {
+        return base
+    }
+    return {
+        ...base,
         capabilities: [...CURRENT_MACHINE_CAPABILITIES],
         ...(typeof startedCliMtimeMs === 'number' ? { startedCliMtimeMs } : {}),
         ...(typeof installedCliMtimeMs === 'number' ? { installedCliMtimeMs } : {}),
+        // systemd/pm2 hosts set HAPI_RUNNER_SUPERVISED=1 — banner Restart may
+        // stop-runner knowing the supervisor cold-starts the new binary.
+        ...(process.env.HAPI_RUNNER_SUPERVISED === '1' ? { supervisedRestart: true } : {}),
     }
 }
 

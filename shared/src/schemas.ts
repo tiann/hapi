@@ -439,6 +439,11 @@ export const MachineMetadataSchema = z.object({
     startedCliMtimeMs: z.number().optional(),
     /** Current on-disk CLI binary/package mtime (may differ after upgrade). */
     installedCliMtimeMs: z.number().optional(),
+    /**
+     * Runner is under systemd/pm2 (HAPI_RUNNER_SUPERVISED=1). Banner Restart
+     * may stop-runner; unsupervised detached runners must not use that path.
+     */
+    supervisedRestart: z.boolean().optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>

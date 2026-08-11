@@ -165,7 +165,14 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
                     const host = machineDisplayHost(machine)
                     const version = machine.metadata?.happyCliVersion
                     const newerOnDisk = cliBinaryUpdatedOnDisk(machine.metadata)
+                    const supervised = machine.metadata?.supervisedRestart === true
+                    const canRestart = newerOnDisk && supervised
                     const restartBusy = restartingId === machine.id
+                    const restartTitle = !newerOnDisk
+                        ? t('runner.skew.banner.restartNeedsNewerBinary')
+                        : !supervised
+                            ? t('runner.skew.banner.restartNeedsSupervisor')
+                            : undefined
                     return (
                         <li
                             key={machine.id}
@@ -189,14 +196,14 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
                                 <button
                                     type="button"
                                     data-testid={`runner-version-skew-restart-${machine.id}`}
-                                    disabled={!newerOnDisk || restartBusy}
-                                    title={newerOnDisk ? undefined : t('runner.skew.banner.restartNeedsNewerBinary')}
+                                    disabled={!canRestart || restartBusy}
+                                    title={restartTitle}
                                     onClick={() => void onRestart(machine)}
                                     className="shrink-0 rounded bg-amber-900 px-2 py-1 text-xs font-medium text-amber-50 disabled:opacity-50 dark:bg-amber-100 dark:text-amber-950"
                                 >
                                     {restartBusy
                                         ? t('runner.skew.banner.restarting')
-                                        : newerOnDisk
+                                        : canRestart
                                             ? t('runner.skew.banner.restart')
                                             : t('runner.skew.banner.restartUnavailable')}
                                 </button>

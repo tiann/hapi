@@ -879,13 +879,13 @@ export class SyncEngine {
     }
 
     /**
-     * Manual stop-runner (banner Restart). Normally unnecessary: runners already
-     * self-restart on CLI mtime drift via version handoff. Use when handoff is
-     * disabled (HAPI_DISABLE_VERSION_HANDOFF=1) or stuck.
+     * Manual stop-runner for supervised hosts only (banner Restart).
+     * Detached `hapi runner start` has no supervisor — stop would leave the
+     * host offline. Require `metadata.supervisedRestart` (HAPI_RUNNER_SUPERVISED=1).
      */
     async restartMachineRunner(machineId: string, namespace: string): Promise<
         | { type: 'success'; message: string }
-        | { type: 'error'; message: string; code: 'machine_not_found' | 'machine_offline' | 'restart_failed' }
+        | { type: 'error'; message: string; code: 'machine_not_found' | 'machine_offline' | 'restart_unsupported' | 'restart_failed' }
     > {
         const machine = this.machineCache.getMachineByNamespace(machineId, namespace)
             ?? this.machineCache.refreshMachine(machineId)
@@ -895,9 +895,16 @@ export class SyncEngine {
         if (!machine.active) {
             return { type: 'error', message: 'Machine is offline', code: 'machine_offline' }
         }
+        if (machine.metadata?.supervisedRestart !== true) {
+            return {
+                type: 'error',
+                message: 'Restart requires a supervised runner (HAPI_RUNNER_SUPERVISED=1); unsupervised stop would leave the host offline',
+                code: 'restart_unsupported',
+            }
+        }
         try {
             await this.rpcGateway.stopRunner(machineId)
-            return { type: 'success', message: 'Runner restart requested' }
+            return { type: 'success', message: 'Runner stop requested; supervisor will relaunch' }
         } catch (error) {
             return {
                 type: 'error',

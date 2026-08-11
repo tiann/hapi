@@ -192,7 +192,34 @@ describe('RunnerVersionSkewBanner', () => {
         expect(restart).toHaveTextContent(/Upgrade CLI first/)
     })
 
-    it('calls restartMachineRunner when Restart is clicked and newer CLI is on disk', async () => {
+    it('disables Restart when newer CLI is on disk but runner is unsupervised', () => {
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({
+                    id: 'old',
+                    metadata: {
+                        host: 'laptop',
+                        platform: 'linux',
+                        happyCliVersion: '0.20.0',
+                        startedCliMtimeMs: 100,
+                        installedCliMtimeMs: 200,
+                    },
+                }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        expect(screen.getByTestId('runner-version-skew-restart-old')).toBeDisabled()
+    })
+
+    it('calls restartMachineRunner when Restart is clicked on a supervised host with newer CLI', async () => {
         useMachinesMock.mockReturnValue({
             machines: [
                 makeMachine({
@@ -203,6 +230,7 @@ describe('RunnerVersionSkewBanner', () => {
                         happyCliVersion: '0.20.0',
                         startedCliMtimeMs: 100,
                         installedCliMtimeMs: 200,
+                        supervisedRestart: true,
                     },
                 }),
             ],
@@ -221,7 +249,6 @@ describe('RunnerVersionSkewBanner', () => {
             expect(restartMachineRunnerMock).toHaveBeenCalledWith('old')
         })
     })
-
     it('minimizes even when sessionStorage setItem throws QuotaExceededError', () => {
         const proto = Object.getPrototypeOf(window.sessionStorage) as Storage
         vi.spyOn(proto, 'setItem').mockImplementation(() => {
