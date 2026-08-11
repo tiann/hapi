@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { ClaudeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import { normalizeClaudeImportedUserText } from '@hapi/protocol/messages'
 import { Store } from '../../store'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createClaudeSessionRoutes, importClaudeSession } from './claudeSessions'
@@ -91,7 +92,7 @@ function assistantMessage(
     }
 }
 
-function nativeObservedContent(message: ReturnType<typeof assistantMessage>) {
+function nativeObservedContent(message: ClaudeLocalSessionWithMessages['messages'][number]) {
     return {
         ...message.content,
         meta: {
@@ -99,6 +100,18 @@ function nativeObservedContent(message: ReturnType<typeof assistantMessage>) {
             claudeTranscriptLocalId: message.localId
         }
     }
+}
+
+function visibleMessageText(message: { content: unknown }): string | null {
+    const envelope = message.content as {
+        role?: string
+        content?: {
+            text?: string
+            data?: { message?: { content?: Array<{ type?: string; text?: string }> } }
+        }
+    }
+    if (envelope.role === 'user') return envelope.content?.text ?? null
+    return envelope.content?.data?.message?.content?.find((block) => block.type === 'text')?.text ?? null
 }
 
 describe('Claude session import', () => {
@@ -115,6 +128,17 @@ describe('Claude session import', () => {
         const engine = {
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            applySessionConfig: async (
+                sessionId: string,
+                config: { model?: string | null; effort?: string | null }
+            ) => {
+                if (config.model !== undefined) {
+                    store.sessions.setSessionModel(sessionId, config.model, 'default', { touchUpdatedAt: false })
+                }
+                if (config.effort !== undefined) {
+                    store.sessions.setSessionEffort(sessionId, config.effort, 'default', { touchUpdatedAt: false })
+                }
             },
             handleRealtimeEvent: (event: unknown) => events.push(event)
         } as unknown as SyncEngine
@@ -254,6 +278,17 @@ describe('Claude session import', () => {
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
+            applySessionConfig: async (
+                sessionId: string,
+                config: { model?: string | null; effort?: string | null }
+            ) => {
+                if (config.model !== undefined) {
+                    store.sessions.setSessionModel(sessionId, config.model, 'default', { touchUpdatedAt: false })
+                }
+                if (config.effort !== undefined) {
+                    store.sessions.setSessionEffort(sessionId, config.effort, 'default', { touchUpdatedAt: false })
+                }
+            },
             handleRealtimeEvent: () => {}
         } as unknown as SyncEngine
         const app = new Hono<WebAppEnv>()
@@ -349,6 +384,33 @@ describe('Claude session import', () => {
             results: [{ claudeSessionId: source.id, error: { code: 'transcript_changed' } }]
         })
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
+    })
+
+    it('returns an upgrade hint when the selected Runner lacks Claude history RPC', async () => {
+        const { store } = setup()
+        const selectedMachine = machine()
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionSummariesForMachine: async () => {
+                throw new RpcTargetMissingError(`${selectedMachine.id}:listClaudeSessions`, 'handler-not-registered')
+            }
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request(`/api/claude/sessions?machineId=${selectedMachine.id}`)
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'This machine uses a HAPI Runner version that does not support Claude history import; update and restart the Runner',
+            sessions: [],
+            machineId: selectedMachine.id
+        })
     })
 
     it('rejects a non-advancing transcript page', async () => {
@@ -538,6 +600,18 @@ describe('Claude session import', () => {
                 usage: { input_tokens: 20, output_tokens: 8, context_window: 1_000_000 }
             }
         )
+        const sdkEvent = sdkAgent.content.content.data
+        sdkAgent.content.content.data = {
+            message: sdkEvent.message,
+            sessionId: sdkEvent.sessionId,
+            type: sdkEvent.type,
+            uuid: sdkEvent.uuid,
+            timestamp: sdkEvent.timestamp,
+            requestId: sdkEvent.requestId,
+            gitBranch: sdkEvent.gitBranch,
+            version: sdkEvent.version,
+            cwd: sdkEvent.cwd
+        }
         store.messages.addMessage(initial.hapiSessionId!, sdkAgent.content)
 
         const repeated = await importClaudeSession({
@@ -658,6 +732,244 @@ describe('Claude session import', () => {
         expect(store.messages.getAllMessages(initial.hapiSessionId!)).toHaveLength(4)
     })
 
+    async function expectSuffixOnlyHistoryToBeCompleted(markNativeIds: boolean): Promise<void> {
+        const { store, engine } = setup()
+        const sessionId = markNativeIds ? 'native-exact-suffix' : 'native-content-suffix'
+        const nativeTranscript = transcript(sessionId, ['old prompt', 'new prompt'])
+        nativeTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-old', 'old answer', 1_500))
+        nativeTranscript.messages.push(assistantMessage(sessionId, 'assistant-new', 'new answer', 2_500))
+        nativeTranscript.messageCount = nativeTranscript.messages.length
+        const existing = store.sessions.getOrCreateSession(
+            `existing-${sessionId}`,
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default'
+        )
+        for (const message of nativeTranscript.messages.slice(2)) {
+            store.messages.addMessage(
+                existing.id,
+                markNativeIds ? nativeObservedContent(message) : message.content,
+                message.content.role === 'user' ? `web-${message.localId}` : undefined,
+                undefined,
+                message.createdAt
+            )
+        }
+
+        const result = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: nativeTranscript
+        })
+
+        expect(result).toMatchObject({ hapiSessionId: existing.id, action: 'updated', appended: 2 })
+        const stored = store.messages.getMessagesByPosition(existing.id, 200)
+        expect(stored).toHaveLength(4)
+        expect(stored.map(visibleMessageText)).toEqual([
+            'old prompt',
+            'old answer',
+            'new prompt',
+            'new answer'
+        ])
+
+        const repeated = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: nativeTranscript
+        })
+        expect(repeated).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(4)
+
+        const liveTail = transcript(sessionId, ['latest prompt']).messages[0]!
+        liveTail.localId = `claude:${sessionId}:user-latest`
+        liveTail.createdAt = 3_000
+        store.messages.addMessage(existing.id, liveTail.content, 'web-user-latest', undefined, liveTail.createdAt)
+        const expandedTranscript = {
+            ...nativeTranscript,
+            modifiedAt: 3_000,
+            messageCount: 5,
+            lastUserMessage: 'latest prompt',
+            messages: [...nativeTranscript.messages, liveTail]
+        }
+        const afterLiveTail = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: expandedTranscript
+        })
+        expect(afterLiveTail).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.messages.getMessagesByPosition(existing.id, 200).map(visibleMessageText)).toEqual([
+            'old prompt',
+            'old answer',
+            'new prompt',
+            'new answer',
+            'latest prompt'
+        ])
+    }
+
+    it('completes a suffix-only HAPI history without duplicating content-matched entries', async () => {
+        await expectSuffixOnlyHistoryToBeCompleted(false)
+    })
+
+    it('completes a suffix-only HAPI history without treating native IDs as a prefix', async () => {
+        await expectSuffixOnlyHistoryToBeCompleted(true)
+    })
+
+    it('recovers a suffix import after finalization fails before the cursor is saved', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-suffix-retry'
+        const nativeTranscript = transcript(sessionId, ['old prompt', 'new prompt'])
+        nativeTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-old', 'old answer', 1_500))
+        nativeTranscript.messages.push(assistantMessage(sessionId, 'assistant-new', 'new answer', 2_500))
+        nativeTranscript.messageCount = nativeTranscript.messages.length
+        const existing = store.sessions.getOrCreateSession(
+            'existing-suffix-retry',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default'
+        )
+        for (const message of nativeTranscript.messages.slice(2)) {
+            store.messages.addMessage(existing.id, message.content, undefined, undefined, message.createdAt)
+        }
+
+        const applySessionConfig = engine.applySessionConfig.bind(engine)
+        let configAttempts = 0
+        const flakyEngine = {
+            ...engine,
+            applySessionConfig: async (session: string, config: Parameters<SyncEngine['applySessionConfig']>[1]) => {
+                configAttempts += 1
+                if (configAttempts === 1) throw new Error('temporary config failure')
+                await applySessionConfig(session, config)
+            }
+        } as unknown as SyncEngine
+
+        const failed = await importClaudeSession({
+            store,
+            engine: flakyEngine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: nativeTranscript,
+            launchSettings: { model: 'claude-opus-4-1' }
+        })
+        expect(failed.error).toMatchObject({ code: 'import_failed', message: 'temporary config failure' })
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(4)
+
+        const retried = await importClaudeSession({
+            store,
+            engine: flakyEngine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: nativeTranscript,
+            launchSettings: { model: 'claude-opus-4-1' }
+        })
+        expect(retried).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.messages.getMessagesByPosition(existing.id, 200).map(visibleMessageText)).toEqual([
+            'old prompt',
+            'old answer',
+            'new prompt',
+            'new answer'
+        ])
+    })
+
+    it('fails closed when existing HAPI history cannot be aligned with the native transcript', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-unaligned'
+        const existing = store.sessions.getOrCreateSession(
+            'existing-unaligned',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default'
+        )
+        store.messages.addMessage(existing.id, transcript(sessionId, ['not in native']).messages[0]!.content, 'web-unmatched')
+
+        const result = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: transcript(sessionId, ['native prompt'])
+        })
+
+        expect(result.error).toMatchObject({ code: 'transcript_diverged' })
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(1)
+    })
+
+    it('aligns separately stored user rows with one batched native prompt without a prior cursor', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-unanchored-user-batch'
+        const existing = store.sessions.getOrCreateSession(
+            'existing-unanchored-user-batch',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default'
+        )
+        store.messages.addMessage(existing.id, transcript(sessionId, ['first queued']).messages[0]!.content, 'web-first')
+        store.messages.addMessage(existing.id, transcript(sessionId, ['second queued']).messages[0]!.content, 'web-second')
+
+        const result = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: transcript(sessionId, ['first queued\nsecond queued'])
+        })
+
+        expect(result).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(2)
+    })
+
+    it('fails closed when content-only history has multiple valid native alignments', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-ambiguous'
+        const existing = store.sessions.getOrCreateSession(
+            'existing-ambiguous',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default'
+        )
+        store.messages.addMessage(existing.id, transcript(sessionId, ['same prompt']).messages[0]!.content, 'web-same')
+
+        const result = await importClaudeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: transcript(sessionId, ['same prompt', 'same prompt'])
+        })
+
+        expect(result.error).toMatchObject({ code: 'transcript_diverged' })
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(1)
+    })
+
     it('reuses a normal HAPI session and imports only its newer native tail', async () => {
         const { store, engine } = setup()
         const nativeTranscript = transcript('native-1', ['already observed', 'native tail'])
@@ -745,6 +1057,96 @@ describe('Claude session import', () => {
 
         expect(result.error?.code).toBe('session_active')
         expect(store.messages.getAllMessages(existing.id)).toHaveLength(0)
+    })
+
+    it('applies requested launch settings through the active session runtime', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-active-settings'
+        const nativeTranscript = transcript(sessionId, ['already observed'])
+        const existing = store.sessions.getOrCreateSession(
+            'active-claude-settings',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default',
+            'old-model',
+            'low'
+        )
+        store.messages.addMessage(existing.id, nativeTranscript.messages[0]!.content, 'web-observed')
+        store.sessions.setSessionActive(existing.id, true, Date.now(), 'default')
+        const appliedConfigs: unknown[] = []
+        const runtimeEngine = {
+            ...engine,
+            applySessionConfig: async (_sessionId: string, config: unknown) => {
+                appliedConfigs.push(config)
+            }
+        } as unknown as SyncEngine
+
+        const result = await importClaudeSession({
+            store,
+            engine: runtimeEngine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: nativeTranscript,
+            launchSettings: {
+                model: 'new-model',
+                effort: 'high',
+                permissionMode: 'bypassPermissions'
+            }
+        })
+
+        expect(result).toMatchObject({ action: 'unchanged', appended: 0 })
+        expect(appliedConfigs).toEqual([{
+            model: 'new-model',
+            effort: 'high',
+            permissionMode: 'bypassPermissions'
+        }])
+    })
+
+    it('does not persist requested settings when the active runtime rejects them', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-active-settings-rejected'
+        const nativeTranscript = transcript(sessionId, ['already observed'])
+        const existing = store.sessions.getOrCreateSession(
+            'active-claude-settings-rejected',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default',
+            'old-model',
+            'low'
+        )
+        store.messages.addMessage(existing.id, nativeTranscript.messages[0]!.content, 'web-observed')
+        store.sessions.setSessionActive(existing.id, true, Date.now(), 'default')
+        const rejectingEngine = {
+            ...engine,
+            applySessionConfig: async () => {
+                throw new Error('runtime rejected config')
+            }
+        } as unknown as SyncEngine
+
+        const result = await importClaudeSession({
+            store,
+            engine: rejectingEngine,
+            namespace: 'default',
+            machine: machine(),
+            transcript: nativeTranscript,
+            launchSettings: { model: 'new-model', effort: 'high', permissionMode: 'bypassPermissions' }
+        })
+
+        expect(result.error).toEqual({ code: 'session_config_failed', message: 'runtime rejected config' })
+        expect(store.sessions.getSession(existing.id)).toMatchObject({ model: 'old-model', effort: 'low' })
+        expect(store.sessions.getSession(existing.id)?.metadata).not.toMatchObject({
+            preferredPermissionMode: 'bypassPermissions'
+        })
     })
 
     it('marks rewritten imported history as diverged', async () => {

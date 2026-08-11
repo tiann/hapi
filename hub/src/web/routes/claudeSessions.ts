@@ -16,6 +16,7 @@ import type { Metadata } from '@hapi/protocol/types'
 import type { Store, StoredMessage, StoredSession } from '../../store'
 import { ImportedMessageConflictError } from '../../store/messages'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 
@@ -68,6 +69,15 @@ function resolveClaudeMachine(engine: SyncEngine | null, namespace: string, requ
     const online = engine.getOnlineMachinesByNamespace(namespace)
     if (requestedMachineId) return online.find((machine) => machine.id === requestedMachineId) ?? null
     return online[0] ?? null
+}
+
+function claudeSessionRpcError(error: unknown): string {
+    if (error instanceof RpcTargetMissingError) {
+        return error.code === 'handler-not-registered'
+            ? 'This machine uses a HAPI Runner version that does not support Claude history import; update and restart the Runner'
+            : 'The selected HAPI Runner disconnected; reconnect it and retry'
+    }
+    return error instanceof Error ? error.message : 'Failed to read Claude session history from the selected machine'
 }
 
 function importedClaudeSessionsById(store: Store, namespace: string, machineId: string): Map<string, StoredSession> {
@@ -133,26 +143,19 @@ function updateMetadataWithRetry(
     throw new Error('Claude import metadata changed concurrently')
 }
 
-function applyClaudeLaunchSettings(
-    store: Store,
+async function applyClaudeLaunchSettings(
+    engine: SyncEngine,
     sessionId: string,
-    namespace: string,
     launchSettings: ClaudeImportLaunchSettings
-): void {
-    if (launchSettings.permissionMode !== undefined) {
-        updateMetadataWithRetry(
-            store,
-            sessionId,
-            namespace,
-            (metadata) => ({ ...metadata, preferredPermissionMode: launchSettings.permissionMode }) as Metadata
-        )
+): Promise<void> {
+    const config: Parameters<SyncEngine['applySessionConfig']>[1] = {
+        ...(launchSettings.model !== undefined ? { model: launchSettings.model } : {}),
+        ...(launchSettings.effort !== undefined ? { effort: launchSettings.effort } : {}),
+        ...(launchSettings.permissionMode !== undefined
+            ? { permissionMode: launchSettings.permissionMode }
+            : {})
     }
-    if (launchSettings.model !== undefined) {
-        store.sessions.setSessionModel(sessionId, launchSettings.model, namespace, { touchUpdatedAt: false })
-    }
-    if (launchSettings.effort !== undefined) {
-        store.sessions.setSessionEffort(sessionId, launchSettings.effort, namespace, { touchUpdatedAt: false })
-    }
+    if (Object.keys(config).length > 0) await engine.applySessionConfig(sessionId, config)
 }
 
 function emitImportedMessages(engine: SyncEngine, sessionId: string, messages: StoredMessage[]): void {
@@ -188,9 +191,14 @@ type ClaudeImportBoundaryEntry =
     | { type: 'user'; text: string }
     | { type: 'agent'; contentDigest: string }
 
+type ClaudeUnanchoredObservation =
+    | ClaudeImportBoundaryEntry
+    | { type: 'exact'; localId: string; contentDigest: string }
+
 type ClaudeImportBoundary = {
     exact: { localId: string; contentDigest: string } | null
     trailingEntries: ClaudeImportBoundaryEntry[]
+    unanchoredEntries: ClaudeUnanchoredObservation[] | null
 }
 
 type ClaudeImportCursor = {
@@ -202,7 +210,18 @@ type ClaudeImportCursor = {
 type ClaudeTranscriptAnalysis = ClaudeImportCursor & {
     summary: ClaudeLocalSessionSummary
     observedCount: number
+    importStartIndex: number
+    matchedSourceIndexes: ReadonlySet<number>
     error?: string
+}
+
+type ClaudeSourceObservation = {
+    localId: string
+    contentDigest: string
+    comparable:
+        | { type: 'user'; textDigest: string }
+        | { type: 'agent'; contentDigest: string }
+        | null
 }
 
 type ClaudePageLoader = (cursor: number) => Promise<ListClaudeSessionsRpcResponse>
@@ -238,6 +257,23 @@ function contentDigest(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(canonicalContent(value))).digest('hex')
 }
 
+function stableJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(stableJsonValue)
+    const record = asRecord(value)
+    if (!record) return value
+    return Object.fromEntries(
+        Object.keys(record)
+            .sort()
+            .map((key) => [key, stableJsonValue(record[key])])
+    )
+}
+
+function semanticContentDigest(value: unknown): string {
+    return createHash('sha256')
+        .update(JSON.stringify(stableJsonValue(canonicalContent(value))))
+        .digest('hex')
+}
+
 function stableClaudeAgentDigest(value: unknown, sessionId: string): string | null {
     const envelope = asRecord(value)
     const output = asRecord(envelope?.content)
@@ -251,7 +287,137 @@ function stableClaudeAgentDigest(value: unknown, sessionId: string): string | nu
         return null
     }
     const stableEvent = normalizeClaudeAgentEventForImport(event)
-    return contentDigest({ ...envelope, content: { ...output, data: stableEvent } })
+    return semanticContentDigest({ ...envelope, content: { ...output, data: stableEvent } })
+}
+
+function normalizedClaudeUserTextDigest(value: string): string {
+    return createHash('sha256').update(normalizeClaudeImportedUserText(value)).digest('hex')
+}
+
+function sourceObservation(message: ClaudeImportedMessage, sessionId: string): ClaudeSourceObservation {
+    let comparable: ClaudeSourceObservation['comparable'] = null
+    if (message.content.role === 'user') {
+        comparable = {
+            type: 'user',
+            textDigest: normalizedClaudeUserTextDigest(message.content.content.text)
+        }
+    } else {
+        const agentDigest = stableClaudeAgentDigest(message.content, sessionId)
+        if (agentDigest) comparable = { type: 'agent', contentDigest: agentDigest }
+    }
+    return {
+        localId: message.localId,
+        contentDigest: contentDigest(message.content),
+        comparable
+    }
+}
+
+function forwardObservationMatches(
+    source: ClaudeSourceObservation,
+    entries: ClaudeUnanchoredObservation[],
+    start: number
+): number[] {
+    const entry = entries[start]
+    if (!entry) return []
+    if (entry.type === 'exact') {
+        return entry.localId === source.localId && entry.contentDigest === source.contentDigest ? [1] : []
+    }
+    if (entry.type === 'agent') {
+        return source.comparable?.type === 'agent' && source.comparable.contentDigest === entry.contentDigest ? [1] : []
+    }
+    if (source.comparable?.type !== 'user') return []
+
+    const matches: number[] = []
+    let batch = ''
+    for (let end = start; end < entries.length; end += 1) {
+        const next = entries[end]!
+        if (next.type !== 'user') break
+        batch = batch.length === 0 ? next.text : `${batch}\n${next.text}`
+        if (normalizedClaudeUserTextDigest(batch) === source.comparable.textDigest) {
+            matches.push(end - start + 1)
+        }
+    }
+    return matches
+}
+
+function backwardObservationMatches(
+    source: ClaudeSourceObservation,
+    entries: ClaudeUnanchoredObservation[],
+    end: number
+): number[] {
+    const entry = entries[end - 1]
+    if (!entry) return []
+    if (entry.type === 'exact') {
+        return entry.localId === source.localId && entry.contentDigest === source.contentDigest ? [1] : []
+    }
+    if (entry.type === 'agent') {
+        return source.comparable?.type === 'agent' && source.comparable.contentDigest === entry.contentDigest ? [1] : []
+    }
+    if (source.comparable?.type !== 'user') return []
+
+    const matches: number[] = []
+    let batch = ''
+    for (let start = end - 1; start >= 0; start -= 1) {
+        const previous = entries[start]!
+        if (previous.type !== 'user') break
+        batch = batch.length === 0 ? previous.text : `${previous.text}\n${batch}`
+        if (normalizedClaudeUserTextDigest(batch) === source.comparable.textDigest) {
+            matches.push(end - start)
+        }
+    }
+    return matches
+}
+
+function alignUnanchoredObservations(
+    entries: ClaudeUnanchoredObservation[],
+    sources: ClaudeSourceObservation[]
+): { matchedSourceIndexes: Set<number>; error?: string } {
+    if (entries.length === 0) return { matchedSourceIndexes: new Set() }
+
+    const forward = new Array<number>(entries.length)
+    let forwardEntry = 0
+    for (let sourceIndex = 0; sourceIndex < sources.length && forwardEntry < entries.length; sourceIndex += 1) {
+        const matches = forwardObservationMatches(sources[sourceIndex]!, entries, forwardEntry)
+        if (matches.length > 1) {
+            return {
+                matchedSourceIndexes: new Set(),
+                error: 'Existing HAPI history has an ambiguous batched user-message boundary'
+            }
+        }
+        const consumed = matches[0]
+        if (!consumed) continue
+        for (let offset = 0; offset < consumed; offset += 1) forward[forwardEntry + offset] = sourceIndex
+        forwardEntry += consumed
+    }
+    if (forwardEntry !== entries.length) {
+        return {
+            matchedSourceIndexes: new Set(),
+            error: 'Existing HAPI history could not be aligned with the local Claude transcript'
+        }
+    }
+
+    const backward = new Array<number>(entries.length)
+    let backwardEntry = entries.length
+    for (let sourceIndex = sources.length - 1; sourceIndex >= 0 && backwardEntry > 0; sourceIndex -= 1) {
+        const matches = backwardObservationMatches(sources[sourceIndex]!, entries, backwardEntry)
+        if (matches.length > 1) {
+            return {
+                matchedSourceIndexes: new Set(),
+                error: 'Existing HAPI history has an ambiguous batched user-message boundary'
+            }
+        }
+        const consumed = matches[0]
+        if (!consumed) continue
+        for (let offset = 1; offset <= consumed; offset += 1) backward[backwardEntry - offset] = sourceIndex
+        backwardEntry -= consumed
+    }
+    if (backwardEntry !== 0 || forward.some((sourceIndex, index) => sourceIndex !== backward[index])) {
+        return {
+            matchedSourceIndexes: new Set(),
+            error: 'Existing HAPI history matches multiple positions in the local Claude transcript'
+        }
+    }
+    return { matchedSourceIndexes: new Set(forward) }
 }
 
 function nextTranscriptDigest(previous: string, message: ClaudeImportedMessage): string {
@@ -279,30 +445,52 @@ function storedImportCursor(session: StoredSession): ClaudeImportCursor | null {
         : null
 }
 
-function findClaudeImportBoundary(store: Store, session: StoredSession, claudeSessionId: string): ClaudeImportBoundary {
-    let beforeSeq = Number.MAX_SAFE_INTEGER
+function findClaudeImportBoundary(
+    store: Store,
+    session: StoredSession,
+    claudeSessionId: string,
+    collectUnanchored: boolean
+): ClaudeImportBoundary {
+    let before: { at: number; seq: number } | undefined
     const trailingEntries: ClaudeImportBoundaryEntry[] = []
+    const unanchoredEntries: ClaudeUnanchoredObservation[] | null = collectUnanchored ? [] : null
+    const collectedEntries: ClaudeUnanchoredObservation[] = unanchoredEntries ?? trailingEntries
     while (true) {
-        const page = store.messages.getMessagesBeforeSeq(session.id, beforeSeq)
-        if (page.length === 0) return { exact: null, trailingEntries: trailingEntries.reverse() }
-        for (const message of page) {
+        const page = store.messages.getMessagesByPosition(session.id, 200, before)
+        if (page.length === 0) {
+            return {
+                exact: null,
+                trailingEntries: trailingEntries.reverse(),
+                unanchoredEntries: unanchoredEntries?.reverse() ?? null
+            }
+        }
+        for (let index = page.length - 1; index >= 0; index -= 1) {
+            const message = page[index]!
             const localId = storedClaudeLocalId(message, claudeSessionId)
             if (localId) {
+                if (unanchoredEntries) {
+                    unanchoredEntries.push({ type: 'exact', localId, contentDigest: contentDigest(message.content) })
+                    continue
+                }
                 return {
                     exact: { localId, contentDigest: contentDigest(message.content) },
-                    trailingEntries: trailingEntries.reverse()
+                    trailingEntries: trailingEntries.reverse(),
+                    unanchoredEntries: null
                 }
             }
             const envelope = asRecord(message.content)
             const body = asRecord(envelope?.content)
             if (envelope?.role === 'user' && body?.type === 'text' && typeof body.text === 'string') {
-                trailingEntries.push({ type: 'user', text: body.text })
+                collectedEntries.push({ type: 'user', text: body.text })
                 continue
             }
             const agentDigest = stableClaudeAgentDigest(message.content, claudeSessionId)
-            if (agentDigest) trailingEntries.push({ type: 'agent', contentDigest: agentDigest })
+            if (agentDigest) {
+                collectedEntries.push({ type: 'agent', contentDigest: agentDigest })
+            }
         }
-        beforeSeq = page.at(-1)!.seq
+        const oldest = page[0]!
+        before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
     }
 }
 
@@ -369,6 +557,7 @@ async function analyzeClaudeTranscript(options: {
     let exactBoundaryChanged = false
     let trailingEntryIndex: number | null = null
     let matchedTrailingEntries = 0
+    const unanchoredSources: ClaudeSourceObservation[] | null = options.boundary.unanchoredEntries ? [] : null
 
     const summary = await visitClaudeTranscriptPages({
         loadPage: options.loadPage,
@@ -376,6 +565,10 @@ async function analyzeClaudeTranscript(options: {
         onMessage: (message, index) => {
             digest = nextTranscriptDigest(digest, message)
             lastLocalId = message.localId
+            if (unanchoredSources) {
+                unanchoredSources.push(sourceObservation(message, options.sessionId))
+                return
+            }
             if (options.priorCursor && index + 1 === options.priorCursor.messageCount) {
                 priorCursorVerified = digest === options.priorCursor.prefixDigest &&
                     message.localId === options.priorCursor.lastLocalId
@@ -421,8 +614,14 @@ async function analyzeClaudeTranscript(options: {
     const priorCount = options.priorCursor?.messageCount ?? 0
     const exactCount = exactBoundaryIndex === null ? 0 : exactBoundaryIndex + 1
     const trailingCount = trailingEntryIndex === null ? 0 : trailingEntryIndex + 1
+    const prefixCount = Math.max(priorCount, exactCount, trailingCount)
+    let matchedSourceIndexes = new Set<number>()
     let error: string | undefined
-    if (priorCount > summary.messageCount || !priorCursorVerified) {
+    if (unanchoredSources && options.boundary.unanchoredEntries) {
+        const alignment = alignUnanchoredObservations(options.boundary.unanchoredEntries, unanchoredSources)
+        matchedSourceIndexes = alignment.matchedSourceIndexes
+        error = alignment.error
+    } else if (priorCount > summary.messageCount || !priorCursorVerified) {
         error = 'Local Claude transcript no longer extends the previously imported history'
     } else if (options.boundary.exact && exactBoundaryIndex === null) {
         error = 'Local Claude transcript no longer contains the latest observed history entry'
@@ -434,7 +633,9 @@ async function analyzeClaudeTranscript(options: {
         messageCount: summary.messageCount,
         lastLocalId,
         prefixDigest: digest,
-        observedCount: Math.max(priorCount, exactCount, trailingCount),
+        observedCount: prefixCount + [...matchedSourceIndexes].filter((index) => index >= prefixCount).length,
+        importStartIndex: prefixCount,
+        matchedSourceIndexes,
         ...(error ? { error } : {})
     }
 }
@@ -494,16 +695,17 @@ async function importClaudeSessionFromPages(options: {
         existingSession === undefined
             ? (importedClaudeSessionsById(store, namespace, machine.id).get(claudeSessionId) ?? null)
             : existingSession
+    const priorCursor = stored ? storedImportCursor(stored) : null
     const boundary = stored
-        ? findClaudeImportBoundary(store, stored, claudeSessionId)
-        : { exact: null, trailingEntries: [] }
+        ? findClaudeImportBoundary(store, stored, claudeSessionId, priorCursor === null)
+        : { exact: null, trailingEntries: [], unanchoredEntries: null }
     let analysis: ClaudeTranscriptAnalysis
     try {
         analysis = await analyzeClaudeTranscript({
             loadPage: options.loadPage,
             sessionId: claudeSessionId,
             boundary,
-            priorCursor: stored ? storedImportCursor(stored) : null
+            priorCursor
         })
     } catch (error) {
         const streamError = error instanceof ClaudeImportStreamError ? error : null
@@ -562,6 +764,19 @@ async function importClaudeSessionFromPages(options: {
                     error: { code: 'session_active', message }
                 }
             }
+            try {
+                await applyClaudeLaunchSettings(engine, stored.id, launchSettings)
+            } catch (error) {
+                const message = error instanceof Error
+                    ? error.message
+                    : 'Failed to apply launch settings to the active Claude session'
+                markImportState(store, engine, stored.id, namespace, transcript, machine.id, 'failed', message)
+                return {
+                    claudeSessionId: transcript.id,
+                    hapiSessionId: stored.id,
+                    error: { code: 'session_config_failed', message }
+                }
+            }
             updateMetadataWithRetry(store, stored.id, namespace, (metadata) =>
                 buildClaudeMetadata(
                     transcript,
@@ -581,7 +796,6 @@ async function importClaudeSessionFromPages(options: {
                     launchSettings
                 )
             )
-            applyClaudeLaunchSettings(store, stored.id, namespace, launchSettings)
             engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
             return {
                 claudeSessionId: transcript.id,
@@ -615,9 +829,10 @@ async function importClaudeSessionFromPages(options: {
             await visitClaudeTranscriptPages({
                 loadPage: options.loadPage,
                 sessionId: claudeSessionId,
-                startCursor: analysis.observedCount,
+                startCursor: analysis.importStartIndex,
                 expectedSummary: transcript,
-                onMessage: (source) => {
+                onMessage: (source, index) => {
+                    if (analysis.matchedSourceIndexes.has(index)) return
                     const result = store.messages.addImportedMessage(
                         stored!.id,
                         source.content,
@@ -647,6 +862,7 @@ async function importClaudeSessionFromPages(options: {
     }
 
     try {
+        await applyClaudeLaunchSettings(engine, stored.id, launchSettings)
         updateMetadataWithRetry(store, stored.id, namespace, (metadata) =>
             buildClaudeMetadata(
                 transcript,
@@ -678,13 +894,6 @@ async function importClaudeSessionFromPages(options: {
         }
     }
 
-    const resolvedModel = launchSettings.model !== undefined ? launchSettings.model : created ? transcript.model : undefined
-    if (resolvedModel !== undefined) {
-        store.sessions.setSessionModel(stored.id, resolvedModel ?? null, namespace, { touchUpdatedAt: false })
-    }
-    if (launchSettings.effort !== undefined) {
-        store.sessions.setSessionEffort(stored.id, launchSettings.effort, namespace, { touchUpdatedAt: false })
-    }
     const activityAt = lastActivityAt ?? transcript.modifiedAt
     engine.recordSessionActivity(stored.id, activityAt)
     engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
@@ -775,7 +984,20 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
                 },
                 503
             )
-        const result = await engine.listClaudeSessionSummariesForMachine(machine.id, c.req.query('cwd')?.trim() || null)
+        let result: ListClaudeSessionsRpcResponse
+        try {
+            result = await engine.listClaudeSessionSummariesForMachine(machine.id, c.req.query('cwd')?.trim() || null)
+        } catch (error) {
+            return c.json(
+                {
+                    success: false,
+                    error: claudeSessionRpcError(error),
+                    sessions: [],
+                    machineId: machine.id
+                },
+                503
+            )
+        }
         if (!result.success || result.mode !== 'summaries')
             return c.json(
                 {
@@ -833,12 +1055,18 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
                         namespace,
                         machine,
                         claudeSessionId: sessionId,
-                        loadPage: async (cursor) => await engine.listClaudeSessionPageForMachine(machine.id, {
-                            cwd,
-                            sessionId,
-                            cursor,
-                            maxBytes: CLAUDE_IMPORT_PAGE_BYTES
-                        }),
+                        loadPage: async (cursor) => {
+                            try {
+                                return await engine.listClaudeSessionPageForMachine(machine.id, {
+                                    cwd,
+                                    sessionId,
+                                    cursor,
+                                    maxBytes: CLAUDE_IMPORT_PAGE_BYTES
+                                })
+                            } catch (error) {
+                                return { success: false, error: claudeSessionRpcError(error) }
+                            }
+                        },
                         existingSession: importedClaudeSessionsById(options.store, namespace, machine.id).get(sessionId) ?? null,
                         launchSettings
                     })
