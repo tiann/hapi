@@ -225,15 +225,15 @@ function DirectoryNode(props: {
     )
 }
 
-const STORAGE_KEY_PREFIX = 'hapi-dir-expanded-'
+const STORAGE_KEY_PREFIX = 'hapi-dir-expanded-v2-'
+const LEGACY_SESSION_STORAGE_KEY_PREFIX = 'hapi-dir-expanded-'
 
 function readExpanded(sessionId: string): Set<string> {
     try {
-        const raw = sessionStorage.getItem(STORAGE_KEY_PREFIX + sessionId)
-        if (raw) {
-            const parsed = JSON.parse(raw)
-            if (Array.isArray(parsed)) return new Set(parsed as string[])
-        }
+        const raw = localStorage.getItem(STORAGE_KEY_PREFIX + sessionId)
+            ?? sessionStorage.getItem(LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId)
+        const parsed = raw ? JSON.parse(raw) : null
+        if (Array.isArray(parsed)) return new Set(parsed as string[])
     } catch {
         // ignore
     }
@@ -241,10 +241,16 @@ function readExpanded(sessionId: string): Set<string> {
 }
 
 function writeExpanded(sessionId: string, expanded: Set<string>) {
+    const serialized = JSON.stringify([...expanded])
     try {
-        sessionStorage.setItem(STORAGE_KEY_PREFIX + sessionId, JSON.stringify([...expanded]))
+        localStorage.setItem(STORAGE_KEY_PREFIX + sessionId, serialized)
+        sessionStorage.removeItem(LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId)
     } catch {
-        // ignore
+        try {
+            sessionStorage.setItem(LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId, serialized)
+        } catch {
+            // ignore
+        }
     }
 }
 
@@ -289,4 +295,3 @@ export function DirectoryTree(props: {
         </div>
     )
 }
-
