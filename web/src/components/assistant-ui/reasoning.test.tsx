@@ -63,6 +63,13 @@ describe('ReasoningGroup', () => {
         expect(isCollapsed(container)).toBe(true)
     })
 
+    it('does not mount reasoning content while collapsed', () => {
+        const { container, queryByTestId } = renderGroup()
+
+        expect(isCollapsed(container)).toBe(true)
+        expect(queryByTestId('reasoning-content')).toBeNull()
+    })
+
     it('expands on click', () => {
         const { container } = renderGroup()
         const scroll = container.querySelector('.aui-reasoning-scroll') as HTMLDivElement
@@ -70,6 +77,19 @@ describe('ReasoningGroup', () => {
         fireEvent.click(container.querySelector('button')!)
         expect(isCollapsed(container)).toBe(false)
         expect(scroll.tabIndex).toBe(0)
+        expect(container.querySelector('[data-testid="reasoning-content"]')).not.toBeNull()
+    })
+
+    it('unmounts reasoning content after collapsing again', () => {
+        const { container, queryByTestId } = renderGroup()
+
+        fireEvent.click(container.querySelector('button')!)
+        expect(queryByTestId('reasoning-content')).not.toBeNull()
+
+        fireEvent.click(container.querySelector('button')!)
+
+        expect(isCollapsed(container)).toBe(true)
+        expect(queryByTestId('reasoning-content')).toBeNull()
     })
 
     it('auto-expands while streaming', () => {

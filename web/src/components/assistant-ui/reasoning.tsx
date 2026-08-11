@@ -72,6 +72,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
         && message.content[message.content.length - 1]?.type === 'reasoning'
     const { reasoningCollapsed } = useReasoningCollapse()
     const chatContext = useOptionalHappyChatContext()
+    const shouldRenderContent = isOpen
 
     useEffect(() => {
         if (!isStreaming) return
@@ -204,7 +205,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
                     onKeyDown={claimNestedKeyboardScroll}
                     className="aui-reasoning-scroll max-h-[60vh] overflow-y-auto overscroll-y-contain border-t border-[var(--app-divider)] px-3.5 py-3"
                 >
-                    {children}
+                    {shouldRenderContent ? children : null}
                 </div>
             </div>
         </div>
