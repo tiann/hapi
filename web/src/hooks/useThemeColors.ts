@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { applyColorTheme, getColorThemePickerValue, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
+import { syncTelegramWebAppThemeColors } from './useTelegram'
 
 /**
  * Per-appearance "key color" customization.
@@ -248,6 +249,7 @@ export function applyThemeColors(): void {
 
     const overrides = getStoredThemeColors()[scheme] ?? {}
     const rootStyle = document.documentElement.style
+    let telegramBackgroundColor: string | undefined
 
     for (const key of THEME_COLOR_KEYS) {
         const override = overrides[key.id]
@@ -264,7 +266,13 @@ export function applyThemeColors(): void {
                 rootStyle.setProperty(cssVar, derived[cssVar]!)
             }
         }
+
+        if (key.id === 'background') {
+            telegramBackgroundColor = hex
+        }
     }
+
+    syncTelegramWebAppThemeColors(telegramBackgroundColor)
 }
 
 export function getThemeColorPickerValue(scheme: ThemeScheme, id: ThemeColorKeyId): string {

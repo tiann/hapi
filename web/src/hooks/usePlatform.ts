@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { getTelegramWebApp, isTelegramApp } from './useTelegram'
+import { getTelegramWebApp, isTelegramApp, markTelegramHapticFeedback } from './useTelegram'
 
 export type HapticStyle = 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'
 export type HapticNotification = 'error' | 'success' | 'warning'
@@ -44,6 +44,7 @@ const haptic: PlatformHaptic = {
     impact: (style: HapticStyle) => {
         const tg = getTelegramWebApp()
         if (tg?.HapticFeedback) {
+            markTelegramHapticFeedback()
             tg.HapticFeedback.impactOccurred(style)
         } else {
             vibrate(vibrationPatterns[style])
@@ -52,6 +53,7 @@ const haptic: PlatformHaptic = {
     notification: (type: HapticNotification) => {
         const tg = getTelegramWebApp()
         if (tg?.HapticFeedback) {
+            markTelegramHapticFeedback()
             tg.HapticFeedback.notificationOccurred(type)
         } else {
             vibrate(vibrationPatterns[type])
@@ -60,6 +62,7 @@ const haptic: PlatformHaptic = {
     selection: () => {
         const tg = getTelegramWebApp()
         if (tg?.HapticFeedback) {
+            markTelegramHapticFeedback()
             tg.HapticFeedback.selectionChanged()
         } else {
             vibrate(vibrationPatterns.selection)

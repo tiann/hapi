@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
-import { getTelegramWebApp } from './useTelegram'
+import { getTelegramWebApp, syncTelegramWebAppThemeColors } from './useTelegram'
 import { applyColorTheme, getColorThemeBackground, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 export type AppearancePreference = 'system' | 'dark' | 'light' | 'oled'
@@ -105,6 +105,7 @@ function applyTheme(scheme: ColorScheme): void {
     document.documentElement.setAttribute('data-theme', scheme)
     applyColorTheme(getStoredColorTheme(), scheme)
     applyBrowserThemeColor(scheme)
+    syncTelegramWebAppThemeColors()
 }
 
 function applyPlatform(): void {
