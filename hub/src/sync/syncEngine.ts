@@ -881,13 +881,20 @@ export class SyncEngine {
         }
     }
 
-    deleteSessionJob(sessionId: string, jobKey: string): boolean {
-        const removed = this.store.sessionJobs.delete(sessionId, jobKey)
-        if (removed) {
+    deleteSessionJob(
+        sessionId: string,
+        jobKey: string,
+        expectedRunId?: string
+    ):
+        | { outcome: 'deleted' }
+        | { outcome: 'not-found' }
+        | { outcome: 'run-mismatch' } {
+        const result = this.store.sessionJobs.delete(sessionId, jobKey, expectedRunId)
+        if (result.outcome === 'deleted') {
             const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
             this.sessionCache.emitAttachedJobChanged(sessionId, primary)
         }
-        return removed
+        return result
     }
 
     private async withScratchlistUploadLock<T>(

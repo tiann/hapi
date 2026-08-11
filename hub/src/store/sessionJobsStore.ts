@@ -59,8 +59,12 @@ export class SessionJobsStore {
         return patchSessionJob(this.db, sessionId, jobKey, patch, now)
     }
 
-    delete(sessionId: string, jobKey: string): boolean {
-        return deleteSessionJob(this.db, sessionId, jobKey)
+    delete(
+        sessionId: string,
+        jobKey: string,
+        expectedRunId?: string
+    ): import('./sessionJobs').DeleteSessionJobResult {
+        return deleteSessionJob(this.db, sessionId, jobKey, expectedRunId)
     }
 
     transfer(fromSessionId: string, toSessionId: string): TransferSessionJobsResult {

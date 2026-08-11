@@ -75,6 +75,9 @@ export const sessionJobInputSchema: z.ZodTypeAny = z.object({
     detail: z.string().max(500).nullable().optional().describe(
         'Stage / current item text (not an ETA). Pass null to clear.'
     ),
+    expectedRunId: z.string().min(1).max(64).optional().describe(
+        'Run generation fence for update/clear. Required when a manual wrapper stamped runId on set.'
+    ),
     startedAt: z.number().optional().describe(
         'Not used over MCP (set is refused). Correct clocks via CLI job set --started-at.'
     )
@@ -90,6 +93,7 @@ export type SessionJobToolArgs = {
     remaining?: number | null
     unit?: string | null
     detail?: string | null
+    expectedRunId?: string
     startedAt?: number
 }
 
@@ -149,7 +153,13 @@ export async function handleSessionJobTool(
         }
 
         if (args.action === 'clear') {
-            const result = await clearSessionJob({ sessionIdPrefix, jobKey })
+            const result = await clearSessionJob({
+                sessionIdPrefix,
+                jobKey,
+                ...(args.expectedRunId !== undefined
+                    ? { expectedRunId: args.expectedRunId }
+                    : {})
+            })
             return { text: `cleared ${jobKey} on ${result.sessionId}`, isError: false }
         }
 
@@ -161,7 +171,10 @@ export async function handleSessionJobTool(
             ...(args.total !== undefined ? { total: args.total } : {}),
             ...(args.remaining !== undefined ? { remaining: args.remaining } : {}),
             ...(args.unit !== undefined ? { unit: args.unit } : {}),
-            ...(args.detail !== undefined ? { detail: args.detail } : {})
+            ...(args.detail !== undefined ? { detail: args.detail } : {}),
+            ...(args.expectedRunId !== undefined
+                ? { expectedRunId: args.expectedRunId }
+                : {})
         }
         // Empty body is a heartbeat-only update; hub stamps heartbeatAt.
         const result = await updateSessionJob({ sessionIdPrefix, jobKey, body })

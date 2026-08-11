@@ -52,14 +52,14 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         })
         store.sessionJobs.patch(session.id, 'newer', { remaining: 0 })
         expect(store.sessionJobs.getPrimaryRunning(session.id)?.key).toBe('beets')
-        expect(store.sessionJobs.delete(session.id, 'newer')).toBe(true)
+        expect(store.sessionJobs.delete(session.id, 'newer').outcome).toBe('deleted')
 
         const patched = store.sessionJobs.patch(session.id, 'beets', { remaining: 80 })
         expect(patched.outcome).toBe('patched')
         if (patched.outcome !== 'patched') throw new Error('unreachable')
         expect(patched.job.remaining).toBe(80)
 
-        expect(store.sessionJobs.delete(session.id, 'beets')).toBe(true)
+        expect(store.sessionJobs.delete(session.id, 'beets').outcome).toBe('deleted')
         expect(store.sessionJobs.getPrimaryRunning(session.id)).toBeNull()
         store.close()
     })
@@ -174,6 +174,27 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         expect(corrected.outcome).toBe('upserted')
         if (corrected.outcome !== 'upserted') throw new Error('unreachable')
         expect(corrected.job.startedAt).toBe(1_785_304_595_000)
+        store.close()
+    })
+
+    it('fences delete with expectedRunId after key reuse', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'a',
+            status: 'running',
+            runId: 'run-a'
+        }, 1_000)
+        store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'b',
+            status: 'running',
+            runId: 'run-b'
+        }, 2_000)
+
+        expect(store.sessionJobs.delete(session.id, 'beets', 'run-a').outcome).toBe('run-mismatch')
+        expect(store.sessionJobs.get(session.id, 'beets')?.runId).toBe('run-b')
+        expect(store.sessionJobs.delete(session.id, 'beets', 'run-b').outcome).toBe('deleted')
+        expect(store.sessionJobs.get(session.id, 'beets')).toBeNull()
         store.close()
     })
 

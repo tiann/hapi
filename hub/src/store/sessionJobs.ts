@@ -277,11 +277,43 @@ export function patchSessionJob(
     return { outcome: 'patched', job }
 }
 
-export function deleteSessionJob(db: Database, sessionId: string, jobKey: string): boolean {
+export type DeleteSessionJobResult =
+    | { outcome: 'deleted' }
+    | { outcome: 'not-found' }
+    | { outcome: 'run-mismatch' }
+
+export function deleteSessionJob(
+    db: Database,
+    sessionId: string,
+    jobKey: string,
+    expectedRunId?: string
+): DeleteSessionJobResult {
+    const existing = getSessionJob(db, sessionId, jobKey)
+    if (!existing) return { outcome: 'not-found' }
+    if (
+        expectedRunId !== undefined
+        && existing.runId !== expectedRunId
+    ) {
+        return { outcome: 'run-mismatch' }
+    }
+
     const result = db.prepare(
-        'DELETE FROM session_jobs WHERE session_id = ? AND job_key = ?'
-    ).run(sessionId, jobKey)
-    return result.changes > 0
+        `DELETE FROM session_jobs
+         WHERE session_id = ? AND job_key = ?
+           AND (? IS NULL OR run_id = ?)`
+    ).run(
+        sessionId,
+        jobKey,
+        expectedRunId ?? null,
+        expectedRunId ?? null
+    )
+
+    if (result.changes === 0) {
+        const still = getSessionJob(db, sessionId, jobKey)
+        if (!still) return { outcome: 'not-found' }
+        return { outcome: 'run-mismatch' }
+    }
+    return { outcome: 'deleted' }
 }
 
 export type SessionJobKeyRedirect = {

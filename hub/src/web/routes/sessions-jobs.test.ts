@@ -68,6 +68,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                     ...(body.remaining !== undefined ? { remaining: body.remaining } : {}),
                     ...(body.unit !== undefined ? { unit: body.unit } : {}),
                     ...(body.detail !== undefined ? { detail: body.detail } : {}),
+                    ...(body.runId !== undefined ? { runId: body.runId } : {}),
                     heartbeatAt: now,
                     startedAt: body.startedAt ?? now,
                     updatedAt: now
@@ -98,7 +99,22 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                 jobs.set(key, next)
                 return { outcome: 'patched' as const, job: next }
             },
-            deleteSessionJob: (_sid: string, key: string) => jobs.delete(key)
+            deleteSessionJob: (
+                _sid: string,
+                key: string,
+                expectedRunId?: string
+            ) => {
+                const existing = jobs.get(key)
+                if (!existing) return { outcome: 'not-found' as const }
+                if (
+                    expectedRunId !== undefined
+                    && existing.runId !== expectedRunId
+                ) {
+                    return { outcome: 'run-mismatch' as const }
+                }
+                jobs.delete(key)
+                return { outcome: 'deleted' as const }
+            }
         } as unknown as SyncEngine
 
         const app = new Hono<WebAppEnv>()
@@ -116,7 +132,8 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
                 body: JSON.stringify({
                     label: 'beets import',
                     remaining: 120,
-                    unit: 'tracks'
+                    unit: 'tracks',
+                    runId: 'run-a'
                 })
             }
         )
@@ -131,8 +148,14 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         expect(body.sessions[0]!.attachedJob?.key).toBe('beets')
         expect(body.sessions[0]!.attachedJob?.remaining).toBe(120)
 
+        const staleDel = await app.request(
+            `http://localhost/api/sessions/${session.id}/jobs/beets?expectedRunId=run-stale`,
+            { method: 'DELETE' }
+        )
+        expect(staleDel.status).toBe(409)
+
         const del = await app.request(
-            `http://localhost/api/sessions/${session.id}/jobs/beets`,
+            `http://localhost/api/sessions/${session.id}/jobs/beets?expectedRunId=run-a`,
             { method: 'DELETE' }
         )
         expect(del.status).toBe(200)
@@ -169,7 +192,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             getPrimaryAttachedJob: (sid: string) => (sid === owner.id ? jobs.get('beets')! : null),
             upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
             patchSessionJob: () => ({ outcome: 'not-found' as const }),
-            deleteSessionJob: () => false
+            deleteSessionJob: () => ({ outcome: 'not-found' as const })
         } as unknown as SyncEngine
 
         const app = new Hono<WebAppEnv>()
@@ -195,7 +218,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             getPrimaryAttachedJob: () => null,
             upsertSessionJob: () => ({ outcome: 'session-not-found' as const }),
             patchSessionJob: () => ({ outcome: 'not-found' as const }),
-            deleteSessionJob: () => false
+            deleteSessionJob: () => ({ outcome: 'not-found' as const })
         } as unknown as SyncEngine
 
         const app = new Hono<WebAppEnv>()

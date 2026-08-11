@@ -47,10 +47,10 @@ ${chalk.bold('Agent contract:')}
 
 ${chalk.bold('Usage:')}
   hapi job run <session> <job-key> --label <text> [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]
-  hapi job set <session> <job-key> --label <text> [--started-at MS] [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
-  hapi job update <session> <job-key> [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
+  hapi job set <session> <job-key> --label <text> [--started-at MS] [--run-id UUID] [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
+  hapi job update <session> <job-key> [--expected-run-id UUID] [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
                        [--clear-remaining|--clear-done|--clear-total|--clear-unit|--clear-detail]
-  hapi job clear <session> <job-key>
+  hapi job clear <session> <job-key> [--expected-run-id UUID]
   hapi job list <session>
 
 ${chalk.bold('Progress UI:')}
@@ -67,7 +67,8 @@ ${chalk.bold('startedAt / elapsed:')}
   or clear then set with --started-at (works on older hubs that ignored PUT corrections).
   Manual babysitter wrappers: mint one UUID per run (${chalk.bold('set --run-id <uuid>')}),
   then pass the same value on every heartbeat (${chalk.bold('update --expected-run-id <uuid>')})
-  so a key-reuse cannot steal the older wrapper's PATCHes.
+  and on clear (${chalk.bold('clear --expected-run-id <uuid>')}) so a key-reuse cannot
+  steal the older wrapper's PATCHes or DELETE the newer run.
 
 ${chalk.bold('Notes:')}
   Hub-persisted. Prefer "$HAPI_SESSION_ID" for this chat.
@@ -280,8 +281,9 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         result.expectedRunId !== undefined
         && result.action !== undefined
         && result.action !== 'update'
+        && result.action !== 'clear'
     ) {
-        throw new SessionJobError('bad_args', '--expected-run-id is only valid with job update')
+        throw new SessionJobError('bad_args', '--expected-run-id is only valid with job update or clear')
     }
 
     return result
@@ -367,7 +369,10 @@ export async function handleJobCommand(args: string[]): Promise<void> {
     if (parsed.action === 'clear') {
         const result = await clearSessionJob({
             sessionIdPrefix: parsed.sessionIdPrefix,
-            jobKey: parsed.jobKey
+            jobKey: parsed.jobKey,
+            ...(parsed.expectedRunId !== undefined
+                ? { expectedRunId: parsed.expectedRunId }
+                : {})
         })
         console.log(`cleared ${parsed.jobKey} on ${result.sessionId}`)
         return

@@ -360,21 +360,34 @@ export async function updateSessionJob(
 }
 
 export async function clearSessionJob(
-    options: SessionJobClientOptions & { jobKey: string }
+    options: SessionJobClientOptions & { jobKey: string; expectedRunId?: string }
 ): Promise<{ sessionId: string }> {
     return withAuthedRequest(
         options,
-        ({ apiUrl, jwt, sessionId, http }) => http.delete(
-            `${apiUrl}/api/sessions/${sessionId}/jobs/${encodeURIComponent(options.jobKey)}`,
-            {
-                headers: authHeaders(jwt),
-                timeout: 15_000,
-                validateStatus: () => true
-            }
-        ),
+        ({ apiUrl, jwt, sessionId, http }) => {
+            const qs = options.expectedRunId
+                ? `?expectedRunId=${encodeURIComponent(options.expectedRunId)}`
+                : ''
+            return http.delete(
+                `${apiUrl}/api/sessions/${sessionId}/jobs/${encodeURIComponent(options.jobKey)}${qs}`,
+                {
+                    headers: authHeaders(jwt),
+                    timeout: 15_000,
+                    validateStatus: () => true
+                }
+            )
+        },
         (response, sessionId) => {
             if (response.status === 404) {
                 throw new SessionJobError('not_found', 'job not found')
+            }
+            if (response.status === 409) {
+                const detail = (response.data as { error?: string } | undefined)?.error
+                throw new SessionJobError(
+                    'run_mismatch',
+                    detail
+                        ?? 'job run mismatch (expectedRunId); another run reused this key'
+                )
             }
             if (response.status < 200 || response.status >= 300) {
                 throw httpStatusError('clear job', response)

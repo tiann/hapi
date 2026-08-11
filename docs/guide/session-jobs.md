@@ -86,7 +86,7 @@ hapi job update "$HAPI_SESSION_ID" beets \
   --expected-run-id "$RUN_ID" \
   --status completed
 # or
-hapi job clear "$HAPI_SESSION_ID" beets
+hapi job clear "$HAPI_SESSION_ID" beets --expected-run-id "$RUN_ID"
 ```
 
 Same auth as `hapi ping-peer` (`HAPI_API_URL` / `CLI_API_TOKEN` or `hapi auth login`).
@@ -158,7 +158,7 @@ When the process exits, mark completed/failed or clear. A stuck green/amber chip
 ```bash
 hapi job set <session> <job-key> --label <text> [--started-at MS] [--run-id UUID] [progress flags]
 hapi job update <session> <job-key> [--expected-run-id UUID] [progress flags]   # no startedAt
-hapi job clear <session> <job-key>
+hapi job clear <session> <job-key> [--expected-run-id UUID]
 hapi job list <session>
 hapi job run <session> <job-key> --label <text> -- <cmd>…
 hapi job --help
@@ -169,9 +169,9 @@ Needs a hub/CLI build that includes `job` (soup / feat — global npm releases m
 | Method | Path | Notes |
 |--------|------|-------|
 | `GET` | `/api/sessions/:id/jobs` | List jobs |
-| `PUT` | `/api/sessions/:id/jobs/:jobKey` | Upsert (`AttachedJobUpsert`; optional `startedAt`) |
-| `PATCH` | `/api/sessions/:id/jobs/:jobKey` | Progress/heartbeat (`AttachedJobPatch`; **no** `startedAt`) |
-| `DELETE` | `/api/sessions/:id/jobs/:jobKey` | Clear |
+| `PUT` | `/api/sessions/:id/jobs/:jobKey` | Upsert (`AttachedJobUpsert`; optional `startedAt`, `runId`) |
+| `PATCH` | `/api/sessions/:id/jobs/:jobKey` | Progress/heartbeat (`AttachedJobPatch`; **no** `startedAt`; optional `expectedRunId`) |
+| `DELETE` | `/api/sessions/:id/jobs/:jobKey?expectedRunId=` | Clear (optional fence; 409 on run mismatch) |
 
 Primary running job is enriched onto `GET /api/sessions` as `attachedJob` and pushed on `session-updated` SSE patches.
 

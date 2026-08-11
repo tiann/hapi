@@ -1418,9 +1418,22 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
         }
         const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
-        const removed = engine.deleteSessionJob(sessionResult.sessionId, jobKey)
-        if (!removed) {
+        const expectedRunIdRaw = c.req.query('expectedRunId')
+        const expectedRunId = expectedRunIdRaw && expectedRunIdRaw.trim()
+            ? expectedRunIdRaw.trim()
+            : undefined
+        const result = engine.deleteSessionJob(
+            sessionResult.sessionId,
+            jobKey,
+            expectedRunId
+        )
+        if (result.outcome === 'not-found') {
             return c.json({ error: 'Job not found' }, 404)
+        }
+        if (result.outcome === 'run-mismatch') {
+            return c.json({
+                error: 'Job run mismatch: expectedRunId does not match the current run (key was reused).'
+            }, 409)
         }
         return c.json({ ok: true })
     })

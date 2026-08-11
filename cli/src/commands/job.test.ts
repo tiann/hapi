@@ -85,7 +85,7 @@ describe('parseJobArgs', () => {
         expect(parsed.total).toBe(10)
     })
 
-    it('parses --run-id on set and --expected-run-id on update', () => {
+    it('parses --run-id on set and --expected-run-id on update/clear', () => {
         const setParsed = parseJobArgs([
             'set',
             'sid',
@@ -103,6 +103,14 @@ describe('parseJobArgs', () => {
             '--expected-run-id=11111111-1111-1111-1111-111111111111'
         ])
         expect(updateParsed.expectedRunId).toBe('11111111-1111-1111-1111-111111111111')
+
+        const clearParsed = parseJobArgs([
+            'clear',
+            'sid',
+            'beets',
+            '--expected-run-id=11111111-1111-1111-1111-111111111111'
+        ])
+        expect(clearParsed.expectedRunId).toBe('11111111-1111-1111-1111-111111111111')
     })
 
     it('rejects --run-id on update and --expected-run-id on set', () => {
@@ -118,7 +126,7 @@ describe('parseJobArgs', () => {
             'beets',
             '--label=beets',
             '--expected-run-id=11111111-1111-1111-1111-111111111111'
-        ])).toThrow(/--expected-run-id is only valid with job update/)
+        ])).toThrow(/--expected-run-id is only valid with job update or clear/)
     })
 })
 
