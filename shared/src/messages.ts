@@ -17,6 +17,35 @@ export function normalizeClaudeImportedUserText(value: string): string {
         : value
 }
 
+const CLAUDE_AGENT_IMPORT_RUNTIME_FIELDS = [
+    'uuid',
+    'parentUuid',
+    'timestamp',
+    'cwd',
+    'version',
+    'gitBranch',
+    'requestId'
+] as const
+
+/** Removes SDK/native runtime metadata before comparing imported Claude agent events. */
+export function normalizeClaudeAgentEventForImport(value: unknown): unknown {
+    if (!isObject(value)) return value
+
+    const normalized: Record<string, unknown> = { ...value }
+    for (const field of CLAUDE_AGENT_IMPORT_RUNTIME_FIELDS) {
+        delete normalized[field]
+    }
+
+    if (!isObject(normalized.message) || !isObject(normalized.message.usage)) {
+        return normalized
+    }
+
+    const usage = { ...normalized.message.usage }
+    delete usage.context_window
+    normalized.message = { ...normalized.message, usage }
+    return normalized
+}
+
 function truncateDisplayHistoryString(value: string): string {
     const removed = value.length - DISPLAY_HISTORY_TRUNCATE_HEAD - DISPLAY_HISTORY_TRUNCATE_TAIL
     return `${value.slice(0, DISPLAY_HISTORY_TRUNCATE_HEAD)}\n…[hapi: truncated ${removed} chars]…\n${value.slice(value.length - DISPLAY_HISTORY_TRUNCATE_TAIL)}`

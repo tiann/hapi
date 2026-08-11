@@ -50,7 +50,22 @@ function transcript(id: string, prompts: string[]): ClaudeLocalSessionWithMessag
     }
 }
 
-function assistantMessage(sessionId: string, uuid: string, text: string, createdAt: number) {
+type AssistantRuntimeFields = {
+    cwd?: string
+    version?: string
+    gitBranch?: string
+    requestId?: string
+    usage?: Record<string, number>
+}
+
+function assistantMessage(
+    sessionId: string,
+    uuid: string,
+    text: string,
+    createdAt: number,
+    runtime: AssistantRuntimeFields = {}
+) {
+    const { usage, ...runtimeFields } = runtime
     return {
         localId: `claude:${sessionId}:${uuid}`,
         createdAt,
@@ -59,11 +74,16 @@ function assistantMessage(sessionId: string, uuid: string, text: string, created
             content: {
                 type: 'output' as const,
                 data: {
+                    ...runtimeFields,
                     type: 'assistant',
                     uuid,
                     sessionId,
                     timestamp: new Date(createdAt).toISOString(),
-                    message: { role: 'assistant', content: [{ type: 'text', text }] }
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text }],
+                        ...(usage ? { usage } : {})
+                    }
                 }
             },
             meta: { sentFrom: 'cli' as const }
@@ -394,10 +414,34 @@ describe('Claude session import', () => {
 
         const expandedTranscript = transcript(sessionId, ['one', 'two'])
         expandedTranscript.messages.splice(1, 0, assistantMessage(sessionId, 'assistant-1', 'first answer', 1_500))
-        expandedTranscript.messages.push(assistantMessage(sessionId, 'assistant-native-2', 'second answer', 2_500))
+        expandedTranscript.messages.push(assistantMessage(
+            sessionId,
+            'assistant-native-2',
+            'second answer',
+            2_500,
+            {
+                cwd: '/native/project',
+                version: '2.1.0',
+                gitBranch: 'native-branch',
+                requestId: 'native-request-2',
+                usage: { input_tokens: 20, output_tokens: 8 }
+            }
+        ))
         expandedTranscript.messageCount = expandedTranscript.messages.length
         store.messages.addMessage(initial.hapiSessionId!, expandedTranscript.messages[2]!.content, 'web-user-2')
-        const sdkAgent = assistantMessage(sessionId, 'synthetic-sdk-2', 'second answer', 9_000)
+        const sdkAgent = assistantMessage(
+            sessionId,
+            'synthetic-sdk-2',
+            'second answer',
+            9_000,
+            {
+                cwd: '/sdk/project',
+                version: '2.2.0',
+                gitBranch: 'sdk-branch',
+                requestId: 'sdk-request-2',
+                usage: { input_tokens: 20, output_tokens: 8, context_window: 1_000_000 }
+            }
+        )
         store.messages.addMessage(initial.hapiSessionId!, sdkAgent.content)
 
         const repeated = await importClaudeSession({

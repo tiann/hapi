@@ -5,11 +5,44 @@ import {
     extractAssistantPlainText,
     extractNotifySummary,
     isRedundantGoalStatusEventContent,
+    normalizeClaudeAgentEventForImport,
     normalizeClaudeImportedUserText,
     splitNotifySummary,
     stripNotifySummaryFooter,
     type NotifySummary
 } from './messages'
+
+describe('normalizeClaudeAgentEventForImport', () => {
+    test('removes SDK/native runtime differences without mutating the event', () => {
+        const event = {
+            type: 'assistant',
+            sessionId: 'session-1',
+            uuid: 'sdk-uuid',
+            parentUuid: 'sdk-parent',
+            timestamp: '2026-08-11T00:00:00.000Z',
+            cwd: '/sdk/project',
+            version: '1.2.3',
+            gitBranch: 'sdk-branch',
+            requestId: 'sdk-request',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'same answer' }],
+                usage: { input_tokens: 10, output_tokens: 5, context_window: 1_000_000 }
+            }
+        }
+
+        expect(normalizeClaudeAgentEventForImport(event)).toEqual({
+            type: 'assistant',
+            sessionId: 'session-1',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'same answer' }],
+                usage: { input_tokens: 10, output_tokens: 5 }
+            }
+        })
+        expect(event.message.usage.context_window).toBe(1_000_000)
+    })
+})
 
 describe('normalizeClaudeImportedUserText', () => {
     test('truncates oversized prompts deterministically and idempotently', () => {

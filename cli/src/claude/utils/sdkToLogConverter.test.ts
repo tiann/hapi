@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { SDKToLogConverter, convertSDKToLog } from './sdkToLogConverter'
 import type { SDKMessage, SDKUserMessage, SDKAssistantMessage, SDKSystemMessage, SDKResultMessage } from '@/claude/sdk'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import { normalizeClaudeAgentEventForImport } from '@hapi/protocol/messages'
 
 describe('SDKToLogConverter', () => {
     let converter: SDKToLogConverter
@@ -158,6 +159,49 @@ describe('SDKToLogConverter', () => {
             const logMessage = converter.convert(sdkMessage)
 
             expect((logMessage as any).requestId).toBe('req_123')
+        })
+
+        it('normalizes a real SDK event to the matching native transcript event', () => {
+            converter.convert({
+                type: 'system',
+                subtype: 'init',
+                session_id: context.sessionId,
+                model: 'claude-opus-4-7[1m]'
+            } as SDKSystemMessage)
+            const sdkEvent = converter.convert({
+                type: 'assistant',
+                requestId: 'sdk-request',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'same answer' }],
+                    usage: { input_tokens: 20, output_tokens: 8 }
+                }
+            } as SDKAssistantMessage)
+            expect((sdkEvent as any)?.message?.usage?.context_window).toBe(1_000_000)
+
+            const nativeEvent = {
+                parentUuid: 'native-parent',
+                isSidechain: false,
+                parentToolUseId: undefined,
+                userType: 'external',
+                cwd: '/native/project',
+                sessionId: context.sessionId,
+                version: '2.1.0',
+                gitBranch: 'native-branch',
+                uuid: 'native-uuid',
+                timestamp: '2026-08-11T00:00:00.000Z',
+                type: 'assistant',
+                requestId: 'native-request',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'same answer' }],
+                    usage: { input_tokens: 20, output_tokens: 8 }
+                }
+            }
+
+            expect(normalizeClaudeAgentEventForImport(sdkEvent)).toEqual(
+                normalizeClaudeAgentEventForImport(nativeEvent)
+            )
         })
     })
 

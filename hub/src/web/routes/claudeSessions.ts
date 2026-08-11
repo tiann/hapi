@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
 import { Hono } from 'hono'
 import { CLAUDE_IMPORT_PAGE_BYTES } from '@hapi/protocol/apiTypes'
-import { normalizeClaudeImportedUserText } from '@hapi/protocol/messages'
+import {
+    normalizeClaudeAgentEventForImport,
+    normalizeClaudeImportedUserText
+} from '@hapi/protocol/messages'
 import type {
     ClaudeImportedMessage,
     ClaudeLocalSessionSummary,
@@ -247,10 +250,7 @@ function stableClaudeAgentDigest(value: unknown, sessionId: string): string | nu
     ) {
         return null
     }
-    const stableEvent = { ...event }
-    delete stableEvent.uuid
-    delete stableEvent.parentUuid
-    delete stableEvent.timestamp
+    const stableEvent = normalizeClaudeAgentEventForImport(event)
     return contentDigest({ ...envelope, content: { ...output, data: stableEvent } })
 }
 
