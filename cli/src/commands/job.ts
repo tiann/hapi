@@ -19,11 +19,11 @@ export type ParsedJobArgs = {
     jobKey?: string
     label?: string
     status?: 'running' | 'completed' | 'failed'
-    done?: number
-    total?: number
-    remaining?: number
-    unit?: string
-    detail?: string
+    done?: number | null
+    total?: number | null
+    remaining?: number | null
+    unit?: string | null
+    detail?: string | null
     startedAt?: number
     heartbeatSec?: number
     command?: string[]
@@ -47,6 +47,7 @@ ${chalk.bold('Usage:')}
   hapi job run <session> <job-key> --label <text> [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]
   hapi job set <session> <job-key> --label <text> [--started-at MS] [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
   hapi job update <session> <job-key> [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
+                       [--clear-remaining|--clear-done|--clear-total|--clear-unit|--clear-detail]
   hapi job clear <session> <job-key>
   hapi job list <session>
 
@@ -55,6 +56,7 @@ ${chalk.bold('Progress UI:')}
   done + total        → "P% · done/total · 2h"
   label/detail only   → "running · 2h" + indeterminate bar
   elapsed always from startedAt (wall clock) — never an ETA / time-remaining field
+  --clear-remaining   → drop leftover meter so done/total can take over (PATCH null)
 
 ${chalk.bold('startedAt / elapsed:')}
   Prefer ${chalk.bold('update')} for heartbeats/progress so the clock is never wiped.
@@ -182,6 +184,26 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             result.startedAt = parseOptionalNumber('--started-at', arg.slice('--started-at='.length))
             continue
         }
+        if (arg === '--clear-remaining') {
+            result.remaining = null
+            continue
+        }
+        if (arg === '--clear-done') {
+            result.done = null
+            continue
+        }
+        if (arg === '--clear-total') {
+            result.total = null
+            continue
+        }
+        if (arg === '--clear-unit') {
+            result.unit = null
+            continue
+        }
+        if (arg === '--clear-detail') {
+            result.detail = null
+            continue
+        }
         if (arg.startsWith('-')) {
             throw new SessionJobError('bad_args', `unexpected flag: ${arg}`)
         }
@@ -211,6 +233,16 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
 
     if (result.startedAt !== undefined && result.action !== undefined && result.action !== 'set') {
         throw new SessionJobError('bad_args', '--started-at is only valid with job set')
+    }
+
+    const clearUsed =
+        result.done === null
+        || result.total === null
+        || result.remaining === null
+        || result.unit === null
+        || result.detail === null
+    if (clearUsed && result.action !== undefined && result.action !== 'update') {
+        throw new SessionJobError('bad_args', '--clear-* flags are only valid with job update')
     }
 
     return result
@@ -312,11 +344,11 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         const body: AttachedJobUpsert = {
             label: parsed.label,
             status: parsed.status ?? 'running',
-            ...(parsed.done !== undefined ? { done: parsed.done } : {}),
-            ...(parsed.total !== undefined ? { total: parsed.total } : {}),
-            ...(parsed.remaining !== undefined ? { remaining: parsed.remaining } : {}),
-            ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
-            ...(parsed.detail !== undefined ? { detail: parsed.detail } : {}),
+            ...(typeof parsed.done === 'number' ? { done: parsed.done } : {}),
+            ...(typeof parsed.total === 'number' ? { total: parsed.total } : {}),
+            ...(typeof parsed.remaining === 'number' ? { remaining: parsed.remaining } : {}),
+            ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
+            ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
             ...(parsed.startedAt !== undefined ? { startedAt: parsed.startedAt } : {})
         }
         const result = await setSessionJob({
@@ -343,11 +375,11 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(parsed.heartbeatSec !== undefined
                 ? { heartbeatMs: Math.max(5, parsed.heartbeatSec) * 1000 }
                 : {}),
-            ...(parsed.done !== undefined ? { done: parsed.done } : {}),
-            ...(parsed.total !== undefined ? { total: parsed.total } : {}),
-            ...(parsed.remaining !== undefined ? { remaining: parsed.remaining } : {}),
-            ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
-            ...(parsed.detail !== undefined ? { detail: parsed.detail } : {})
+            ...(typeof parsed.done === 'number' ? { done: parsed.done } : {}),
+            ...(typeof parsed.total === 'number' ? { total: parsed.total } : {}),
+            ...(typeof parsed.remaining === 'number' ? { remaining: parsed.remaining } : {}),
+            ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
+            ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {})
         })
         if (exitCode !== 0) {
             process.exitCode = exitCode

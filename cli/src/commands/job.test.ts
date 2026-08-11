@@ -68,6 +68,22 @@ describe('parseJobArgs', () => {
             '--started-at=1785304595000'
         ])).toThrow(/--started-at is only valid with job set/)
     })
+
+    it('parses --clear-remaining as null for update patches', () => {
+        const parsed = parseJobArgs([
+            'update',
+            'sid',
+            'beets',
+            '--clear-remaining',
+            '--done',
+            '3',
+            '--total',
+            '10'
+        ])
+        expect(parsed.remaining).toBeNull()
+        expect(parsed.done).toBe(3)
+        expect(parsed.total).toBe(10)
+    })
 })
 
 describe('resolveSessionByPrefix', () => {

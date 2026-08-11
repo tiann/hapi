@@ -60,11 +60,21 @@ export const sessionJobInputSchema: z.ZodTypeAny = z.object({
     status: z.enum(['running', 'completed', 'failed']).optional().describe(
         'Job status on update (completed|failed to finish).'
     ),
-    done: z.number().nonnegative().optional().describe('Units completed (pair with total when known).'),
-    total: z.number().positive().optional().describe('Total units when both ends of a fraction exist.'),
-    remaining: z.number().nonnegative().optional().describe('Units left — prefer when operator cares about leftover.'),
-    unit: z.string().trim().min(1).max(64).optional().describe('Unit label (tracks, folders, files, …).'),
-    detail: z.string().max(500).optional().describe('Stage / current item text (not an ETA).'),
+    done: z.number().nonnegative().nullable().optional().describe(
+        'Units completed (pair with total). Pass null to clear a stale done count.'
+    ),
+    total: z.number().positive().nullable().optional().describe(
+        'Total units when both ends of a fraction exist. Pass null to clear.'
+    ),
+    remaining: z.number().nonnegative().nullable().optional().describe(
+        'Units left. Pass null to clear so done/total can take over (web prefers remaining).'
+    ),
+    unit: z.string().trim().min(1).max(64).nullable().optional().describe(
+        'Unit label (tracks, folders, files, …). Pass null to clear.'
+    ),
+    detail: z.string().max(500).nullable().optional().describe(
+        'Stage / current item text (not an ETA). Pass null to clear.'
+    ),
     startedAt: z.number().optional().describe(
         'Not used over MCP (set is refused). Correct clocks via CLI job set --started-at.'
     )
@@ -75,11 +85,11 @@ export type SessionJobToolArgs = {
     jobKey?: string
     label?: string
     status?: 'running' | 'completed' | 'failed'
-    done?: number
-    total?: number
-    remaining?: number
-    unit?: string
-    detail?: string
+    done?: number | null
+    total?: number | null
+    remaining?: number | null
+    unit?: string | null
+    detail?: string | null
     startedAt?: number
 }
 

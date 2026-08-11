@@ -78,4 +78,29 @@ describe('sessionJobMcp', () => {
         expect(result.isError).toBe(true)
         expect(result.text).toMatch(/startedAt is not valid over MCP/)
     })
+
+    it('forwards null remaining so done/total can take over after a leftover meter', async () => {
+        const { updateSessionJob } = await import('./sessionJob')
+        vi.mocked(updateSessionJob).mockClear()
+        const result = await handleSessionJobTool(
+            {
+                action: 'update',
+                jobKey: 'beets',
+                remaining: null,
+                done: 3,
+                total: 10
+            },
+            'sid-1'
+        )
+        expect(result.isError).toBe(false)
+        expect(updateSessionJob).toHaveBeenCalledWith(
+            expect.objectContaining({
+                body: expect.objectContaining({
+                    remaining: null,
+                    done: 3,
+                    total: 10
+                })
+            })
+        )
+    })
 })
