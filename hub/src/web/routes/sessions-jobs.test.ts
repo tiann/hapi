@@ -139,6 +139,15 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         )
         expect(put.status).toBe(200)
 
+        const listedWithRun = await app.request(`http://localhost/api/sessions/${session.id}/jobs`)
+        expect(listedWithRun.status).toBe(200)
+        const listedBody = await listedWithRun.json() as {
+            jobs: AttachedJob[]
+            primary: AttachedJob | null
+        }
+        expect(listedBody.jobs[0]?.runId).toBe('run-a')
+        expect(listedBody.primary?.runId).toBe('run-a')
+
         const res = await app.request('http://localhost/api/sessions')
         expect(res.status).toBe(200)
         const body = await res.json() as {

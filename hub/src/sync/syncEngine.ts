@@ -790,6 +790,7 @@ export class SyncEngine {
             ...(job.remaining !== undefined ? { remaining: job.remaining } : {}),
             ...(job.unit !== undefined ? { unit: job.unit } : {}),
             ...(job.detail !== undefined ? { detail: job.detail } : {}),
+            ...(job.runId !== undefined ? { runId: job.runId } : {}),
             heartbeatAt: job.heartbeatAt,
             startedAt: job.startedAt,
             updatedAt: job.updatedAt

@@ -298,6 +298,7 @@ function formatJobLine(job: {
     remaining?: number
     unit?: string
     detail?: string
+    runId?: string
     heartbeatAt: number
     startedAt: number
 }): string {
@@ -322,6 +323,7 @@ function formatJobLine(job: {
         parts.push(h > 0 ? `elapsed ${d}d ${h}h` : `elapsed ${d}d`)
     }
     if (job.detail) parts.push(job.detail)
+    if (job.runId) parts.push(`runId ${job.runId}`)
     const ageSec = Math.max(0, Math.round((Date.now() - job.heartbeatAt) / 1000))
     parts.push(`heartbeat ${ageSec}s ago`)
     return parts.join(' · ')

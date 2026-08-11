@@ -105,6 +105,7 @@ function formatJobLine(job: AttachedJob): string {
         parts.push(`${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''}`)
     }
     if (job.detail) parts.push(job.detail)
+    if (job.runId) parts.push(`runId ${job.runId}`)
     return parts.join(' · ')
 }
 
