@@ -294,6 +294,35 @@ describe('matchSessionsForMention', () => {
         })
         expect(matchSessionsForMention([husk, named], '').map((s) => s.id)).toEqual(['named-active'])
     })
+
+    it('excludes titled duplicates that sidebar dedup hides, even when their title matches better', () => {
+        const live = makeSession({
+            id: 'live-visible',
+            active: true,
+            updatedAt: 100,
+            metadata: {
+                path: '/work/session-attached-jobs',
+                name: 'Peer: session-attached jobs',
+                flavor: 'cursor',
+                agentSessionId: 'shared-acp-thread',
+                lifecycleState: 'running',
+            },
+        })
+        const hidden = makeSession({
+            id: 'stale-hidden',
+            updatedAt: 999,
+            metadata: {
+                path: '/work/session-attached-jobs',
+                name: 'session-attached-jobs',
+                flavor: 'cursor',
+                agentSessionId: 'shared-acp-thread',
+                lifecycleState: 'archived',
+            },
+        })
+        const hits = matchSessionsForMention([hidden, live], 'session-attached-jobs')
+        expect(hits.map((s) => s.id)).toEqual(['live-visible'])
+        expect(hits.map((s) => s.id)).not.toContain('stale-hidden')
+    })
 })
 
 describe('parseSessionPathHref', () => {

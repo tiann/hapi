@@ -1,5 +1,5 @@
 import type { SessionSummary } from '@/types/api'
-import { normalizeSearch, sessionMatchesQuery } from '@/components/SessionList'
+import { normalizeSearch, prepareSidebarSessions, sessionMatchesQuery } from '@/components/SessionList'
 import { truncateGraphemes } from '@/lib/graphemes'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
@@ -65,8 +65,9 @@ export function isMentionableSession(session: SessionSummary): boolean {
 
 /**
  * Rank sessions for composer `@` autocomplete.
- * Candidates need a real title signal (#1506); match filter then reuses
- * share/sidebar `sessionMatchesQuery`. Display/insert still use `getSessionTitle`.
+ * Pool is sidebar-visible rows (`prepareSidebarSessions`) that also have a
+ * real title signal (#1506). Path husks stay out even if sidebar shows them.
+ * Match filter then reuses share/sidebar `sessionMatchesQuery`.
  * Empty query → active/recent shortlist (excludes archived + untitled husks).
  */
 export function matchSessionsForMention(
@@ -78,9 +79,10 @@ export function matchSessionsForMention(
     const excludeId = options.excludeId
     const resolveMachineLabel = options.resolveMachineLabel ?? (() => '')
     const normalized = normalizeSearch(query)
+    const candidates = prepareSidebarSessions([...sessions], excludeId)
 
     const scored: { session: SessionSummary; score: number }[] = []
-    for (const session of sessions) {
+    for (const session of candidates) {
         if (excludeId && session.id === excludeId) continue
         if (!isMentionableSession(session)) continue
 
