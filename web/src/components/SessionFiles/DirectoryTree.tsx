@@ -228,10 +228,18 @@ function DirectoryNode(props: {
 const STORAGE_KEY_PREFIX = 'hapi-dir-expanded-v2-'
 const LEGACY_SESSION_STORAGE_KEY_PREFIX = 'hapi-dir-expanded-'
 
+function safeReadStorage(storage: Storage, key: string): string | null {
+    try {
+        return storage.getItem(key)
+    } catch {
+        return null
+    }
+}
+
 function readExpanded(sessionId: string): Set<string> {
     try {
-        const raw = localStorage.getItem(STORAGE_KEY_PREFIX + sessionId)
-            ?? sessionStorage.getItem(LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId)
+        const raw = safeReadStorage(sessionStorage, LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId)
+            ?? safeReadStorage(localStorage, STORAGE_KEY_PREFIX + sessionId)
         const parsed = raw ? JSON.parse(raw) : null
         if (Array.isArray(parsed)) return new Set(parsed as string[])
     } catch {

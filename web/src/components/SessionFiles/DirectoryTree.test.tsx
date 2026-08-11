@@ -67,4 +67,37 @@ describe('DirectoryTree expanded folders', () => {
         expect(localStorage.getItem('hapi-dir-expanded-v2-session-1')).toBe(JSON.stringify(['', 'src']))
         expect(sessionStorage.getItem('hapi-dir-expanded-session-1')).toBeNull()
     })
+
+    it('prefers the session fallback after localStorage writes fail', () => {
+        localStorage.setItem('hapi-dir-expanded-v2-session-1', JSON.stringify(['']))
+        const originalSetItem = Storage.prototype.setItem
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function setItem(this: Storage, key, value) {
+            if (this === localStorage && key === 'hapi-dir-expanded-v2-session-1') throw new Error('quota')
+            return originalSetItem.call(this, key, value)
+        })
+        const sessionSetItem = vi.spyOn(sessionStorage, 'setItem')
+
+        const view = renderTree()
+        fireEvent.click(screen.getByRole('button', { name: 'src' }))
+
+        expect(sessionSetItem).toHaveBeenLastCalledWith('hapi-dir-expanded-session-1', JSON.stringify(['', 'src']))
+
+        view.unmount()
+        renderTree()
+
+        expect(screen.getByRole('button', { name: 'index.ts' })).toBeInTheDocument()
+    })
+
+    it('uses the session fallback when localStorage reads throw', () => {
+        sessionStorage.setItem('hapi-dir-expanded-session-1', JSON.stringify(['', 'src']))
+        const originalGetItem = Storage.prototype.getItem
+        vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function getItem(this: Storage, key) {
+            if (this === localStorage && key === 'hapi-dir-expanded-v2-session-1') throw new Error('unavailable')
+            return originalGetItem.call(this, key)
+        })
+
+        renderTree()
+
+        expect(screen.getByRole('button', { name: 'index.ts' })).toBeInTheDocument()
+    })
 })
