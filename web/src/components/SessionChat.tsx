@@ -83,7 +83,7 @@ import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutat
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
-import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
+import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, shouldKeepPendingBridge, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
@@ -1262,10 +1262,10 @@ function SessionChatInner(props: SessionChatProps) {
     const bridgePending = isBridgeSettling(props.session.metadata, pendingBridgeEventId)
 
     useEffect(() => {
-        if (pendingBridgeEventId && !bridgePending) {
+        if (pendingBridgeEventId && !shouldKeepPendingBridge(props.session.active, bridgePending)) {
             setPendingBridgeEventId(null)
         }
-    }, [pendingBridgeEventId, bridgePending])
+    }, [props.session.active, pendingBridgeEventId, bridgePending])
 
     const handleBridgeModelError = useCallback(async () => {
         if (isBridgingModelError || bridgePending) {

@@ -6,6 +6,7 @@ import {
     hasRecoveredModelError,
     hasUrgentModelError,
     isBridgeSettling,
+    shouldKeepPendingBridge,
     visibleBridgeFailureReason,
     type ModelErrorHolder
 } from './ModelErrorBanner'
@@ -83,6 +84,12 @@ describe('model error UI states', () => {
         expect(visibleBridgeFailureReason(failure, 'evt-1000')).toBe('not_bridgeable')
         expect(visibleBridgeFailureReason(failure, 'evt-2000')).toBeNull()
         expect(visibleBridgeFailureReason(null, 'evt-1000')).toBeNull()
+    })
+
+    it('drops local Bridge pending across a session disconnect', () => {
+        expect(shouldKeepPendingBridge(true, true)).toBe(true)
+        expect(shouldKeepPendingBridge(false, true)).toBe(false)
+        expect(shouldKeepPendingBridge(true, false)).toBe(false)
     })
 })
 

@@ -52,6 +52,14 @@ export function createHubSettingsRoutes(
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
+        const providedFieldCount = [
+            parsed.data.sessionSummaryContract,
+            parsed.data.sessionSummaryInChat,
+            parsed.data.autoBridgeTransientModelErrors
+        ].filter((value) => value !== undefined).length
+        if (providedFieldCount > 1) {
+            return c.json({ error: 'Update one hub setting per request' }, 400)
+        }
         if (parsed.data.sessionSummaryContract !== undefined) {
             await writeSessionSummaryContractEnabled(
                 dataDir,

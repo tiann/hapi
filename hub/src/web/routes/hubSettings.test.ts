@@ -114,6 +114,20 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.status).toBe(400)
     })
 
+    it('rejects combined two-field updates', async () => {
+        const { app } = await createApp()
+        const response = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                sessionSummaryContract: true,
+                autoBridgeTransientModelErrors: true
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Update one hub setting per request' })
+    })
+
     it('rejects non-default namespaces for PUT but allows GET', async () => {
         const { app, dataDir } = await createApp('default')
         await writeSessionSummaryInChatEnabled(dataDir, true)

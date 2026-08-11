@@ -63,6 +63,10 @@ export function isBridgeSettling(
     return true
 }
 
+export function shouldKeepPendingBridge(sessionActive: boolean, settling: boolean): boolean {
+    return sessionActive && settling
+}
+
 export function visibleBridgeFailureReason(
     failure: { eventId: string; reason: string } | null,
     currentEventId: string | undefined
