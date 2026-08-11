@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it } from 'vitest'
 import { normalizeCliArgs } from './cliArgs'
 
 describe('normalizeCliArgs (tiann/hapi#1404 job run --)', () => {
