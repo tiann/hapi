@@ -65,4 +65,25 @@ describe('normalizeCliArgs (tiann/hapi#1404 job run --)', () => {
             'login'
         ])).toEqual(['auth', 'login'])
     })
+
+    it('does not re-insert -- for hapi -- auth login', () => {
+        const hapiBin = process.execPath
+        expect(normalizeCliArgs([
+            hapiBin,
+            '--',
+            'auth',
+            'login'
+        ])).toEqual(['auth', 'login'])
+    })
+
+    it('does not re-insert -- for hapi codex -- --model o3', () => {
+        const hapiBin = process.execPath
+        expect(normalizeCliArgs([
+            hapiBin,
+            'codex',
+            '--',
+            '--model',
+            'o3'
+        ])).toEqual(['codex', '--model', 'o3'])
+    })
 })

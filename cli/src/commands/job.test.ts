@@ -84,6 +84,42 @@ describe('parseJobArgs', () => {
         expect(parsed.done).toBe(3)
         expect(parsed.total).toBe(10)
     })
+
+    it('parses --run-id on set and --expected-run-id on update', () => {
+        const setParsed = parseJobArgs([
+            'set',
+            'sid',
+            'beets',
+            '--label=beets',
+            '--run-id=11111111-1111-1111-1111-111111111111'
+        ])
+        expect(setParsed.runId).toBe('11111111-1111-1111-1111-111111111111')
+
+        const updateParsed = parseJobArgs([
+            'update',
+            'sid',
+            'beets',
+            '--remaining=9',
+            '--expected-run-id=11111111-1111-1111-1111-111111111111'
+        ])
+        expect(updateParsed.expectedRunId).toBe('11111111-1111-1111-1111-111111111111')
+    })
+
+    it('rejects --run-id on update and --expected-run-id on set', () => {
+        expect(() => parseJobArgs([
+            'update',
+            'sid',
+            'beets',
+            '--run-id=11111111-1111-1111-1111-111111111111'
+        ])).toThrow(/--run-id is only valid with job set/)
+        expect(() => parseJobArgs([
+            'set',
+            'sid',
+            'beets',
+            '--label=beets',
+            '--expected-run-id=11111111-1111-1111-1111-111111111111'
+        ])).toThrow(/--expected-run-id is only valid with job update/)
+    })
 })
 
 describe('resolveSessionByPrefix', () => {

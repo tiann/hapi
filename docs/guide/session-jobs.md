@@ -66,17 +66,25 @@ Tool name: `session_job` (Claude: `mcp__hapi__session_job`; Codex: `functions.ha
 
 ### CLI manual path (self-heartbeating wrapper only)
 
-Only when you own a wrapper that calls `update` at least every ~10 minutes (not an idle agent):
+Only when you own a wrapper that calls `update` at least every ~10 minutes (not an idle agent).
+Mint one UUID per wrapper run and fence every PATCH so a key-reuse cannot steal progress:
 
 ```bash
+RUN_ID="$(uuidgen)"   # or python -c 'import uuid; print(uuid.uuid4())'
+
 hapi job set "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
+  --run-id "$RUN_ID" \
   --remaining 150 --done 1637 --total 1787 --unit units \
   --detail 'album: Some Artist - Some Album'
 
-hapi job update "$HAPI_SESSION_ID" beets --remaining 149 --done 1638 --detail '…'
+hapi job update "$HAPI_SESSION_ID" beets \
+  --expected-run-id "$RUN_ID" \
+  --remaining 149 --done 1638 --detail '…'
 
-hapi job update "$HAPI_SESSION_ID" beets --status completed
+hapi job update "$HAPI_SESSION_ID" beets \
+  --expected-run-id "$RUN_ID" \
+  --status completed
 # or
 hapi job clear "$HAPI_SESSION_ID" beets
 ```
@@ -148,8 +156,8 @@ When the process exits, mark completed/failed or clear. A stuck green/amber chip
 ## CLI / API reference
 
 ```bash
-hapi job set <session> <job-key> --label <text> [--started-at MS] [progress flags]
-hapi job update <session> <job-key> [progress flags]   # no startedAt
+hapi job set <session> <job-key> --label <text> [--started-at MS] [--run-id UUID] [progress flags]
+hapi job update <session> <job-key> [--expected-run-id UUID] [progress flags]   # no startedAt
 hapi job clear <session> <job-key>
 hapi job list <session>
 hapi job run <session> <job-key> --label <text> -- <cmd>…

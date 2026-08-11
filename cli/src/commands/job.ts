@@ -26,6 +26,8 @@ export type ParsedJobArgs = {
     detail?: string | null
     startedAt?: number
     heartbeatSec?: number
+    runId?: string
+    expectedRunId?: string
     command?: string[]
 }
 
@@ -63,6 +65,9 @@ ${chalk.bold('startedAt / elapsed:')}
   PATCH rejects startedAt. PUT/set without --started-at keeps the existing clock.
   Late attach or wrong clock: ${chalk.bold('set --started-at <epoch-ms>')} (explicit PUT),
   or clear then set with --started-at (works on older hubs that ignored PUT corrections).
+  Manual babysitter wrappers: mint one UUID per run (${chalk.bold('set --run-id <uuid>')}),
+  then pass the same value on every heartbeat (${chalk.bold('update --expected-run-id <uuid>')})
+  so a key-reuse cannot steal the older wrapper's PATCHes.
 
 ${chalk.bold('Notes:')}
   Hub-persisted. Prefer "$HAPI_SESSION_ID" for this chat.
@@ -204,6 +209,30 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             result.detail = null
             continue
         }
+        if (arg === '--run-id') {
+            result.runId = flagArgs[++i]
+            if (!result.runId) throw new SessionJobError('bad_args', '--run-id requires a value')
+            continue
+        }
+        if (arg.startsWith('--run-id=')) {
+            result.runId = arg.slice('--run-id='.length)
+            if (!result.runId) throw new SessionJobError('bad_args', '--run-id requires a value')
+            continue
+        }
+        if (arg === '--expected-run-id') {
+            result.expectedRunId = flagArgs[++i]
+            if (!result.expectedRunId) {
+                throw new SessionJobError('bad_args', '--expected-run-id requires a value')
+            }
+            continue
+        }
+        if (arg.startsWith('--expected-run-id=')) {
+            result.expectedRunId = arg.slice('--expected-run-id='.length)
+            if (!result.expectedRunId) {
+                throw new SessionJobError('bad_args', '--expected-run-id requires a value')
+            }
+            continue
+        }
         if (arg.startsWith('-')) {
             throw new SessionJobError('bad_args', `unexpected flag: ${arg}`)
         }
@@ -243,6 +272,16 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         || result.detail === null
     if (clearUsed && result.action !== undefined && result.action !== 'update') {
         throw new SessionJobError('bad_args', '--clear-* flags are only valid with job update')
+    }
+    if (result.runId !== undefined && result.action !== undefined && result.action !== 'set') {
+        throw new SessionJobError('bad_args', '--run-id is only valid with job set')
+    }
+    if (
+        result.expectedRunId !== undefined
+        && result.action !== undefined
+        && result.action !== 'update'
+    ) {
+        throw new SessionJobError('bad_args', '--expected-run-id is only valid with job update')
     }
 
     return result
@@ -349,7 +388,8 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(typeof parsed.remaining === 'number' ? { remaining: parsed.remaining } : {}),
             ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
             ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
-            ...(parsed.startedAt !== undefined ? { startedAt: parsed.startedAt } : {})
+            ...(parsed.startedAt !== undefined ? { startedAt: parsed.startedAt } : {}),
+            ...(parsed.runId !== undefined ? { runId: parsed.runId } : {})
         }
         const result = await setSessionJob({
             sessionIdPrefix: parsed.sessionIdPrefix,
@@ -396,7 +436,8 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         ...(parsed.total !== undefined ? { total: parsed.total } : {}),
         ...(parsed.remaining !== undefined ? { remaining: parsed.remaining } : {}),
         ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
-        ...(parsed.detail !== undefined ? { detail: parsed.detail } : {})
+        ...(parsed.detail !== undefined ? { detail: parsed.detail } : {}),
+        ...(parsed.expectedRunId !== undefined ? { expectedRunId: parsed.expectedRunId } : {})
     }
     // Empty body is a heartbeat-only update; hub stamps heartbeatAt.
     const result = await updateSessionJob({

@@ -74,16 +74,20 @@ export function normalizeCliArgs(rawArgv: string[]): string[] {
     if (dashIndex >= 0) {
         const preArgs = rawArgv.slice(0, dashIndex);
         const postArgs = rawArgv.slice(dashIndex + 1);
-        // `bun src/index.ts -- auth login` → only postArgs (runtime handoff).
-        // `bun src/index.ts job run … -- cmd` → keep `--` (subcommand child sep).
-        // Installed `hapi job run … -- cmd` → keep `--` as well.
+        const normalizedPre = stripRuntimePrefix(preArgs, execPath, execBase, bunMain);
+        // Only `job run … -- <cmd>` needs the child separator preserved.
+        // `hapi -- auth login` / `hapi codex -- --model o3` must keep stripping.
+        const keepSeparator = normalizedPre[0] === 'job' && normalizedPre[1] === 'run';
         if (
             hasRuntimeWrapper(preArgs, execPath, execBase, bunMain)
-            && stripRuntimePrefix(preArgs, execPath, execBase, bunMain).length === 0
+            && normalizedPre.length === 0
         ) {
+            // `bun src/index.ts -- auth login` → only postArgs (runtime handoff).
             argv = postArgs;
         } else {
-            argv = [...preArgs, '--', ...postArgs];
+            argv = keepSeparator
+                ? [...preArgs, '--', ...postArgs]
+                : [...preArgs, ...postArgs];
         }
     }
 
