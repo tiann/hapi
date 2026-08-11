@@ -33,6 +33,7 @@ const runtime = vi.hoisted(() => ({
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
+    isTouch: false,
 }))
 
 vi.mock('@assistant-ui/react', async () => {
@@ -101,7 +102,12 @@ vi.mock('@/hooks/useComposerDraft', () => ({
     useComposerDraft: (sessionId: string | undefined) => ({ sessionId, complete: true, restoredAny: false, hasStoredAttachments: false }),
 }))
 vi.mock('@/hooks/useComposerEnterBehavior', () => ({ useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send' }) }))
-vi.mock('@/hooks/usePlatform', () => ({ usePlatform: () => ({ haptic: { impact: () => {}, notification: () => {} }, isTouch: false }) }))
+vi.mock('@/hooks/usePlatform', () => ({
+    usePlatform: () => ({
+        haptic: { impact: () => {}, notification: () => {}, selection: () => {} },
+        isTouch: runtime.isTouch,
+    }),
+}))
 vi.mock('@/hooks/usePWAInstall', () => ({ usePWAInstall: () => ({ isStandalone: false, isIOS: false }) }))
 vi.mock('@/hooks/useActiveWord', () => ({ useActiveWord: () => null }))
 vi.mock('@/hooks/useActiveSuggestions', () => ({ useActiveSuggestions: () => [[], -1, () => {}, () => {}, () => {}] }))
@@ -563,6 +569,7 @@ describe('HappyComposer send intent gestures', () => {
         cleanup()
         runtime.pendingSendIntentRef = null
         runtime.sentIntents = []
+        runtime.isTouch = false
     })
 
     it('ignores Alt/Option+Enter (the old explicit-queue gesture) entirely', () => {
@@ -580,6 +587,26 @@ describe('HappyComposer send intent gestures', () => {
         renderComposer('ordinary send', null, true)
 
         fireEvent.keyDown(input(), { key: 'Enter' })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('keeps plain Enter as newline on touch devices', () => {
+        runtime.isTouch = true
+        renderComposer('mobile newline', null, true)
+
+        fireEvent.keyDown(input(), { key: 'Enter' })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('still sends with Ctrl+Enter on touch devices', () => {
+        runtime.isTouch = true
+        renderComposer('mobile explicit send', null, true)
+
+        fireEvent.keyDown(input(), { key: 'Enter', ctrlKey: true })
 
         expect(runtime.sentIntents).toEqual(['default'])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')

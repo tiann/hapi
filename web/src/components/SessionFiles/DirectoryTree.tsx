@@ -225,26 +225,45 @@ function DirectoryNode(props: {
     )
 }
 
-const STORAGE_KEY_PREFIX = 'hapi-dir-expanded-'
+const STORAGE_KEY_PREFIX = 'hapi-dir-expanded-v2-'
+const LEGACY_SESSION_STORAGE_KEY_PREFIX = 'hapi-dir-expanded-'
 
-function readExpanded(sessionId: string): Set<string> {
+function getExpandedStorageKey(sessionId: string, rootLabel: string): string {
+    return `${STORAGE_KEY_PREFIX}${sessionId}:${rootLabel}`
+}
+
+function safeReadStorage(storage: Storage, key: string): string | null {
     try {
-        const raw = sessionStorage.getItem(STORAGE_KEY_PREFIX + sessionId)
-        if (raw) {
-            const parsed = JSON.parse(raw)
-            if (Array.isArray(parsed)) return new Set(parsed as string[])
-        }
+        return storage.getItem(key)
+    } catch {
+        return null
+    }
+}
+
+function readExpanded(sessionId: string, rootLabel: string): Set<string> {
+    try {
+        const raw = safeReadStorage(sessionStorage, LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId)
+            ?? safeReadStorage(localStorage, getExpandedStorageKey(sessionId, rootLabel))
+            ?? safeReadStorage(localStorage, STORAGE_KEY_PREFIX + sessionId)
+        const parsed = raw ? JSON.parse(raw) : null
+        if (Array.isArray(parsed)) return new Set(parsed as string[])
     } catch {
         // ignore
     }
     return new Set([''])
 }
 
-function writeExpanded(sessionId: string, expanded: Set<string>) {
+function writeExpanded(sessionId: string, rootLabel: string, expanded: Set<string>) {
+    const serialized = JSON.stringify([...expanded])
     try {
-        sessionStorage.setItem(STORAGE_KEY_PREFIX + sessionId, JSON.stringify([...expanded]))
+        localStorage.setItem(getExpandedStorageKey(sessionId, rootLabel), serialized)
+        sessionStorage.removeItem(LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId)
     } catch {
-        // ignore
+        try {
+            sessionStorage.setItem(LEGACY_SESSION_STORAGE_KEY_PREFIX + sessionId, serialized)
+        } catch {
+            // ignore
+        }
     }
 }
 
@@ -255,11 +274,11 @@ export function DirectoryTree(props: {
     onOpenFile: (path: string) => void
     sort: DirectorySort
 }) {
-    const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(props.sessionId))
+    const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(props.sessionId, props.rootLabel))
 
     useEffect(() => {
-        writeExpanded(props.sessionId, expanded)
-    }, [props.sessionId, expanded])
+        writeExpanded(props.sessionId, props.rootLabel, expanded)
+    }, [props.sessionId, props.rootLabel, expanded])
 
     const handleToggle = useCallback((path: string) => {
         setExpanded((prev) => {
@@ -289,4 +308,3 @@ export function DirectoryTree(props: {
         </div>
     )
 }
-

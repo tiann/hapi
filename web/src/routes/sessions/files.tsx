@@ -605,7 +605,7 @@ export default function FilesPage() {
                         )
                     ) : activeTab === 'directories' ? (
                         <DirectoryTree
-                            key={sessionId}
+                            key={`${sessionId}:${rootLabel}`}
                             api={api}
                             sessionId={sessionId}
                             rootLabel={rootLabel}

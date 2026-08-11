@@ -5,7 +5,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
 import './index.css'
 import { initializeFontScale } from '@/hooks/useFontScale'
-import { getTelegramWebApp, isTelegramEnvironment, loadTelegramSdk } from './hooks/useTelegram'
+import { configureTelegramWebApp, getTelegramWebApp, isTelegramEnvironment, loadTelegramSdk } from './hooks/useTelegram'
 import { queryClient } from './lib/query-client'
 import { createAppRouter } from './router'
 import { I18nProvider } from './lib/i18n-context'
@@ -42,6 +42,7 @@ async function bootstrap() {
     document.documentElement.dataset.telegramApp = isTelegram ? 'true' : 'false'
     if (isTelegram) {
         await loadTelegramSdk()
+        configureTelegramWebApp({ syncThemeColors: false })
     }
 
     // Handle GitHub Pages 404 redirect for SPA routing
