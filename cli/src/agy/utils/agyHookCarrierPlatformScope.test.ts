@@ -430,7 +430,11 @@ describe('real defaultScopeProbe (smoke test, no macOS tooling on this Linux hos
         _resetCarrierScopeCacheForTests();
     });
 
-    it('resolves to undefined (never hangs, never throws) when stubbed to darwin on a non-macOS host', async () => {
+    it.runIf(process.platform !== 'darwin')('resolves to undefined (never hangs, never throws) when stubbed to darwin on a non-macOS host', async () => {
+        // Premise-gated: this asserts the real ioreg/sysctl probes FAIL
+        // cleanly, which only holds where those tools are absent or behave
+        // differently — on a genuine macOS host they succeed and resolve a
+        // real scope (covered by the darwin-host test below).
         restorePlatform = stubPlatform('darwin');
         await expect(warmCarrierScope()).resolves.toBeUndefined();
 
@@ -440,6 +444,24 @@ describe('real defaultScopeProbe (smoke test, no macOS tooling on this Linux hos
             if (!carrier) return;
             const owner = JSON.parse(readFileSync(join(carrier.carrierDir, 'owner.json'), 'utf8'));
             expect(owner.scope).toBe('');
+        } finally {
+            cleanupAgyHookCarrier(carrier?.carrierDir);
+        }
+    }, 10_000);
+
+    it.runIf(process.platform === 'darwin')('resolves a real darwin:<machineId>:<bootSessionId> scope on a genuine macOS host (live verification of the success/parsing path)', async () => {
+        // The header comment above defers validating the SUCCESS path against
+        // the real OS tools to a live macOS run — this is that run, whenever
+        // the suite executes on a real Mac: real /usr/sbin/ioreg + sysctl,
+        // real parsers, end to end through the warm cache into owner.json.
+        await warmCarrierScope();
+
+        const carrier = prepareAgyHookCarrier('{}');
+        try {
+            expect(carrier).toBeDefined();
+            if (!carrier) return;
+            const owner = JSON.parse(readFileSync(join(carrier.carrierDir, 'owner.json'), 'utf8'));
+            expect(owner.scope).toMatch(/^darwin:[0-9A-Fa-f-]{36}:[0-9A-Fa-f-]{36}$/);
         } finally {
             cleanupAgyHookCarrier(carrier?.carrierDir);
         }

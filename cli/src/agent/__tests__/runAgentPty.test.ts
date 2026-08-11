@@ -394,26 +394,44 @@ describe('runAgentPty', () => {
     })
 
     it('injects envVars/extraEnv into the spawn env only (not process.env)', async () => {
-        const msg = deferred<{ message: string } | null>()
-        const opts = makeOpts({
-            envVars: { FLAVOR_TOKEN: 'tok' },
-            extraEnv: { CLAUDE_CONFIG_DIR: '/tmp/iso-cfg' },
-            nextMessage: () => msg.promise,
-        })
-        const promise = runAgentPty(opts)
-        await tick(0)
-        const spawnEnv = (harness.m.spawn.mock.calls[0][0] as { env: Record<string, string> }).env
-        expect(spawnEnv.FLAVOR_TOKEN).toBe('tok')
-        expect(spawnEnv.CLAUDE_CONFIG_DIR).toBe('/tmp/iso-cfg')
-        // TERM is always set so interactive TUI agents initialize (agy/bubbletea
-        // drops to its login menu without it).
-        expect(spawnEnv.TERM).toBeTruthy()
-        // process.env must stay clean so the parent's scanner is unaffected.
-        expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined()
-        expect(process.env.FLAVOR_TOKEN).toBeUndefined()
-        await reachReady()
-        msg.resolve(null)
-        await promise
+        // The host shell may legitimately carry these already (a test run
+        // launched from inside a Claude Code session exports CLAUDE_CONFIG_DIR,
+        // for example). Clear them for the duration of this test so the
+        // "no leak into process.env" assertions observe what runAgentPty did,
+        // not what the runner's environment happened to contain. Restoring in
+        // finally also keeps the tail of this test (await promise) on the
+        // non-throwing path — an assertion throw here would abandon the
+        // in-flight runAgentPty call on the shared harness, which then
+        // surfaces as an unrelated unhandled rejection in a later test.
+        const savedConfigDir = process.env.CLAUDE_CONFIG_DIR
+        const savedFlavorToken = process.env.FLAVOR_TOKEN
+        delete process.env.CLAUDE_CONFIG_DIR
+        delete process.env.FLAVOR_TOKEN
+        try {
+            const msg = deferred<{ message: string } | null>()
+            const opts = makeOpts({
+                envVars: { FLAVOR_TOKEN: 'tok' },
+                extraEnv: { CLAUDE_CONFIG_DIR: '/tmp/iso-cfg' },
+                nextMessage: () => msg.promise,
+            })
+            const promise = runAgentPty(opts)
+            await tick(0)
+            const spawnEnv = (harness.m.spawn.mock.calls[0][0] as { env: Record<string, string> }).env
+            expect(spawnEnv.FLAVOR_TOKEN).toBe('tok')
+            expect(spawnEnv.CLAUDE_CONFIG_DIR).toBe('/tmp/iso-cfg')
+            // TERM is always set so interactive TUI agents initialize (agy/bubbletea
+            // drops to its login menu without it).
+            expect(spawnEnv.TERM).toBeTruthy()
+            // process.env must stay clean so the parent's scanner is unaffected.
+            expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+            expect(process.env.FLAVOR_TOKEN).toBeUndefined()
+            await reachReady()
+            msg.resolve(null)
+            await promise
+        } finally {
+            if (savedConfigDir !== undefined) process.env.CLAUDE_CONFIG_DIR = savedConfigDir
+            if (savedFlavorToken !== undefined) process.env.FLAVOR_TOKEN = savedFlavorToken
+        }
     })
 
     it('removes unsetEnv keys from the spawn env (agy SSH_* stripping)', async () => {

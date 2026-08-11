@@ -21,12 +21,31 @@ import {
  * so this is a pure structural addition: computeLocalCarrierScope()'s
  * observable output on this (Linux) test host is unchanged either way.
  */
+/** Pins process.platform for the duration of a test — same pattern as
+ * agyHookCarrierPlatformScope.test.ts. Every probe in this file is
+ * Linux-shaped (readBootId/readPidNamespaceId), so the platform dispatch in
+ * computeLocalCarrierScopeAsync must take the linux branch for the cache
+ * mechanics under test to be reachable at all; on a darwin/win32 test host
+ * the dispatch would otherwise bypass these probes entirely. */
+function stubPlatform(value: NodeJS.Platform): () => void {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+    return () => {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    };
+}
+
 describe('carrier scope cache (Phase 2-B infrastructure)', () => {
+    let restorePlatform: (() => void) | undefined;
+
     beforeEach(() => {
         _resetCarrierScopeCacheForTests();
+        restorePlatform = stubPlatform('linux');
     });
 
     afterEach(() => {
+        restorePlatform?.();
+        restorePlatform = undefined;
         _resetCarrierScopeCacheForTests();
     });
 
@@ -127,7 +146,14 @@ describe('carrier scope cache (Phase 2-B infrastructure)', () => {
             if (!carrier) return;
             try {
                 const owner = JSON.parse(readFileSync(join(carrier.carrierDir, 'owner.json'), 'utf8'));
-                expect(owner.scope).toBe(computeLocalCarrierScope());
+                // Normalized comparison: on a Linux host both sides are the
+                // same real linux:<bootId>:<ns> string. On a host without
+                // /proc (macOS/Windows) the sync fallback yields undefined,
+                // which writeOwnerMetadata records as an empty scope (see its
+                // "records no scope at all" docstring) — so '' vs undefined
+                // here is the documented no-identity encoding, not a
+                // recompute-vs-cache divergence.
+                expect(owner.scope ?? '').toBe(computeLocalCarrierScope() ?? '');
             } finally {
                 cleanupAgyHookCarrier(carrier.carrierDir);
             }

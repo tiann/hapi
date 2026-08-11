@@ -15,6 +15,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     return { ...actual, readdir: vi.fn(actual.readdir) };
 });
 import {
+    _resetCarrierScopeCacheForTests,
     agyHookCarrierIsIntact,
     cleanupAgyHookCarrier,
     computeLocalCarrierScope,
@@ -23,6 +24,19 @@ import {
     writeAgyHooksJsonAtomic,
     type ScopeProbe
 } from './agyHookCarrier';
+
+/** Pins process.platform for the duration of a test — same pattern as
+ * agyHookCarrierPlatformScope.test.ts. Used by the tests below whose
+ * injected probes are Linux-shaped: computeLocalCarrierScopeAsync dispatches
+ * on process.platform, so on a darwin/win32 test host those probes would
+ * never be reached without this. */
+function stubPlatform(value: NodeJS.Platform): () => void {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+    return () => {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    };
+}
 
 /**
  * Spawns a real child process, waits for it to exit, and returns its PID.
@@ -189,6 +203,11 @@ describe('agy hook carrier location (Phase 2.8)', () => {
     });
 
     it('writes owner metadata (pid, scope) at the carrier root, outside .agents/', () => {
+        // Deterministic starting point: a previous test in this file may have
+        // warmed the module-level scope cache (any sweepAgyHookCarriers() call
+        // with the default probe does), and writeOwnerMetadata prefers the
+        // cache over the sync computation compared against below.
+        _resetCarrierScopeCacheForTests();
         const result = prepareAgyHookCarrier('{}');
         expect(result).toBeDefined();
         if (!result) return;
@@ -204,7 +223,11 @@ describe('agy hook carrier location (Phase 2.8)', () => {
             // recorded under a different scope must never be probed by this
             // host's sweep. See computeLocalCarrierScope's docstring for why
             // hostname alone (the original Fix N6) wasn't enough.
-            expect(owner.scope).toBe(computeLocalCarrierScope());
+            // Normalized comparison: on Linux both sides are the real
+            // linux:<bootId>:<ns> string; on a host without /proc the sync
+            // path yields undefined, which writeOwnerMetadata records as an
+            // empty scope (its documented no-identity encoding).
+            expect(owner.scope ?? '').toBe(computeLocalCarrierScope() ?? '');
             // Must not land inside .agents/ — that's the directory agy itself
             // reads (hooks.json, plugins/), and owner metadata is HAPI-only
             // bookkeeping that must not pollute it.
@@ -216,12 +239,18 @@ describe('agy hook carrier location (Phase 2.8)', () => {
 });
 
 describe('computeLocalCarrierScope', () => {
-    it('computes a linux:<bootId>:<nsId> scope from real /proc reads on this (Linux) test host', () => {
+    it.runIf(process.platform === 'linux')('computes a linux:<bootId>:<nsId> scope from real /proc reads on this (Linux) test host', () => {
         // Non-vacuous: this sandbox's /proc is genuinely readable (verified
         // manually before writing this test), so this pins the real Linux
-        // success path, not just the fallback.
+        // success path, not just the fallback. Linux-only: there is no /proc
+        // to read anywhere else, hence the runIf gate.
         const scope = computeLocalCarrierScope();
         expect(scope).toMatch(/^linux:[0-9a-f-]{36}:\d+$/);
+    });
+
+    it.runIf(process.platform === 'darwin')('returns undefined on macOS — the sync path is Linux-only (macOS identity comes from the async warm cache, see warmCarrierScope)', () => {
+        _resetCarrierScopeCacheForTests();
+        expect(computeLocalCarrierScope()).toBeUndefined();
     });
 
     it('refuses to fall back to hostname when the Linux probe fails — hostname is not an identity', () => {
@@ -275,7 +304,13 @@ describe('sweepAgyHookCarriers', () => {
         return carrierDir;
     }
 
-    it('③ sweeps a carrier whose owner scope matches AND whose process has died', async () => {
+    it.runIf(process.platform === 'linux')('③ sweeps a carrier whose owner scope matches AND whose process has died', async () => {
+        // Linux-gated: the fixture's scope must equal what the sweep itself
+        // resolves, and only the Linux sync path yields a real value here
+        // (elsewhere computeLocalCarrierScope() is undefined, so the fixture
+        // would record no scope and the sweep would rightly preserve it).
+        // The cross-platform variant below covers the delete path on other
+        // hosts via an injected probe.
         const deadPid = await spawnAndReapDeadPid();
         const carrierDir = makeCarrierDir('dead-owner-matching-scope');
         writeFileSync(
@@ -289,6 +324,32 @@ describe('sweepAgyHookCarriers', () => {
         // check regresses to always-preserve — this is the one combination
         // that must actually delete.
         expect(existsSync(carrierDir)).toBe(false);
+    });
+
+    it('③ (platform-independent) sweeps a carrier whose owner scope matches AND whose process has died — injected probe', async () => {
+        // Same delete-path assertion as ③ above, but with the local scope
+        // pinned through an injected Linux-shaped probe + platform stub so it
+        // runs identically on any test host (macOS included).
+        const restorePlatform = stubPlatform('linux');
+        try {
+            const probe: ScopeProbe = {
+                readBootId: () => 'sweep-fixture-boot-id',
+                readPidNamespaceId: () => '77',
+                hostname: () => 'irrelevant',
+            };
+            const deadPid = await spawnAndReapDeadPid();
+            const carrierDir = makeCarrierDir('dead-owner-matching-scope-injected');
+            writeFileSync(
+                join(carrierDir, 'owner.json'),
+                JSON.stringify({ pid: deadPid, scope: 'linux:sweep-fixture-boot-id:77' })
+            );
+
+            await sweepAgyHookCarriers(probe);
+
+            expect(existsSync(carrierDir)).toBe(false);
+        } finally {
+            restorePlatform();
+        }
     });
 
     it('preserves a carrier whose owner process is alive — the costliest mistake is deleting a live session\'s carrier', async () => {
@@ -588,7 +649,14 @@ describe('sweepAgyHookCarriers', () => {
                 hostname: () => 'irrelevant',
             };
 
-            await sweepAgyHookCarriers(probe);
+            // The injected probe is Linux-shaped; pin the platform so the
+            // scope resolution actually invokes it on any test host.
+            const restorePlatform = stubPlatform('linux');
+            try {
+                await sweepAgyHookCarriers(probe);
+            } finally {
+                restorePlatform();
+            }
 
             // Fails (mutation check: swap the readdir()/resolveLocalCarrierScope()
             // statements in sweepAgyHookCarriers) if the scope probe ever
