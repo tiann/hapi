@@ -19,6 +19,10 @@ export type LiveAgentKind = 'background' | 'interactive'
 
 const AGENTS_QUERY_TIMEOUT_MS = 5_000
 
+function formatCaught(e: unknown): string {
+    return e instanceof Error ? e.message : String(e)
+}
+
 interface ClaudeAgentEntry {
     sessionId?: unknown
     kind?: unknown
@@ -54,7 +58,9 @@ export function getLiveAgentKind(sessionId: string): LiveAgentKind | null {
     } catch (e) {
         // Command missing, daemon down, timeout, non-zero exit, etc.
         // Degrade to "treat as dead" so the resume path is never blocked.
-        logger.debug('[getLiveAgentKind] failed to query claude agents', e)
+        // Log a string, not the Error: upstream logger JSON.stringifies extra
+        // args, and Node spawn errors are circular (`error.error = error`).
+        logger.debug(`[getLiveAgentKind] failed to query claude agents: ${formatCaught(e)}`)
         return null
     }
 
@@ -62,7 +68,7 @@ export function getLiveAgentKind(sessionId: string): LiveAgentKind | null {
     try {
         parsed = JSON.parse(raw)
     } catch (e) {
-        logger.debug('[getLiveAgentKind] failed to parse claude agents --json output', e)
+        logger.debug(`[getLiveAgentKind] failed to parse claude agents --json output: ${formatCaught(e)}`)
         return null
     }
 

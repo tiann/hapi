@@ -73,6 +73,16 @@ describe('getLiveAgentKind', () => {
         expect(getLiveAgentKind(SESSION_ID)).toBeNull()
     })
 
+    it('returns null when exec throws a circular Error (logger must not JSON.stringify-crash)', async () => {
+        execFileSyncMock.mockImplementation(() => {
+            const err = new Error('spawnSync claude ENOENT') as Error & { error?: Error }
+            err.error = err
+            throw err
+        })
+        const { getLiveAgentKind } = await import('./getLiveAgentKind')
+        expect(getLiveAgentKind(SESSION_ID)).toBeNull()
+    })
+
     it('returns null when the output is not valid JSON', async () => {
         execFileSyncMock.mockReturnValue('not json at all')
         const { getLiveAgentKind } = await import('./getLiveAgentKind')
