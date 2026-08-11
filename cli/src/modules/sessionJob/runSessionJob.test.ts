@@ -227,6 +227,52 @@ describe('runSessionJob', () => {
         expect(lastPatch.status).toBe('completed')
     })
 
+    it('exits 1 when child succeeds but terminal status never persists', async () => {
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async () => {
+                throw new Error('hub unreachable')
+            })
+        }
+
+        const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => fakeChild(0)) as never,
+            setIntervalImpl: ((() => 1) as never),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async () => undefined
+        })
+
+        expect(exitCode).toBe(1)
+        expect(http.patch).toHaveBeenCalled()
+        expect(err).toHaveBeenCalledWith(expect.stringMatching(/failed to mark job completed/i))
+        err.mockRestore()
+    })
+
     it('marks failed on non-zero exit', async () => {
         const http = {
             post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),

@@ -186,6 +186,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     await inflightHeartbeat.catch(() => undefined)
 
     const terminalStatus = exitCode === 0 ? 'completed' : 'failed'
+    let terminalWriteFailed = false
     try {
         await markTerminalWithRetry({
             clientOpts,
@@ -196,9 +197,15 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
             sleep,
         })
     } catch (error) {
+        // run_mismatch means another generation owns the key — not our meter to fix.
+        terminalWriteFailed = !(
+            error instanceof SessionJobError && error.code === 'run_mismatch'
+        )
         const message = error instanceof Error ? error.message : String(error)
         console.error(`[hapi job run] failed to mark job ${terminalStatus}: ${message}`)
     }
 
-    return exitCode
+    // Child success with a frozen "running" meter is worse than a nonzero exit —
+    // surface the supervision failure so wrappers/CI cannot claim green.
+    return exitCode === 0 && terminalWriteFailed ? 1 : exitCode
 }
