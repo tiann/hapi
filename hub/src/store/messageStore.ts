@@ -46,8 +46,8 @@ export class MessageStore {
         this.db = db
     }
 
-    addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
-        return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number, positionAt?: number): StoredMessage {
+        return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt, positionAt)
     }
 
     addImportedMessage(sessionId: string, content: unknown, localId: string, createdAt: number): { message: StoredMessage; inserted: boolean } {

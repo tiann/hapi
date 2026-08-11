@@ -313,7 +313,7 @@ function createSessionStub(
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const sentAgentMessages: unknown[] = [];
-    const sentAgentMessageCalls: Array<{ message: unknown; createdAt: number | undefined }> = [];
+    const sentAgentMessageCalls: Array<{ message: unknown; createdAt: number | undefined; positionAt: number | undefined }> = [];
     const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
@@ -360,9 +360,9 @@ function createSessionStub(
         onSessionFound(id: string) {
             session.sessionId = id;
         },
-        sendAgentMessage(message: unknown, createdAt?: number) {
+        sendAgentMessage(message: unknown, createdAt?: number, positionAt?: number) {
             sentAgentMessages.push(message);
-            sentAgentMessageCalls.push({ message, createdAt });
+            sentAgentMessageCalls.push({ message, createdAt, positionAt });
         },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
@@ -2291,13 +2291,14 @@ describe('selectAbortStatusMessage', () => {
         expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
     });
 
-    it('stamps live turn messages with arrival time but gives post-settlement stragglers the stable turn position', async () => {
-        // between-turn drain stragglers arrive via the previous turn's
+    it('stamps every turn message with arrival time but anchors position to the turn origin', async () => {
+        // Between-turn drain stragglers arrive via the previous turn's
         // onUpdate *after* prompt() settles; they must carry the turn's
-        // origin timestamp (so they sort before the next user message) while
-        // in-turn messages keep real hub receipt times (so web tool durations
-        // don't collapse to 0). This drives the exact closure shape from
-        // runPromptLoop: promptSettled flips only after await resolves.
+        // origin position anchor (so they sort before the next user message)
+        // while every message keeps its real arrival time as createdAt (so
+        // web tool durations don't collapse to 0). This drives the exact
+        // closure shape from runPromptLoop: turnPositionAt is captured on the
+        // turn's first onUpdate and reused for all subsequent messages.
         let resolvePrompt: (() => void) | null = null;
         harness.promptImpl = () => new Promise<void>((resolve) => {
             resolvePrompt = resolve;
@@ -2313,11 +2314,16 @@ describe('selectAbortStatusMessage', () => {
         expect(harness.promptOnUpdates).toHaveLength(1);
         const onUpdate = harness.promptOnUpdates[0];
 
-        // Live turn message: emitted while prompt() is active → no createdAt.
+        // Live turn message: emitted while prompt() is active → real arrival
+        // time as createdAt, turn origin as positionAt.
         onUpdate({ type: 'text', text: 'in-turn reply' });
-        expect(sentAgentMessageCalls[sentAgentMessageCalls.length - 1].createdAt).toBeUndefined();
+        const liveCall = sentAgentMessageCalls[sentAgentMessageCalls.length - 1];
+        expect(liveCall.createdAt).toEqual(expect.any(Number));
+        expect(liveCall.positionAt).toEqual(liveCall.createdAt);
 
-        // Straggler: emitted after prompt() settled → stable turn position.
+        // Straggler: emitted after prompt() settled → later real arrival time
+        // as createdAt, but the SAME turn origin as positionAt (the turn's
+        // first message time, captured before the live reply above).
         resolvePrompt!();
         await launcherPromise;
         onUpdate({ type: 'text', text: 'straggler tail' });
@@ -2325,5 +2331,6 @@ describe('selectAbortStatusMessage', () => {
         const stragglerCall = sentAgentMessageCalls[sentAgentMessageCalls.length - 1];
         expect(stragglerCall.message).toEqual(expect.objectContaining({ message: 'straggler tail' }));
         expect(stragglerCall.createdAt).toEqual(expect.any(Number));
+        expect(stragglerCall.positionAt).toEqual(liveCall.positionAt);
     });
 });

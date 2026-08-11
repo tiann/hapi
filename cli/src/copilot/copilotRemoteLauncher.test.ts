@@ -56,6 +56,7 @@ describe('CopilotRemoteLauncher.applyAgentMode', () => {
                 type: 'token_count',
                 model: 'gpt-5.6'
             }),
+            undefined,
             undefined
         );
     });

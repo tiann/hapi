@@ -331,17 +331,13 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
             }
 
             try {
-                let promptSettled = false;
                 let turnPositionAt: number | undefined;
                 const onUpdate = (message: AgentMessage) => {
-                    turnPositionAt ??= Date.now()
-                    this.handleAgentMessage(message, promptSettled ? turnPositionAt : undefined)
+                    const emittedAt = Date.now()
+                    turnPositionAt ??= emittedAt
+                    this.handleAgentMessage(message, emittedAt, turnPositionAt)
                 };
-                try {
-                    await backend.prompt(acpSessionId, promptContent, onUpdate)
-                } finally {
-                    promptSettled = true
-                }
+                await backend.prompt(acpSessionId, promptContent, onUpdate)
                 if (localId && nextPromptIndex != null) {
                     this.conversationHistory.rememberPromptIndex(localId, nextPromptIndex)
                     session.client.updateMetadata((metadata) => ({
@@ -391,9 +387,9 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private handleAgentMessage(message: AgentMessage, turnOutputAt?: number): void {
+    private handleAgentMessage(message: AgentMessage, createdAt?: number, positionAt?: number): void {
         const converted = convertAgentMessage(message, this.currentBackendModel)
-        if (converted) this.session.sendAgentMessage(converted, turnOutputAt)
+        if (converted) this.session.sendAgentMessage(converted, createdAt, positionAt)
 
         switch (message.type) {
             case 'text':

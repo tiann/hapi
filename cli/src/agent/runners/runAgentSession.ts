@@ -187,21 +187,17 @@ export async function runAgentSession(opts: {
             syncKeepAlive();
 
             try {
-                let promptSettled = false;
                 let turnPositionAt: number | undefined;
                 const onUpdate = (message: AgentMessage) => {
-                    turnPositionAt ??= Date.now();
+                    const emittedAt = Date.now();
+                    turnPositionAt ??= emittedAt;
                     const model = backend.getSessionModelsMetadata?.(agentSessionId)?.currentModelId;
                     const converted = convertAgentMessage(message, model);
                     if (converted) {
-                        session.sendAgentMessage(converted, promptSettled ? turnPositionAt : undefined);
+                        session.sendAgentMessage(converted, emittedAt, turnPositionAt);
                     }
                 };
-                try {
-                    await backend.prompt(agentSessionId, promptContent, onUpdate);
-                } finally {
-                    promptSettled = true;
-                }
+                await backend.prompt(agentSessionId, promptContent, onUpdate);
             } catch (error) {
                 logger.warn('[ACP] Prompt failed', error);
                 session.sendSessionEvent({

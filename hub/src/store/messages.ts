@@ -100,7 +100,8 @@ export function addMessage(
     content: unknown,
     localId?: string,
     scheduledAt?: number | null,
-    createdAt?: number
+    createdAt?: number,
+    positionAt?: number
 ): StoredMessage {
     const now = Date.now()
     // Client-provided origin timestamp (e.g. a Claude transcript entry's own
@@ -109,6 +110,15 @@ export function addMessage(
     const stampedAt = Number.isFinite(createdAt)
         ? Math.min(createdAt!, now)
         : now
+
+    // Sort anchor: when a caller separates display time (createdAt) from turn
+    // position (positionAt), COALESCE(invoked_at, created_at) ordering must
+    // honor the position anchor — a between-turn straggler carries its turn's
+    // anchor so it sorts before the next user message even though its
+    // createdAt is later. Falls back to stampedAt when absent.
+    const sortedAt = Number.isFinite(positionAt)
+        ? Math.min(positionAt!, now)
+        : stampedAt
 
     // Without a localId, invoked_at is stamped immediately below — there is no
     // ack path to flip it later.  A scheduled message in that state would be
@@ -138,11 +148,11 @@ export function addMessage(
 
     // Messages without a localId have no ack path (markMessagesInvoked matches by localId).
     // Treat them as already-invoked at insert time so they land in the thread normally instead
-    // of being stuck in the queued floating bar forever. Stamped with `stampedAt` (the
-    // client-provided createdAt when present) rather than server-now so getMessagesByPosition's
-    // COALESCE(invoked_at, created_at) sort reflects the transcript's own jsonl order instead of
-    // hub arrival order.
-    const invokedAt = localId ? null : stampedAt
+    // of being stuck in the queued floating bar forever. Stamped with `sortedAt` (the
+    // client-provided positionAt when present, else createdAt, else server-now) so
+    // getMessagesByPosition's COALESCE(invoked_at, created_at) sort reflects the turn's
+    // position anchor instead of hub arrival order.
+    const invokedAt = localId ? null : sortedAt
 
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)

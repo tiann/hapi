@@ -105,8 +105,8 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
         this.localLaunchFailure = { message, exitReason };
     };
 
-    sendAgentMessage = (message: unknown, createdAt?: number): void => {
-        this.client.sendAgentMessage(message, createdAt);
+    sendAgentMessage = (message: unknown, createdAt?: number, positionAt?: number): void => {
+        this.client.sendAgentMessage(message, createdAt, positionAt);
     };
 
     sendUserMessage = (text: string): void => {

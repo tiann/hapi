@@ -53,7 +53,12 @@ const messageSchema = z.object({
     // Client-provided origin timestamp (epoch ms) — e.g. a Claude transcript
     // entry's own `timestamp`. Only honored for agent messages (no localId);
     // see addMessage in messages.ts.
-    createdAt: z.number().optional()
+    createdAt: z.number().optional(),
+    // Client-provided sort anchor (epoch ms) decoupled from createdAt — a
+    // between-turn drain straggler carries its turn's positionAt so it sorts
+    // before the next user message despite its later createdAt. Stored as
+    // invoked_at; see addMessage in messages.ts.
+    positionAt: z.number().optional()
 })
 
 const updateMetadataSchema = z.object({
@@ -109,7 +114,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const { sid, localId, createdAt } = parsed.data
+        const { sid, localId, createdAt, positionAt } = parsed.data
         const raw = parsed.data.message
 
         const content = typeof raw === 'string'
@@ -133,7 +138,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt, positionAt)
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
         }
