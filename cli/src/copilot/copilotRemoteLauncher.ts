@@ -189,11 +189,17 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
-                let turnOutputAt: number | undefined;
-                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    if (turnOutputAt === undefined) turnOutputAt = Date.now();
-                    this.handleAgentMessage(message, turnOutputAt);
-                });
+                let promptSettled = false;
+                let turnPositionAt: number | undefined;
+                const onUpdate = (message: AgentMessage) => {
+                    turnPositionAt ??= Date.now();
+                    this.handleAgentMessage(message, promptSettled ? turnPositionAt : undefined);
+                };
+                try {
+                    await backend.prompt(acpSessionId, promptContent, onUpdate);
+                } finally {
+                    promptSettled = true;
+                }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);

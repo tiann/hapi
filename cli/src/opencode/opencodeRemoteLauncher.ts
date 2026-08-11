@@ -610,14 +610,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
-                let turnOutputAt: number | undefined;
-                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    // Capture per-turn origin timestamp so between-turn drain
-                    // stragglers (emitted via this turn's closure) carry this
-                    // turn's position instead of stamping at arrival time.
-                    if (turnOutputAt === undefined) turnOutputAt = Date.now();
-                    this.handleAgentMessage(message, turnOutputAt);
-                });
+                let promptSettled = false;
+                let turnPositionAt: number | undefined;
+                const onUpdate = (message: AgentMessage) => {
+                    turnPositionAt ??= Date.now();
+                    this.handleAgentMessage(message, promptSettled ? turnPositionAt : undefined);
+                };
+                try {
+                    await backend.prompt(acpSessionId, promptContent, onUpdate);
+                } finally {
+                    promptSettled = true;
+                }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);

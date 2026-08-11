@@ -36,6 +36,9 @@ const harness = vi.hoisted(() => ({
     // not rpcHandlers.
     newSessionImpl: null as null | (() => Promise<string>),
     disconnectImpl: null as null | (() => Promise<void>),
+    // Captures each prompt() call's onUpdate callback so a test can drive
+    // turn messages and post-settlement stragglers deterministically.
+    promptOnUpdates: [] as Array<(message: unknown) => void>,
     permissionCancelError: null as Error | null,
     serverStopError: null as Error | null,
     eventStreamOptions: [] as Array<{
@@ -100,10 +103,13 @@ vi.mock('./utils/opencodeBackend', () => ({
                 harness.thoughtLevelOption = { ...harness.thoughtLevelOption, currentValue: value };
             }
         }),
-        prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
+        prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate?: (message: unknown) => void) => {
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
             harness.promptCount++;
+            if (onUpdate) {
+                harness.promptOnUpdates.push(onUpdate);
+            }
             if (harness.hangPrompt) {
                 await new Promise<void>((resolve) => {
                     harness.resolvePrompt = resolve;
@@ -307,6 +313,7 @@ function createSessionStub(
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const sentAgentMessages: unknown[] = [];
+    const sentAgentMessageCalls: Array<{ message: unknown; createdAt: number | undefined }> = [];
     const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
@@ -353,8 +360,9 @@ function createSessionStub(
         onSessionFound(id: string) {
             session.sessionId = id;
         },
-        sendAgentMessage(message: unknown) {
+        sendAgentMessage(message: unknown, createdAt?: number) {
             sentAgentMessages.push(message);
+            sentAgentMessageCalls.push({ message, createdAt });
         },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
@@ -362,7 +370,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
+    return { session, sessionEvents, sentAgentMessages, sentAgentMessageCalls, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -412,6 +420,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.cancelPromptImpl = null;
         harness.newSessionImpl = null;
         harness.disconnectImpl = null;
+        harness.promptOnUpdates = [];
         harness.permissionCancelError = null;
         harness.serverStopError = null;
         harness.eventStreamOptions = [];
@@ -2280,5 +2289,41 @@ describe('selectAbortStatusMessage', () => {
         });
 
         expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
+    });
+
+    it('stamps live turn messages with arrival time but gives post-settlement stragglers the stable turn position', async () => {
+        // between-turn drain stragglers arrive via the previous turn's
+        // onUpdate *after* prompt() settles; they must carry the turn's
+        // origin timestamp (so they sort before the next user message) while
+        // in-turn messages keep real hub receipt times (so web tool durations
+        // don't collapse to 0). This drives the exact closure shape from
+        // runPromptLoop: promptSettled flips only after await resolves.
+        let resolvePrompt: (() => void) | null = null;
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvePrompt = resolve;
+        });
+        const { session, sentAgentMessageCalls } = createSessionStub([
+            { message: 'hello', mode: createMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {});
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(harness.promptOnUpdates).toHaveLength(1);
+        const onUpdate = harness.promptOnUpdates[0];
+
+        // Live turn message: emitted while prompt() is active → no createdAt.
+        onUpdate({ type: 'text', text: 'in-turn reply' });
+        expect(sentAgentMessageCalls[sentAgentMessageCalls.length - 1].createdAt).toBeUndefined();
+
+        // Straggler: emitted after prompt() settled → stable turn position.
+        resolvePrompt!();
+        await launcherPromise;
+        onUpdate({ type: 'text', text: 'straggler tail' });
+
+        const stragglerCall = sentAgentMessageCalls[sentAgentMessageCalls.length - 1];
+        expect(stragglerCall.message).toEqual(expect.objectContaining({ message: 'straggler tail' }));
+        expect(stragglerCall.createdAt).toEqual(expect.any(Number));
     });
 });

@@ -331,11 +331,17 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
             }
 
             try {
-                let turnOutputAt: number | undefined;
-                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    if (turnOutputAt === undefined) turnOutputAt = Date.now()
-                    this.handleAgentMessage(message, turnOutputAt)
-                })
+                let promptSettled = false;
+                let turnPositionAt: number | undefined;
+                const onUpdate = (message: AgentMessage) => {
+                    turnPositionAt ??= Date.now()
+                    this.handleAgentMessage(message, promptSettled ? turnPositionAt : undefined)
+                };
+                try {
+                    await backend.prompt(acpSessionId, promptContent, onUpdate)
+                } finally {
+                    promptSettled = true
+                }
                 if (localId && nextPromptIndex != null) {
                     this.conversationHistory.rememberPromptIndex(localId, nextPromptIndex)
                     session.client.updateMetadata((metadata) => ({

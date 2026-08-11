@@ -5,7 +5,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import { AgentRegistry } from '@/agent/AgentRegistry';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { PermissionAdapter } from '@/agent/permissionAdapter';
-import type { AgentBackend, PromptContent } from '@/agent/types';
+import type { AgentBackend, AgentMessage, PromptContent } from '@/agent/types';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
@@ -187,15 +187,21 @@ export async function runAgentSession(opts: {
             syncKeepAlive();
 
             try {
-                let turnOutputAt: number | undefined;
-                await backend.prompt(agentSessionId, promptContent, (message) => {
-                    if (turnOutputAt === undefined) turnOutputAt = Date.now();
+                let promptSettled = false;
+                let turnPositionAt: number | undefined;
+                const onUpdate = (message: AgentMessage) => {
+                    turnPositionAt ??= Date.now();
                     const model = backend.getSessionModelsMetadata?.(agentSessionId)?.currentModelId;
                     const converted = convertAgentMessage(message, model);
                     if (converted) {
-                        session.sendAgentMessage(converted, turnOutputAt);
+                        session.sendAgentMessage(converted, promptSettled ? turnPositionAt : undefined);
                     }
-                });
+                };
+                try {
+                    await backend.prompt(agentSessionId, promptContent, onUpdate);
+                } finally {
+                    promptSettled = true;
+                }
             } catch (error) {
                 logger.warn('[ACP] Prompt failed', error);
                 session.sendSessionEvent({
