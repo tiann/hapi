@@ -63,6 +63,16 @@ export function isBridgeSettling(
     return true
 }
 
+export function visibleBridgeFailureReason(
+    failure: { eventId: string; reason: string } | null,
+    currentEventId: string | undefined
+): string | null {
+    if (!failure || !currentEventId || failure.eventId !== currentEventId) {
+        return null
+    }
+    return failure.reason
+}
+
 /** Any unacknowledged model-error surface (error, recovered, or bridge failed). */
 export function hasActiveModelError(metadata: ModelErrorHolder | null | undefined): boolean {
     return getModelErrorUiState(metadata) !== null

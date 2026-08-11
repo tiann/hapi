@@ -307,4 +307,58 @@ describe('cursor auto-bridge reconcile on session-ready', () => {
         expect(await readAutoBridgeTransientModelErrorsEnabled(dataDir)).toBe(false)
         expect(configCalls.at(-1)?.config).toEqual({ autoBridgeTransientModelErrors: false })
     })
+
+    it('reconciles an already-active stored Cursor row on first heartbeat after hub restart', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'hapi-auto-bridge-reconcile-'))
+        directories.push(dataDir)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
+
+        const store = new Store(':memory:')
+        const boot = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const session = boot.getOrCreateSession(
+            'session-cursor-restart',
+            { path: '/tmp/restart', host: 'localhost', machineId: 'm1', flavor: 'cursor' },
+            null,
+            'default'
+        )
+        boot.handleSessionAlive({ sid: session.id, time: Date.now() })
+        store.sessions.setSessionActive(session.id, true, Date.now(), 'default')
+        boot.stop()
+
+        const restarted = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        restarted.setSettingsDataDirForTests(dataDir)
+        const configCalls: Array<{ sessionId: string; config: Record<string, unknown> }> = []
+        ;(restarted as unknown as {
+            rpcGateway: {
+                requestSessionConfig: (
+                    sessionId: string,
+                    config: Record<string, unknown>
+                ) => Promise<unknown>
+            }
+        }).rpcGateway.requestSessionConfig = async (sessionId, config) => {
+            configCalls.push({ sessionId, config })
+            return { applied: config }
+        }
+
+        expect(restarted.getSession(session.id)?.active).toBe(true)
+        restarted.handleSessionAlive({ sid: session.id, time: Date.now() + 1 })
+        await waitUntil(
+            () => configCalls.some((call) => (
+                call.sessionId === session.id
+                && call.config.autoBridgeTransientModelErrors === false
+            )),
+            'post-restart heartbeat reconcile'
+        )
+        restarted.stop()
+    })
 })

@@ -83,7 +83,7 @@ import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutat
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
-import { ModelErrorBanner, hasActiveModelError, isBridgeSettling } from '@/components/ModelErrorBanner'
+import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
@@ -1257,7 +1257,7 @@ function SessionChatInner(props: SessionChatProps) {
 
     const [isBridgingModelError, setIsBridgingModelError] = useState(false)
     const [pendingBridgeEventId, setPendingBridgeEventId] = useState<string | null>(null)
-    const [bridgeModelErrorReason, setBridgeModelErrorReason] = useState<string | null>(null)
+    const [bridgeFailure, setBridgeFailure] = useState<{ eventId: string; reason: string } | null>(null)
     const currentModelError = props.session.metadata?.lastModelError
     const bridgePending = isBridgeSettling(props.session.metadata, pendingBridgeEventId)
 
@@ -1277,18 +1277,18 @@ function SessionChatInner(props: SessionChatProps) {
             return
         }
         setIsBridgingModelError(true)
-        setBridgeModelErrorReason(null)
+        setBridgeFailure(null)
         try {
             const result = await props.api.bridgeModelError(props.session.id, eventId)
             if (result.ok) {
                 setPendingBridgeEventId(eventId)
             } else {
-                setBridgeModelErrorReason(result.reason ?? 'not_bridgeable')
+                setBridgeFailure({ eventId, reason: result.reason ?? 'not_bridgeable' })
             }
             props.onRefresh()
         } catch (error) {
             const message = error instanceof Error ? error.message : 'bridge_failed'
-            setBridgeModelErrorReason(message)
+            setBridgeFailure({ eventId, reason: message })
             console.warn('[SessionChat] model error bridge failed:', error)
         } finally {
             setIsBridgingModelError(false)
@@ -1944,7 +1944,7 @@ function SessionChatInner(props: SessionChatProps) {
                     ? handleBridgeModelError
                     : undefined}
                 isBridging={isBridgingModelError || bridgePending}
-                bridgeErrorReason={bridgeModelErrorReason}
+                bridgeErrorReason={visibleBridgeFailureReason(bridgeFailure, currentModelError?.eventId)}
             />
 
             <div className="flex flex-col min-h-0 flex-1">

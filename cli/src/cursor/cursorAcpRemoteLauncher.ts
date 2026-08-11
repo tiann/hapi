@@ -1117,7 +1117,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // Fail closed on silently truncated prompts — Bridge must replay exact text.
         const fullMessage = this.lastUserMessage ?? '';
         const fitsBridgeLimit = fullMessage.length <= MAX_LAST_USER_MESSAGE_CHARS;
-        const bridgeable = opts?.bridgeable !== false && fitsBridgeLimit;
+        const isPassThroughCommand = parseCursorSpecialCommand(fullMessage).type === 'pass-through';
+        const bridgeable = opts?.bridgeable !== false && fitsBridgeLimit && !isPassThroughCommand;
         const lastUserMessage = bridgeable ? fullMessage : '';
 
         logger.debug(

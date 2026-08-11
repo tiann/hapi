@@ -6,6 +6,7 @@ import {
     hasRecoveredModelError,
     hasUrgentModelError,
     isBridgeSettling,
+    visibleBridgeFailureReason,
     type ModelErrorHolder
 } from './ModelErrorBanner'
 import { getEventPresentation } from '@/chat/presentation'
@@ -75,6 +76,13 @@ describe('model error UI states', () => {
         expect(isBridgeSettling(holder({ ...base, supersededByUserTurn: true }), 'evt-1000')).toBe(false)
         expect(isBridgeSettling(holder({ ...base, acknowledgedAt: 2000 }), 'evt-1000')).toBe(false)
         expect(isBridgeSettling(unrecovered, null)).toBe(false)
+    })
+
+    it('scopes a Bridge failure reason to the requested eventId', () => {
+        const failure = { eventId: 'evt-1000', reason: 'not_bridgeable' }
+        expect(visibleBridgeFailureReason(failure, 'evt-1000')).toBe('not_bridgeable')
+        expect(visibleBridgeFailureReason(failure, 'evt-2000')).toBeNull()
+        expect(visibleBridgeFailureReason(null, 'evt-1000')).toBeNull()
     })
 })
 
