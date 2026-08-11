@@ -9,14 +9,14 @@ function getMachineTitle(machine: Machine): string {
     return machine.id.slice(0, 8)
 }
 
-function getMachineOptionLabel(machine: Machine): string {
+function getMachineOptionLabel(machine: Machine, updateRequiredLabel: string): string {
     const title = getMachineTitle(machine)
     const platform = machine.metadata?.platform ? ` (${machine.metadata.platform})` : ''
     const version = machine.metadata?.happyCliVersion
         ? ` · CLI ${machine.metadata.happyCliVersion}`
         : ''
     const skew = machine.active && isMachineCapabilitySkewed(machine.metadata?.capabilities)
-        ? ' · UPDATE REQUIRED'
+        ? ` · ${updateRequiredLabel}`
         : ''
     return `${title}${platform}${version}${skew}`
 }
@@ -49,7 +49,7 @@ export function MachineSelector(props: {
                 )}
                 {props.machines.map((m) => (
                     <option key={m.id} value={m.id}>
-                        {getMachineOptionLabel(m)}
+                        {getMachineOptionLabel(m, t('runner.skew.updateRequired'))}
                     </option>
                 ))}
             </SelectControl>

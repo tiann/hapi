@@ -394,4 +394,11 @@ describe('buildMachineMetadata runner-only capabilities', () => {
         expect(metadata.installedCliMtimeMs).toBe(1_700_000_000_000)
         expect(metadata.supervisedRestart).toBe(true)
     })
+
+    it('always sends supervisedRestart boolean for asRunner so sticky true can clear', () => {
+        delete process.env.HAPI_RUNNER_SUPERVISED
+        const metadata = buildMachineMetadata({ asRunner: true })
+        expect(metadata.capabilities).toEqual(expect.arrayContaining(['stop-runner']))
+        expect(metadata.supervisedRestart).toBe(false)
+    })
 })

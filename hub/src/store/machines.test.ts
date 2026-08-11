@@ -49,6 +49,85 @@ describe('mergeMachineMetadata', () => {
     it('returns undefined when the merge is a no-op', () => {
         expect(mergeMachineMetadata({ host: 'a' }, { host: 'a' })).toBeUndefined()
     })
+
+    it('clears omitted runner ads when clearOmittedRunnerAds is set', () => {
+        const merged = mergeMachineMetadata(
+            {
+                host: 'box',
+                capabilities: ['stop-runner'],
+                supervisedRestart: true,
+                startedCliMtimeMs: 1,
+                installedCliMtimeMs: 2,
+                displayName: 'keep-me',
+            },
+            { host: 'box', supervisedRestart: false },
+            { clearOmittedRunnerAds: true },
+        )
+        expect(merged).toEqual({
+            host: 'box',
+            supervisedRestart: false,
+            displayName: 'keep-me',
+        })
+    })
+
+    it('keeps sticky runner ads without clearOmittedRunnerAds (terminal bootstrap)', () => {
+        const merged = mergeMachineMetadata(
+            { host: 'box', capabilities: ['stop-runner'], supervisedRestart: true },
+            { host: 'box' },
+        )
+        expect(merged).toBeUndefined()
+    })
+})
+
+describe('runner metadata ad clear on re-registration', () => {
+    it('drops sticky supervisedRestart and capabilities when runner re-registers without them', () => {
+        const store = new Store(':memory:')
+        store.machines.getOrCreateMachine(
+            'machine-1',
+            {
+                host: 'box',
+                capabilities: ['stop-runner'],
+                supervisedRestart: true,
+                startedCliMtimeMs: 10,
+            },
+            { status: 'running', pid: 1 },
+            'ns',
+        )
+
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'box', supervisedRestart: false },
+            { status: 'running', pid: 2 },
+            'ns',
+        )
+
+        expect(refreshed.metadata).toEqual({ host: 'box', supervisedRestart: false })
+        expect(refreshed.metadata).not.toHaveProperty('capabilities')
+        expect(refreshed.metadata).not.toHaveProperty('startedCliMtimeMs')
+    })
+
+    it('does not clear runner ads on terminal-only metadata refresh (no runnerState)', () => {
+        const store = new Store(':memory:')
+        store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'box', capabilities: ['stop-runner'], supervisedRestart: true },
+            { status: 'running', pid: 1 },
+            'ns',
+        )
+
+        const refreshed = store.machines.getOrCreateMachine(
+            'machine-1',
+            { host: 'box' },
+            null,
+            'ns',
+        )
+
+        expect(refreshed.metadata).toEqual({
+            host: 'box',
+            capabilities: ['stop-runner'],
+            supervisedRestart: true,
+        })
+    })
 })
 
 describe('runner capabilities backfill', () => {

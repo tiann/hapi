@@ -72,9 +72,8 @@ export function buildMachineMetadata(options?: {
         capabilities: [...CURRENT_MACHINE_CAPABILITIES],
         ...(typeof startedCliMtimeMs === 'number' ? { startedCliMtimeMs } : {}),
         ...(typeof installedCliMtimeMs === 'number' ? { installedCliMtimeMs } : {}),
-        // systemd/pm2 hosts set HAPI_RUNNER_SUPERVISED=1 — banner Restart may
-        // stop-runner knowing the supervisor cold-starts the new binary.
-        ...(process.env.HAPI_RUNNER_SUPERVISED === '1' ? { supervisedRestart: true } : {}),
+        // Always boolean so hub merge can clear a prior true on unsupervised restart.
+        supervisedRestart: process.env.HAPI_RUNNER_SUPERVISED === '1',
     }
 }
 

@@ -44,10 +44,33 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // machine-owned fields over the stored ones so registration doubles as a
 // refresh; hub-side fields the CLI never sends (e.g. displayName) survive.
 // Returns undefined when the merge would not change anything.
-export function mergeMachineMetadata(stored: unknown, incoming: unknown): Record<string, unknown> | undefined {
+//
+// When `clearOmittedRunnerAds` is set (full runner daemon registration with
+// runnerState), runner-advertised keys omitted from incoming are deleted so
+// rollback / unsupervised restart cannot leave sticky capabilities or
+// supervisedRestart:true (#1108 bot Major).
+export const RUNNER_ADVERTISED_METADATA_KEYS = [
+    'capabilities',
+    'supervisedRestart',
+    'startedCliMtimeMs',
+    'installedCliMtimeMs',
+] as const
+
+export function mergeMachineMetadata(
+    stored: unknown,
+    incoming: unknown,
+    options?: { clearOmittedRunnerAds?: boolean },
+): Record<string, unknown> | undefined {
     if (!isPlainObject(incoming)) return undefined
     const base = isPlainObject(stored) ? stored : {}
-    const merged = { ...base, ...incoming }
+    const merged: Record<string, unknown> = { ...base, ...incoming }
+    if (options?.clearOmittedRunnerAds) {
+        for (const key of RUNNER_ADVERTISED_METADATA_KEYS) {
+            if (!(key in incoming)) {
+                delete merged[key]
+            }
+        }
+    }
     return JSON.stringify(merged) === JSON.stringify(base) ? undefined : merged
 }
 
@@ -82,7 +105,11 @@ export function getOrCreateMachine(
         if (stored.namespace !== namespace) {
             throw new Error('Machine namespace mismatch')
         }
-        const merged = mergeMachineMetadata(stored.metadata, metadata)
+        const merged = mergeMachineMetadata(stored.metadata, metadata, {
+            // Full runner registration (with runnerState) owns the skew ads —
+            // omit means clear, so rollback cannot leave sticky supervisedRestart.
+            clearOmittedRunnerAds: runnerState !== null && runnerState !== undefined,
+        })
         let current = stored
         if (merged !== undefined) {
             db.prepare(`

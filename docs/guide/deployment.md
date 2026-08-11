@@ -136,7 +136,9 @@ npm install -g pm2
 
 # Start hub and runner
 pm2 start "hapi hub --relay" --name hapi-hub
-pm2 start "hapi runner start-sync" --name hapi-runner
+# HAPI_RUNNER_SUPERVISED=1 lets the web Restart button stop the runner knowing
+# pm2 will cold-start it again (unsupervised stop would leave the host offline).
+HAPI_RUNNER_SUPERVISED=1 pm2 start "hapi runner start-sync" --name hapi-runner
 
 # View status and logs
 pm2 status
@@ -196,6 +198,11 @@ Create plist files for automatic startup on macOS.
         <string>runner</string>
         <string>start-sync</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HAPI_RUNNER_SUPERVISED</key>
+        <string>1</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -259,6 +266,9 @@ After=network.target hapi-hub.service
 [Service]
 Type=simple
 KillMode=process
+# Advertise supervisedRestart so the web UI Restart button may stop-runner
+# knowing systemd will cold-start the unit again.
+Environment=HAPI_RUNNER_SUPERVISED=1
 ExecStart=/usr/local/bin/hapi runner start-sync
 Restart=always
 RestartSec=5

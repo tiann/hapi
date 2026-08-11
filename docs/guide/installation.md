@@ -324,7 +324,7 @@ Use `--workspace-root <path>` to restrict which directories the runner can brows
 hapi runner start --workspace-root ~/projects --workspace-root ~/work
 ```
 
-For running the hub and runner as persistent background services (pm2, launchd, systemd), see [Deployment](./deployment.md).
+For running the hub and runner as persistent background services (pm2, launchd, systemd), see [Deployment](./deployment.md). Supervised installs should set `HAPI_RUNNER_SUPERVISED=1` on the runner process (systemd `Environment=` / pm2 `--env`) so the web **Restart** control can safely stop-runner knowing the supervisor will cold-start it.
 
 ### Multi-machine hubs
 
