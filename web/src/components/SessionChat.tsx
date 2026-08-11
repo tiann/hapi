@@ -83,7 +83,7 @@ import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutat
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
-import { ModelErrorBanner, hasActiveModelError } from '@/components/ModelErrorBanner'
+import { ModelErrorBanner, hasActiveModelError, isBridgeSettling } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
@@ -1256,13 +1256,22 @@ function SessionChatInner(props: SessionChatProps) {
     }, [props.api, props.session.id, props.session.metadata?.lastModelError?.eventId, props.onRefresh])
 
     const [isBridgingModelError, setIsBridgingModelError] = useState(false)
+    const [pendingBridgeEventId, setPendingBridgeEventId] = useState<string | null>(null)
     const [bridgeModelErrorReason, setBridgeModelErrorReason] = useState<string | null>(null)
+    const currentModelError = props.session.metadata?.lastModelError
+    const bridgePending = isBridgeSettling(props.session.metadata, pendingBridgeEventId)
+
+    useEffect(() => {
+        if (pendingBridgeEventId && !bridgePending) {
+            setPendingBridgeEventId(null)
+        }
+    }, [pendingBridgeEventId, bridgePending])
 
     const handleBridgeModelError = useCallback(async () => {
-        if (isBridgingModelError) {
+        if (isBridgingModelError || bridgePending) {
             return
         }
-        const eventId = props.session.metadata?.lastModelError?.eventId
+        const eventId = currentModelError?.eventId
         if (typeof eventId !== 'string' || eventId.length === 0) {
             props.onRefresh()
             return
@@ -1271,7 +1280,9 @@ function SessionChatInner(props: SessionChatProps) {
         setBridgeModelErrorReason(null)
         try {
             const result = await props.api.bridgeModelError(props.session.id, eventId)
-            if (!result.ok) {
+            if (result.ok) {
+                setPendingBridgeEventId(eventId)
+            } else {
                 setBridgeModelErrorReason(result.reason ?? 'not_bridgeable')
             }
             props.onRefresh()
@@ -1284,9 +1295,10 @@ function SessionChatInner(props: SessionChatProps) {
         }
     }, [
         isBridgingModelError,
+        bridgePending,
+        currentModelError?.eventId,
         props.api,
         props.session.id,
-        props.session.metadata?.lastModelError?.eventId,
         props.onRefresh
     ])
 
@@ -1931,7 +1943,7 @@ function SessionChatInner(props: SessionChatProps) {
                 onBridge={agentFlavor === 'cursor' && props.session.active
                     ? handleBridgeModelError
                     : undefined}
-                isBridging={isBridgingModelError}
+                isBridging={isBridgingModelError || bridgePending}
                 bridgeErrorReason={bridgeModelErrorReason}
             />
 

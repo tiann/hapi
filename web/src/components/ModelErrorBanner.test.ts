@@ -5,6 +5,7 @@ import {
     hasActiveModelError,
     hasRecoveredModelError,
     hasUrgentModelError,
+    isBridgeSettling,
     type ModelErrorHolder
 } from './ModelErrorBanner'
 import { getEventPresentation } from '@/chat/presentation'
@@ -63,6 +64,17 @@ describe('model error UI states', () => {
         const metadata = holder({ ...base, bridgeable: false })
         expect(getModelErrorUiState(metadata)).toBe('unrecovered')
         expect(canShowModelErrorBridge(metadata)).toBe(false)
+    })
+
+    it('keeps Bridge settling after enqueue until metadata records an outcome', () => {
+        const unrecovered = holder(base)
+        expect(isBridgeSettling(unrecovered, 'evt-1000')).toBe(true)
+        expect(isBridgeSettling(unrecovered, 'evt-other')).toBe(false)
+        expect(isBridgeSettling(holder({ ...base, bridgedForEventId: 'evt-1000' }), 'evt-1000')).toBe(false)
+        expect(isBridgeSettling(holder({ ...base, retriedAndFailed: true }), 'evt-1000')).toBe(false)
+        expect(isBridgeSettling(holder({ ...base, supersededByUserTurn: true }), 'evt-1000')).toBe(false)
+        expect(isBridgeSettling(holder({ ...base, acknowledgedAt: 2000 }), 'evt-1000')).toBe(false)
+        expect(isBridgeSettling(unrecovered, null)).toBe(false)
     })
 })
 

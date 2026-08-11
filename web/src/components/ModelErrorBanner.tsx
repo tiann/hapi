@@ -42,6 +42,27 @@ export function canShowModelErrorBridge(metadata: ModelErrorHolder | null | unde
         && metadata?.lastModelError?.bridgeable !== false
 }
 
+/**
+ * True after the CLI accepted a Bridge enqueue for `pendingEventId` and before
+ * metadata records recovered / failed / superseded / acknowledged / a new error.
+ */
+export function isBridgeSettling(
+    metadata: ModelErrorHolder | null | undefined,
+    pendingEventId: string | null
+): boolean {
+    const err = metadata?.lastModelError
+    if (!pendingEventId || !err || err.eventId !== pendingEventId) {
+        return false
+    }
+    if (err.acknowledgedAt || err.retriedAndFailed || err.supersededByUserTurn) {
+        return false
+    }
+    if (err.bridgedForEventId === pendingEventId) {
+        return false
+    }
+    return true
+}
+
 /** Any unacknowledged model-error surface (error, recovered, or bridge failed). */
 export function hasActiveModelError(metadata: ModelErrorHolder | null | undefined): boolean {
     return getModelErrorUiState(metadata) !== null
