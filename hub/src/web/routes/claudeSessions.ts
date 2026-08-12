@@ -228,7 +228,7 @@ type ClaudePageLoader = (cursor: number) => Promise<ListClaudeSessionsRpcRespons
 
 class ClaudeImportStreamError extends Error {
     constructor(
-        readonly code: 'not_found' | 'transcript_changed' | 'import_failed',
+        readonly code: 'not_found' | 'transcript_changed' | 'import_failed' | 'session_active',
         message: string
     ) {
         super(message)
@@ -678,6 +678,15 @@ function markImportState(
     engine.handleRealtimeEvent({ type: 'session-updated', sessionId })
 }
 
+function liveImportedSessionActive(
+    engine: SyncEngine,
+    sessionId: string,
+    namespace: string
+): boolean | null {
+    const access = engine.resolveSessionAccess(sessionId, namespace)
+    return access.ok ? access.session.active : null
+}
+
 async function importClaudeSessionFromPages(options: {
     store: Store
     engine: SyncEngine
@@ -758,10 +767,12 @@ async function importClaudeSessionFromPagesUnlocked(options: {
         }
     }
     const transcript = analysis.summary
+    let liveActive = false
 
     if (stored) {
         const latest = store.sessions.getSessionByNamespace(stored.id, namespace)
-        if (!latest) {
+        const liveActiveState = liveImportedSessionActive(engine, stored.id, namespace)
+        if (!latest || liveActiveState === null) {
             return {
                 claudeSessionId,
                 hapiSessionId: stored.id,
@@ -769,6 +780,7 @@ async function importClaudeSessionFromPagesUnlocked(options: {
             }
         }
         stored = latest
+        liveActive = liveActiveState
     }
 
     if (analysis.error && stored) {
@@ -806,7 +818,7 @@ async function importClaudeSessionFromPagesUnlocked(options: {
             launchSettings.effort ?? undefined
         )
     } else {
-        if (stored.active) {
+        if (liveActive) {
             if (analysis.observedCount < analysis.messageCount) {
                 const message = 'The HAPI Claude session is active; stop it before importing native history changes'
                 markImportState(store, engine, stored.id, namespace, transcript, machine.id, 'failed', message)
@@ -885,6 +897,14 @@ async function importClaudeSessionFromPagesUnlocked(options: {
                 expectedSummary: transcript,
                 onMessage: (source, index) => {
                     if (analysis.matchedSourceIndexes.has(index)) return
+                    const latestActive = liveImportedSessionActive(engine, stored!.id, namespace)
+                    if (latestActive === null) throw new Error('Imported HAPI session disappeared')
+                    if (latestActive) {
+                        throw new ClaudeImportStreamError(
+                            'session_active',
+                            'The HAPI Claude session became active; stop it before importing native history changes'
+                        )
+                    }
                     const result = store.messages.addImportedMessage(
                         stored!.id,
                         source.content,

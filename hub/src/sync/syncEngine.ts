@@ -105,7 +105,7 @@ export type ReopenSessionResult =
 
 export type LocalResumeTargetResult =
     | { type: 'success'; target: LocalResumeTarget }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' | 'resume_failed' }
 
 export type LocalHandoffResult =
     | { type: 'success' }
@@ -2409,6 +2409,17 @@ export class SyncEngine {
     }
 
     resolveLocalResumeTarget(sessionId: string, namespace: string): LocalResumeTargetResult {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return {
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            }
+        }
+        return this.resolveLocalResumeTargetUnlocked(sessionId, namespace)
+    }
+
+    private resolveLocalResumeTargetUnlocked(sessionId: string, namespace: string): LocalResumeTargetResult {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -2869,7 +2880,7 @@ export class SyncEngine {
         // loading state for ~3–5s longer; the session opens as ACP.
         const session = await this.maybeAutoMigrateLegacyCursorSession(initialSession, namespace)
 
-        const targetResult = this.resolveLocalResumeTarget(access.sessionId, namespace)
+        const targetResult = this.resolveLocalResumeTargetUnlocked(access.sessionId, namespace)
         let flavor: AgentFlavor
         let resumeToken: string | undefined
         let directory: string

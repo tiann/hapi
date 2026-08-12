@@ -118,6 +118,15 @@ async function withSessionHistoryLock<T>(_sessionId: string, work: () => T | Pro
     return await work()
 }
 
+function resolveSessionAccess(store: Store) {
+    return (sessionId: string, namespace: string) => {
+        const session = store.sessions.getSessionByNamespace(sessionId, namespace)
+        return session
+            ? { ok: true as const, sessionId, session }
+            : { ok: false as const, reason: 'not-found' as const }
+    }
+}
+
 describe('Claude session import', () => {
     const stores: Store[] = []
 
@@ -131,6 +140,7 @@ describe('Claude session import', () => {
         const events: unknown[] = []
         const engine = {
             withSessionHistoryLock,
+            resolveSessionAccess: resolveSessionAccess(store),
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -161,6 +171,7 @@ describe('Claude session import', () => {
         const persistedCounts: number[] = []
         const engine = {
             withSessionHistoryLock,
+            resolveSessionAccess: resolveSessionAccess(store),
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionPageForMachine: async (_machineId: string, options: { sessionId: string; cursor: number }) => {
                 requests.push({ sessionId: options.sessionId, cursor: options.cursor })
@@ -255,6 +266,7 @@ describe('Claude session import', () => {
         })
         const engine = {
             withSessionHistoryLock,
+            resolveSessionAccess: resolveSessionAccess(store),
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => {
                 pageCalls += 1
@@ -354,6 +366,7 @@ describe('Claude session import', () => {
         const source = transcript('native-changing', ['one', 'two'])
         const engine = {
             withSessionHistoryLock,
+            resolveSessionAccess: resolveSessionAccess(store),
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => ({
                 success: true as const,
@@ -399,6 +412,7 @@ describe('Claude session import', () => {
         const selectedMachine = machine()
         const engine = {
             withSessionHistoryLock,
+            resolveSessionAccess: resolveSessionAccess(store),
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionSummariesForMachine: async () => {
                 throw new RpcTargetMissingError(`${selectedMachine.id}:listClaudeSessions`, 'handler-not-registered')
@@ -1089,14 +1103,21 @@ describe('Claude session import', () => {
             get() {
                 if (!activated) {
                     activated = true
-                    store.sessions.setSessionActive(existing.id, true, Date.now(), 'default')
                 }
                 return sourceMessages
             }
         })
         const runtimeEngine = {
             ...engine,
-            withSessionHistoryLock: async <T>(_sessionId: string, work: () => T | Promise<T>) => await work()
+            withSessionHistoryLock: async <T>(_sessionId: string, work: () => T | Promise<T>) => await work(),
+            resolveSessionAccess: (sessionId: string, namespace: string) => {
+                const session = sessionId === existing.id
+                    ? store.sessions.getSessionByNamespace(sessionId, namespace)
+                    : null
+                return session
+                    ? { ok: true as const, sessionId, session: { ...session, active: activated } }
+                    : { ok: false as const, reason: 'not-found' as const }
+            }
         } as unknown as SyncEngine
 
         const result = await importClaudeSession({

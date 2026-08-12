@@ -175,6 +175,15 @@ describe('session model', () => {
                 message: 'Conversation history action already in progress',
                 code: 'resume_failed'
             })
+            const targetResult = await engine.withSessionHistoryLock(
+                'history-locked-session',
+                () => engine.resolveLocalResumeTarget('history-locked-session', 'default')
+            )
+            expect(targetResult).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
         } finally {
             engine.stop()
         }
