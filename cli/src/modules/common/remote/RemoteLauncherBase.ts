@@ -2,6 +2,7 @@ import { render } from 'ink';
 import type { ReactElement } from 'react';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { restoreTerminalState } from '@/ui/terminalState';
+import { isTerminalLost } from '@/agent/terminalLossState';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export type RemoteLauncherExitReason = 'switch' | 'exit';
@@ -38,7 +39,6 @@ type RpcHandlerManagerLike = {
 
 export abstract class RemoteLauncherBase {
     protected readonly messageBuffer: MessageBuffer;
-    protected readonly hasTTY: boolean;
     protected readonly logPath?: string;
     protected exitReason: RemoteLauncherExitReason | null = null;
     protected shouldExit: boolean = false;
@@ -47,8 +47,21 @@ export abstract class RemoteLauncherBase {
 
     protected constructor(logPath?: string) {
         this.logPath = logPath;
-        this.hasTTY = Boolean(process.stdout.isTTY && process.stdin.isTTY);
         this.messageBuffer = new MessageBuffer();
+    }
+
+    // A fresh launcher is constructed on every local→remote switch (e.g.
+    // ClaudeRemoteLauncher), but the terminal can also disappear (SIGHUP)
+    // AFTER an existing launcher instance has already been constructed and
+    // is mid-run. Once the controlling terminal is gone, the slave-side fd
+    // can still read isTTY=true even though nothing is reading/writing it
+    // anymore — so this must be evaluated live on every access (not cached
+    // once at construction time), and `isTerminalLost()` must short-circuit
+    // it regardless of what isTTY reports, or setupTerminal()/
+    // finalizeTerminal() below would still console.clear(), ink-render, and
+    // touch raw mode against a dead terminal.
+    protected get hasTTY(): boolean {
+        return Boolean(process.stdout.isTTY && process.stdin.isTTY) && !isTerminalLost();
     }
 
     protected abstract createDisplay(context: RemoteLauncherDisplayContext): ReactElement;
