@@ -886,94 +886,112 @@ async function importClaudeSessionFromPagesUnlocked(options: {
         )
     }
 
-    let appended = 0
-    let lastActivityAt: number | null = null
-    try {
-        if (analysis.observedCount < analysis.messageCount) {
-            await visitClaudeTranscriptPages({
-                loadPage: options.loadPage,
-                sessionId: claudeSessionId,
-                startCursor: analysis.importStartIndex,
-                expectedSummary: transcript,
-                onMessage: (source, index) => {
-                    if (analysis.matchedSourceIndexes.has(index)) return
-                    const latestActive = liveImportedSessionActive(engine, stored!.id, namespace)
-                    if (latestActive === null) throw new Error('Imported HAPI session disappeared')
-                    if (latestActive) {
-                        throw new ClaudeImportStreamError(
-                            'session_active',
-                            'The HAPI Claude session became active; stop it before importing native history changes'
+    const importedSession = stored
+    const finishImport = async (): Promise<ClaudeImportResult> => {
+        let appended = 0
+        let lastActivityAt: number | null = null
+        try {
+            if (analysis.observedCount < analysis.messageCount) {
+                await visitClaudeTranscriptPages({
+                    loadPage: options.loadPage,
+                    sessionId: claudeSessionId,
+                    startCursor: analysis.importStartIndex,
+                    expectedSummary: transcript,
+                    onMessage: (source, index) => {
+                        if (analysis.matchedSourceIndexes.has(index)) return
+                        const latestActive = liveImportedSessionActive(engine, importedSession.id, namespace)
+                        if (latestActive === null) throw new Error('Imported HAPI session disappeared')
+                        if (latestActive) {
+                            throw new ClaudeImportStreamError(
+                                'session_active',
+                                'The HAPI Claude session became active; stop it before importing native history changes'
+                            )
+                        }
+                        const result = store.messages.addImportedMessage(
+                            importedSession.id,
+                            source.content,
+                            source.localId,
+                            source.createdAt
                         )
+                        if (!result.inserted) return
+                        appended += 1
+                        lastActivityAt = result.message.createdAt
+                        emitImportedMessages(engine, importedSession.id, [result.message])
                     }
-                    const result = store.messages.addImportedMessage(
-                        stored!.id,
-                        source.content,
-                        source.localId,
-                        source.createdAt
-                    )
-                    if (!result.inserted) return
-                    appended += 1
-                    lastActivityAt = result.message.createdAt
-                    emitImportedMessages(engine, stored!.id, [result.message])
+                })
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to persist imported Claude history'
+            const state = error instanceof ImportedMessageConflictError ? 'diverged' : 'failed'
+            const streamError = error instanceof ClaudeImportStreamError ? error : null
+            markImportState(store, engine, importedSession.id, namespace, transcript, machine.id, state, message)
+            return {
+                claudeSessionId: transcript.id,
+                hapiSessionId: importedSession.id,
+                error: {
+                    code: state === 'diverged' ? 'transcript_diverged' : (streamError?.code ?? 'import_failed'),
+                    message
                 }
-            })
+            }
         }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to persist imported Claude history'
-        const state = error instanceof ImportedMessageConflictError ? 'diverged' : 'failed'
-        const streamError = error instanceof ClaudeImportStreamError ? error : null
-        markImportState(store, engine, stored.id, namespace, transcript, machine.id, state, message)
+
+        try {
+            await applyClaudeLaunchSettings(engine, importedSession.id, launchSettings)
+            updateMetadataWithRetry(store, importedSession.id, namespace, (metadata) =>
+                buildClaudeMetadata(
+                    transcript,
+                    machine,
+                    metadata,
+                    {
+                        state: 'complete',
+                        machineId: machine.id,
+                        claudeSessionId: transcript.id,
+                        sourceFile: transcript.file,
+                        startedAt,
+                        updatedAt: Date.now(),
+                        messageCount: analysis.messageCount,
+                        lastLocalId: analysis.lastLocalId,
+                        prefixDigest: analysis.prefixDigest
+                    },
+                    launchSettings
+                )
+            )
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to finalize imported Claude history'
+            try {
+                markImportState(store, engine, importedSession.id, namespace, transcript, machine.id, 'failed', message)
+            } catch {}
+            return {
+                claudeSessionId: transcript.id,
+                hapiSessionId: importedSession.id,
+                error: { code: 'import_failed', message }
+            }
+        }
+
+        const activityAt = lastActivityAt ?? transcript.modifiedAt
+        engine.recordSessionActivity(importedSession.id, activityAt)
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: importedSession.id })
         return {
             claudeSessionId: transcript.id,
-            hapiSessionId: stored.id,
-            error: {
-                code: state === 'diverged' ? 'transcript_diverged' : (streamError?.code ?? 'import_failed'),
-                message
-            }
+            hapiSessionId: importedSession.id,
+            action: created ? 'created' : appended > 0 ? 'updated' : 'unchanged',
+            appended
         }
     }
 
+    if (!created) return await finishImport()
     try {
-        await applyClaudeLaunchSettings(engine, stored.id, launchSettings)
-        updateMetadataWithRetry(store, stored.id, namespace, (metadata) =>
-            buildClaudeMetadata(
-                transcript,
-                machine,
-                metadata,
-                {
-                    state: 'complete',
-                    machineId: machine.id,
-                    claudeSessionId: transcript.id,
-                    sourceFile: transcript.file,
-                    startedAt,
-                    updatedAt: Date.now(),
-                    messageCount: analysis.messageCount,
-                    lastLocalId: analysis.lastLocalId,
-                    prefixDigest: analysis.prefixDigest
-                },
-                launchSettings
-            )
-        )
+        return await engine.withSessionHistoryLock(importedSession.id, finishImport)
     } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to finalize imported Claude history'
+        const message = error instanceof Error ? error.message : 'Failed to lock Claude session history'
         try {
-            markImportState(store, engine, stored.id, namespace, transcript, machine.id, 'failed', message)
+            markImportState(store, engine, importedSession.id, namespace, transcript, machine.id, 'failed', message)
         } catch {}
         return {
             claudeSessionId: transcript.id,
-            hapiSessionId: stored.id,
+            hapiSessionId: importedSession.id,
             error: { code: 'import_failed', message }
         }
-    }
-
-    const activityAt = lastActivityAt ?? transcript.modifiedAt
-    engine.recordSessionActivity(stored.id, activityAt)
-    engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
-    return {
-        claudeSessionId: transcript.id,
-        hapiSessionId: stored.id,
-        action: created ? 'created' : appended > 0 ? 'updated' : 'unchanged',
-        appended
     }
 }
 

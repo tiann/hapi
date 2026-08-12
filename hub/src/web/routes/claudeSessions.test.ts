@@ -3,8 +3,9 @@ import { Hono } from 'hono'
 import type { ClaudeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import { normalizeClaudeImportedUserText } from '@hapi/protocol/messages'
 import { Store } from '../../store'
+import { RpcRegistry } from '../../socket/rpcRegistry'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
-import type { Machine, SyncEngine } from '../../sync/syncEngine'
+import { type Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createClaudeSessionRoutes, importClaudeSession } from './claudeSessions'
 
@@ -249,6 +250,114 @@ describe('Claude session import', () => {
             0, 0,
             0, 1
         ])
+    })
+
+    it('locks a newly created session until every import page is persisted', async () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        const engine = new SyncEngine(
+            store,
+            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const selectedMachine = machine()
+        const source = transcript('native-first-import-lock', ['one', 'two'])
+        let pageCalls = 0
+        let signalSecondPersistPage!: () => void
+        let releaseSecondPersistPage!: () => void
+        const secondPersistPageStarted = new Promise<void>((resolve) => {
+            signalSecondPersistPage = resolve
+        })
+        const secondPersistPageBlocked = new Promise<void>((resolve) => {
+            releaseSecondPersistPage = resolve
+        })
+
+        Object.assign(engine, {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => {
+                pageCalls += 1
+                if (pageCalls === 4) {
+                    signalSecondPersistPage()
+                    await secondPersistPageBlocked
+                }
+                const messages = source.messages.slice(options.cursor, options.cursor + 1)
+                const next = options.cursor + messages.length
+                return {
+                    success: true as const,
+                    mode: 'messages' as const,
+                    page: {
+                        session: {
+                            id: source.id,
+                            title: source.title,
+                            lastUserMessage: source.lastUserMessage,
+                            cwd: source.cwd,
+                            file: source.file,
+                            modifiedAt: source.modifiedAt,
+                            model: source.model,
+                            messageCount: source.messageCount
+                        },
+                        messages,
+                        nextCursor: next < source.messages.length ? next : null
+                    }
+                }
+            }
+        })
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const responsePromise = app.request('/api/claude/import-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    machineId: selectedMachine.id,
+                    sessionIds: [source.id]
+                })
+            })
+            await secondPersistPageStarted
+
+            const imported = store.sessions.getSessionsByNamespace('default').find((session) =>
+                (session.metadata as { claudeSessionId?: string } | null)?.claudeSessionId === source.id
+            )
+            expect(imported).toBeDefined()
+            expect(store.messages.getAllMessages(imported!.id)).toHaveLength(1)
+            expect(await engine.reopenSession(imported!.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+            expect(engine.resolveLocalResumeTarget(imported!.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+            await expect(engine.sendMessage(imported!.id, { text: 'must wait' })).rejects.toThrow(
+                'Conversation history action already in progress'
+            )
+
+            releaseSecondPersistPage()
+            const response = await responsePromise
+            expect(response.status).toBe(200)
+            expect(await response.json()).toMatchObject({
+                success: true,
+                results: [{
+                    claudeSessionId: source.id,
+                    hapiSessionId: imported!.id,
+                    action: 'created',
+                    appended: 2
+                }]
+            })
+            expect(store.messages.getAllMessages(imported!.id)).toHaveLength(2)
+        } finally {
+            releaseSecondPersistPage()
+            engine.stop()
+        }
     })
 
     it('queues concurrent imports and applies each request launch settings in order', async () => {
