@@ -334,6 +334,15 @@ export class SessionCache {
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
 
+        if (!wasActive) {
+            // Mirror the active=false convergence point (expireInactive /
+            // handleSessionEnd below): persist the reactivation to the store,
+            // not just the in-memory cache. Gated on the false->true edge
+            // only, so a running session's frequent keepalives don't hit the
+            // DB on every heartbeat.
+            this.store.sessions.setSessionActive(session.id, true, session.activeAt, session.namespace)
+        }
+
         this.lastBroadcastAtBySessionId.set(session.id, Date.now())
         this.publisher.emit({
             type: 'session-updated',
@@ -470,6 +479,13 @@ export class SessionCache {
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
+        if (!wasActive) {
+            // Same reactivation-persistence rule as markSessionActive: only
+            // write on the false->true edge so the frequent (every-few-
+            // seconds) keepalive heartbeat that drives this method doesn't
+            // hit the DB while the session is already active.
+            this.store.sessions.setSessionActive(session.id, true, session.activeAt, session.namespace)
+        }
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
         if (!requestedThinking && preserveQueuedThinking && hasUnconsumedPrompt) {
