@@ -198,6 +198,61 @@ describe('local Claude sessions', () => {
         })
     })
 
+    it('keeps a timestamp-less message between its timestamped JSONL neighbors', async () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        const firstAt = Date.parse('2026-08-08T01:00:00.000Z')
+        const lastAt = Date.parse('2026-08-08T01:00:02.000Z')
+        writeFileSync(
+            join(projectDir, `${SESSION_ID}.jsonl`),
+            [
+                line({
+                    parentUuid: null,
+                    isSidechain: false,
+                    userType: 'external',
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'user',
+                    message: { role: 'user', content: 'First prompt' },
+                    uuid: 'user-before-missing',
+                    timestamp: '2026-08-08T01:00:00.000Z'
+                }),
+                line({
+                    parentUuid: 'user-before-missing',
+                    isSidechain: false,
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'Untimestamped answer' }] },
+                    uuid: 'assistant-missing-timestamp'
+                }),
+                line({
+                    parentUuid: 'assistant-missing-timestamp',
+                    isSidechain: false,
+                    userType: 'external',
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'user',
+                    message: { role: 'user', content: 'Later prompt' },
+                    uuid: 'user-after-missing',
+                    timestamp: '2026-08-08T01:00:02.000Z'
+                })
+            ].join('\n')
+        )
+
+        const session = await readSession(SESSION_ID)
+
+        expect(session?.messages.map((message) => message.localId)).toEqual([
+            `claude:${SESSION_ID}:user-before-missing`,
+            `claude:${SESSION_ID}:assistant-missing-timestamp`,
+            `claude:${SESSION_ID}:user-after-missing`
+        ])
+        expect(session?.messages.map((message) => message.createdAt)).toEqual([
+            firstAt,
+            firstAt,
+            lastAt
+        ])
+    })
+
     it('streams a large CRLF transcript below a byte budget without losing message order', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const records: Record<string, unknown>[] = [{

@@ -39,6 +39,7 @@ type ClaudeTranscriptRecord = {
     userPreview: string | null
     assistantModel: string | null
     assistantToolUseIds: string[]
+    createdAt: number | null
     offset: number
     length: number
 }
@@ -47,6 +48,7 @@ type ClaudeTranscriptLocation = {
     uuid: string
     offset: number
     length: number
+    createdAt: number
 }
 
 type ClaudeTranscriptIndex = {
@@ -69,10 +71,27 @@ function truncateText(value: string, maxLength: number): string {
     return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value
 }
 
-function parseTimestamp(value: string | undefined, fallback: number): number {
-    if (!value) return fallback
+function parseTimestamp(value: string | undefined): number | null {
+    if (!value) return null
     const parsed = Date.parse(value)
-    return Number.isFinite(parsed) ? parsed : fallback
+    return Number.isFinite(parsed) ? parsed : null
+}
+
+function resolveCreatedAts(values: Array<number | null>, fallback: number): number[] {
+    const resolved = values.slice()
+    let previous: number | null = null
+    for (let index = 0; index < resolved.length; index += 1) {
+        const current = resolved[index]
+        if (current !== null) previous = current
+        else if (previous !== null) resolved[index] = previous
+    }
+
+    const firstKnown = resolved.findIndex((value) => value !== null)
+    if (firstKnown === -1) return resolved.map(() => fallback)
+    for (let index = firstKnown - 1; index >= 0; index -= 1) {
+        resolved[index] = resolved[index + 1]! - 1
+    }
+    return resolved as number[]
 }
 
 export function getClaudeProjectsRoot(): string {
@@ -301,11 +320,13 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
         let assistantModel: string | null = null
         let toolUseIds: string[] = []
         let relatedMessageId: string | null = null
+        let createdAt: number | null = null
 
         if (rawRecord.type === 'custom-title' && typeof rawRecord.customTitle === 'string') {
             customTitle = rawRecord.customTitle.trim() || customTitle
         } else if (parsed.success) {
             const event = parsed.data
+            createdAt = parseTimestamp(event.timestamp)
             cwd ??= event.cwd?.trim() || null
             if (event.type === 'ai-title') {
                 aiTitle = event.aiTitle.trim() || aiTitle
@@ -351,6 +372,7 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
             userPreview,
             assistantModel,
             assistantToolUseIds: toolUseIds,
+            createdAt,
             offset: line.offset,
             length: line.length
         }
@@ -366,14 +388,27 @@ async function indexClaudeTranscript(candidate: SessionFileCandidate): Promise<C
     }
 
     const activeRecordIds = activeClaudeRecordIds(records)
+    const importedRecords = records.filter((record) =>
+        record.uuid !== null &&
+        record.messageKind !== null &&
+        (!activeRecordIds || activeRecordIds.has(record.uuid))
+    )
+    const createdAts = resolveCreatedAts(
+        importedRecords.map((record) => record.createdAt),
+        candidate.modifiedAt
+    )
     const messageLocations: ClaudeTranscriptLocation[] = []
     let firstUserMessage: string | null = null
     let lastUserMessage: string | null = null
     let model: string | null = null
-    for (const record of records) {
-        if (!record.uuid || !record.messageKind) continue
-        if (activeRecordIds && !activeRecordIds.has(record.uuid)) continue
-        messageLocations.push({ uuid: record.uuid, offset: record.offset, length: record.length })
+    for (let index = 0; index < importedRecords.length; index += 1) {
+        const record = importedRecords[index]!
+        messageLocations.push({
+            uuid: record.uuid!,
+            offset: record.offset,
+            length: record.length,
+            createdAt: createdAts[index]!
+        })
         if (record.messageKind === 'user' && record.userPreview) {
             firstUserMessage ??= record.userPreview
             lastUserMessage = record.userPreview
@@ -556,8 +591,7 @@ async function readAt(file: FileHandle, offset: number, length: number): Promise
 async function readImportedMessage(
     file: FileHandle,
     location: ClaudeTranscriptLocation,
-    sessionId: string,
-    modifiedAt: number
+    sessionId: string
 ): Promise<ClaudeImportedMessage> {
     let raw: unknown
     try {
@@ -570,7 +604,6 @@ async function readImportedMessage(
         throw new Error('Claude transcript changed while paging')
     }
     const event = parsed.data
-    const createdAt = parseTimestamp(event.timestamp, modifiedAt)
     if (isExternalUserMessage(event)) {
         const text = extractRawUserTextContent(event.message.content)
         if (text === null || text.trim().length === 0) {
@@ -578,13 +611,13 @@ async function readImportedMessage(
         }
         return {
             localId: `claude:${sessionId}:${location.uuid}`,
-            createdAt,
+            createdAt: location.createdAt,
             content: importedUser(text)
         }
     }
     return {
         localId: `claude:${sessionId}:${location.uuid}`,
-        createdAt,
+        createdAt: location.createdAt,
         content: importedAgent(event)
     }
 }
@@ -621,8 +654,7 @@ export async function listLocalClaudeSessionMessagesPageById(
             const imported = await readImportedMessage(
                 file,
                 index.messageLocations[nextIndex]!,
-                sessionId,
-                index.modifiedAt
+                sessionId
             )
             const normalized = normalizeImportedMessageForTransport(imported)
             const separatorBytes = messages.length > 0 ? 1 : 0
