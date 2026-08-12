@@ -407,6 +407,7 @@ describe('runAgentPty', () => {
         const savedFlavorToken = process.env.FLAVOR_TOKEN
         delete process.env.CLAUDE_CONFIG_DIR
         delete process.env.FLAVOR_TOKEN
+        let promise: ReturnType<typeof runAgentPty> | undefined
         try {
             const msg = deferred<{ message: string } | null>()
             const opts = makeOpts({
@@ -414,7 +415,7 @@ describe('runAgentPty', () => {
                 extraEnv: { CLAUDE_CONFIG_DIR: '/tmp/iso-cfg' },
                 nextMessage: () => msg.promise,
             })
-            const promise = runAgentPty(opts)
+            promise = runAgentPty(opts)
             await tick(0)
             const spawnEnv = (harness.m.spawn.mock.calls[0][0] as { env: Record<string, string> }).env
             expect(spawnEnv.FLAVOR_TOKEN).toBe('tok')
@@ -439,6 +440,15 @@ describe('runAgentPty', () => {
             else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
             if (savedFlavorToken === undefined) delete process.env.FLAVOR_TOKEN
             else process.env.FLAVOR_TOKEN = savedFlavorToken
+
+            // Then settle the run itself. On the throwing path the awaits above
+            // are skipped, so the in-flight runAgentPty keeps the shared harness
+            // and never resolves - and a later test flipping isRunning would
+            // settle it asynchronously, surfacing as an unhandled rejection in
+            // an unrelated test. That is the very cascade this isolation exists
+            // to prevent, so the failure path has to clean up after itself.
+            if (promise && harness.m.isRunning) harness.triggerExit(0)
+            await promise?.catch(() => {})
         }
     })
 
