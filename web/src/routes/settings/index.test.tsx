@@ -330,11 +330,19 @@ describe('responsive settings pages', () => {
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
-    it('keeps chat enum choices inline', () => {
+    it('keeps chat enum choices inline', async () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
         expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
         expect(screen.getByText('Grouped Tool Use Background')).toBeInTheDocument()
+        expect(await screen.findByRole('checkbox', { name: 'Automatically bridge transient model errors' })).toBeInTheDocument()
+    })
+
+    it('hides the auto-bridge setting from tenant namespaces', () => {
+        context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
+        renderPage(<SettingsChatPage />)
+        expect(screen.queryByRole('checkbox', { name: 'Automatically bridge transient model errors' })).not.toBeInTheDocument()
+        expect(getHubSettings).not.toHaveBeenCalled()
     })
 
     it('renders the default-collapse switch for Codex exploration groups', () => {
