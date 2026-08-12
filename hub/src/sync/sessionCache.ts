@@ -929,25 +929,13 @@ export class SessionCache {
             }
 
             if (result.result === 'success') {
+                // `refreshSession` re-reads the row we just wrote from the
+                // store, rebuilds the in-memory `Session`, and already emits
+                // a full `session-updated` broadcast itself (see its tail
+                // above) - already-open web UI tabs pick up the archive on
+                // that broadcast alone. A second, hand-rolled metadata-patch
+                // emit here would just double-fire the same update.
                 this.refreshSession(sessionId)
-                // Unlike renameSession's cosmetic metadata edit, this is a
-                // *terminal* write - no CLI is coming back to send its own
-                // update-metadata broadcast afterward, and the
-                // every-candidate-here-has-active===false precondition means
-                // SyncEngine.archiveSession's fallback handleSessionEnd()
-                // call (the other markSessionArchivedFromHub caller) also
-                // no-ops on it (it early-returns when already inactive).
-                // Without this, a hub-reaped session silently stops updating
-                // in already-open web UI tabs until the next unrelated full
-                // refetch - broadcast explicitly, same shape
-                // sessionHandlers.ts's update-metadata handler uses.
-                this.publisher.emit({
-                    type: 'session-updated',
-                    sessionId,
-                    data: {
-                        metadata: { version: result.version, value: result.value as Session['metadata'] }
-                    } satisfies SessionPatch
-                })
                 return
             }
 

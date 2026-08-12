@@ -132,13 +132,15 @@ describe('SessionReaper (hub reaper)', () => {
         expect(typeof meta?.lifecycleStateSince).toBe('number')
     })
 
-    it('broadcasts a session-updated event for each session it reaps', () => {
+    it('broadcasts exactly one full session-updated event for each session it reaps, via refreshSession - no duplicate metadata-patch emit', () => {
         // A reaped session's `active` is already `false` by construction
         // (that is the reaper's own candidate precondition), so the usual
         // `handleSessionEnd`-driven broadcast (which no-ops when the session
-        // is already inactive) never fires for it - the archive write itself
-        // must be the thing that broadcasts, or an already-open web UI
-        // tab never learns the session ended until some unrelated refetch.
+        // is already inactive) never fires for it. `markSessionArchivedFromHub`
+        // relies entirely on `refreshSession`'s own broadcast for this - it
+        // does not additionally hand-roll a metadata-patch emit, so exactly
+        // one `session-updated` event per reap is expected, carrying the full
+        // rebuilt `Session` (not a `{ metadata: { version, value } }` patch).
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
         const cache = new SessionCache(store, createPublisher(events))
@@ -160,15 +162,10 @@ describe('SessionReaper (hub reaper)', () => {
             (event): event is Extract<SyncEvent, { type: 'session-updated' }> =>
                 event.type === 'session-updated' && event.sessionId === session.id
         )
-        expect(updates.length).toBeGreaterThan(0)
-        const metadataValue = updates
-            .map((event) => {
-                const data = event.data as { metadata?: { version: number; value: Record<string, unknown> | null } } | undefined
-                return data?.metadata?.value
-            })
-            .find((value) => value !== undefined)
-        expect(metadataValue?.lifecycleState).toBe('archived')
-        expect(metadataValue?.archivedBy).toBe('hub-reaper')
+        expect(updates).toHaveLength(1)
+        const data = updates[0]?.data as { metadata?: Record<string, unknown> | null } | undefined
+        expect(data?.metadata?.lifecycleState).toBe('archived')
+        expect(data?.metadata?.archivedBy).toBe('hub-reaper')
     })
 
     it('leaves a disconnected running session alone when under the stale threshold', () => {
