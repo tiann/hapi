@@ -429,8 +429,16 @@ describe('runAgentPty', () => {
             msg.resolve(null)
             await promise
         } finally {
-            if (savedConfigDir !== undefined) process.env.CLAUDE_CONFIG_DIR = savedConfigDir
-            if (savedFlavorToken !== undefined) process.env.FLAVOR_TOKEN = savedFlavorToken
+            // Restore the EXACT prior state, including "was absent". A bare
+            // `if (saved !== undefined) set` leaves a leaked value in place on
+            // the one path that matters: if the assertions above catch a real
+            // process.env leak, the throw lands here with saved === undefined,
+            // and the leak would survive into later tests - reintroducing the
+            // cascading failure this test isolation exists to prevent.
+            if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+            else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
+            if (savedFlavorToken === undefined) delete process.env.FLAVOR_TOKEN
+            else process.env.FLAVOR_TOKEN = savedFlavorToken
         }
     })
 
