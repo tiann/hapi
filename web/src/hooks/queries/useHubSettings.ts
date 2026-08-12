@@ -21,6 +21,6 @@ export function useHubSettings(api: ApiClient | null): {
 
     return {
         data: query.data,
-        peerToolsEnabled: query.data?.peerToolsEnabled === true,
+        peerToolsEnabled: query.status === 'success' && query.data?.peerToolsEnabled === true,
     }
 }

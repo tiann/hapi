@@ -4,6 +4,7 @@ import type { PropsWithChildren } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { HubSettingsResponse } from '@hapi/protocol/apiTypes'
+import { queryKeys } from '@/lib/query-keys'
 import { useHubSettings } from './useHubSettings'
 
 const settings = (peerToolsEnabled: boolean): HubSettingsResponse => ({
@@ -17,7 +18,7 @@ function renderHubSettings(api: ApiClient | null) {
     const wrapper = ({ children }: PropsWithChildren) => (
         <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
-    return renderHook(() => useHubSettings(api), { wrapper })
+    return { ...renderHook(() => useHubSettings(api), { wrapper }), queryClient }
 }
 
 describe('useHubSettings peer-tools exposure', () => {
@@ -55,6 +56,22 @@ describe('useHubSettings peer-tools exposure', () => {
             expect(result.current.data).toBeUndefined()
             expect(result.current.peerToolsEnabled).toBe(false)
         })
+    })
+
+    it('denies guidance after an enabled settings refetch rejects', async () => {
+        const getHubSettings = vi
+            .fn()
+            .mockResolvedValueOnce(settings(true))
+            .mockRejectedValueOnce(new Error('settings unavailable'))
+        const api = { getHubSettings } as unknown as ApiClient
+        const { result, queryClient } = renderHubSettings(api)
+
+        await waitFor(() => expect(result.current.peerToolsEnabled).toBe(true))
+        await queryClient.refetchQueries({ queryKey: queryKeys.hubSettings, type: 'active' })
+        await waitFor(() => expect(queryClient.getQueryState(queryKeys.hubSettings)?.status).toBe('error'))
+
+        expect(result.current.data?.peerToolsEnabled).toBe(true)
+        expect(result.current.peerToolsEnabled).toBe(false)
     })
 
     it('denies guidance when no API is available', () => {
