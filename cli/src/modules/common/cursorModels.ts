@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process';
 import type { CursorModelsResponse, CursorModelSummary } from '@hapi/protocol/apiTypes';
+import {
+    releaseAgentCliSpawnLeaseSync,
+    tryAcquireAgentCliSpawnLeaseSync
+} from '@hapi/protocol/agentCliSpawnLease';
 import { isAgentAcpTransportActive } from '@/agent/backends/acp/agentCliGuard';
+import { resolveHapiHomeDir } from '@/configuration';
+import { killProcessByChildProcess } from '@/utils/process';
 import { getCursorAcpModelsSnapshot } from '@/cursor/utils/cursorAcpModelsBridge';
 import { getErrorMessage } from './rpcResponses';
 import {
@@ -202,9 +208,22 @@ export function parseCursorModelsOutput(output: string): {
 }
 
 async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
-    if (isAgentAcpTransportActive()) {
+    if (!tryAcquireAgentCliSpawnLeaseSync(resolveHapiHomeDir())) {
         throw new Error('Cursor ACP transport is active');
     }
+    if (isAgentAcpTransportActive()) {
+        releaseAgentCliSpawnLeaseSync();
+        throw new Error('Cursor ACP transport is active');
+    }
+
+    let leaseReleased = false;
+    const releaseLeaseOnce = (): void => {
+        if (leaseReleased) {
+            return;
+        }
+        leaseReleased = true;
+        releaseAgentCliSpawnLeaseSync();
+    };
 
     return await new Promise((resolve, reject) => {
         const child = spawn('agent', ['--list-models'], {
@@ -217,11 +236,21 @@ async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
         let stderr = '';
         let settled = false;
 
-        const timeout = setTimeout(() => {
-            if (settled) return;
+        let timeoutError: Error | null = null;
+
+        const finish = (handler: () => void): void => {
+            if (settled) {
+                return;
+            }
             settled = true;
-            child.kill('SIGTERM');
-            reject(new Error('Cursor model discovery timed out'));
+            clearTimeout(timeout);
+            releaseLeaseOnce();
+            handler();
+        };
+
+        const timeout = setTimeout(() => {
+            timeoutError = new Error('Cursor model discovery timed out');
+            void killProcessByChildProcess(child, true);
         }, PROBE_TIMEOUT_MS);
 
         child.stdout?.on('data', (chunk) => {
@@ -231,23 +260,23 @@ async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
             stderr += chunk.toString();
         });
         child.on('error', (error) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            reject(error);
+            finish(() => reject(error));
         });
         child.on('exit', (code) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            if (code !== 0) {
-                reject(new Error(stderr.trim() || `agent --list-models exited with code ${code}`));
-                return;
-            }
+            finish(() => {
+                if (timeoutError) {
+                    reject(timeoutError);
+                    return;
+                }
+                if (code !== 0) {
+                    reject(new Error(stderr.trim() || `agent --list-models exited with code ${code}`));
+                    return;
+                }
 
-            resolve({
-                success: true,
-                ...parseCursorModelsOutput(stdout)
+                resolve({
+                    success: true,
+                    ...parseCursorModelsOutput(stdout)
+                });
             });
         });
     });

@@ -129,7 +129,7 @@ describe('AcpStdioTransport agent CLI guard', () => {
     });
 
     test('registers cross-process guard only for Cursor agent command', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         expect(guard.register).toHaveBeenCalledTimes(1);
         expect(guard.recordChildPid).toHaveBeenCalledWith(424242);
         await transport.close();
@@ -137,17 +137,17 @@ describe('AcpStdioTransport agent CLI guard', () => {
         expect(guard.unregister).toHaveBeenCalledWith({ childPid: 424242 });
     });
 
-    test('registers the ACP guard before spawn so list-models cannot race the new child', () => {
+    test('registers the ACP guard before spawn so list-models cannot race the new child', async () => {
         spawnState.spawnCallOrder = [];
-        new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         expect(spawnState.spawnCallOrder.indexOf('register')).toBeGreaterThanOrEqual(0);
         expect(spawnState.spawnCallOrder.indexOf('spawn')).toBeGreaterThan(
             spawnState.spawnCallOrder.indexOf('register')
         );
     });
 
-    test('keeps the ACP guard held across exit until close drains stdio', () => {
-        new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+    test('keeps the ACP guard held across exit until close drains stdio', async () => {
+        await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         guard.unregister.mockClear();
 
         for (const handler of spawnState.exitHandlers) {
@@ -162,12 +162,12 @@ describe('AcpStdioTransport agent CLI guard', () => {
         expect(guard.unregister).toHaveBeenCalledWith({ childPid: 424242 });
     });
 
-    test('does not register guard for non-agent ACP backends', () => {
+    test('does not register guard for non-agent ACP backends', async () => {
         for (const command of ['gemini', 'opencode', 'kimi']) {
             guard.register.mockClear();
             guard.unregister.mockClear();
             guard.recordChildPid.mockClear();
-            new AcpStdioTransport({ command });
+            await AcpStdioTransport.create({ command });
             expect(guard.register).not.toHaveBeenCalled();
             expect(guard.recordChildPid).not.toHaveBeenCalled();
             expect(guard.unregister).not.toHaveBeenCalled();
@@ -188,7 +188,7 @@ describe('AcpStdioTransport plain-text stdout', () => {
     });
 
     test('ignores Cursor worktree banner and keeps JSON-RPC session alive', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const notifications: Array<{ method: string; params: unknown }> = [];
         transport.onNotification((method, params) => {
             notifications.push({ method, params });
@@ -221,7 +221,7 @@ describe('AcpStdioTransport plain-text stdout', () => {
     });
 
     test('ignores non-object JSON lines without killing the session', async () => {
-        const transport = new AcpStdioTransport({ command: 'gemini' });
+        const transport = await AcpStdioTransport.create({ command: 'gemini' });
         const pending = transport.sendRequest('initialize');
 
         emitStdout('42\n');
@@ -239,7 +239,7 @@ describe('AcpStdioTransport plain-text stdout', () => {
     });
 
     test('treats unknown non-JSON stdout as a fatal protocol error', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const pending = transport.sendRequest('initialize');
 
         expect(spawnState.stdoutDataHandlers.length).toBeGreaterThan(0);
@@ -266,7 +266,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('rejects new requests after process exit before close without writing stdin', async () => {
-        const transport = new AcpStdioTransport({ command: 'gemini' });
+        const transport = await AcpStdioTransport.create({ command: 'gemini' });
         spawnState.exitCode = 1;
         spawnState.stdinWrite.mockClear();
 
@@ -287,7 +287,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('rejects new requests after the ACP process exits instead of throwing from stdin.write', async () => {
-        const transport = new AcpStdioTransport({ command: 'gemini' });
+        const transport = await AcpStdioTransport.create({ command: 'gemini' });
         spawnState.exitCode = 1;
         spawnState.stdinWrite.mockImplementation(() => {
             throw new Error('WritableIterable is closed');
@@ -304,7 +304,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('includes recent stderr on process close so callers can classify model rejection', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -328,7 +328,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('accumulates split stderr chunks so Cannot use this model survives a catalog follow-up chunk', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -352,7 +352,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('preserves Cannot use this model when the keyword itself is split across chunks', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -382,7 +382,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('waits for the model id before emitting Cannot use this model via onStderrError', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -415,7 +415,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('pins Cannot use this model head when Available models catalog exceeds the rolling window', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -439,7 +439,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
     });
 
     test('keeps the head of long stderr so Cannot use this model survives Available models lists', async () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -462,8 +462,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         );
     });
 
-    test('reports Cannot use this model stderr via onStderrError with Cursor text intact', () => {
-        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+    test('reports Cannot use this model stderr via onStderrError with Cursor text intact', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const seen: Array<{ type: string; message: string; raw: string }> = [];
         transport.onStderrError((error) => {
             seen.push(error);
@@ -492,8 +492,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         ['status 404', 'model_not_found'],
         ['Cannot use this model: stale-id', 'model_not_found'],
         ['unexpected error', 'unknown']
-    ])('reports newline-free %s stderr immediately', (chunk, type) => {
-        const transport = new AcpStdioTransport({ command: 'agent' });
+    ])('reports newline-free %s stderr immediately', async (chunk, type) => {
+        const transport = await AcpStdioTransport.create({ command: 'agent' });
         const seen: Array<{ type: string }> = [];
         transport.onStderrError((error) => seen.push(error));
         const proc = (transport as unknown as { process: {
@@ -508,8 +508,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         expect(seen.map((error) => error.type)).toEqual([type]);
     });
 
-    test('reports a completed non-HTTP/2 cancellation record', () => {
-        const transport = new AcpStdioTransport({ command: 'agent' });
+    test('reports a completed non-HTTP/2 cancellation record', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agent' });
         const seen: Array<{ type: string; message: string; raw: string }> = [];
         transport.onStderrError((error) => seen.push(error));
         const proc = (transport as unknown as { process: {
@@ -528,8 +528,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }]);
     });
 
-    test('parses stall signatures split across stderr chunks without waiting for close', () => {
-        const transport = new AcpStdioTransport({ command: 'opencode' });
+    test('parses stall signatures split across stderr chunks without waiting for close', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
         const seen: Array<{ type: string; message: string; raw: string }> = [];
         transport.onStderrError((error) => {
             seen.push(error);
@@ -579,8 +579,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         ]);
     });
 
-    test('bounds newline-free unclassified stderr tails', () => {
-        const transport = new AcpStdioTransport({ command: 'agent' });
+    test('bounds newline-free unclassified stderr tails', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agent' });
         const proc = (transport as unknown as { process: {
             stderr: { on: ReturnType<typeof vi.fn> };
         } }).process;
@@ -599,7 +599,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
             throw new Error('WritableIterable is closed');
         });
 
-        const transport = new AcpStdioTransport({ command: 'gemini' });
+        const transport = await AcpStdioTransport.create({ command: 'gemini' });
         await expect(transport.sendRequest('initialize')).rejects.toThrow('WritableIterable is closed');
         await expect(transport.sendRequest('session/new')).rejects.toThrow('WritableIterable is closed');
     });

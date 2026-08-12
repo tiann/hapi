@@ -4,9 +4,11 @@ const transportState = vi.hoisted(() => ({
     calls: [] as Array<{ method: string; params?: unknown }>
 }));
 
-vi.mock('./AcpStdioTransport', () => ({
-    AcpStdioTransport: class {
-        constructor(_options: unknown) {}
+vi.mock('./AcpStdioTransport', () => {
+    class MockAcpStdioTransport {
+        static async create(_options: unknown) {
+            return new MockAcpStdioTransport();
+        }
         onNotification = vi.fn();
         onStderrError = vi.fn();
         registerRequestHandler = vi.fn();
@@ -19,7 +21,8 @@ vi.mock('./AcpStdioTransport', () => ({
         });
         close = vi.fn(async () => {});
     }
-}));
+    return { AcpStdioTransport: MockAcpStdioTransport };
+});
 
 import { AcpSdkBackend } from './AcpSdkBackend';
 

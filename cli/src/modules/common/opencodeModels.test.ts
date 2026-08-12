@@ -2,17 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const sendRequestMock = vi.fn()
 const closeMock = vi.fn().mockResolvedValue(undefined)
-const transportConstructor = vi.fn()
+const transportCreate = vi.fn()
 
-vi.mock('@/agent/backends/acp/AcpStdioTransport', () => ({
-    AcpStdioTransport: class {
+vi.mock('@/agent/backends/acp/AcpStdioTransport', () => {
+    class MockAcpStdioTransport {
         sendRequest = sendRequestMock
         close = closeMock
-        constructor(opts: { command: string; args?: string[] }) {
-            transportConstructor(opts)
+        static async create(opts: { command: string; args?: string[] }) {
+            transportCreate(opts)
+            return new MockAcpStdioTransport()
         }
     }
-}))
+    return { AcpStdioTransport: MockAcpStdioTransport }
+})
 
 import { listOpencodeModelsForCwd, _resetOpencodeModelsCacheForTests } from './opencodeModels'
 
@@ -21,7 +23,7 @@ describe('listOpencodeModelsForCwd', () => {
         _resetOpencodeModelsCacheForTests()
         sendRequestMock.mockReset()
         closeMock.mockClear()
-        transportConstructor.mockClear()
+        transportCreate.mockClear()
     })
 
     afterEach(() => {
@@ -50,7 +52,7 @@ describe('listOpencodeModelsForCwd', () => {
 
         const result = await listOpencodeModelsForCwd('/home/user/project')
 
-        expect(transportConstructor).toHaveBeenCalledWith(
+        expect(transportCreate).toHaveBeenCalledWith(
             expect.objectContaining({ command: 'opencode', args: ['acp'] })
         )
         expect(sendRequestMock).toHaveBeenNthCalledWith(
@@ -131,7 +133,7 @@ describe('listOpencodeModelsForCwd', () => {
         await listOpencodeModelsForCwd('/cache/cwd')
         await listOpencodeModelsForCwd('/cache/cwd')
 
-        expect(transportConstructor).toHaveBeenCalledTimes(1)
+        expect(transportCreate).toHaveBeenCalledTimes(1)
         expect(sendRequestMock).toHaveBeenCalledTimes(2)
     })
 
@@ -152,7 +154,7 @@ describe('listOpencodeModelsForCwd', () => {
 
         const [r1, r2] = await Promise.all([inflight1, inflight2])
 
-        expect(transportConstructor).toHaveBeenCalledTimes(1)
+        expect(transportCreate).toHaveBeenCalledTimes(1)
         expect(r1).toEqual(r2)
         expect(r1.success).toBe(true)
     })

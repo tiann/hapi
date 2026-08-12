@@ -1,4 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
+import {
+    acquireAgentCliSpawnLease,
+    releaseAgentCliSpawnLeaseFromAcpRegisterSync
+} from '@hapi/protocol/agentCliSpawnLease';
+import { resolveHapiHomeDir } from '@/configuration';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
 import { GEMINI_MODEL_PRESETS } from '@hapi/protocol';
@@ -58,6 +63,7 @@ export function buildAcpStdioSpawnOptions(env?: Record<string, string>): SpawnOp
 export class AcpStdioTransport {
     /** Only Cursor's `agent` CLI is single-process; other ACP backends must not block model probes. */
     private readonly shouldGuardAgentCli: boolean;
+    private readonly command: string;
     private readonly process: ChildProcessWithoutNullStreams;
     private readonly pending = new Map<string | number, {
         resolve: (value: unknown) => void;
@@ -87,23 +93,44 @@ export class AcpStdioTransport {
     /** Max stderr attached to the close Error (prefer model-rejection head). */
     private static readonly CLOSE_STDERR_CAP = 4_000;
 
-    constructor(options: {
+    static async create(options: {
         command: string;
         args?: string[];
         env?: Record<string, string>;
-    }) {
-        this.shouldGuardAgentCli = options.command === 'agent';
-        // Register before spawn so runner/list-models cannot observe an unlocked
-        // window between process creation and lock write (#1472).
-        if (this.shouldGuardAgentCli) {
-            registerActiveAcpTransport();
+    }): Promise<AcpStdioTransport> {
+        const shouldGuardAgentCli = options.command === 'agent';
+        if (shouldGuardAgentCli) {
+            await acquireAgentCliSpawnLease(resolveHapiHomeDir());
+            try {
+                registerActiveAcpTransport();
+                try {
+                    const process = spawn(
+                        options.command,
+                        options.args ?? [],
+                        buildAcpStdioSpawnOptions(options.env)
+                    ) as ChildProcessWithoutNullStreams;
+                    return new AcpStdioTransport(process, true, options.command);
+                } catch (error) {
+                    unregisterActiveAcpTransport();
+                    throw error;
+                }
+            } finally {
+                releaseAgentCliSpawnLeaseFromAcpRegisterSync();
+            }
         }
 
-        this.process = spawn(
+        const process = spawn(
             options.command,
             options.args ?? [],
             buildAcpStdioSpawnOptions(options.env)
         ) as ChildProcessWithoutNullStreams;
+        return new AcpStdioTransport(process, false, options.command);
+    }
+
+    private constructor(process: ChildProcessWithoutNullStreams, shouldGuardAgentCli: boolean, command: string) {
+        this.shouldGuardAgentCli = shouldGuardAgentCli;
+        this.command = command;
+        this.process = process;
 
         if (this.shouldGuardAgentCli) {
             const childPid = typeof this.process.pid === 'number' ? this.process.pid : null;
@@ -195,7 +222,7 @@ export class AcpStdioTransport {
             logger.debug('[ACP] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
             this.markClosed(new Error(
-                `Failed to spawn ${options.command}: ${message}. Is it installed and on PATH?`,
+                `Failed to spawn ${this.command}: ${message}. Is it installed and on PATH?`,
                 { cause: error }
             ));
         });

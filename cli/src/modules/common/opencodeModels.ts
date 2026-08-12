@@ -84,7 +84,7 @@ function extractModelsFromResponse(response: unknown): {
 }
 
 async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdResponse> {
-    const transport = new AcpStdioTransport({
+    const transport = await AcpStdioTransport.create({
         command: 'opencode',
         args: ['acp']
     });

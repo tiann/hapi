@@ -8,6 +8,10 @@ import {
     writeFileSync
 } from 'node:fs';
 import { join } from 'node:path';
+import {
+    releaseAgentCliSpawnLeaseFromAcpRegisterSync,
+    _resetAgentCliSpawnLeaseForTests
+} from '@hapi/protocol/agentCliSpawnLease';
 import { resolveHapiHomeDir } from '@/configuration';
 
 /**
@@ -16,7 +20,10 @@ import { resolveHapiHomeDir } from '@/configuration';
  * child (SIGTERM / exit 143) and crashes the remote session.
  *
  * In-process ref counting covers RPC handlers in the same process; a HAPI_HOME
- * lock directory covers runner vs session child processes.
+ * lock directory covers runner vs session child processes. The proper-lockfile
+ * spawn lease (`locks/agent-cli.spawn`) is held only around `spawn('agent')`
+ * in AcpStdioTransport and during list-models probes — not for the full session
+ * (#1520; multi-session ACP must remain possible).
  *
  * Prefer recording the ACP child PID (not only the HAPI host PID) so stale
  * cleanup and logs attribute the real `agent` process. Register the lock
@@ -468,8 +475,11 @@ export function _setActiveAcpTransportCountForTests(count: number): void {
 }
 
 export function _resetAgentCliGuardForTests(): void {
+    const home = process.env.HAPI_HOME;
     activeAcpTransportCount = 0;
     registerPublishHook = null;
     addLockPidHook = null;
+    releaseAgentCliSpawnLeaseFromAcpRegisterSync();
+    _resetAgentCliSpawnLeaseForTests(home);
     removeAcpLockDir();
 }

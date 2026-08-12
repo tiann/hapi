@@ -152,7 +152,7 @@ async function runGrokModelsCliProbe(cwd: string): Promise<ListGrokModelsForCwdR
 async function runGrokModelsProbe(cwd: string): Promise<ListGrokModelsForCwdResponse> {
     // The primary ACP probe also uses shell mode on Windows through AcpStdioTransport.
     assertSafeWindowsShellArg(cwd, 'cwd')
-    const transport = new AcpStdioTransport({
+    const transport = await AcpStdioTransport.create({
         command: 'grok',
         args: ['--cwd', cwd, 'agent', '--reasoning-effort', 'low', 'stdio'],
         env: Object.fromEntries(

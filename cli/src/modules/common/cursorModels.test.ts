@@ -404,20 +404,41 @@ describe('listCursorModels', () => {
         });
     });
 
-    test('skips CLI slug probe when ACP lock is active after ACP probe', async () => {
-        vi.mocked(isAgentAcpTransportActive)
-            .mockReturnValueOnce(false)
-            .mockReturnValueOnce(true);
+    test('skips CLI slug probe when spawn lease is held after guard reads inactive', async () => {
+        const { acquireAgentCliSpawnLeaseSync, _resetAgentCliSpawnLeaseForTests } = await import(
+            '@hapi/protocol/agentCliSpawnLease'
+        )
+        acquireAgentCliSpawnLeaseSync(testHapiHome)
+        vi.mocked(isAgentAcpTransportActive).mockReturnValueOnce(false)
         acpProbeMock.runCursorAcpModelProbe.mockResolvedValue({
             success: false,
             error: 'no wires'
-        });
+        })
 
-        const result = await listCursorModels();
+        const result = await listCursorModels()
 
-        expect(spawnMock).not.toHaveBeenCalled();
-        expect(result).toEqual({ success: false, error: 'no wires' });
-    });
+        expect(spawnMock).not.toHaveBeenCalled()
+        expect(result.success).toBe(false)
+        expect(result.error).toContain('ACP transport is active')
+        _resetAgentCliSpawnLeaseForTests(testHapiHome)
+    })
+
+    test('does not spawn list-models when ACP marker appears after lease acquire', async () => {
+        vi.mocked(isAgentAcpTransportActive)
+            .mockReturnValueOnce(false)
+            .mockReturnValueOnce(false)
+            .mockReturnValueOnce(true)
+        acpProbeMock.runCursorAcpModelProbe.mockResolvedValue({
+            success: false,
+            error: 'no wires'
+        })
+
+        const result = await listCursorModels()
+
+        expect(spawnMock).not.toHaveBeenCalled()
+        expect(result.success).toBe(false)
+        expect(result.error).toContain('ACP transport is active')
+    })
 
     test('prefers live ACP snapshot over cache while ACP transport is active', async () => {
         vi.mocked(isAgentAcpTransportActive).mockReturnValue(true)

@@ -74,6 +74,7 @@ export class AcpSdkBackend implements AgentBackend {
     private messageHandler: AcpMessageHandler | null = null;
     private activeSessionId: string | null = null;
     private initializeResult: AcpInitializeResult | null = null;
+    private initializeInFlight: Promise<void> | null = null;
     private setModeSupported: boolean | undefined = undefined;
     private isProcessingMessage = false;
     private promptRequestInFlight = false;
@@ -133,12 +134,34 @@ export class AcpSdkBackend implements AgentBackend {
 
     async initialize(): Promise<void> {
         if (this.transport) return;
+        if (this.initializeInFlight) {
+            await this.initializeInFlight;
+            return;
+        }
 
-        this.transport = new AcpStdioTransport({
+        this.initializeInFlight = this.bootstrapTransport();
+        try {
+            await this.initializeInFlight;
+        } finally {
+            this.initializeInFlight = null;
+        }
+    }
+
+    private async bootstrapTransport(): Promise<void> {
+        if (this.transport) return;
+
+        const transport = await AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
             env: this.options.env
         });
+
+        if (this.transport) {
+            await transport.close();
+            return;
+        }
+
+        this.transport = transport;
 
         this.transport.onNotification((method, params) => {
             if (method === 'session/update') {
