@@ -237,4 +237,26 @@ describe('SessionActionMenu - Copy reference action', () => {
             )
         })
     })
+
+    it('copies a readable path-only citation when peer tools are disabled', async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+
+        renderMenu({
+            sessionId: 'abc-def',
+            sessionTitle: 'upstream issue/pr discovery',
+            peerToolsEnabled: false,
+        })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: /Copy reference/ }))
+
+        await vi.waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith(
+                'See session "upstream issue/pr discovery" (/sessions/abc-def) for context.'
+            )
+        })
+    })
 })

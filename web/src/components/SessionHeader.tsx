@@ -27,6 +27,7 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
+import { useHubSettings } from '@/hooks/queries/useHubSettings'
 
 /** Same preference order as session-list chips: display label → host → short id. */
 export function resolveSessionHeaderMachineLabel(
@@ -185,6 +186,7 @@ export function SessionHeader(props: {
         ? session.metadata.piSessionId?.trim() || null
         : null
     const { machines } = useMachines(api, Boolean(api))
+    const { peerToolsEnabled } = useHubSettings(api)
     const machineLabelsById = useMachineLabels(machines)
     const machineLabel = useMemo(
         () => resolveSessionHeaderMachineLabel(session, machineLabelsById),
@@ -515,6 +517,7 @@ export function SessionHeader(props: {
                 sessionId={session.id}
                 sessionTitle={title}
                 sessionActive={session.active}
+                peerToolsEnabled={peerToolsEnabled}
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}
