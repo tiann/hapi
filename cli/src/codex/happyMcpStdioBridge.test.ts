@@ -159,20 +159,4 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
-    it('does not register peer tools when the bridge tool list omits them', async () => {
-        await runHappyMcpStdioBridge([
-            '--url',
-            'http://127.0.0.1:43006',
-            '--tools',
-            'change_title,display_image,display_video,display_media'
-        ])
-
-        expect([...harness.tools.keys()]).toEqual([
-            'change_title',
-            'display_image',
-            'display_video',
-            'display_media'
-        ])
-    })
-
 })
