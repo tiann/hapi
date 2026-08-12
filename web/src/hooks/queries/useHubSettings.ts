@@ -3,7 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { HubSettingsResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 
-/** Hub settings shared by operator UI surfaces; missing peer-tools data stays enabled for old Hubs. */
+/** Hub settings shared by operator UI surfaces; only confirmed enabled permits steering. */
 export function useHubSettings(api: ApiClient | null): {
     data: HubSettingsResponse | undefined
     peerToolsEnabled: boolean
@@ -21,6 +21,6 @@ export function useHubSettings(api: ApiClient | null): {
 
     return {
         data: query.data,
-        peerToolsEnabled: query.data?.peerToolsEnabled ?? true,
+        peerToolsEnabled: query.data?.peerToolsEnabled === true,
     }
 }
