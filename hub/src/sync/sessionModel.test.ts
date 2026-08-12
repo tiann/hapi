@@ -147,6 +147,39 @@ async function runCodexResumeScenario(
 }
 
 describe('session model', () => {
+    it('does not resume or reopen while another history action holds the session lock', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const resumeResult = await engine.withSessionHistoryLock(
+                'history-locked-session',
+                () => engine.resumeSession('history-locked-session', 'default')
+            )
+            expect(resumeResult).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+            const reopenResult = await engine.withSessionHistoryLock(
+                'history-locked-session',
+                () => engine.reopenSession('history-locked-session', 'default')
+            )
+            expect(reopenResult).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('includes explicit model in session summaries', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

@@ -2780,7 +2780,38 @@ export class SyncEngine {
         }
     }
 
+    async withSessionHistoryLock<T>(
+        sessionId: string,
+        work: () => T | Promise<T>
+    ): Promise<T> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            throw new Error('Conversation history action already in progress')
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            return await work()
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return {
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            return await this.resumeSessionUnlocked(sessionId, namespace, opts)
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    private async resumeSessionUnlocked(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -3204,6 +3235,22 @@ export class SyncEngine {
      * needed to resume is missing.
      */
     async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return {
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            return await this.reopenSessionUnlocked(sessionId, namespace)
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    private async reopenSessionUnlocked(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -3311,7 +3358,7 @@ export class SyncEngine {
                 }
             }
 
-            const resumeResult = await this.resumeSession(access.sessionId, namespace)
+            const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
                 // Never restore archived metadata over a live Pi child. A live
                 // row blocks retry by itself and must remain visible as active.
@@ -3337,7 +3384,7 @@ export class SyncEngine {
         // Not active and not archived (e.g. brand-new session that has not yet connected,
         // or one that ended without writing archive metadata). Forward to resume so the
         // operator still gets one-click revival.
-        const resumeResult = await this.resumeSession(access.sessionId, namespace)
+        const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
         if (resumeResult.type === 'error') {
             return resumeResult
         }

@@ -514,6 +514,61 @@ describe('local Claude sessions', () => {
         ])
     })
 
+    it('keeps linear history when an active parent chain has a missing ancestor', async () => {
+        const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
+        writeFileSync(
+            join(projectDir, `${SESSION_ID}.jsonl`),
+            [
+                line({
+                    parentUuid: null,
+                    isSidechain: false,
+                    userType: 'external',
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'user',
+                    message: { role: 'user', content: 'Older prompt' },
+                    uuid: 'older-user'
+                }),
+                line({
+                    parentUuid: 'older-user',
+                    isSidechain: false,
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'Older answer' }] },
+                    uuid: 'older-assistant'
+                }),
+                line({
+                    parentUuid: 'missing-ancestor',
+                    isSidechain: false,
+                    userType: 'external',
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'user',
+                    message: { role: 'user', content: 'Newer prompt' },
+                    uuid: 'newer-user'
+                }),
+                line({
+                    parentUuid: 'newer-user',
+                    isSidechain: false,
+                    cwd: CWD,
+                    sessionId: SESSION_ID,
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'Newer answer' }] },
+                    uuid: 'newer-assistant'
+                })
+            ].join('\n')
+        )
+
+        const session = await readSession(SESSION_ID)
+        expect(session?.messages.map((message) => message.localId)).toEqual([
+            `claude:${SESSION_ID}:older-user`,
+            `claude:${SESSION_ID}:older-assistant`,
+            `claude:${SESSION_ID}:newer-user`,
+            `claude:${SESSION_ID}:newer-assistant`
+        ])
+    })
+
     it('does not miss cwd when the first transcript record exceeds the old pre-read window', async () => {
         const projectDir = join(tempDir, 'projects', '-tmp-claude-import-project')
         const longPrompt = `Start ${'x'.repeat(70 * 1024)}`

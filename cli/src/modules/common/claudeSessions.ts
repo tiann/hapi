@@ -237,10 +237,13 @@ function activeClaudeRecordIds(records: ClaudeTranscriptRecord[]): Set<string> |
         visited.add(currentUuid)
         activeMainIds.add(currentUuid)
         const current = topology.get(currentUuid)
-        const parentUuid = current?.parentUuid ?? null
-        if (parentUuid && topology.has(parentUuid)) followedKnownParent = true
+        if (!current) return null
+        const parentUuid = current.parentUuid
+        if (parentUuid && !topology.has(parentUuid)) return null
+        if (parentUuid) followedKnownParent = true
         currentUuid = parentUuid
     }
+    if (currentUuid) return null
     if (!followedKnownParent) return null
 
     const activeToolUseIds = new Set<string>()

@@ -114,6 +114,10 @@ function visibleMessageText(message: { content: unknown }): string | null {
     return envelope.content?.data?.message?.content?.find((block) => block.type === 'text')?.text ?? null
 }
 
+async function withSessionHistoryLock<T>(_sessionId: string, work: () => T | Promise<T>): Promise<T> {
+    return await work()
+}
+
 describe('Claude session import', () => {
     const stores: Store[] = []
 
@@ -126,6 +130,7 @@ describe('Claude session import', () => {
         stores.push(store)
         const events: unknown[] = []
         const engine = {
+            withSessionHistoryLock,
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -155,6 +160,7 @@ describe('Claude session import', () => {
         const requests: Array<{ sessionId: string; cursor: number }> = []
         const persistedCounts: number[] = []
         const engine = {
+            withSessionHistoryLock,
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionPageForMachine: async (_machineId: string, options: { sessionId: string; cursor: number }) => {
                 requests.push({ sessionId: options.sessionId, cursor: options.cursor })
@@ -248,6 +254,7 @@ describe('Claude session import', () => {
             releaseFirstPage = resolve
         })
         const engine = {
+            withSessionHistoryLock,
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => {
                 pageCalls += 1
@@ -346,6 +353,7 @@ describe('Claude session import', () => {
         const selectedMachine = machine()
         const source = transcript('native-changing', ['one', 'two'])
         const engine = {
+            withSessionHistoryLock,
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => ({
                 success: true as const,
@@ -390,6 +398,7 @@ describe('Claude session import', () => {
         const { store } = setup()
         const selectedMachine = machine()
         const engine = {
+            withSessionHistoryLock,
             getOnlineMachinesByNamespace: () => [selectedMachine],
             listClaudeSessionSummariesForMachine: async () => {
                 throw new RpcTargetMissingError(`${selectedMachine.id}:listClaudeSessions`, 'handler-not-registered')
@@ -1055,6 +1064,51 @@ describe('Claude session import', () => {
             transcript: transcript('native-active', ['native tail'])
         })
 
+        expect(result.error?.code).toBe('session_active')
+        expect(store.messages.getAllMessages(existing.id)).toHaveLength(0)
+    })
+
+    it('rechecks active state after transcript analysis before importing a native tail', async () => {
+        const { store, engine } = setup()
+        const sessionId = 'native-reopened-during-analysis'
+        const existing = store.sessions.getOrCreateSession(
+            'claude-reopened-during-analysis',
+            {
+                path: '/tmp/project',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: sessionId
+            },
+            {},
+            'default'
+        )
+        const source = transcript(sessionId, ['native tail'])
+        const sourceMessages = source.messages
+        let activated = false
+        Object.defineProperty(source, 'messages', {
+            get() {
+                if (!activated) {
+                    activated = true
+                    store.sessions.setSessionActive(existing.id, true, Date.now(), 'default')
+                }
+                return sourceMessages
+            }
+        })
+        const runtimeEngine = {
+            ...engine,
+            withSessionHistoryLock: async <T>(_sessionId: string, work: () => T | Promise<T>) => await work()
+        } as unknown as SyncEngine
+
+        const result = await importClaudeSession({
+            store,
+            engine: runtimeEngine,
+            namespace: 'default',
+            machine: machine(),
+            existingSession: existing,
+            transcript: source
+        })
+
+        expect(activated).toBe(true)
         expect(result.error?.code).toBe('session_active')
         expect(store.messages.getAllMessages(existing.id)).toHaveLength(0)
     })

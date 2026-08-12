@@ -689,6 +689,46 @@ async function importClaudeSessionFromPages(options: {
     launchSettings?: ClaudeImportLaunchSettings
 }): Promise<ClaudeImportResult> {
     const { store, engine, namespace, machine, claudeSessionId, existingSession } = options
+    const stored = existingSession === undefined
+        ? (importedClaudeSessionsById(store, namespace, machine.id).get(claudeSessionId) ?? null)
+        : existingSession
+    if (!stored) return await importClaudeSessionFromPagesUnlocked({ ...options, existingSession: null })
+
+    try {
+        return await engine.withSessionHistoryLock(stored.id, async () => {
+            const latest = store.sessions.getSessionByNamespace(stored.id, namespace)
+            if (!latest) {
+                return {
+                    claudeSessionId,
+                    hapiSessionId: stored.id,
+                    error: { code: 'import_failed', message: 'Imported HAPI session disappeared' }
+                }
+            }
+            return await importClaudeSessionFromPagesUnlocked({ ...options, existingSession: latest })
+        })
+    } catch (error) {
+        return {
+            claudeSessionId,
+            hapiSessionId: stored.id,
+            error: {
+                code: 'import_failed',
+                message: error instanceof Error ? error.message : 'Failed to lock Claude session history'
+            }
+        }
+    }
+}
+
+async function importClaudeSessionFromPagesUnlocked(options: {
+    store: Store
+    engine: SyncEngine
+    namespace: string
+    machine: Machine
+    claudeSessionId: string
+    loadPage: ClaudePageLoader
+    existingSession: StoredSession | null
+    launchSettings?: ClaudeImportLaunchSettings
+}): Promise<ClaudeImportResult> {
+    const { store, engine, namespace, machine, claudeSessionId, existingSession } = options
     const launchSettings = options.launchSettings ?? {}
     const startedAt = Date.now()
     let stored =
@@ -718,6 +758,18 @@ async function importClaudeSessionFromPages(options: {
         }
     }
     const transcript = analysis.summary
+
+    if (stored) {
+        const latest = store.sessions.getSessionByNamespace(stored.id, namespace)
+        if (!latest) {
+            return {
+                claudeSessionId,
+                hapiSessionId: stored.id,
+                error: { code: 'import_failed', message: 'Imported HAPI session disappeared' }
+            }
+        }
+        stored = latest
+    }
 
     if (analysis.error && stored) {
         markImportState(store, engine, stored.id, namespace, transcript, machine.id, 'diverged', analysis.error)
