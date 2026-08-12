@@ -340,6 +340,10 @@ describe('Claude session import', () => {
             await expect(engine.sendMessage(imported!.id, { text: 'must wait' })).rejects.toThrow(
                 'Conversation history action already in progress'
             )
+            await expect(engine.deleteSession(imported!.id)).rejects.toThrow(
+                'Conversation history action already in progress'
+            )
+            expect(store.sessions.getSession(imported!.id)).toBeDefined()
 
             releaseSecondPersistPage()
             const response = await responsePromise

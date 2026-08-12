@@ -189,6 +189,67 @@ describe('session model', () => {
         }
     })
 
+    it('keeps an interrupted Claude import unavailable after the hub restarts', async () => {
+        const store = new Store(':memory:')
+        const first = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const session = first.getOrCreateSession(
+            'interrupted-claude-import',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'claude',
+                claudeSessionId: 'native-interrupted',
+                claudeImportState: {
+                    state: 'importing',
+                    machineId: 'machine-1',
+                    claudeSessionId: 'native-interrupted',
+                    sourceFile: '/tmp/native-interrupted.jsonl',
+                    startedAt: 1,
+                    updatedAt: 1
+                }
+            },
+            null,
+            'default'
+        )
+        first.stop()
+
+        const restarted = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        try {
+            expect(await restarted.resumeSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+            expect(await restarted.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+            expect(restarted.resolveLocalResumeTarget(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Conversation history action already in progress',
+                code: 'resume_failed'
+            })
+            await expect(restarted.sendMessage(session.id, { text: 'must wait' })).rejects.toThrow(
+                'Conversation history action already in progress'
+            )
+            expect(await restarted.withSessionHistoryLock(session.id, async () => 'retry-import')).toBe('retry-import')
+        } finally {
+            restarted.stop()
+        }
+    })
+
     it('includes explicit model in session summaries', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

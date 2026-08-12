@@ -1014,7 +1014,7 @@ export class SyncEngine {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<void> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
         const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
@@ -1337,7 +1337,7 @@ export class SyncEngine {
         namespace: string,
         messageLocalId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId, namespace)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
@@ -1583,7 +1583,7 @@ export class SyncEngine {
         namespace: string,
         messageLocalId: string
     ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId, namespace)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
@@ -1851,7 +1851,7 @@ export class SyncEngine {
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
         await this.rpcGateway.switchSession(sessionId, to)
@@ -1870,6 +1870,9 @@ export class SyncEngine {
     }
 
     async deleteSession(sessionId: string): Promise<void> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            throw new Error('Conversation history action already in progress')
+        }
         await this.sessionCache.deleteSession(sessionId)
     }
 
@@ -2409,7 +2412,7 @@ export class SyncEngine {
     }
 
     resolveLocalResumeTarget(sessionId: string, namespace: string): LocalResumeTargetResult {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId, namespace)) {
             return {
                 type: 'error',
                 message: 'Conversation history action already in progress',
@@ -2806,8 +2809,16 @@ export class SyncEngine {
         }
     }
 
+    private isSessionHistoryUnavailable(sessionId: string, namespace?: string): boolean {
+        if (this.historyActionsInFlight.has(sessionId)) return true
+        const session = namespace === undefined
+            ? (this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId))
+            : this.sessionCache.getSessionByNamespace(sessionId, namespace)
+        return session?.metadata?.claudeImportState?.state === 'importing'
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId, namespace)) {
             return {
                 type: 'error',
                 message: 'Conversation history action already in progress',
@@ -3246,7 +3257,7 @@ export class SyncEngine {
      * needed to resume is missing.
      */
     async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isSessionHistoryUnavailable(sessionId, namespace)) {
             return {
                 type: 'error',
                 message: 'Conversation history action already in progress',
