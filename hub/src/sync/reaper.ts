@@ -31,6 +31,14 @@
  * caught, just by the first periodic sweep that lands after
  * `hub start + staleMs` has elapsed, not by the immediate one.
  *
+ * Opt-in, not on by default: `active === false` plus a stale heartbeat is a
+ * *suspicion* the CLI process is dead, not proof - a CLI riding out a long
+ * network partition presents identically. Reaping that session while the
+ * original process is still alive lets the existing reopen flow spawn a
+ * second agent before the first one reconnects, so this sweep ships disabled
+ * (`REAPER_DEFAULT_INTERVAL_MS === 0`) until callers explicitly opt in via
+ * `HAPI_REAPER_INTERVAL_MS` (and, optionally, `HAPI_REAPER_STALE_MS`).
+ *
  * Revival: reconnecting alone (`SessionCache.markSessionActive` /
  * `handleSessionAlive` flipping `active` back to `true`) is what excludes a
  * session from the next sweep's candidate set. But a session the reaper
@@ -45,7 +53,17 @@
  */
 import { REAPER_ARCHIVED_BY, type SessionCache } from './sessionCache'
 
-export const REAPER_DEFAULT_INTERVAL_MS = 5 * 60_000
+// Disabled by default (0 = off). A dropped connection plus heartbeat age is
+// not proof the CLI process is actually dead - a client riding out a long
+// network partition looks identical to a killed one from the hub's side.
+// Archiving that session while the original CLI is still alive lets the
+// existing reopen flow spawn a second agent on the same session before the
+// first one reconnects, i.e. exactly the double-agent failure this sweep was
+// meant to prevent, not cause. Operators who know their environment (e.g. no
+// long partitions expected) can opt in with `HAPI_REAPER_INTERVAL_MS`; when
+// that is set without also setting `HAPI_REAPER_STALE_MS`, the stale
+// threshold still falls back to `REAPER_DEFAULT_STALE_MS` below.
+export const REAPER_DEFAULT_INTERVAL_MS = 0
 export const REAPER_DEFAULT_STALE_MS = 30 * 60_000
 export const REAPER_ARCHIVE_REASON = 'Connection lost (reaped by hub)'
 

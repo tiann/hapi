@@ -113,6 +113,74 @@ describe('SyncEngine reaper mount point', () => {
         }
     })
 
+    it('mounts a disabled reaper by default: no env override means no sweep timer and no candidate scanning', () => {
+        // Per the Major finding from the automated review: shipping the
+        // reaper on by default let a CLI riding out a long network
+        // partition get archived on heartbeat age alone, with no proof the
+        // process was actually dead - the existing reopen flow could then
+        // spawn a second agent before the original reconnected. The reaper
+        // now defaults to off (`REAPER_DEFAULT_INTERVAL_MS === 0`); this
+        // pins that `SyncEngine`'s mount point respects that default instead
+        // of forcing an interval of its own.
+        //
+        // `enabled`/`intervalMs` alone only prove the flags were plumbed
+        // through - they don't prove the reaper actually never looks at a
+        // candidate. So this also seeds a session that is 45 minutes
+        // disconnected with `lifecycleState: 'running'` (past the 30min
+        // default staleness threshold, so it would be reaped in a heartbeat
+        // if a sweep ever ran against it), spies on
+        // `SessionReaper.prototype.sweep` to assert it is never called, and
+        // asserts the session is still `running` after construction - proof
+        // the disabled reaper does not scan candidates, not just that its
+        // config says it shouldn't.
+        const store = new Store(':memory:')
+        const originalNow = Date.now
+        const backdatedAt = Date.now() - 45 * 60_000
+        Date.now = () => backdatedAt
+        let stored: ReturnType<typeof store.sessions.getOrCreateSession>
+        try {
+            stored = store.sessions.getOrCreateSession(
+                'stale-but-untouched',
+                { path: '/tmp/project', host: 'localhost', flavor: 'claude', lifecycleState: 'running' },
+                null,
+                'default'
+            )
+        } finally {
+            Date.now = originalNow
+        }
+        expect(stored.active).toBe(false)
+
+        let sweepCalls = 0
+        const originalSweep = SessionReaper.prototype.sweep
+        SessionReaper.prototype.sweep = function patchedSweep(this: SessionReaper): string[] {
+            sweepCalls += 1
+            return originalSweep.call(this)
+        }
+
+        let engine: SyncEngine
+        try {
+            engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+        } finally {
+            SessionReaper.prototype.sweep = originalSweep
+        }
+        const reaper = (engine as unknown as { reaper: SessionReaper }).reaper
+        try {
+            expect(reaper.enabled).toBe(false)
+            expect(reaper.intervalMs).toBe(0)
+            expect(sweepCalls).toBe(0)
+
+            const session = engine.getSession(stored.id)
+            expect(session?.metadata?.lifecycleState).toBe('running')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('stop() delegates to the reaper, clearing its periodic timer', () => {
         const engine = makeEngine()
         const reaper = (engine as unknown as { reaper: SessionReaper }).reaper

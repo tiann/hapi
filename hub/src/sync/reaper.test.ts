@@ -57,15 +57,41 @@ describe('SessionReaper (hub reaper)', () => {
         process.env = { ...ORIGINAL_ENV }
     })
 
-    it('reads defaults: 5min interval, 30min staleness', () => {
+    it('ships disabled by default: interval 0, and a 30min staleness ready for whenever an operator opts in', () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, createPublisher([]))
         const reaper = new SessionReaper(cache)
 
         expect(reaper.intervalMs).toBe(REAPER_DEFAULT_INTERVAL_MS)
         expect(reaper.staleMs).toBe(REAPER_DEFAULT_STALE_MS)
-        expect(REAPER_DEFAULT_INTERVAL_MS).toBe(5 * 60_000)
+        expect(REAPER_DEFAULT_INTERVAL_MS).toBe(0)
         expect(REAPER_DEFAULT_STALE_MS).toBe(30 * 60_000)
+        expect(reaper.enabled).toBe(false)
+    })
+
+    it('does not start a sweep timer, and sweep() is a no-op, when constructed with no options at all (default-off)', () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const now = Date.now()
+
+        const session = cache.getOrCreateSession(
+            'session-default-off',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude', lifecycleState: 'running' },
+            null,
+            'default'
+        )
+        connectThenDisconnect(cache, session.id, now, now + 45 * 60_000)
+
+        const reaper = new SessionReaper(cache, { now: () => now + 45 * 60_000 })
+        expect(reaper.enabled).toBe(false)
+
+        reaper.start()
+        try {
+            expect(reaper.sweep()).toEqual([])
+            expect(cache.getSession(session.id)?.metadata?.lifecycleState).toBe('running')
+        } finally {
+            reaper.stop()
+        }
     })
 
     it('honors HAPI_REAPER_INTERVAL_MS / HAPI_REAPER_STALE_MS overrides', () => {
@@ -778,7 +804,10 @@ describe('SessionReaper (hub reaper)', () => {
 
         expect(reaper.intervalMs).toBe(REAPER_DEFAULT_INTERVAL_MS)
         expect(reaper.staleMs).toBe(REAPER_DEFAULT_STALE_MS)
-        expect(reaper.enabled).toBe(true)
+        // The default interval is itself 0 (disabled) - a garbage env
+        // override falling back to that default therefore still leaves the
+        // reaper disabled, not enabled.
+        expect(reaper.enabled).toBe(false)
     })
 
     it('continues sweeping other sessions when one archive attempt throws', () => {

@@ -219,7 +219,11 @@ export class SyncEngine {
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
         // hub reaper: clears sessions whose CLI connection dropped without a
         // chance to archive on exit (SIGHUP/SIGKILL, hub-restart cascades).
-        // start() sweeps once synchronously to arm the timer, but under the
+        // Disabled by default (see reaper.ts's class doc comment on why a
+        // dropped connection alone isn't proof the CLI process is dead) - an
+        // operator opts in with `HAPI_REAPER_INTERVAL_MS`, and start() below
+        // is then a no-op until that env var is set. When enabled, start()
+        // sweeps once synchronously to arm the timer, but under the
         // hub-downtime floor (see SessionReaper's class doc comment in
         // reaper.ts) that first sweep never archives anything - it can only
         // measure disconnect duration from the hub's own just-captured start
