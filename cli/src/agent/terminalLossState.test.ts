@@ -10,6 +10,7 @@ vi.mock('@/ui/logger', () => ({
 import {
     markTerminalLost,
     isTerminalLost,
+    waitForTerminalLoss,
     installTerminalOutputGuard,
     __resetTerminalLossStateForTests
 } from './terminalLossState'
@@ -210,5 +211,69 @@ describe('terminalLossState', () => {
                 }
             }
         }
+    })
+})
+
+// Closes the tiann/hapi#1527 review finding: terminal close sends SIGHUP to
+// the whole foreground process group, but there is no guaranteed ordering
+// between the parent's SIGHUP handler and a child-exit callback that also
+// wants to know whether the terminal is gone. waitForTerminalLoss gives a
+// late-running markTerminalLost() a short window to still win.
+describe('waitForTerminalLoss', () => {
+    beforeEach(() => {
+        __resetTerminalLossStateForTests()
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        // Reset while fake timers are still active so the reset path's own
+        // cleanup (settling any leftover waiter) doesn't depend on real
+        // timers, then restore real timers for the rest of the suite.
+        __resetTerminalLossStateForTests()
+        vi.useRealTimers()
+    })
+
+    it('resolves true immediately when the terminal is already lost', async () => {
+        markTerminalLost()
+
+        const result = await waitForTerminalLoss(100)
+
+        expect(result).toBe(true)
+    })
+
+    it('resolves true as soon as markTerminalLost() fires within the window', async () => {
+        const pending = waitForTerminalLoss(100)
+
+        await vi.advanceTimersByTimeAsync(30)
+        markTerminalLost()
+
+        await expect(pending).resolves.toBe(true)
+    })
+
+    it('resolves false once the timeout elapses with no markTerminalLost() call', async () => {
+        const pending = waitForTerminalLoss(100)
+
+        await vi.advanceTimersByTimeAsync(100)
+
+        await expect(pending).resolves.toBe(false)
+    })
+
+    it('cleans up its timer once settled, leaving no pending timers behind', async () => {
+        const pending = waitForTerminalLoss(100)
+        markTerminalLost()
+        await pending
+
+        // If the timeout timer were not cleared on early settle, this would
+        // still have one pending timer left over.
+        expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('__resetTerminalLossStateForTests resolves a pending wait as false and clears it', async () => {
+        const pending = waitForTerminalLoss(100)
+
+        __resetTerminalLossStateForTests()
+
+        await expect(pending).resolves.toBe(false)
+        expect(vi.getTimerCount()).toBe(0)
     })
 })

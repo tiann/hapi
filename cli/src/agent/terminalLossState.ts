@@ -16,12 +16,61 @@ let outputGuardInstalled = false
 // semantics — it must not be reused here.
 let guardedStreams = new WeakSet<object>()
 
+type PendingTerminalLossWaiter = {
+    resolvePromise: (result: boolean) => void
+    timer: ReturnType<typeof setTimeout>
+}
+
+// Callers that read isTerminalLost() right as the parent's SIGHUP handler
+// and the child-exit callback race each other (see waitForTerminalLoss
+// below) need a way to be woken up the instant markTerminalLost() actually
+// runs, rather than only ever polling a synchronous flag. Kept as a Set
+// (not a single "next waiter") because a caller can invoke
+// waitForTerminalLoss more than once concurrently in theory.
+let pendingWaiters = new Set<PendingTerminalLossWaiter>()
+
+function settleWaiter(waiter: PendingTerminalLossWaiter, result: boolean): void {
+    pendingWaiters.delete(waiter)
+    clearTimeout(waiter.timer)
+    waiter.resolvePromise(result)
+}
+
 export function markTerminalLost(): void {
     terminalLost = true
+    // Wake every caller currently blocked in waitForTerminalLoss instead of
+    // making them ride out their full timeout — this is what lets the
+    // parent's SIGHUP handler win a race against a child-exit callback that
+    // started waiting microseconds earlier.
+    for (const waiter of [...pendingWaiters]) {
+        settleWaiter(waiter, true)
+    }
 }
 
 export function isTerminalLost(): boolean {
     return terminalLost
+}
+
+/**
+ * One-shot wait for markTerminalLost() to fire, used to close the race
+ * between the parent process's SIGHUP handler and a child-exit callback
+ * that both read terminal-loss state around the same instant (terminal
+ * close sends SIGHUP to the whole foreground process group, but there is
+ * no guaranteed ordering between the parent's signal callback and the
+ * child's exit callback). Resolves true immediately if the terminal is
+ * already known lost, true as soon as markTerminalLost() runs while this
+ * call is pending, or false once timeoutMs elapses with no such call.
+ */
+export function waitForTerminalLoss(timeoutMs: number): Promise<boolean> {
+    if (terminalLost) {
+        return Promise.resolve(true)
+    }
+    return new Promise<boolean>((resolvePromise) => {
+        const waiter: PendingTerminalLossWaiter = {
+            resolvePromise,
+            timer: setTimeout(() => settleWaiter(waiter, false), timeoutMs)
+        }
+        pendingWaiters.add(waiter)
+    })
 }
 
 /**
@@ -32,6 +81,13 @@ export function __resetTerminalLossStateForTests(): void {
     terminalLost = false
     outputGuardInstalled = false
     guardedStreams = new WeakSet<object>()
+    // Resolve rather than drop any waiter left over from a prior test —
+    // otherwise its timer keeps the event loop alive into the next test and
+    // its promise never settles.
+    for (const waiter of [...pendingWaiters]) {
+        settleWaiter(waiter, false)
+    }
+    pendingWaiters = new Set()
 }
 
 type WritableErrorStream = {

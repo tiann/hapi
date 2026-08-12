@@ -5,7 +5,7 @@ import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
 import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 import type { LocalLauncherControl } from "@/modules/common/launcher/BaseLocalLauncher";
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
-import { isTerminalLost } from '@/agent/terminalLossState';
+import { isTerminalLost, waitForTerminalLoss } from '@/agent/terminalLossState';
 import { logger } from '@/ui/logger';
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
@@ -90,7 +90,20 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 // current unsaved turn; the session resumes from the last
                 // save point via --resume, same as any other local→remote
                 // handoff.
-                if (isTerminalLost()) {
+                //
+                // isTerminalLost() alone is a synchronous read of a flag set
+                // by the parent's SIGHUP handler — but SIGHUP hits the whole
+                // foreground process group at once, so there is no
+                // guaranteed ordering between that handler running and this
+                // child-exit callback running. If the child's exit callback
+                // wins the race, isTerminalLost() reads false even though
+                // the terminal is in fact already gone. Falling back to
+                // waitForTerminalLoss briefly closes that race by giving the
+                // SIGHUP handler a short window to run and mark the flag
+                // before we commit to a classification. Accepted tradeoff:
+                // every abnormal local-child death now carries up to 100ms
+                // of added latency before it is classified.
+                if (isTerminalLost() || await waitForTerminalLoss(100)) {
                     logger.debug('[claudeLocalLauncher] Local claude died after terminal loss — switching to remote', error);
                     requestSwitch();
                     return;
@@ -109,7 +122,15 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             // session. (A same-tick race where the user's own /exit lands
             // right as the terminal dies is resolved in favor of the safer
             // side: keep the session alive rather than silently end it.)
-            if (isTerminalLost()) {
+            //
+            // Same ordering caveat as the catch branch above applies here:
+            // a clean exit callback can win the race against the parent's
+            // SIGHUP handler, so isTerminalLost() alone is not conclusive.
+            // waitForTerminalLoss gives the handler a short window to catch
+            // up before this exit is classified as a genuine user /exit.
+            // Accepted tradeoff: every clean local-child exit now carries up
+            // to 100ms of added latency before it is classified.
+            if (isTerminalLost() || await waitForTerminalLoss(100)) {
                 logger.debug('[claudeLocalLauncher] Local claude exited cleanly after terminal loss — switching to remote');
                 requestSwitch();
                 return;
