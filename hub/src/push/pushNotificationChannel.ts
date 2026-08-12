@@ -51,6 +51,7 @@ export class PushNotificationChannel implements NotificationChannel {
         const stored = await this.loadCopy()
         const url = this.buildSessionPath(session.id)
         const { title, body } = buildPermissionRequestCopy(session, stored, url)
+        const toastCopy = buildPermissionRequestCopy(session, DEFAULT_COPY, url)
 
         const payload: PushPayload = {
             title,
@@ -64,7 +65,7 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'permission')
+        await this.deliverWebOrToast(session, payload, toastCopy, ctx, 'permission')
     }
 
     async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
@@ -75,6 +76,7 @@ export class PushNotificationChannel implements NotificationChannel {
         const stored = await this.loadCopy()
         const url = this.buildSessionPath(session.id)
         const { title, body } = buildReadyCopy(session, stored, url)
+        const toastCopy = buildReadyCopy(session, DEFAULT_COPY, url)
 
         const payload: PushPayload = {
             title,
@@ -87,7 +89,7 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'ready')
+        await this.deliverWebOrToast(session, payload, toastCopy, ctx, 'ready')
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
@@ -98,6 +100,7 @@ export class PushNotificationChannel implements NotificationChannel {
         const stored = await this.loadCopy()
         const url = this.buildSessionPath(session.id)
         const { title, body } = buildTaskCopy(session, notification, stored, url)
+        const toastCopy = buildTaskCopy(session, notification, DEFAULT_COPY, url)
 
         const payload: PushPayload = {
             title,
@@ -109,7 +112,7 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'task')
+        await this.deliverWebOrToast(session, payload, toastCopy, ctx, 'task')
     }
 
     /**
@@ -121,6 +124,7 @@ export class PushNotificationChannel implements NotificationChannel {
         const stored = await this.loadCopy()
         const url = this.buildSessionPath(session.id)
         const { title, body } = buildSessionCompletionCopy(session, reason, stored, url)
+        const toastCopy = buildSessionCompletionCopy(session, reason, DEFAULT_COPY, url)
 
         const payload: PushPayload = {
             title,
@@ -133,12 +137,13 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'session-completion')
+        await this.deliverWebOrToast(session, payload, toastCopy, ctx, 'session-completion')
     }
 
     private async deliverWebOrToast(
         session: Session,
         payload: PushPayload,
+        toastCopy: Pick<PushPayload, 'title' | 'body'>,
         ctx: NotificationSendContext | undefined,
         method: 'permission' | 'ready' | 'task' | 'session-completion'
     ): Promise<void> {
@@ -152,8 +157,8 @@ export class PushNotificationChannel implements NotificationChannel {
             const delivered = await this.sseManager.sendToast(session.namespace, {
                 type: 'toast',
                 data: {
-                    title: payload.title,
-                    body: payload.body,
+                    title: toastCopy.title,
+                    body: toastCopy.body,
                     sessionId: session.id,
                     url
                 }

@@ -179,6 +179,50 @@ describe('PushNotificationChannel', () => {
         expect(pushed[0].payload.body).toBe('Demo task is ready at /sessions/session-task-toast')
     })
 
+    it('keeps foreground toast copy at defaults while background push uses custom copy', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const toasts: Array<{
+            type: 'toast'
+            data: { title: string; body: string; sessionId: string; url: string }
+        }> = []
+        let visible = false
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async (_namespace: string, event: typeof toasts[number]) => {
+                    toasts.push(event)
+                    return 1
+                }
+            } as never,
+            {
+                hasVisibleConnection: () => visible
+            } as never,
+            '',
+            async () => ({
+                ready: { title: 'Custom push', body: 'Custom {sessionName}' }
+            })
+        )
+
+        await channel.sendReady(createSession())
+        visible = true
+        await channel.sendReady(createSession())
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0].payload).toMatchObject({
+            title: 'Custom push',
+            body: 'Custom Demo task'
+        })
+        expect(toasts).toHaveLength(1)
+        expect(toasts[0]?.data).toMatchObject({
+            title: 'Ready for input',
+            body: 'Codex is waiting in Demo task'
+        })
+    })
+
     it('falls back to defaults for empty template fields', async () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
