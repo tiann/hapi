@@ -9,6 +9,7 @@ import {
 } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
+import { readPeerToolsEnabled } from '../../config/peerToolsExposure'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
@@ -132,7 +133,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             const sessionSummaryContract = await readSessionSummaryContractEnabled(
                 getConfiguration().dataDir
             )
-            return c.json({ session, sessionSummaryContract })
+            const peerToolsEnabled = await readPeerToolsEnabled(getConfiguration().dataDir)
+            return c.json({ session, sessionSummaryContract, peerToolsEnabled })
         } catch (error) {
             if (error instanceof SessionIdentityConflictError) {
                 return c.json({ error: error.message }, 409)
@@ -252,7 +254,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         const sessionSummaryContract = await readSessionSummaryContractEnabled(
             getConfiguration().dataDir
         )
-        return c.json({ session: resolved.session, sessionSummaryContract })
+        const peerToolsEnabled = await readPeerToolsEnabled(getConfiguration().dataDir)
+        return c.json({ session: resolved.session, sessionSummaryContract, peerToolsEnabled })
     })
 
     app.get('/sessions/:id/messages', (c) => {

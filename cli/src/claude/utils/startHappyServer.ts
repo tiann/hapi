@@ -21,6 +21,7 @@ import {
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
 import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
 import { resolveSkill } from "@/modules/common/skills";
+import { isHubPeerToolsEnabled } from '@/modules/common/peerToolsExposure'
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
     PING_PEER_TOOL_DESCRIPTION,
@@ -35,6 +36,8 @@ type StartHappyServerOptions = {
         workingDirectory: string;
         flavor: string;
     };
+    /** Exposure control only; peer REST routes keep their existing authorization. */
+    peerToolsEnabled?: boolean;
 };
 
 /** Registered on the MCP server, but never pre-approved via Claude --allowedTools. */
@@ -61,7 +64,8 @@ function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
-    skillLookup: StartHappyServerOptions['skillLookup']
+    skillLookup: StartHappyServerOptions['skillLookup'],
+    peerToolsEnabled: boolean
 ): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
@@ -291,7 +295,7 @@ function createHapiMcpServer(
         }
     });
 
-    mcp.registerTool<any, any>('ping_peer', {
+    if (peerToolsEnabled) mcp.registerTool<any, any>('ping_peer', {
         description: PING_PEER_TOOL_DESCRIPTION,
         title: 'Ping Peer Session',
         inputSchema: pingPeerInputSchema,
@@ -330,7 +334,7 @@ function createHapiMcpServer(
         }
     });
 
-    mcp.registerTool<any, any>('inspect_peer', {
+    if (peerToolsEnabled) mcp.registerTool<any, any>('inspect_peer', {
         description: INSPECT_PEER_TOOL_DESCRIPTION,
         title: 'Inspect Peer Session',
         inputSchema: inspectPeerInputSchema,
@@ -369,7 +373,7 @@ function createHapiMcpServer(
         }
     });
 
-    mcp.registerTool<any, any>('list_peers', {
+    if (peerToolsEnabled) mcp.registerTool<any, any>('list_peers', {
         description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id.',
         title: 'List Peer Sessions',
         inputSchema: listPeersInputSchema,
@@ -477,9 +481,10 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     const enableChangeTitle = options.enableChangeTitle ?? true;
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
+    const peerToolsEnabled = options.peerToolsEnabled ?? isHubPeerToolsEnabled();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup, peerToolsEnabled);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -534,8 +539,11 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'display_video', 'display_media']
+        : ['display_image', 'display_video', 'display_media'];
+    if (peerToolsEnabled) {
+        toolNames.push('list_peers', 'ping_peer', 'inspect_peer');
+    }
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

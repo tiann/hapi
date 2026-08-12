@@ -236,6 +236,10 @@ describe('cli lazy session creation', () => {
             undefined,
             sessionId
         )
+        expect(await response.json()).toMatchObject({
+            session: { id: sessionId },
+            peerToolsEnabled: true
+        })
     })
 
     it('rejects an embedded machine owned by another namespace', async () => {

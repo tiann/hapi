@@ -735,14 +735,16 @@ export class ApiClient {
     }
 
     async getHubSettings(): Promise<HubSettingsResponse> {
-        return await this.request<HubSettingsResponse>('/api/hub-settings')
+        const settings = await this.request<HubSettingsResponse>('/api/hub-settings')
+        return { ...settings, peerToolsEnabled: settings.peerToolsEnabled ?? true }
     }
 
     async updateHubSettings(settings: UpdateHubSettingsRequest): Promise<HubSettingsResponse> {
-        return await this.request<HubSettingsResponse>('/api/hub-settings', {
+        const response = await this.request<HubSettingsResponse>('/api/hub-settings', {
             method: 'PUT',
             body: JSON.stringify(settings)
         })
+        return { ...response, peerToolsEnabled: response.peerToolsEnabled ?? true }
     }
 
     async getUsageSummary(

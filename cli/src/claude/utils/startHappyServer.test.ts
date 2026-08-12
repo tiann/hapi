@@ -163,6 +163,24 @@ describe('startHappyServer skill_lookup', () => {
         ])
     })
 
+    it('does not advertise peer tools when hub exposure is off', async () => {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, { peerToolsEnabled: false })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-peer-toggle-test', version: '1.0.0' })
+        client = mcp
+
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        const tools = await mcp.listTools()
+
+        expect(server.toolNames).not.toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+        expect(tools.tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+    })
+
 })
 
 describe('toClaudeAllowedHapiMcpTools', () => {

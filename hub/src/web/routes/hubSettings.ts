@@ -7,13 +7,15 @@ import {
     type Settings
 } from '../../config/settings'
 import type { WebAppEnv } from '../middleware/auth'
+import { isPeerToolsEnabledSetting } from '../../config/peerToolsExposure'
 
 const OWNER_ONLY_ERROR = 'Hub settings are only available to the hub owner'
 
 function toHubSettings(settings: Settings): HubSettingsResponse {
     return {
         sessionSummaryContract: settings.sessionSummaryContract === true,
-        sessionSummaryInChat: settings.sessionSummaryInChat === true
+        sessionSummaryInChat: settings.sessionSummaryInChat === true,
+        peerToolsEnabled: isPeerToolsEnabledSetting(settings)
     }
 }
 
@@ -44,6 +46,9 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
             }
             if (parsed.data.sessionSummaryInChat !== undefined) {
                 settings.sessionSummaryInChat = parsed.data.sessionSummaryInChat
+            }
+            if (parsed.data.peerToolsEnabled !== undefined) {
+                settings.peerToolsEnabled = parsed.data.peerToolsEnabled
             }
             return {
                 settings,

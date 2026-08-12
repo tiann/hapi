@@ -3,6 +3,7 @@ import { buildSessionCitationSteerInstruction } from "@hapi/protocol/sessionCita
 import { shouldIncludeCoAuthoredBy } from "./claudeSettings";
 import { DISPLAY_IMAGE_PROMPT_CLAUDE, DISPLAY_MEDIA_PROMPT_CLAUDE, DISPLAY_VIDEO_PROMPT_CLAUDE } from "@/modules/common/displayImagePrompt";
 import { withSessionSummaryInstruction } from "@/modules/common/sessionSummaryInstruction";
+import { isHubPeerToolsEnabled } from '@/modules/common/peerToolsExposure';
 
 /**
  * Base system prompt shared across all configurations
@@ -12,12 +13,13 @@ const BASE_SYSTEM_PROMPT = (() => trimIdent(`
     ${DISPLAY_IMAGE_PROMPT_CLAUDE}
     ${DISPLAY_VIDEO_PROMPT_CLAUDE}
     ${DISPLAY_MEDIA_PROMPT_CLAUDE}
-    ${buildSessionCitationSteerInstruction({
-        inspectTool: 'mcp__hapi__inspect_peer',
-        pingTool: 'mcp__hapi__ping_peer',
-        listPeersTool: 'mcp__hapi__list_peers',
-    })}
 `))();
+
+const PEER_CITATION_GUIDANCE = buildSessionCitationSteerInstruction({
+    inspectTool: 'mcp__hapi__inspect_peer',
+    pingTool: 'mcp__hapi__ping_peer',
+    listPeersTool: 'mcp__hapi__list_peers',
+});
 
 /**
  * Co-authored-by credits to append when enabled
@@ -39,8 +41,10 @@ const CO_AUTHORED_CREDITS = (() => trimIdent(`
  */
 export function getSystemPrompt(): string {
     const includeCoAuthored = shouldIncludeCoAuthoredBy();
+    const peerGuidance = isHubPeerToolsEnabled() ? '\n\n' + PEER_CITATION_GUIDANCE : '';
+    const basePrompt = BASE_SYSTEM_PROMPT + peerGuidance;
     const base = includeCoAuthored
-        ? BASE_SYSTEM_PROMPT + '\n\n' + CO_AUTHORED_CREDITS
-        : BASE_SYSTEM_PROMPT;
+        ? basePrompt + '\n\n' + CO_AUTHORED_CREDITS
+        : basePrompt;
     return withSessionSummaryInstruction(base);
 }

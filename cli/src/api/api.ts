@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
+import { applyHubPeerToolsEnabled } from '@/modules/common/peerToolsExposure'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
@@ -88,6 +89,7 @@ export class ApiClient {
         if (typeof parsed.data.sessionSummaryContract === 'boolean') {
             applyHubSessionSummaryContract(parsed.data.sessionSummaryContract)
         }
+        applyHubPeerToolsEnabled(parsed.data.peerToolsEnabled ?? true)
 
         const raw = parsed.data.session
 
@@ -144,6 +146,7 @@ export class ApiClient {
         if (typeof parsed.data.sessionSummaryContract === 'boolean') {
             applyHubSessionSummaryContract(parsed.data.sessionSummaryContract)
         }
+        applyHubPeerToolsEnabled(parsed.data.peerToolsEnabled ?? true)
 
         const raw = parsed.data.session
         const metadata = (() => {

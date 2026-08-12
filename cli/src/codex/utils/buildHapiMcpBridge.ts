@@ -50,6 +50,8 @@ export interface HapiMcpBridgeOptions {
         workingDirectory: string;
         flavor: string;
     };
+    /** Exposure control only; peer REST routes retain their authorization. */
+    peerToolsEnabled?: boolean;
 }
 
 /**
@@ -80,8 +82,10 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
-        skillLookup: options.skillLookup
+        skillLookup: options.skillLookup,
+        ...(options.peerToolsEnabled === undefined ? {} : { peerToolsEnabled: options.peerToolsEnabled })
     });
+    const peerToolsEnabled = happyServer.toolNames.includes('list_peers');
     const bridgeCommand = getHappyCliCommand([
         'mcp',
         '--url',
@@ -105,13 +109,15 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
-    // Discovery shortlist only - same trust as skill_lookup / change_title.
-    tools.list_peers = {
-        approval_mode: 'approve'
-    };
-    // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
-    // bridge, but are not auto-approved: they target another session (resume +
-    // inject, or read peer histories).
+    if (peerToolsEnabled) {
+        // Discovery shortlist only - same trust as skill_lookup / change_title.
+        tools.list_peers = {
+            approval_mode: 'approve'
+        };
+        // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
+        // bridge, but are not auto-approved: they target another session (resume +
+        // inject, or read peer histories).
+    }
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

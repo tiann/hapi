@@ -34,6 +34,8 @@ export interface Settings {
      * Default off: render/copy strip the footer; store stays raw.
      */
     sessionSummaryInChat?: boolean
+    /** Hub-level exposure control for peer MCP tools; omitted means enabled. */
+    peerToolsEnabled?: boolean
     /**
      * Hub-side provider API keys / endpoints managed from Settings.
      * Env vars still win when set at process start (ops override).

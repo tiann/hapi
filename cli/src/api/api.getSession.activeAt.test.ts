@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { configuration } from '@/configuration'
+import { applyHubPeerToolsEnabled, isHubPeerToolsEnabled, resetHubPeerToolsEnabledForTests } from '@/modules/common/peerToolsExposure'
 
 const axiosGetMock = vi.hoisted(() => vi.fn())
 
@@ -23,9 +24,11 @@ describe('ApiClient.getSession activeAt coerce', () => {
         configuration._setApiUrl('https://hapi.example.com')
         configuration._setExtraHeaders({})
         axiosGetMock.mockReset()
+        resetHubPeerToolsEnabledForTests()
     })
 
     it('accepts hub payloads with null activeAt without throwing', async () => {
+        applyHubPeerToolsEnabled(false)
         axiosGetMock.mockResolvedValue({
             data: {
                 session: {
@@ -59,5 +62,38 @@ describe('ApiClient.getSession activeAt coerce', () => {
 
         expect(session.activeAt).toBe(0)
         expect(typeof session.activeAt).toBe('number')
+        expect(isHubPeerToolsEnabled()).toBe(true)
+    })
+
+    it('applies the hub peer tools toggle from the resume bootstrap response', async () => {
+        axiosGetMock.mockResolvedValue({
+            data: {
+                peerToolsEnabled: false,
+                session: {
+                    id: '11111111-1111-4111-8111-111111111111',
+                    namespace: 'default',
+                    seq: 1,
+                    createdAt: now,
+                    updatedAt: now,
+                    active: false,
+                    activeAt: now,
+                    metadata: null,
+                    metadataVersion: 0,
+                    agentState: null,
+                    agentStateVersion: 0,
+                    thinking: false,
+                    thinkingAt: now,
+                    todos: [],
+                    model: null,
+                    modelReasoningEffort: null,
+                    effort: null,
+                    serviceTier: null
+                }
+            }
+        })
+
+        const client = await ApiClient.create()
+        await client.getSession('11111111-1111-4111-8111-111111111111')
+        expect(isHubPeerToolsEnabled()).toBe(false)
     })
 })

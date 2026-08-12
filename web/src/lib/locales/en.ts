@@ -764,6 +764,8 @@ export default {
   'settings.general.sessionSummaryContract.desc': 'When on, Claude, Codex, OpenCode, and remote Grok sessions are asked to end each turn with an AGENT_NOTIFY_SUMMARY line for denser ready notifications. Off by default. Local Grok and Cursor are not covered yet. Applies to new/resumed sessions.',
   'settings.general.sessionSummaryInChat': 'Show session status summary in chat',
   'settings.general.sessionSummaryInChat.desc': 'When on, assistant messages show a compact status row instead of raw AGENT_NOTIFY_SUMMARY JSON. Off by default (hidden from chat and copy). Stored messages, notifications, and capture are unchanged.',
+  'settings.general.peerToolsEnabled': 'Expose peer session tools to agents',
+  'settings.general.peerToolsEnabled.desc': 'When off, peer MCP tools and their citation guidance are not exposed to agent sessions. This is exposure control, not a REST authorization boundary. On by default.',
   'settings.language.title': 'Language',
   'settings.language.label': 'Language',
   'settings.display.title': 'Display',

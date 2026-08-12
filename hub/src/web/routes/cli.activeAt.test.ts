@@ -63,6 +63,7 @@ describe('CLI GET /sessions/:id with null active_at', () => {
         }
         expect(typeof body.session.activeAt).toBe('number')
         expect(body.session.activeAt).toBe(created.createdAt)
+        expect(body).toHaveProperty('peerToolsEnabled', true)
         store.close()
     })
 })
