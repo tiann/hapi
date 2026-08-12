@@ -194,4 +194,65 @@ describe('SessionRowSummary model-error + attention', () => {
         expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
         expect(screen.getByLabelText('Permission required')).toBeTruthy()
     })
+
+    it('keeps the model-error pulse while thinking (auto-bridge in flight)', () => {
+        const summary = makeSummary({
+            id: 's-bridge',
+            thinking: true,
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-bridge',
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'rate limited',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                },
+            },
+        })
+
+        renderWithI18n(
+            <SessionRowSummary
+                session={summary}
+                showDetailedStatus
+                selected={false}
+                nestedTooltips={false}
+            />
+        )
+
+        expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
+    })
+
+    it('hides the model-error pulse after a successful bridge even if still thinking', () => {
+        const summary = makeSummary({
+            id: 's-recovered',
+            thinking: true,
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-ok',
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'rate limited',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                    bridgedForEventId: 'evt-row-ok',
+                },
+            },
+        })
+
+        renderWithI18n(
+            <SessionRowSummary
+                session={summary}
+                showDetailedStatus
+                selected={false}
+                nestedTooltips={false}
+            />
+        )
+
+        expect(screen.queryByLabelText(/Model error/i)).toBeNull()
+    })
 })

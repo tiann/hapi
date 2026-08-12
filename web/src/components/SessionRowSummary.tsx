@@ -177,6 +177,7 @@ export function SessionRowSummary(props: {
                     >
                         {sessionName}
                     </div>
+<<<<<<< HEAD
                     {attention?.kind === 'unread' && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator
                             attention={attention}
@@ -190,20 +191,21 @@ export function SessionRowSummary(props: {
                             title={attentionLabel ?? undefined}
                             aria-label={attentionLabel ?? undefined}
                         />
-                    ) : s.active && s.thinking ? (
+                    ) : null}
+                    {modelErrorActive ? (
+                        <span
+                            className="relative inline-flex h-2 w-2 shrink-0"
+                            title={modelErrorLabel}
+                            aria-label={modelErrorLabel}
+                        >
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                        </span>
+                    ) : null}
+                    {s.active && s.thinking ? (
                         <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-badge-success-text)]" />
                     ) : (
                         <>
-                            {modelErrorActive ? (
-                                <span
-                                    className="relative inline-flex h-2 w-2 shrink-0"
-                                    title={modelErrorLabel}
-                                    aria-label={modelErrorLabel}
-                                >
-                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
-                                    <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
-                                </span>
-                            ) : null}
                             {urgentAttention && nestedTooltips && attentionId ? (
                                 <SessionAttentionIndicator
                                     attention={attention}
