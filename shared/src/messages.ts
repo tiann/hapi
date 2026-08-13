@@ -64,7 +64,7 @@ export function isRedundantGoalStatusMessageText(value: unknown): boolean {
     if (typeof value !== 'string') return false
     const message = value.trim()
     return message === 'Goal cleared'
-        || /^Goal (active|paused|complete|limited by budget)(?:$|\s+·\s+)/.test(message)
+        || /^Goal (active|paused|complete|blocked|limited by (?:budget|usage))(?:$|\s+·\s+)/.test(message)
 }
 
 export function isRedundantGoalStatusEventContent(value: unknown): boolean {

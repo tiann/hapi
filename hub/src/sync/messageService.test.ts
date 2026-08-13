@@ -110,6 +110,8 @@ describe('MessageService goal status filtering', () => {
 
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/goal ship it' } })
         store.messages.addMessage(session.id, redundantGoalStatusContent('Goal active · 8016 tokens'))
+        store.messages.addMessage(session.id, redundantGoalStatusContent('Goal blocked'))
+        store.messages.addMessage(session.id, redundantGoalStatusContent('Goal limited by usage · 8016 tokens'))
         store.messages.addMessage(session.id, redundantGoalStatusContent('No goal to clear'))
 
         const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)

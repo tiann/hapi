@@ -74,10 +74,16 @@ describe('cli session handlers', () => {
             }
         })
 
-        socket.trigger('message', {
-            sid: session.id,
-            message: redundantGoalStatusContent('Goal active · 8016 tokens')
-        })
+        for (const message of [
+            'Goal active · 8016 tokens',
+            'Goal blocked',
+            'Goal limited by usage · 8016 tokens'
+        ]) {
+            socket.trigger('message', {
+                sid: session.id,
+                message: redundantGoalStatusContent(message)
+            })
+        }
 
         expect(store.messages.getMessages(session.id)).toHaveLength(0)
         expect(socket.roomEvents).toHaveLength(0)
