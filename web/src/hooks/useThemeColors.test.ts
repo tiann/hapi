@@ -14,6 +14,7 @@ function setScheme(scheme: string): void {
 describe('useThemeColors', () => {
     beforeEach(() => {
         localStorage.clear()
+        delete window.Telegram
         document.documentElement.removeAttribute('data-theme')
         document.documentElement.removeAttribute('style')
     })
@@ -99,6 +100,56 @@ describe('useThemeColors', () => {
 
         expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#123456')
         expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#526fff')
+    })
+
+    it('syncs Telegram chrome after applying custom background colors', () => {
+        const setHeaderColor = vi.fn()
+        const setBackgroundColor = vi.fn()
+        const setBottomBarColor = vi.fn()
+        window.Telegram = {
+            WebApp: {
+                initData: 'init-data',
+                themeParams: {},
+                ready: vi.fn(),
+                expand: vi.fn(),
+                setHeaderColor,
+                setBackgroundColor,
+                setBottomBarColor,
+            },
+        }
+        localStorage.setItem('hapi-theme-colors', JSON.stringify({ light: { background: '#123456' } }))
+        setScheme('light')
+
+        applyThemeColors()
+
+        expect(setHeaderColor).toHaveBeenCalledWith('#123456')
+        expect(setBackgroundColor).toHaveBeenCalledWith('#123456')
+        expect(setBottomBarColor).toHaveBeenCalledWith('#123456')
+    })
+
+    it('syncs Telegram chrome from the active color theme preset', () => {
+        const setHeaderColor = vi.fn()
+        const setBackgroundColor = vi.fn()
+        const setBottomBarColor = vi.fn()
+        window.Telegram = {
+            WebApp: {
+                initData: 'init-data',
+                themeParams: {},
+                ready: vi.fn(),
+                expand: vi.fn(),
+                setHeaderColor,
+                setBackgroundColor,
+                setBottomBarColor,
+            },
+        }
+        localStorage.setItem('hapi-color-theme', 'matrix')
+        setScheme('dark')
+
+        applyThemeColors()
+
+        expect(setHeaderColor).toHaveBeenCalledWith('#030806')
+        expect(setBackgroundColor).toHaveBeenCalledWith('#030806')
+        expect(setBottomBarColor).toHaveBeenCalledWith('#030806')
     })
 
     it('uses the active color theme as the custom color picker baseline', () => {

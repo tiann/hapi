@@ -827,6 +827,7 @@ export function HappyComposer(props: {
     }, [controlledByUser])
 
     const { haptic: platformHaptic, isTouch } = usePlatform()
+    const effectiveComposerEnterBehavior = isTouch ? 'newline' : composerEnterBehavior
     const { isStandalone, isIOS } = usePWAInstall()
     const isIOSPWA = isIOS && isStandalone
     const bottomPaddingClass = isIOSPWA ? 'pb-0' : 'pb-3'
@@ -1240,9 +1241,9 @@ export function HappyComposer(props: {
             return
         }
 
-        // Only plain Enter (no modifiers) sends; other modifier combos are ignored
+        // Enter sends only when the effective behavior is send; touch devices default to newline.
         if (key === 'Enter') {
-            if (composerEnterBehavior === 'newline') {
+            if (effectiveComposerEnterBehavior === 'newline') {
                 if ((e.ctrlKey || e.metaKey) && !e.altKey && canSend) {
                     e.preventDefault()
                     flushAndSend()
@@ -1323,7 +1324,7 @@ export function HappyComposer(props: {
         canSend,
         handleSend,
         haptic,
-        composerEnterBehavior,
+        effectiveComposerEnterBehavior,
         richMentionsEnabled,
         richComposerFueStatus,
         dismissRichComposerFue,
