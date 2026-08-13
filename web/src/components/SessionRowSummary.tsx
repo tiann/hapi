@@ -17,6 +17,7 @@ import {
     formatAttachedJobProgress,
     isAttachedJobStale
 } from '@/lib/attachedJob'
+import { isAgentForegroundThinking } from '@/lib/sessionInProgress'
 function LoaderIcon(props: { className?: string }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
@@ -209,7 +210,7 @@ export function SessionRowSummary(props: {
                             title={attentionLabel ?? undefined}
                             aria-label={attentionLabel ?? undefined}
                         />
-                    ) : s.active && s.thinking ? (
+                    ) : isAgentForegroundThinking(s) ? (
                         <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-badge-success-text)]" />
                     ) : urgentAttention && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator

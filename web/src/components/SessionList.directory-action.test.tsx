@@ -593,6 +593,34 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
     })
 
+    it('puts ambient thinking with attached job in Jobs not Running (#1553)', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const sessions = [
+            makeSession({
+                id: 'session-job-thinking',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Comfy batch', flavor: 'cursor' },
+                attachedJob: {
+                    key: 'comfy',
+                    label: 'Animate stills',
+                    status: 'running',
+                    remaining: 16,
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/Jobs \(1\)/)).toBeInTheDocument()
+        expect(screen.queryByText(/^Running \(/i)).toBeNull()
+        expect(screen.getByRole('button', { name: /Comfy batch/ })).toBeInTheDocument()
+    })
+
     it('puts pending operator action ahead of Jobs when both apply', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
         const sessions = [

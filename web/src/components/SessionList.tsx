@@ -31,6 +31,10 @@ import {
 } from '@/hooks/usePinInProgressSessions'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    hasAgentForegroundWork,
+    hasRunningAttachedJob,
+} from '@/lib/sessionInProgress'
+import {
     getSessionLastSeenAt,
     getSessionLastSeenSnapshot,
     getSessionManualUnreadAt,
@@ -76,16 +80,11 @@ const RUNNING_BUCKETS = [
 
 type RunningBucketKey = (typeof RUNNING_BUCKETS)[number]['key']
 
-function hasRunningAttachedJob(session: SessionSummary): boolean {
-    return session.attachedJob?.status === 'running'
-}
-
 function hasAgentInProgressActivity(session: SessionSummary): boolean {
     if (!session.active) {
         return false
     }
-    return session.thinking
-        || (session.backgroundTaskCount ?? 0) > 0
+    return hasAgentForegroundWork(session)
         || (session.pendingRequestsCount ?? 0) > 0
 }
 
@@ -1382,8 +1381,7 @@ export function SessionList(props: {
             if (!isPinnedInProgressSession(session, pinInProgressMode)) {
                 continue
             }
-            const agentWorking = session.active
-                && (session.thinking || (session.backgroundTaskCount ?? 0) > 0)
+            const agentWorking = hasAgentForegroundWork(session)
             const agentPending = session.active
                 && (session.pendingRequestsCount ?? 0) > 0
                 && !agentWorking

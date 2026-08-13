@@ -625,8 +625,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             session.onThinkingChange(true);
             this.promptInFlight = true;
+<<<<<<< HEAD
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
+=======
+>>>>>>> 0323ba842 (fix(cursor,web): stop attached-job sessions bouncing Running/Jobs (#1553))
 
             try {
                 this.promptInFlight = true;
@@ -825,11 +828,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * #1470 / #1502: ACP foreground state → hub thinking via keepalive.
-     * Background tool/content updates are ignored; running is debounced in the backend.
+     * #1470 / #1502 / #1553: ACP foreground state → hub thinking via keepalive.
+     * Ignore ambient running bumps while queue-idle — prompt() owns thinking, and
+     * attached jobs are the honest list signal when the agent is not working.
      */
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
         backend.setAgentActivityListener((thinking) => {
+            if (thinking && !this.promptInFlight && session.queue.size() === 0) {
+                return;
+            }
             if (session.thinking !== thinking) {
                 session.onThinkingChange(thinking);
             }

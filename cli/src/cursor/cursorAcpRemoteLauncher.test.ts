@@ -624,12 +624,13 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
+        // Queue-idle ambient running is ignored (#1553); idle clear still lands.
         harness.agentActivityListener!(true);
         harness.agentActivityListener!(true);
         harness.agentActivityListener!(false);
 
         expect(session.thinking).toBe(false);
-        expect(keepAlive.mock.calls.map((call) => call[0])).toEqual([true, false]);
+        expect(keepAlive).not.toHaveBeenCalled();
 
         queue.close();
         await runPromise;
