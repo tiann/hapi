@@ -599,9 +599,18 @@ export function wireTransportEvents(
         clearPromptLifecycleFallback();
         session.updateThinkingState(false);
         if (options.conversationHistory) {
+            // The settled notification fires after an async history sync. A new
+            // lifecycle (e.g. an autonomous wake-up) can begin in the meantime;
+            // generation-scope the callback so a stale settlement cannot mark
+            // that newer lifecycle's abort boundary as settled.
+            const settlementGeneration = lifecycleGeneration;
             void options.conversationHistory.syncEntries()
                 .catch(() => {})
-                .finally(() => options.onAgentSettled?.());
+                .finally(() => {
+                    if (settlementGeneration === lifecycleGeneration) {
+                        options.onAgentSettled?.();
+                    }
+                });
         } else {
             options.onAgentSettled?.();
         }
@@ -768,6 +777,10 @@ export function wireTransportEvents(
                 // Prompt-driven lifecycles are unaffected: beginPromptLifecycle
                 // has already reset deliveredSettlement to false by the time
                 // their agent_start arrives.
+                // Advance the generation so a previous settlement's async
+                // history-sync callback (still in flight) turns stale and
+                // cannot mark this new lifecycle's abort boundary as settled.
+                lifecycleGeneration += 1;
                 deliveredSettlement = false;
                 agentEndObserved = false;
                 activeAgentSettledSeen = false;

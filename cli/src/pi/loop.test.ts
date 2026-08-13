@@ -1301,6 +1301,52 @@ describe('Pi settlement compatibility fallbacks', () => {
         expect(h.stateSession.piIsStreaming).toBe(false);
     });
 
+    it('does not let a stale in-flight settlement callback settle a newly started autonomous lifecycle', async () => {
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const stateSession = createMockSession();
+        const onAgentSettled = vi.fn();
+        let releaseSync: (() => void) | null = null;
+        const conversationHistory = {
+            syncEntries: vi.fn(() => new Promise<void>((resolve) => { releaseSync = resolve; })),
+            observeEntry: vi.fn(),
+        } as unknown as PiConversationHistory;
+        const controller = wireTransportEvents(transport, stateSession, [], { onAgentSettled, conversationHistory });
+        const emit = (event: Record<string, unknown>) => listener?.(event);
+
+        controller.beginPromptLifecycle('prompt-1');
+        emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        emit({ type: 'agent_start' });
+        emit({ type: 'agent_end', willRetry: false });
+        emit({ type: 'agent_settled' });
+        // Settlement delivered, but its history sync (and therefore the
+        // onAgentSettled notification) is still in flight.
+        expect(onAgentSettled).not.toHaveBeenCalled();
+
+        // Pi wakes up autonomously before the sync completes.
+        emit({ type: 'agent_start' });
+        expect(stateSession.piIsStreaming).toBe(true);
+
+        // The stale callback resolves now — it must not settle the new
+        // lifecycle's boundary.
+        releaseSync!();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(onAgentSettled).not.toHaveBeenCalled();
+
+        // The autonomous lifecycle settles through its own events.
+        emit({ type: 'agent_end', willRetry: false });
+        emit({ type: 'agent_settled' });
+        releaseSync!();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(onAgentSettled).toHaveBeenCalledTimes(1);
+        expect(stateSession.piIsStreaming).toBe(false);
+    });
+
     it('rejects a matching prompt after turn_start already consumed its local ID', async () => {
         vi.useFakeTimers();
         const pendingLocalIds = ['local-a'];
