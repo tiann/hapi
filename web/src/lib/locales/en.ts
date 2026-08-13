@@ -1124,6 +1124,8 @@ export default {
   'session.status.goal.active': 'Active',
   'session.status.goal.paused': 'Paused',
   'session.status.goal.budgetLimited': 'Limited',
+  'session.status.goal.usageLimited': 'Usage limited',
+  'session.status.goal.blocked': 'Blocked',
   'session.status.goal.complete': 'Complete',
   'session.status.subagent.running': 'Running',
   'session.status.subagent.waiting': 'Waiting',

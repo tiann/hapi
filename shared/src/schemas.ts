@@ -254,7 +254,14 @@ export const TeamStateSchema = z.object({
 
 export type TeamState = z.infer<typeof TeamStateSchema>
 
-export const ThreadGoalStatusSchema = z.enum(['active', 'paused', 'budgetLimited', 'complete'])
+export const ThreadGoalStatusSchema = z.enum([
+    'active',
+    'paused',
+    'budgetLimited',
+    'complete',
+    'blocked',
+    'usageLimited'
+])
 export type ThreadGoalStatus = z.infer<typeof ThreadGoalStatusSchema>
 
 export const ThreadGoalSchema = z.object({

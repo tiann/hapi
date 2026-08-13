@@ -114,11 +114,12 @@ function buildMcpServerConfig(mcpServers: McpServersConfig): Record<string, unkn
 function resolveInstructions(args: {
     baseInstructions?: string;
     developerInstructions?: string;
-}): { baseInstructions: string; developerInstructions: string } {
-    const baseInstructions = args.baseInstructions ?? getCodexSystemPrompt();
+}): { baseInstructions: string | undefined; developerInstructions: string } {
+    const baseInstructions = args.baseInstructions;
+    const hapiDeveloperInstructions = getCodexSystemPrompt();
     const developerInstructions = args.developerInstructions
-        ? `${baseInstructions}\n\n${args.developerInstructions}`
-        : baseInstructions;
+        ? `${hapiDeveloperInstructions}\n\n${args.developerInstructions}`
+        : hapiDeveloperInstructions;
     return {
         baseInstructions,
         developerInstructions
@@ -218,7 +219,7 @@ export function buildThreadStartParams(args: {
         cwd: args.cwd,
         approvalPolicy: resolvedApprovalPolicy,
         sandbox: resolvedSandbox,
-        baseInstructions,
+        ...(baseInstructions !== undefined ? { baseInstructions } : {}),
         developerInstructions: resolvedDeveloperInstructions,
         ...(Object.keys(configWithInstructions).length > 0 ? { config: configWithInstructions } : {})
     };

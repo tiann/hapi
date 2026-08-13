@@ -1571,7 +1571,7 @@ describe('codexRemoteLauncher', () => {
         });
     });
 
-    it('sets a Codex goal without starting a normal turn', async () => {
+    it('sets a Codex goal without starting a duplicate client turn', async () => {
         const { session, sessionEvents, codexMessages, foundSessionIds } = createSessionStub(['/goal improve benchmark coverage']);
 
         const exitReason = await codexRemoteLauncher(session as never);
@@ -1641,6 +1641,70 @@ describe('codexRemoteLauncher', () => {
                 })
             })
         ]));
+    });
+
+    it('does not start client turns for goal commands', async () => {
+        const { session } = createSessionStub([
+            '/goal improve benchmark coverage',
+            '/goal',
+            '/goal pause',
+            '/goal resume',
+            '/goal clear'
+        ], createMode(), true);
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.startTurnParams).toHaveLength(0);
+    });
+
+    it('tracks externally started turns used by app-server goals', async () => {
+        const { session, thinkingChanges } = createSessionStub(['/goal improve benchmark coverage']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.goalSetCalls).toHaveLength(1);
+        });
+
+        harness.dispatchNotification?.('turn/started', {
+            threadId: 'thread-1',
+            turn: { id: 'goal-turn-1' }
+        });
+        await vi.waitFor(() => {
+            expect(session.thinking).toBe(true);
+        });
+
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'goal-turn-1', status: 'completed' }
+        });
+        await vi.waitFor(() => {
+            expect(session.thinking).toBe(false);
+        });
+
+        expect(thinkingChanges).toEqual(expect.arrayContaining([true, false]));
+        expect(await running).toBe('exit');
+    });
+
+    it('formats usage-limited goal status', async () => {
+        harness.goal = {
+            threadId: 'thread-1',
+            objective: 'improve benchmark coverage',
+            status: 'usageLimited',
+            tokenBudget: null,
+            tokensUsed: 10,
+            timeUsedSeconds: 1,
+            createdAt: 1,
+            updatedAt: 2
+        };
+        const { session, sessionEvents } = createSessionStub(['/goal']);
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.startTurnParams).toHaveLength(0);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Goal limited by usage · 10 tokens'
+        });
     });
 
     it('does not emit ready when a goal command interrupts an active turn', async () => {

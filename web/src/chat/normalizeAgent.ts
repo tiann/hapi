@@ -40,7 +40,14 @@ function normalizeThreadGoal(value: unknown) {
     const objective = asString(value.objective)
     const status = asString(value.status)
     if (!threadId || !objective || !status) return null
-    if (status !== 'active' && status !== 'paused' && status !== 'budgetLimited' && status !== 'complete') return null
+    if (
+        status !== 'active'
+        && status !== 'paused'
+        && status !== 'budgetLimited'
+        && status !== 'usageLimited'
+        && status !== 'blocked'
+        && status !== 'complete'
+    ) return null
     return {
         threadId,
         objective,

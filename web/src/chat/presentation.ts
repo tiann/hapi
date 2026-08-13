@@ -118,6 +118,8 @@ function formatGoalStatus(status: string): string {
     if (status === 'active') return 'active'
     if (status === 'paused') return 'paused'
     if (status === 'budgetLimited') return 'limited by budget'
+    if (status === 'usageLimited') return 'limited by usage'
+    if (status === 'blocked') return 'blocked'
     if (status === 'complete') return 'complete'
     return status
 }

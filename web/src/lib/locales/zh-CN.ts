@@ -1123,6 +1123,8 @@ export default {
   'session.status.goal.active': '进行中',
   'session.status.goal.paused': '已暂停',
   'session.status.goal.budgetLimited': '已受限',
+  'session.status.goal.usageLimited': '用量受限',
+  'session.status.goal.blocked': '已阻塞',
   'session.status.goal.complete': '已完成',
   'session.status.subagent.running': '运行中',
   'session.status.subagent.waiting': '等待中',

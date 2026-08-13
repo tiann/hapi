@@ -303,7 +303,13 @@ export interface ThreadCompactStartResponse {
     [key: string]: unknown;
 }
 
-export type ThreadGoalStatus = 'active' | 'paused' | 'budgetLimited' | 'complete';
+export type ThreadGoalStatus =
+    | 'active'
+    | 'paused'
+    | 'budgetLimited'
+    | 'usageLimited'
+    | 'blocked'
+    | 'complete';
 
 export interface ThreadGoal {
     threadId: string;
