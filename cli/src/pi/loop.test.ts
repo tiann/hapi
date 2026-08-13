@@ -1259,6 +1259,48 @@ describe('Pi settlement compatibility fallbacks', () => {
         expect(h.onAgentSettled).not.toHaveBeenCalled();
     });
 
+    it('settles an autonomous agent lifecycle that starts after the previous prompt already settled', () => {
+        const h = setup();
+
+        // A normal prompt lifecycle runs to settlement.
+        h.controller.beginPromptLifecycle('prompt-1');
+        h.emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'agent_settled' });
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(1);
+        expect(h.stateSession.piIsStreaming).toBe(false);
+
+        // Pi wakes up on its own (subagent completion, scheduled work) with no
+        // HAPI prompt in flight. Its settlement must not be swallowed by the
+        // already-delivered previous cycle, or thinking stays true forever.
+        h.emit({ type: 'agent_start' });
+        expect(h.stateSession.piIsStreaming).toBe(true);
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'agent_settled' });
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(2);
+        expect(h.stateSession.piIsStreaming).toBe(false);
+    });
+
+    it('settles an autonomous agent lifecycle through the legacy agent_end grace when agent_settled never arrives', async () => {
+        vi.useFakeTimers();
+        const h = setup();
+
+        h.controller.beginPromptLifecycle('prompt-1');
+        h.emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'agent_settled' });
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(1);
+
+        h.emit({ type: 'agent_start' });
+        expect(h.stateSession.piIsStreaming).toBe(true);
+        h.emit({ type: 'agent_end', willRetry: false });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(2);
+        expect(h.stateSession.piIsStreaming).toBe(false);
+    });
+
     it('rejects a matching prompt after turn_start already consumed its local ID', async () => {
         vi.useFakeTimers();
         const pendingLocalIds = ['local-a'];

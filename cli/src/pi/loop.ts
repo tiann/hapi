@@ -757,6 +757,21 @@ export function wireTransportEvents(
         }
 
         if (event.type === 'agent_start' || event.type === 'turn_start') {
+            if (deliveredSettlement) {
+                // Pi can start an agent lifecycle on its own — subagent
+                // completion wake-ups, scheduled work — with no HAPI prompt in
+                // flight. The previous prompt lifecycle already delivered its
+                // settlement, so every settlement path below is gated shut and
+                // this turn's agent_settled/agent_end would be swallowed,
+                // leaving thinking=true (and the FIFO pump blocked) forever.
+                // Open a fresh settlement cycle for the autonomous lifecycle.
+                // Prompt-driven lifecycles are unaffected: beginPromptLifecycle
+                // has already reset deliveredSettlement to false by the time
+                // their agent_start arrives.
+                deliveredSettlement = false;
+                agentEndObserved = false;
+                activeAgentSettledSeen = false;
+            }
             clearCompactionRetryPending();
             agentLifecycleSeen = true;
             clearLegacySettleFallback();
