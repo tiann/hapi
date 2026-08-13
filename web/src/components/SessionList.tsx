@@ -43,6 +43,7 @@ import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
+import { useHubSettings } from '@/hooks/queries/useHubSettings'
 
 export { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
@@ -870,6 +871,7 @@ function SessionItem(props: {
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
+    peerToolsEnabled: boolean
     selected?: boolean
     showDetailedStatus?: boolean
     inRunningSection?: boolean
@@ -878,7 +880,7 @@ function SessionItem(props: {
 }) {
     const { t } = useTranslation()
     const { addToast } = useToast()
-    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false, inRunningSection = false, projectLabel, machineLabel } = props
+    const { session: s, onSelect, showPath = true, api, peerToolsEnabled, selected = false, showDetailedStatus = false, inRunningSection = false, projectLabel, machineLabel } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -1009,6 +1011,7 @@ function SessionItem(props: {
                 sessionId={s.id}
                 sessionTitle={sessionName}
                 sessionActive={s.active}
+                peerToolsEnabled={peerToolsEnabled}
                 sessionPinned={Boolean(s.pinned)}
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
@@ -1138,6 +1141,7 @@ export function SessionList(props: {
 }) {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, machinesById = {}, onNewSessionInDirectory } = props
+    const { peerToolsEnabled } = useHubSettings(api)
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
@@ -1447,6 +1451,7 @@ export function SessionList(props: {
                                     onSelect={props.onSelect}
                                     showPath={false}
                                     api={api}
+                                    peerToolsEnabled={peerToolsEnabled}
                                     selected={s.id === selectedSessionId}
                                     showDetailedStatus={showDetailedStatus}
                                 />
@@ -1808,6 +1813,7 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            peerToolsEnabled={peerToolsEnabled}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
@@ -1869,6 +1875,7 @@ export function SessionList(props: {
                                                     onSelect={props.onSelect}
                                                     showPath={false}
                                                     api={api}
+                                                    peerToolsEnabled={peerToolsEnabled}
                                                     selected={s.id === selectedSessionId}
                                                     showDetailedStatus={showDetailedStatus}
                                                     inRunningSection

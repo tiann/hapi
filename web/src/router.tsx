@@ -49,6 +49,7 @@ import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optim
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
 import { initializeSessionLastSeen, markSessionSeen } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
+import { useHubSettings } from '@/hooks/queries/useHubSettings'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
 import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
@@ -330,6 +331,7 @@ function classifySendError(
 
 function SessionPage() {
     const { api } = useAppContext()
+    const { peerToolsEnabled } = useHubSettings(api)
     const { t } = useTranslation()
     const goBack = useAppGoBack()
     const navigate = useNavigate()
@@ -678,7 +680,7 @@ function SessionPage() {
                 resolveMachineLabel: resolveMentionMachineLabel,
             }).map((s) => {
                 const title = getSessionTitle(s)
-                const mentionText = buildSessionReferenceText(title, s.id)
+                const mentionText = buildSessionReferenceText(title, s.id, { peerToolsEnabled })
                 const idPrefix = s.id.slice(0, 8)
                 return {
                     key: `session:${s.id}`,
@@ -723,6 +725,7 @@ function SessionPage() {
         sessionId,
         allSessions,
         resolveMentionMachineLabel,
+        peerToolsEnabled,
         getSkillSuggestions,
         getSlashSuggestions,
     ])

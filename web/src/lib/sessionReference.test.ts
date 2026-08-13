@@ -66,6 +66,15 @@ describe('buildSessionReferenceText', () => {
         )
     })
 
+    it('keeps a readable path-only citation when peer tools are disabled', () => {
+        expect(buildSessionReferenceText('upstream issue/pr discovery', 'abc-def', {
+            peerToolsEnabled: false,
+        })).toBe('See session "upstream issue/pr discovery" (/sessions/abc-def) for context.')
+        expect(buildSessionReferenceText('upstream issue/pr discovery', 'abc-def', {
+            peerToolsEnabled: false,
+        })).not.toContain('inspect_peer')
+    })
+
     it('keeps combining and ZWJ title graphemes only when they fit the UTF-16 limit', () => {
         const prefix = 'a'.repeat(119)
         const combining = `${prefix}e\u0301x`

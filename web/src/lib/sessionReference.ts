@@ -15,13 +15,19 @@ function sanitizeSessionReferenceTitle(sessionTitle: string): string {
 }
 
 /** Clipboard text for citing this session in another HAPI chat (not a public share link). */
-export function buildSessionReferenceText(sessionTitle: string, sessionId: string): string {
+export function buildSessionReferenceText(
+    sessionTitle: string,
+    sessionId: string,
+    options: { peerToolsEnabled?: boolean } = {}
+): string {
     const path = buildSessionReferencePath(sessionId)
     const title = sanitizeSessionReferenceTitle(sessionTitle)
     const base = title
         ? `See session ${JSON.stringify(title)} (${path}) for context`
         : `See HAPI session ${path} for context`
-    return `${base}.${SESSION_REFERENCE_STEER_SUFFIX}`
+    return options.peerToolsEnabled === false
+        ? `${base}.`
+        : `${base}.${SESSION_REFERENCE_STEER_SUFFIX}`
 }
 
 export type MatchSessionsForMentionOptions = {

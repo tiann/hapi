@@ -34,7 +34,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.headers.get('cache-control')).toBe('no-store')
         expect(await response.json()).toEqual({
             sessionSummaryContract: false,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            peerToolsEnabled: true
         })
     })
 
@@ -48,13 +49,15 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(200)
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            peerToolsEnabled: true
         })
 
         const get = await app.request('/api/hub-settings')
         expect(await get.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            peerToolsEnabled: true
         })
     })
 
@@ -70,7 +73,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(200)
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            peerToolsEnabled: true
         })
     })
 
@@ -82,6 +86,26 @@ describe('GET/PUT /api/hub-settings', () => {
             body: JSON.stringify({})
         })
         expect(response.status).toBe(400)
+    })
+
+    it('persists the peer tools exposure toggle for the owner', async () => {
+        const { app, dataDir } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ peerToolsEnabled: false })
+        })
+        expect(put.status).toBe(200)
+        expect(await put.json()).toEqual({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            peerToolsEnabled: false
+        })
+        const get = await app.request('/api/hub-settings')
+        const body = await get.json() as { peerToolsEnabled?: boolean }
+        expect(body.peerToolsEnabled).toBe(false)
+        const saved = JSON.parse(await Bun.file(`${dataDir}/settings.json`).text()) as { peerToolsEnabled?: boolean }
+        expect(saved.peerToolsEnabled).toBe(false)
     })
 
     it('rejects invalid body', async () => {
@@ -109,7 +133,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(get.status).toBe(200)
         expect(await get.json()).toEqual({
             sessionSummaryContract: false,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            peerToolsEnabled: true
         })
 
         const put = await tenantApp.request('/api/hub-settings', {
@@ -127,7 +152,8 @@ describe('GET/PUT /api/hub-settings', () => {
         const response = await app.request('/api/hub-settings')
         expect(await response.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            peerToolsEnabled: true
         })
     })
 })

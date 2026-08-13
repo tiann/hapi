@@ -156,6 +156,12 @@ See `src/web/routes/` for all endpoints.
 - `POST /cli/machines` - Create/load machine.
 - `GET /cli/machines/:id` - Get machine by ID.
 
+### Hub settings
+
+- `GET /api/hub-settings` - Read owner-configured agent behavior defaults.
+- `PUT /api/hub-settings` - Owner namespace (`default`) updates settings; other namespaces receive 403.
+- `peerToolsEnabled` - When false, new and resumed agent bootstrap responses tell the CLI not to expose `list_peers`, `inspect_peer`, or `ping_peer` MCP tools or their citation steering. This is an exposure control, not a REST authorization boundary; existing session/message authorization is unchanged. Missing settings default to true.
+
 ## Socket.IO
 
 See `src/socket/handlers/cli.ts` for event handlers.

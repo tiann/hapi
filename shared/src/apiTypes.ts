@@ -52,7 +52,9 @@ export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 export const CreateSessionResponseSchema = z.object({
     session: SessionSchema,
     /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
-    sessionSummaryContract: z.boolean().optional()
+    sessionSummaryContract: z.boolean().optional(),
+    /** Hub peer-tool exposure control (defaults on for older Hub responses). */
+    peerToolsEnabled: z.boolean().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
@@ -60,7 +62,9 @@ export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
-    sessionSummaryInChat: z.boolean()
+    sessionSummaryInChat: z.boolean(),
+    /** MCP peer tools are exposure-controlled, not a REST authorization boundary. */
+    peerToolsEnabled: z.boolean().optional()
 })
 
 export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
@@ -68,10 +72,13 @@ export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
 export const UpdateHubSettingsRequestSchema = z
     .object({
         sessionSummaryContract: z.boolean().optional(),
-        sessionSummaryInChat: z.boolean().optional()
+        sessionSummaryInChat: z.boolean().optional(),
+        peerToolsEnabled: z.boolean().optional()
     })
     .refine(
-        (data) => data.sessionSummaryContract !== undefined || data.sessionSummaryInChat !== undefined,
+        (data) => data.sessionSummaryContract !== undefined
+            || data.sessionSummaryInChat !== undefined
+            || data.peerToolsEnabled !== undefined,
         { message: 'At least one hub setting field is required' }
     )
 

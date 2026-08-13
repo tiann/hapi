@@ -20,6 +20,7 @@ type SessionActionMenuProps = {
     sessionId: string
     sessionTitle: string
     sessionActive: boolean
+    peerToolsEnabled?: boolean
     onRename: () => void
     sessionPinned?: boolean
     sessionGlobalPinned?: boolean
@@ -191,6 +192,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionId,
         sessionTitle,
         sessionActive,
+        peerToolsEnabled = true,
         onRename,
         sessionPinned = false,
         sessionGlobalPinned = false,
@@ -220,7 +222,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleCopyReference = async () => {
         onClose()
         try {
-            await safeCopyToClipboard(buildSessionReferenceText(sessionTitle, sessionId))
+            await safeCopyToClipboard(buildSessionReferenceText(sessionTitle, sessionId, { peerToolsEnabled }))
             haptic.notification('success')
         } catch {
             haptic.notification('error')

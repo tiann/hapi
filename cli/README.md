@@ -128,6 +128,12 @@ See `src/configuration.ts` for all options.
   bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
   ```
 
+The Hub Settings “Expose peer session tools to agents” toggle controls whether
+new or resumed sessions receive the peer MCP tools (`list_peers`, `inspect_peer`,
+and `ping_peer`) and their agent citation guidance. It defaults to on for older
+Hubs/settings. This controls agent-tool exposure only; it is not a REST
+authorization boundary.
+
   Explicit other session (prefix or full uuid) still works; that path may list sessions.
 
 ## Storage

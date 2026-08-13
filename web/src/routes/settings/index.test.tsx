@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import SettingsHubPage from './index'
@@ -23,8 +23,8 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setVoice: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, peerToolsEnabled: true })
+const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, peerToolsEnabled: false })
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -216,8 +216,8 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, peerToolsEnabled: true })
+        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, peerToolsEnabled: false })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -247,6 +247,8 @@ describe('responsive settings pages', () => {
         expect(screen.getByText('Companion pairing')).toBeInTheDocument()
         expect(await screen.findByRole('checkbox', { name: 'Ask agents to emit session status summary' })).toBeInTheDocument()
         expect(screen.getByRole('checkbox', { name: 'Show session status summary in chat' })).toBeInTheDocument()
+        fireEvent.click(await screen.findByRole('checkbox', { name: 'Expose peer session tools to agents' }))
+        await waitFor(() => expect(updateHubSettings).toHaveBeenCalledWith({ peerToolsEnabled: false }))
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
     })

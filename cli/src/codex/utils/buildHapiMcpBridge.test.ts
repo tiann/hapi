@@ -9,13 +9,16 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('@/claude/utils/startHappyServer', () => ({
-    startHappyServer: vi.fn(async (_client: unknown, options: { skillLookup?: unknown }) => {
+    startHappyServer: vi.fn(async (_client: unknown, options: { skillLookup?: unknown; peerToolsEnabled?: boolean }) => {
         harness.startOptions = options
+        const peerTools = options.peerToolsEnabled !== false
         return {
             url: 'http://127.0.0.1:43006/',
-            toolNames: options.skillLookup
-                ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'skill_lookup']
-                : ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'],
+            toolNames: [
+                'change_title', 'display_image', 'display_video', 'display_media',
+                ...(peerTools ? ['list_peers', 'ping_peer', 'inspect_peer'] : []),
+                ...(options.skillLookup ? ['skill_lookup'] : [])
+            ],
             stop: vi.fn()
         }
     })
@@ -104,6 +107,18 @@ describe('buildHapiMcpBridge skill lookup config', () => {
         expect(harness.materialize).toHaveBeenCalledOnce()
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe('lazy-session-1')
         expect(client.isPending()).toBe(false)
+    })
+
+    it('omits peer tools and approvals when hub exposure is off', async () => {
+        const bridge = await buildHapiMcpBridge(createClient(), { peerToolsEnabled: false })
+
+        expect(harness.cliArgs.at(-1)).toBe('change_title,display_image,display_video,display_media')
+        expect(bridge.mcpServers.hapi.tools).toEqual({
+            change_title: { approval_mode: 'approve' },
+            display_image: { approval_mode: 'prompt' },
+            display_video: { approval_mode: 'prompt' },
+            display_media: { approval_mode: 'prompt' }
+        })
     })
 
     it('fails closed when pending materialization fails', async () => {
