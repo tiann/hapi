@@ -77,6 +77,99 @@ describe('AcpSdkBackend', () => {
         expect(updates).toEqual([{ sessionId: 'session-1', title: 'Native session title' }]);
     });
 
+    it('refreshes cached config options from asynchronous ACP updates', () => {
+        const backend = new AcpSdkBackend({ command: 'reasonix', flavor: 'reasonix' });
+        const updates: Array<{ sessionId: string; options: unknown[] }> = [];
+        backend.setSessionConfigOptionsUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.handleSessionUpdate({
+            sessionId: 'reasonix-session-1',
+            update: {
+                sessionUpdate: 'config_option_update',
+                configOptions: [
+                    {
+                        id: 'effort',
+                        category: 'thought_level',
+                        currentValue: 'high',
+                        options: [{ value: 'high', name: 'High' }]
+                    }
+                ]
+            }
+        });
+
+        expect(backend.getSessionConfigOptions('reasonix-session-1')).toEqual([
+            {
+                id: 'effort',
+                category: 'thought_level',
+                currentValue: 'high',
+                options: [{ value: 'high', name: 'High' }]
+            }
+        ]);
+        expect(updates).toEqual([
+            {
+                sessionId: 'reasonix-session-1',
+                options: [
+                    {
+                        id: 'effort',
+                        category: 'thought_level',
+                        currentValue: 'high',
+                        options: [{ value: 'high', name: 'High' }]
+                    }
+                ]
+            }
+        ]);
+    });
+
+    it('refreshes cached session mode from asynchronous ACP updates', () => {
+        const backend = new AcpSdkBackend({ command: 'reasonix', flavor: 'reasonix' });
+        const updates: Array<{ sessionId: string; modeId: string }> = [];
+        backend.setSessionModeUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.handleSessionUpdate({
+            sessionId: 'reasonix-session-1',
+            update: {
+                sessionUpdate: 'current_mode_update',
+                currentModeId: 'goal'
+            }
+        });
+
+        expect(backend.getSessionModeMetadata('reasonix-session-1')).toEqual({
+            currentModeId: 'goal'
+        });
+        expect(updates).toEqual([{
+            sessionId: 'reasonix-session-1',
+            modeId: 'goal'
+        }]);
+    });
+
+    it('clears cached config options when the ACP transport disconnects', async () => {
+        const backend = new AcpSdkBackend({ command: 'reasonix', flavor: 'reasonix' });
+        const backendInternal = backend as unknown as {
+            transport: { close: () => Promise<void> } | null;
+            sessionConfigOptions: Map<string, Array<{
+                id: string;
+                currentValue?: string;
+                options: Array<{ value: string }>;
+            }>>;
+        };
+        backendInternal.transport = { close: async () => {} };
+        backendInternal.sessionConfigOptions.set('reasonix-session-1', [{
+            id: 'tool_approval',
+            currentValue: 'ask',
+            options: [{ value: 'ask' }]
+        }]);
+
+        await backend.disconnect();
+
+        expect(backend.getSessionConfigOptions('reasonix-session-1')).toBeUndefined();
+    });
+
     it('refreshes native titles through ACP session/list', async () => {
         const backend = new AcpSdkBackend({ command: 'opencode' });
         const calls: Array<{ method: string; params: unknown; options: unknown }> = [];
@@ -1121,6 +1214,67 @@ describe('AcpSdkBackend', () => {
             { method: 'session/set_mode', params: { sessionId: 'session-1', modeId: 'plan' } },
             { method: 'session/set_config_option', params: { sessionId: 'session-1', configId: 'mode-opt', value: 'plan' } }
         ]);
+    });
+
+    it('does not treat Reasonix collaboration mode as its thought level', async () => {
+        const backend = new AcpSdkBackend({ command: 'reasonix', flavor: 'reasonix' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+            sessionConfigOptions: Map<string, Array<{ id: string; category?: string; currentValue?: string; options: Array<{ value: string }> }>>;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return null;
+            },
+            close: async () => {}
+        };
+        backendInternal.sessionConfigOptions.set('reasonix-session', [
+            {
+                id: 'effort',
+                category: 'thought_level',
+                currentValue: 'high',
+                options: [{ value: 'auto' }, { value: 'high' }]
+            }
+        ]);
+
+        await backend.setMode('reasonix-session', 'plan');
+
+        expect(calls).toEqual([{
+            method: 'session/set_mode',
+            params: { sessionId: 'reasonix-session', modeId: 'plan' }
+        }]);
+        expect(backend.getThoughtLevelConfigOption('reasonix-session')?.currentValue).toBe('high');
+    });
+
+    it('resumes a persisted ACP session without replaying transcript updates', async () => {
+        const backend = new AcpSdkBackend({ command: 'reasonix', flavor: 'reasonix' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return { sessionId: 'reasonix-session-2' };
+            },
+            close: async () => {}
+        };
+
+        await expect(backend.resumeSession({
+            sessionId: 'reasonix-session-1',
+            cwd: '/tmp/reasonix',
+            mcpServers: []
+        })).resolves.toBe('reasonix-session-2');
+        expect(calls).toEqual([{
+            method: 'session/resume',
+            params: {
+                sessionId: 'reasonix-session-1',
+                cwd: '/tmp/reasonix',
+                mcpServers: []
+            }
+        }]);
     });
 
     it('registerExtensionRequestHandler wires transport handlers', () => {

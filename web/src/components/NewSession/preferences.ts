@@ -11,7 +11,7 @@ import {
     type CodexReasoningEffort,
     type LaunchEffort
 } from './types'
-import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { usesFlavorPermissionModes } from '@/lib/codexFamilyPermissionAgents'
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
@@ -132,7 +132,10 @@ export function resolvePreferredLaunchSettings(
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
-    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot'
+    const model = staticModelValues.length > 0
+        && agent !== 'codex'
+        && agent !== 'copilot'
+        && agent !== 'reasonix'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel
     const effort = agent === 'claude'
@@ -151,7 +154,7 @@ export function resolvePreferredLaunchSettings(
             'default'
         )
         : (preferred?.modelReasoningEffort ?? 'default')
-    const supportsCodexFamilyPermissionMode = usesCodexFamilyPermissionModes(agent)
+    const supportsCodexFamilyPermissionMode = usesFlavorPermissionModes(agent)
     const availablePermissionModes = getPermissionModesForFlavor(agent)
     const preferredPermissionMode = preferred?.permissionMode
     const permissionMode = supportsCodexFamilyPermissionMode

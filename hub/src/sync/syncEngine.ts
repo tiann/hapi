@@ -11,6 +11,7 @@ import { isKnownFlavor, type LocalResumeTarget, type ResumableSession, type Sess
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
+    MACHINE_CAPABILITIES,
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -47,6 +48,7 @@ import {
     type RpcListGrokModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
+    type RpcListReasonixConfigOptionsResponse,
     type RpcListOpencodeReasoningEffortOptionsResponse,
     type RpcCursorModel,
     type RpcCursorChatStoreStatus,
@@ -79,6 +81,7 @@ export type {
     RpcListGrokModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
+    RpcListReasonixConfigOptionsResponse,
     RpcListOpencodeReasoningEffortOptionsResponse,
     RpcCursorModel,
     RpcCursorChatStoreStatus,
@@ -175,6 +178,15 @@ export class SyncEngine {
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
+    /** Current lifecycle generation per HAPI session id. Retired generations
+     * stay fenced so a stopped child cannot reconnect and reclaim the row. */
+    private readonly sessionGenerationById = new Map<string, string>()
+    private readonly retiredSessionGenerations = new Map<string, Set<string>>()
+    /** Reasonix rows rejected after a lifecycle/cleanup failure. */
+    private readonly blockedReasonixSessionIds = new Set<string>()
+    /** Reasonix rows expired by the Hub need an explicit child retirement
+     * before same-ID runner dedupe may be used for a replacement. */
+    private readonly expiredReasonixSessionIds = new Set<string>()
     /** Same-ID PTY rows with a resume currently in flight. */
     private readonly ptyResumeInFlightIds = new Set<string>()
     /** PTY rows kept fail-closed after a metadata write/clear failure. */
@@ -183,6 +195,8 @@ export class SyncEngine {
     private readonly piResumeInFlightIds = new Set<string>()
     /** Pi rows whose runner child could not be confirmed terminated. */
     private readonly piResumeQuarantinedIds = new Set<string>()
+    /** Same-ID Reasonix rows with ACP startup/readiness currently in flight. */
+    private readonly reasonixResumeInFlightIds = new Set<string>()
     /** Unexpected version-skew temp child -> original row whose retry is blocked until child ends. */
     private readonly piUnexpectedTempOriginalIds = new Map<string, string>()
     /** Serialize scratchlist uploads per session so disk-byte caps cannot race. */
@@ -506,6 +520,7 @@ export class SyncEngine {
 
     handleSessionAlive(payload: {
         sid: string
+        sessionGeneration?: string
         time: number
         thinking?: boolean
         mode?: 'local' | 'remote'
@@ -516,14 +531,23 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
+        if (!this.acceptSessionGeneration(payload.sid, payload.sessionGeneration)) return
         this.sessionCache.handleSessionAlive(payload)
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
     }
 
-    handleSessionReady(payload: { sid: string; time: number }): void {
-        this.sessionReadyIds.add(payload.sid)
+    handleSessionReady(payload: { sid: string; sessionGeneration?: string; time: number }): void {
+        if (!this.acceptSessionGeneration(payload.sid, payload.sessionGeneration)) return
         const session = this.sessionCache.getSession(payload.sid)
+        // A child may flush a queued ready event while its socket is closing.
+        // Never let a notification for an inactive row satisfy a later
+        // generation's readiness barrier.
+        if (session?.metadata?.flavor === 'reasonix' && !session.active) {
+            this.sessionReadyIds.delete(payload.sid)
+            return
+        }
+        this.sessionReadyIds.add(payload.sid)
         if (session?.metadata?.piResumeAttempt) {
             void this.writePiResumeAttempt(payload.sid, session.namespace, null)
                 .then(() => {
@@ -539,7 +563,8 @@ export class SyncEngine {
         this.sessionCache.clearQueuedThinkingGrace(sessionId)
     }
 
-    handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
+    handleSessionEnd(payload: { sid: string; sessionGeneration?: string; time: number; reason?: SessionEndReason }): void {
+        if (!this.acceptSessionGeneration(payload.sid, payload.sessionGeneration)) return
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
@@ -589,6 +614,9 @@ export class SyncEngine {
             })
         }
         clearAgentTerminalBuffer(payload.sid)
+        if (payload.sessionGeneration && before?.metadata?.flavor === 'reasonix') {
+            this.retireSessionGeneration(payload.sid, payload.sessionGeneration)
+        }
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -654,6 +682,103 @@ export class SyncEngine {
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
             attachments: row.attachments,
+        }
+    }
+
+    private acceptSessionGeneration(sessionId: string, generation: string | undefined): boolean {
+        // Internal Hub calls do not represent a socket generation.
+        if (!generation) return true
+        // Reasonix reuses a HAPI row while its ACP process owns a native stdio
+        // lease, so accepting lifecycle from a replaced child is unsafe. Other
+        // flavors retain their existing heartbeat recovery semantics: after a
+        // transient inactivity expiry, a replacement/reconnected process may
+        // legitimately arrive with a new ApiSessionClient generation.
+        if (this.sessionCache.getSession(sessionId)?.metadata?.flavor !== 'reasonix') return true
+        if (this.blockedReasonixSessionIds.has(sessionId)) return false
+        if (this.retiredSessionGenerations.get(sessionId)?.has(generation)) return false
+        const current = this.sessionGenerationById.get(sessionId)
+        if (!current) {
+            this.sessionGenerationById.set(sessionId, generation)
+            return true
+        }
+        return current === generation
+    }
+
+    acceptSessionSocketOwner(sessionId: string, generation: string): boolean {
+        return this.acceptSessionGeneration(sessionId, generation)
+    }
+
+    private retireSessionGeneration(sessionId: string, generation?: string): void {
+        const retiredGeneration = generation ?? this.sessionGenerationById.get(sessionId)
+        if (!retiredGeneration) {
+            // A Hub restart can lose the in-memory generation map while a
+            // runner socket remains connected long enough to reconnect. An
+            // explicit replacement must evict every same-session socket in
+            // that case; otherwise room broadcasts can reach an unknown old
+            // child even though no generation is authoritative yet.
+            this.disconnectReasonixSockets(sessionId)
+            return
+        }
+        this.disconnectReasonixSockets(sessionId, retiredGeneration)
+        let retired = this.retiredSessionGenerations.get(sessionId)
+        if (!retired) {
+            retired = new Set<string>()
+            this.retiredSessionGenerations.set(sessionId, retired)
+        }
+        retired.add(retiredGeneration)
+        if (this.sessionGenerationById.get(sessionId) === retiredGeneration) {
+            this.sessionGenerationById.delete(sessionId)
+        }
+    }
+
+    private clearSessionReadyForGeneration(sessionId: string, generation?: string): void {
+        const current = this.sessionGenerationById.get(sessionId)
+        if (generation && current !== generation) return
+        this.sessionReadyIds.delete(sessionId)
+    }
+
+    private prepareSessionGeneration(sessionId: string, generation?: string): void {
+        this.blockedReasonixSessionIds.delete(sessionId)
+        this.expiredReasonixSessionIds.delete(sessionId)
+        this.retireSessionGeneration(sessionId)
+        if (generation) {
+            this.sessionGenerationById.set(sessionId, generation)
+        }
+        this.sessionReadyIds.delete(sessionId)
+    }
+
+    private bindSessionGeneration(sessionId: string, generation: string): void {
+        this.blockedReasonixSessionIds.delete(sessionId)
+        this.expiredReasonixSessionIds.delete(sessionId)
+        const current = this.sessionGenerationById.get(sessionId)
+        if (current && current !== generation) {
+            this.retireSessionGeneration(sessionId, current)
+            this.sessionReadyIds.delete(sessionId)
+        }
+        this.sessionGenerationById.set(sessionId, generation)
+    }
+
+    private blockReasonixSession(sessionId: string, generation?: string): void {
+        if (this.sessionCache.getSession(sessionId)?.metadata?.flavor !== 'reasonix') return
+        this.blockedReasonixSessionIds.add(sessionId)
+        this.retireSessionGeneration(sessionId, generation)
+        this.clearSessionReadyForGeneration(sessionId, generation)
+    }
+
+    private disconnectReasonixSockets(sessionId: string, generation?: string): void {
+        if (!this.io || typeof this.io.of !== 'function') return
+        const namespace = this.io.of('/cli')
+        for (const socket of namespace.sockets.values()) {
+            const data = socket.data
+            if (
+                data.clientType === 'session-scoped'
+                && data.sessionId === sessionId
+                && (generation === undefined || data.sessionGeneration === generation)
+            ) {
+                // Server-side disconnect prevents the stale child from
+                // remaining in `session:<sid>` and receiving queued prompts.
+                socket.disconnect(true)
+            }
         }
     }
 
@@ -917,6 +1042,16 @@ export class SyncEngine {
 
     private expireInactive(): void {
         const expired = this.sessionCache.expireInactive()
+        for (const sessionId of expired) {
+            const session = this.sessionCache.getSession(sessionId)
+            if (session?.metadata?.flavor === 'reasonix') {
+                // Heartbeat expiry is not proof of process death. Keep the row
+                // fail-closed until an explicit resume installs a new child;
+                // a delayed old keepalive must not make resume short-circuit.
+                this.expiredReasonixSessionIds.add(sessionId)
+                this.blockReasonixSession(sessionId)
+            }
+        }
         // Sort by most recent first so dedup keeps the newest session when multiple
         // duplicates for the same agent thread expire in the same sweep.
         const sorted = expired
@@ -1096,18 +1231,20 @@ export class SyncEngine {
         requestId: string,
         mode?: PermissionMode,
         allowTools?: string[],
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
-        answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+        decision?: 'approved' | 'approved_for_session',
+        answers?: Record<string, string[]> | Record<string, { answers: string[] }>,
+        optionId?: string
     ): Promise<void> {
-        await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, optionId)
     }
 
     async denyPermission(
         sessionId: string,
         requestId: string,
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+        decision?: 'denied' | 'abort',
+        optionId?: string
     ): Promise<void> {
-        await this.rpcGateway.denyPermission(sessionId, requestId, decision)
+        await this.rpcGateway.denyPermission(sessionId, requestId, decision, optionId)
     }
 
     async abortSession(sessionId: string): Promise<void> {
@@ -1923,7 +2060,21 @@ export class SyncEngine {
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty'
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
-        return await this.rpcGateway.spawnSession(
+        if (agent === 'reasonix') {
+            const machine = this.machineCache.getMachine(machineId)
+            if (!machine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ReasonixAcp)) {
+                return { type: 'error', message: 'Reasonix requires an upgraded HAPI runner with Reasonix ACP support' }
+            }
+        }
+        const requiresReasonixReady = agent === 'reasonix'
+        const reasonixGeneration = requiresReasonixReady ? randomUUID() : undefined
+        if (requiresReasonixReady && existingSessionId) {
+            // Do not let a previous generation's ready notification satisfy
+            // this child before its ACP session/new has completed.
+            this.prepareSessionGeneration(existingSessionId, reasonixGeneration)
+        }
+
+        const result = await this.rpcGateway.spawnSession(
             machineId,
             directory,
             agent,
@@ -1939,8 +2090,81 @@ export class SyncEngine {
             existingSessionId,
             collaborationMode,
             copilotAgentMode,
-            startingMode
+            startingMode,
+            undefined,
+            reasonixGeneration
         )
+
+        // Runner webhook success only means the HAPI child connected. Reasonix
+        // still has to initialize its ACP process and bind session/new before
+        // the session is usable. Gate fresh creates on the same ready fence as
+        // native resumes so an ACP setup failure cannot be reported as a live
+        // session.
+        if (!requiresReasonixReady) {
+            return result
+        }
+        if (result.type !== 'success') {
+            if (existingSessionId) {
+                this.blockReasonixSession(existingSessionId, reasonixGeneration)
+            }
+            return result
+        }
+        this.bindSessionGeneration(result.sessionId, reasonixGeneration!)
+
+        const stopReasonixChild = async (): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
+            let status: 'stopped' | 'already_gone' | 'still_alive'
+            try {
+                status = await this.rpcGateway.stopRunnerSession(machineId, result.sessionId)
+            } catch {
+                status = 'still_alive'
+            }
+            this.clearSessionReadyForGeneration(result.sessionId, reasonixGeneration)
+            if (status === 'stopped' || status === 'already_gone') {
+                // The runner can disappear before its session-end event reaches
+                // the hub. Reconcile the cached row so retries cannot see a
+                // phantom active Reasonix process.
+                const current = this.sessionCache.getSession(result.sessionId)
+                if (current?.active) {
+                    this.handleSessionEnd({
+                        sid: result.sessionId,
+                        sessionGeneration: reasonixGeneration,
+                        time: Date.now(),
+                        reason: 'error'
+                    })
+                }
+                this.blockReasonixSession(result.sessionId, reasonixGeneration)
+            }
+            return status
+        }
+
+        const active = await this.waitForSessionActive(result.sessionId)
+        if (!active) {
+            const status = await stopReasonixChild()
+            return {
+                type: 'error',
+                message: status === 'still_alive'
+                    ? 'Reasonix session failed to become active and is still running'
+                    : 'Reasonix session failed to become active'
+            }
+        }
+
+        const ready = await this.waitForSessionReady(result.sessionId)
+        if (ready === 'ready') {
+            return result
+        }
+
+        // Do not leave a failed ACP bootstrap holding its native stdio lease.
+        // `already_gone` is a successful cleanup; a live child is surfaced as
+        // an error rather than pretending the create succeeded.
+        const stopStatus = await stopReasonixChild()
+        return {
+            type: 'error',
+            message: ready === 'ended'
+                ? 'Reasonix ACP session ended before startup completed'
+                : stopStatus === 'still_alive'
+                    ? 'Reasonix ACP session failed to become ready and is still active'
+                    : 'Reasonix ACP session failed to become ready'
+        }
     }
 
     /**
@@ -2381,8 +2605,26 @@ export class SyncEngine {
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
         if (flavor === 'copilot') return metadata.copilotSessionId ?? null
         if (flavor === 'pi') return metadata.piSessionId ?? null
+        if (flavor === 'reasonix') return metadata.reasonixSessionId ?? null
 
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
+    }
+
+    private hasReasonixUserPrompt(sessionId: string): boolean {
+        // Startup stderr/status events are also stored as HAPI messages, but do
+        // not prove that Reasonix has created a durable turn. Any user-role row
+        // does prove a prompt was submitted, including attachment-only prompts.
+        // Scan the full history rather than the 50-row text preview: uncertainty
+        // must preserve the native id instead of forking context.
+        return this.store.messages.getAllMessages(sessionId).some((message) => (
+            unwrapRoleWrappedRecordEnvelope(message.content)?.role === 'user'
+        ))
+    }
+
+    private isNeverStartedReasonixSession(session: Session): boolean {
+        if (session.active || this.resolveFlavor(session) !== 'reasonix') return false
+        if (session.metadata?.reasonixTranscriptPersisted === true) return false
+        return !this.hasReasonixUserPrompt(session.id)
     }
 
     resolveLocalResumeTarget(sessionId: string, namespace: string): LocalResumeTargetResult {
@@ -2402,7 +2644,8 @@ export class SyncEngine {
         }
 
         const agentSessionId = this.resolveAgentResumeId(session, namespace)
-        if (!agentSessionId) {
+        const freshStart = this.isNeverStartedReasonixSession(session)
+        if (!agentSessionId && !(this.resolveFlavor(session) === 'reasonix' && freshStart)) {
             return {
                 type: 'error',
                 message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
@@ -2421,7 +2664,8 @@ export class SyncEngine {
                 active: session.active,
                 thinking: session.thinking,
                 controlledByUser: session.agentState?.controlledByUser === true,
-                agentSessionId,
+                ...(agentSessionId ? { agentSessionId } : {}),
+                ...(freshStart ? { freshStart: true } : {}),
                 model: session.model ?? null,
                 effort: session.effort ?? null,
                 modelReasoningEffort: session.modelReasoningEffort ?? null,
@@ -2447,7 +2691,8 @@ export class SyncEngine {
                     active: target.active,
                     thinking: target.thinking,
                     controlledByUser: target.controlledByUser,
-                    agentSessionId: target.agentSessionId,
+                    ...(target.agentSessionId ? { agentSessionId: target.agentSessionId } : {}),
+                    ...(target.freshStart ? { freshStart: true } : {}),
                     model: target.model,
                     effort: target.effort,
                     modelReasoningEffort: target.modelReasoningEffort,
@@ -2731,6 +2976,12 @@ export class SyncEngine {
         if (this.resolveAgentResumeId(session, namespace)) {
             return false
         }
+        if (this.resolveFlavor(session) === 'reasonix') {
+            // A failed metadata ACK can leave status-only rows behind even
+            // though no native id is available. Those rows are still safe to
+            // replace; a user-role row is evidence we must preserve instead.
+            return !this.hasReasonixUserPrompt(sessionId)
+        }
         return this.store.messages.getFirstMessages(sessionId, 1).length === 0
     }
 
@@ -2803,6 +3054,10 @@ export class SyncEngine {
             this.ptyResumeQuarantinedIds.delete(access.sessionId)
             initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
         }
+        if (this.resolveFlavor(initialSession) === 'reasonix'
+            && this.reasonixResumeInFlightIds.has(access.sessionId)) {
+            return { type: 'error', message: 'Reasonix resume is already in progress', code: 'resume_failed' }
+        }
         if (initialSession.active) {
             return { type: 'success', sessionId: access.sessionId }
         }
@@ -2822,7 +3077,9 @@ export class SyncEngine {
 
         if (targetResult.type === 'success') {
             flavor = targetResult.target.flavor
-            resumeToken = targetResult.target.agentSessionId
+            resumeToken = targetResult.target.freshStart
+                ? undefined
+                : targetResult.target.agentSessionId
             directory = targetResult.target.directory
         } else if (
             targetResult.code === 'resume_unavailable'
@@ -2841,10 +3098,23 @@ export class SyncEngine {
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
-            { strictMachineId: flavor === 'cursor' || (flavor === 'pi' && resumeToken !== undefined) }
+            {
+                strictMachineId: flavor === 'cursor'
+                    || (flavor === 'pi' && resumeToken !== undefined)
+                    || (flavor === 'reasonix' && resumeToken !== undefined)
+            }
         )
         if (!targetMachine) {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
+        }
+
+        if (flavor === 'reasonix'
+            && !targetMachine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ReasonixAcp)) {
+            return {
+                type: 'error',
+                message: 'Reasonix resume requires an upgraded HAPI runner with Reasonix ACP support',
+                code: 'resume_failed'
+            }
         }
 
         if (flavor === 'pi' && resumeToken && targetMachine.runnerState?.capabilities?.piExistingSessionResume !== true) {
@@ -2905,15 +3175,74 @@ export class SyncEngine {
         }
 
         const metadataPermissionMode = session.metadata?.preferredPermissionMode
-        const preferredPermissionMode = metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
-            ? metadataPermissionMode
-            : opts?.permissionMode
-                ?? session.permissionMode
-                ?? metadataPermissionMode
+        // Reasonix persists collaboration and approval as independent ACP
+        // axes. HAPI's single permissionMode cannot represent native `goal`,
+        // so a routine reopen must not replay the lossy cached projection.
+        // Only an explicit resume request is an override for Reasonix.
+        const nativeReasonixResume = flavor === 'reasonix' && resumeToken !== undefined
+        const preferredPermissionMode = nativeReasonixResume && opts?.permissionMode === undefined
+            ? undefined
+            : metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
+                ? metadataPermissionMode
+                : opts?.permissionMode
+                    ?? session.permissionMode
+                    ?? metadataPermissionMode
         const resumedStartingMode =
             (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
                 ? 'pty'
                 : undefined
+        // Reasonix opens its native ACP session asynchronously inside the
+        // runner child. The initial keepalive marks the HAPI row active before
+        // `session/resume`/`session/new` has completed, so gate the API result
+        // on the explicit session-ready signal just like PTY/Pi native resume.
+        // Clear any stale bit from a prior child generation first.
+        const requiresReasonixReady = flavor === 'reasonix'
+        const reasonixGeneration = requiresReasonixReady ? randomUUID() : undefined
+        // `session/resume` restores Reasonix's authoritative model and effort
+        // from its native store. Replaying the Hub projection here can be a
+        // stale or provider-incompatible override, so only pass these values
+        // when this is a first-start fallback with no native resume token.
+        const reasonixNativeResume = nativeReasonixResume
+        const spawnModel = reasonixNativeResume ? undefined : session.model ?? undefined
+        const spawnEffort = reasonixNativeResume ? undefined : session.effort ?? undefined
+        const reasonixExpired = requiresReasonixReady
+            && this.expiredReasonixSessionIds.has(access.sessionId)
+        if (requiresReasonixReady) {
+            // Atomic within this turn: prevent a concurrent reopen from
+            // replacing the generation while the runner deduplicates both
+            // requests to the same in-place child.
+            if (this.reasonixResumeInFlightIds.has(access.sessionId)) {
+                return { type: 'error', message: 'Reasonix resume is already in progress', code: 'resume_failed' }
+            }
+            this.reasonixResumeInFlightIds.add(access.sessionId)
+            this.prepareSessionGeneration(access.sessionId, reasonixGeneration)
+        }
+        if (reasonixExpired) {
+            // Expiry only proves that Hub lost the heartbeat lease. Retire the
+            // old runner child before asking the runner to spawn, otherwise its
+            // same-ID deduplicator can return the expired generation as if it
+            // were the requested replacement.
+            let status: 'stopped' | 'already_gone' | 'still_alive'
+            try {
+                status = await this.rpcGateway.stopRunnerSession(
+                    targetMachine.id,
+                    access.sessionId
+                )
+            } catch {
+                status = 'still_alive'
+            }
+            if (status === 'still_alive') {
+                this.expiredReasonixSessionIds.add(access.sessionId)
+                this.blockReasonixSession(access.sessionId, reasonixGeneration)
+                this.reasonixResumeInFlightIds.delete(access.sessionId)
+                return {
+                    type: 'error',
+                    message: 'Reasonix resume failed and the expired child is still active',
+                    code: 'resume_failed',
+                    rollbackSafe: false
+                }
+            }
+        }
         if (resumedStartingMode === 'pty') {
             if (this.ptyResumeInFlightIds.has(access.sessionId)) {
                 return { type: 'error', message: 'PTY resume is already in progress', code: 'resume_failed' }
@@ -2942,22 +3271,27 @@ export class SyncEngine {
                 targetMachine.id,
                 directory,
                 flavor,
-                session.model ?? undefined,
+                spawnModel,
                 session.modelReasoningEffort ?? undefined,
                 undefined,
                 undefined,
                 undefined,
                 resumeToken,
-                session.effort ?? undefined,
+                spawnEffort,
                 preferredPermissionMode,
                 session.serviceTier ?? undefined,
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,
-                resumedStartingMode
+                resumedStartingMode,
+                undefined,
+                reasonixGeneration
             )
 
             if (spawnResult.type !== 'success') {
+                if (requiresReasonixReady) {
+                    this.blockReasonixSession(access.sessionId, reasonixGeneration)
+                }
                 if (requiresPiNativeReady) {
                     const stopped = await this.terminateInPlacePiResume(
                         targetMachine.id,
@@ -2995,6 +3329,35 @@ export class SyncEngine {
 
             const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
             if (!becameActive) {
+                if (requiresReasonixReady) {
+                    let status: 'stopped' | 'already_gone' | 'still_alive'
+                    try {
+                        status = await this.rpcGateway.stopRunnerSession(targetMachine.id, spawnResult.sessionId)
+                    } catch {
+                        status = 'still_alive'
+                    }
+                    this.clearSessionReadyForGeneration(spawnResult.sessionId, reasonixGeneration)
+                    if (status === 'stopped' || status === 'already_gone') {
+                        const current = this.sessionCache.getSession(spawnResult.sessionId)
+                        if (current?.active) {
+                            this.handleSessionEnd({
+                                sid: spawnResult.sessionId,
+                                sessionGeneration: reasonixGeneration,
+                                time: Date.now(),
+                                reason: 'error'
+                            })
+                        }
+                        this.blockReasonixSession(spawnResult.sessionId, reasonixGeneration)
+                    }
+                    if (status === 'still_alive') {
+                        return {
+                            type: 'error',
+                            message: 'Reasonix resume failed and the child is still active',
+                            code: 'resume_failed',
+                            rollbackSafe: false
+                        }
+                    }
+                }
                 if (resumedStartingMode === 'pty') {
                     const current = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
                     const stopped = current
@@ -3026,6 +3389,7 @@ export class SyncEngine {
 
             const needsReadyBeforeSuccess = resumedStartingMode === 'pty'
                 || requiresPiNativeReady
+                || requiresReasonixReady
                 || (
                     spawnResult.sessionId !== access.sessionId
                     && flavor === 'cursor'
@@ -3034,6 +3398,47 @@ export class SyncEngine {
             if (needsReadyBeforeSuccess) {
                 const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
                 if (readyResult !== 'ready') {
+                    if (requiresReasonixReady) {
+                        // Reasonix bootstrap owns a stdio ACP lease. If its
+                        // ready signal never arrives, stop the just-spawned
+                        // child before returning an error. An `ended` result
+                        // can also come from Hub inactivity expiry, which does
+                        // not prove the runner process exited.
+                        let status: 'stopped' | 'already_gone' | 'still_alive'
+                        try {
+                            status = await this.rpcGateway.stopRunnerSession(
+                                targetMachine.id,
+                                spawnResult.sessionId
+                            )
+                        } catch {
+                            status = 'still_alive'
+                        }
+                        let inactive = false
+                        if (status === 'stopped' || status === 'already_gone') {
+                            const current = this.sessionCache.getSession(spawnResult.sessionId)
+                            if (current?.active) {
+                                this.handleSessionEnd({
+                                    sid: spawnResult.sessionId,
+                                    sessionGeneration: reasonixGeneration,
+                                    time: Date.now(),
+                                    reason: 'error'
+                                })
+                            }
+                            this.blockReasonixSession(spawnResult.sessionId, reasonixGeneration)
+                            inactive = true
+                        }
+                        this.clearSessionReadyForGeneration(spawnResult.sessionId, reasonixGeneration)
+                        if (!inactive) {
+                            return {
+                                type: 'error',
+                                message: readyResult === 'ended'
+                                    ? 'Reasonix ACP session ended before startup completed and the child is still active'
+                                    : 'Reasonix ACP resume timed out and the child is still active',
+                                code: 'resume_failed',
+                                rollbackSafe: false
+                            }
+                        }
+                    }
                     if (resumedStartingMode === 'pty' && readyResult === 'timeout') {
                         let status: 'stopped' | 'already_gone' | 'still_alive'
                         try {
@@ -3102,6 +3507,10 @@ export class SyncEngine {
                         ? readyResult === 'ended'
                             ? 'Pi session ended before native resume completed'
                             : 'Pi session failed to become native-ready'
+                        : flavor === 'reasonix'
+                            ? readyResult === 'ended'
+                                ? 'Reasonix ACP session ended before startup completed'
+                                : 'Reasonix ACP session failed to become ready'
                         : resumedStartingMode === 'pty'
                             ? readyResult === 'ended'
                                 ? 'Session ended before the agent PTY became ready'
@@ -3155,6 +3564,9 @@ export class SyncEngine {
                 if (piResumeSucceeded) {
                     this.triggerDedupIfNeeded(access.sessionId)
                 }
+            }
+            if (requiresReasonixReady) {
+                this.reasonixResumeInFlightIds.delete(access.sessionId)
             }
         }
     }
@@ -3519,6 +3931,7 @@ export class SyncEngine {
             && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
             && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
             && (prev?.copilotSessionId ?? null) === (next.copilotSessionId ?? null)
+            && (prev?.reasonixSessionId ?? null) === (next.reasonixSessionId ?? null)
     }
 
     private canRunCursorDedup(session: Session): boolean {
@@ -3923,6 +4336,10 @@ export class SyncEngine {
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
         return await this.rpcGateway.listGrokReasoningEffortOptionsForSession(sessionId)
+    }
+
+    async listReasonixConfigOptionsForSession(sessionId: string): Promise<RpcListReasonixConfigOptionsResponse> {
+        return await this.rpcGateway.listReasonixConfigOptionsForSession(sessionId)
     }
 
     async listCopilotModelsForCwd(machineId: string, cwd: string): Promise<RpcListCopilotModelsResponse> {

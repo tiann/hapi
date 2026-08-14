@@ -12,6 +12,9 @@ export type RemoteAgentCommandOptions<
     modelReasoningEffort?: string
     resumeSessionId?: string
     existingSessionId?: string
+    sessionGeneration?: string
+    /** Whether --permission-mode was explicitly supplied by the operator. */
+    permissionModeExplicit?: boolean
 }
 
 export function parseRemoteAgentCommandOptions<
@@ -43,6 +46,12 @@ export function parseRemoteAgentCommandOptions<
                 throw new Error('Missing --existing-session-id value')
             }
             options.existingSessionId = sessionId
+        } else if (arg === '--session-generation') {
+            const generation = args[++i]
+            if (!generation || generation.startsWith('-')) {
+                throw new Error('Missing --session-generation value')
+            }
+            options.sessionGeneration = generation
         } else if (arg === '--permission-mode') {
             const mode = args[++i]
             if (!mode || !(allowedPermissionModes as readonly string[]).includes(mode)) {
@@ -50,6 +59,7 @@ export function parseRemoteAgentCommandOptions<
             }
             options.permissionMode = mode as TPermissionMode
             hasExplicitPermissionMode = true
+            options.permissionModeExplicit = true
         } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
             // --yolo means "auto-approve everything", but flavors name that mode
             // differently (opencode/gemini: 'yolo', agy: 'always-proceed'). Pick
@@ -60,6 +70,7 @@ export function parseRemoteAgentCommandOptions<
                 .find((m) => (allowedPermissionModes as readonly string[]).includes(m))
             if (yoloEquivalent) {
                 options.permissionMode = yoloEquivalent as TPermissionMode
+                options.permissionModeExplicit = true
             }
         } else if (arg === '--hapi-session-id') {
             // Hub row to reuse on reopen/resume of a pty session (agy), so the id

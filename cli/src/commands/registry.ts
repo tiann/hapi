@@ -13,6 +13,7 @@ import { copilotCommand } from './copilot'
 import { grokCommand } from './grok'
 import { opencodeCommand } from './opencode'
 import { piCommand } from './pi'
+import { reasonixCommand } from './reasonix'
 import { hookForwarderCommand } from './hookForwarder'
 import { mcpCommand } from './mcp'
 import { notifyCommand } from './notify'
@@ -49,6 +50,7 @@ const COMMANDS: CommandDefinition[] = [
     copilotCommand,
     opencodeCommand,
     piCommand,
+    reasonixCommand,
     mcpCommand,
     hubCommand,
     { ...hubCommand, name: 'server' },

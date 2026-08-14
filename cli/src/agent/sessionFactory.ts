@@ -29,6 +29,7 @@ export type SessionBootstrapOptions = {
     model?: string
     modelReasoningEffort?: string
     effort?: string
+    sessionGeneration?: string
     metadataOverrides?: Partial<Metadata>
 }
 
@@ -132,6 +133,10 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId
     if (metadata.copilotSessionId !== undefined) preserved.copilotSessionId = metadata.copilotSessionId
     if (metadata.piSessionId !== undefined) preserved.piSessionId = metadata.piSessionId
+    if (metadata.reasonixSessionId !== undefined) preserved.reasonixSessionId = metadata.reasonixSessionId
+    if (metadata.reasonixTranscriptPersisted !== undefined) {
+        preserved.reasonixTranscriptPersisted = metadata.reasonixTranscriptPersisted
+    }
     if (metadata.piResumeAttempt !== undefined) preserved.piResumeAttempt = metadata.piResumeAttempt
     if (metadata.ptyResumeAttempt !== undefined) preserved.ptyResumeAttempt = metadata.ptyResumeAttempt
     if (metadata.preferredPermissionMode !== undefined) preserved.preferredPermissionMode = metadata.preferredPermissionMode
@@ -227,7 +232,9 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         effort: options.effort
     })
 
-    const session = api.sessionSyncClient(sessionInfo)
+    const session = options.sessionGeneration
+        ? api.sessionSyncClient(sessionInfo, { sessionGeneration: options.sessionGeneration })
+        : api.sessionSyncClient(sessionInfo)
 
     exportHapiSessionEnv(sessionInfo.id)
 
@@ -289,6 +296,7 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
     }
 
     const session = api.sessionSyncClient(sessionInfo, {
+        sessionGeneration: options.sessionGeneration,
         materialize: async (snapshot, signal) => {
             const materialized = await api.getOrCreateSession({
                 id: requestedId,
@@ -335,6 +343,7 @@ export async function bootstrapExistingSession(options: {
     flavor: string
     startedBy?: SessionStartedBy
     workingDirectory: string
+    sessionGeneration?: string
     metadataOverrides?: Partial<Metadata>
 }): Promise<SessionBootstrapResult> {
     const startedBy = options.startedBy ?? 'terminal'
@@ -368,7 +377,9 @@ export async function bootstrapExistingSession(options: {
     }
     const metadata = buildUpdatedMetadata(sessionInfo.metadata)
 
-    const session = api.sessionSyncClient(sessionInfo)
+    const session = options.sessionGeneration
+        ? api.sessionSyncClient(sessionInfo, { sessionGeneration: options.sessionGeneration })
+        : api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
 
     exportHapiSessionEnv(sessionInfo.id)

@@ -45,6 +45,7 @@ import type {
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
     OpencodeReasoningEffortResponse,
+    ReasonixConfigOptionsResponse,
     QueuedStateResponse,
     ReopenSessionResponse,
     SqliteStorageUsageResponse,
@@ -692,7 +693,8 @@ export class ApiClient {
         modeOrOptions?: 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan' | {
             mode?: 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan'
             allowTools?: string[]
-            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            decision?: 'approved' | 'approved_for_session'
+            optionId?: string
             answers?: Record<string, string[]> | Record<string, { answers: string[] }>
         }
     ): Promise<void> {
@@ -709,7 +711,8 @@ export class ApiClient {
         sessionId: string,
         requestId: string,
         options?: {
-            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            decision?: 'denied' | 'abort'
+            optionId?: string
         }
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
@@ -916,6 +919,12 @@ export class ApiClient {
     async getSessionGrokReasoningEffortOptions(sessionId: string): Promise<GrokReasoningEffortResponse> {
         return await this.request<GrokReasoningEffortResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/grok-reasoning-effort-options`
+        )
+    }
+
+    async getSessionReasonixConfigOptions(sessionId: string): Promise<ReasonixConfigOptionsResponse> {
+        return await this.request<ReasonixConfigOptionsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/reasonix-config-options`
         )
     }
 

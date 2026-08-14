@@ -189,6 +189,23 @@ describe('getModelOptionsForFlavor', () => {
         ])
         expect(options.find((option) => option.value === null)?.label).toBe('Auto')
     })
+
+    it('does not expose an unsupported Reasonix default reset', () => {
+        expect(getModelOptionsForFlavor('reasonix', null)).toEqual([])
+        expect(getModelOptionsForFlavor('reasonix', 'deepseek/deepseek-v4-flash')).toEqual([
+            {
+                value: 'deepseek/deepseek-v4-flash',
+                label: 'deepseek/deepseek-v4-flash'
+            }
+        ])
+        expect(getModelOptionsForFlavor('reasonix', 'deepseek/deepseek-v4-flash', [
+            { value: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+            { value: 'deepseek/deepseek-reasoner', label: 'DeepSeek Reasoner' }
+        ])).toEqual([
+            { value: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+            { value: 'deepseek/deepseek-reasoner', label: 'DeepSeek Reasoner' }
+        ])
+    })
 })
 
 describe('getNextModelForFlavor', () => {

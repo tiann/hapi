@@ -27,6 +27,8 @@ export type RunnerCapabilities = typeof RUNNER_CAPABILITIES
 export const MACHINE_CAPABILITIES = {
     CursorChatStoreStatus: RPC_METHODS.CursorChatStoreStatus,
     StopRunner: RPC_METHODS.StopRunner,
+    /** Runner can launch the Reasonix ACP flavor without falling back to Claude. */
+    ReasonixAcp: 'reasonix-acp',
 } as const
 
 export type MachineCapability =
@@ -36,6 +38,7 @@ export type MachineCapability =
 export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
     MACHINE_CAPABILITIES.StopRunner,
+    MACHINE_CAPABILITIES.ReasonixAcp,
 ]
 
 /**

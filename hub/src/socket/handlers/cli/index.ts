@@ -12,6 +12,7 @@ import { cleanupTerminalHandlers, registerTerminalHandlers } from './terminalHan
 
 type SessionAlivePayload = {
     sid: string
+    sessionGeneration: string
     time: number
     thinking?: boolean
     mode?: 'local' | 'remote'
@@ -24,11 +25,13 @@ type SessionAlivePayload = {
 
 type SessionEndPayload = {
     sid: string
+    sessionGeneration: string
     time: number
 }
 
 type SessionReadyPayload = {
     sid: string
+    sessionGeneration: string
     time: number
 }
 
@@ -51,48 +54,66 @@ export type CliHandlersDeps = {
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
+    acceptSessionOwner?: (sessionId: string, sessionGeneration: string) => boolean
 }
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
-    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed, acceptSessionOwner } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
+    const sessionId = socket.data.clientType === 'session-scoped'
+        && typeof socket.data.sessionId === 'string'
+        ? socket.data.sessionId
+        : null
+    const sessionGeneration = sessionId && typeof socket.data.sessionGeneration === 'string'
+        ? socket.data.sessionGeneration
+        : null
+    const machineId = socket.data.clientType === 'machine-scoped'
+        && typeof socket.data.machineId === 'string'
+        ? socket.data.machineId
+        : null
+    const ownsSession = (candidateId: string): boolean => sessionId === candidateId
+        && sessionGeneration !== null
+        && (acceptSessionOwner?.(candidateId, sessionGeneration) ?? true)
 
-    const resolveSessionAccess = (sessionId: string): AccessResult<StoredSession> => {
+    const resolveSessionAccess = (candidateId: string): AccessResult<StoredSession> => {
         if (!namespace) {
             return { ok: false, reason: 'namespace-missing' }
         }
-        const session = store.sessions.getSessionByNamespace(sessionId, namespace)
+        if (!ownsSession(candidateId)) {
+            return { ok: false, reason: 'access-denied' }
+        }
+        const session = store.sessions.getSessionByNamespace(candidateId, namespace)
         if (session) {
             return { ok: true, value: session }
         }
-        if (store.sessions.getSession(sessionId)) {
+        if (store.sessions.getSession(candidateId)) {
             return { ok: false, reason: 'access-denied' }
         }
         return { ok: false, reason: 'not-found' }
     }
 
-    const resolveMachineAccess = (machineId: string): AccessResult<StoredMachine> => {
+    const resolveMachineAccess = (candidateId: string): AccessResult<StoredMachine> => {
         if (!namespace) {
             return { ok: false, reason: 'namespace-missing' }
         }
-        const machine = store.machines.getMachineByNamespace(machineId, namespace)
+        if (machineId !== candidateId) {
+            return { ok: false, reason: 'access-denied' }
+        }
+        const machine = store.machines.getMachineByNamespace(candidateId, namespace)
         if (machine) {
             return { ok: true, value: machine }
         }
-        if (store.machines.getMachine(machineId)) {
+        if (store.machines.getMachine(candidateId)) {
             return { ok: false, reason: 'access-denied' }
         }
         return { ok: false, reason: 'not-found' }
     }
 
-    const auth = socket.handshake.auth as Record<string, unknown> | undefined
-    const sessionId = typeof auth?.sessionId === 'string' ? auth.sessionId : null
     if (sessionId && resolveSessionAccess(sessionId).ok) {
         socket.join(`session:${sessionId}`)
     }
 
-    const machineId = typeof auth?.machineId === 'string' ? auth.machineId : null
     if (machineId && resolveMachineAccess(machineId).ok) {
         socket.join(`machine:${machineId}`)
     }
@@ -106,7 +127,11 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         socket.emit('error', { message, code: reason, scope, id })
     }
 
-    registerRpcHandlers(socket, rpcRegistry)
+    registerRpcHandlers(socket, rpcRegistry, (method) => {
+        if (sessionId) return ownsSession(sessionId) && method.startsWith(`${sessionId}:`)
+        if (machineId) return method.startsWith(`${machineId}:`)
+        return false
+    })
     registerSessionHandlers(socket, {
         store,
         resolveSessionAccess,
@@ -118,7 +143,10 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         onBackgroundTaskDelta,
         onSessionActivity,
         onSweepImmediateQueued,
-        onMessagesConsumed
+        onMessagesConsumed,
+        lifecycleOwner: sessionId && socket.data.sessionGeneration
+            ? { sessionId, sessionGeneration: socket.data.sessionGeneration }
+            : null
     })
     registerMachineHandlers(socket, {
         store,

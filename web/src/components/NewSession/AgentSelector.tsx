@@ -1,4 +1,6 @@
 import { CREATABLE_AGENT_FLAVORS, getFlavorLabel } from '@hapi/protocol'
+import type { Machine } from '@/types/api'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import type { AgentType } from './types'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { useTranslation } from '@/lib/use-translation'
@@ -6,6 +8,7 @@ import { useTranslation } from '@/lib/use-translation'
 export function AgentSelector(props: {
     agent: AgentType
     isDisabled: boolean
+    selectedMachine?: Machine | null
     onAgentChange: (value: AgentType) => void
 }) {
     const { t } = useTranslation()
@@ -16,10 +19,15 @@ export function AgentSelector(props: {
                 {t('newSession.agent')}
             </label>
             <div className="flex flex-wrap gap-x-3 gap-y-2">
-                {CREATABLE_AGENT_FLAVORS.map((agentType) => (
+                {CREATABLE_AGENT_FLAVORS.map((agentType) => {
+                    const reasonixUnavailable = agentType === 'reasonix'
+                        && props.selectedMachine !== undefined
+                        && props.selectedMachine !== null
+                        && props.selectedMachine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ReasonixAcp) !== true
+                    return (
                     <label
                         key={agentType}
-                        className="flex items-center gap-1.5 cursor-pointer"
+                        className={`flex items-center gap-1.5 ${reasonixUnavailable ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                     >
                         <input
                             type="radio"
@@ -27,13 +35,14 @@ export function AgentSelector(props: {
                             value={agentType}
                             checked={props.agent === agentType}
                             onChange={() => props.onAgentChange(agentType)}
-                            disabled={props.isDisabled}
+                            disabled={props.isDisabled || reasonixUnavailable}
                             className="accent-[var(--app-link)]"
                         />
                         <AgentFlavorIcon flavor={agentType} className="h-4 w-4 shrink-0" />
                         <span className="text-sm">{getFlavorLabel(agentType)}</span>
                     </label>
-                ))}
+                    )
+                })}
             </div>
         </div>
     )

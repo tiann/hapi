@@ -83,6 +83,8 @@ export const MetadataSchema = z.object({
     kimiSessionId: z.string().optional(),
     copilotSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
+    reasonixSessionId: z.string().optional(),
+    reasonixTranscriptPersisted: z.boolean().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),
         machineId: z.string(),
@@ -166,7 +168,12 @@ export type Metadata = z.infer<typeof MetadataSchema>
 export const AgentStateRequestSchema = z.object({
     tool: z.string(),
     arguments: z.unknown(),
-    createdAt: z.number().nullish()
+    createdAt: z.number().nullish(),
+    permissionOptions: z.array(z.object({
+        optionId: z.string(),
+        name: z.string(),
+        kind: z.string()
+    })).optional()
 })
 
 export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>
@@ -174,6 +181,11 @@ export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>
 export const AgentStateCompletedRequestSchema = z.object({
     tool: z.string(),
     arguments: z.unknown(),
+    permissionOptions: z.array(z.object({
+        optionId: z.string(),
+        name: z.string(),
+        kind: z.string()
+    })).optional(),
     createdAt: z.number().nullish(),
     completedAt: z.number().nullish(),
     status: z.enum(['canceled', 'denied', 'approved']),

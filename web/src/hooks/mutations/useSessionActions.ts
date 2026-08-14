@@ -75,6 +75,11 @@ export function useSessionActions(
         await queryClient.invalidateQueries({ queryKey: ['machine-cursor-models'] })
     }
 
+    const invalidateReasonixConfigOptions = async () => {
+        if (!sessionId || agentFlavor !== 'reasonix') return
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessionReasonixConfigOptions(sessionId) })
+    }
+
     const abortMutation = useMutation({
         mutationFn: async () => {
             if (!api || !sessionId) {
@@ -180,6 +185,7 @@ export function useSessionActions(
         onSuccess: async () => {
             await invalidateSession()
             await invalidateCursorModels()
+            await invalidateReasonixConfigOptions()
         },
     })
 
@@ -206,7 +212,10 @@ export function useSessionActions(
             }
             await api.setEffort(sessionId, effort)
         },
-        onSuccess: () => void invalidateSession(),
+        onSuccess: async () => {
+            await invalidateSession()
+            await invalidateReasonixConfigOptions()
+        },
     })
 
     const serviceTierMutation = useMutation({

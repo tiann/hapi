@@ -613,6 +613,7 @@ function ToolCardInner(props: ToolCardProps) {
                             api={props.api}
                             sessionId={props.sessionId}
                             tool={props.block.tool}
+                            metadata={props.metadata}
                             disabled={props.disabled}
                             onDone={props.onDone}
                         />

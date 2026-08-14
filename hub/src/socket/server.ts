@@ -38,14 +38,15 @@ export type SocketServerDeps = {
     corsOrigins?: string[]
     getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
     onWebappEvent?: (event: SyncEvent) => void
-    onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
-    onSessionReady?: (payload: { sid: string; time: number }) => void
-    onSessionEnd?: (payload: { sid: string; time: number }) => void
+    onSessionAlive?: (payload: { sid: string; sessionGeneration: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
+    onSessionReady?: (payload: { sid: string; sessionGeneration: string; time: number }) => void
+    onSessionEnd?: (payload: { sid: string; sessionGeneration: string; time: number }) => void
     onMachineAlive?: (payload: { machineId: string; time: number; health?: unknown }) => void
     onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
+    acceptSessionOwner?: (sessionId: string, sessionGeneration: string) => boolean
 }
 
 export function createSocketServer(deps: SocketServerDeps): {
@@ -118,6 +119,28 @@ export function createSocketServer(deps: SocketServerDeps): {
             return next(new Error('Invalid token'))
         }
         socket.data.namespace = parsedToken.namespace
+        const clientType = auth?.clientType
+        if (clientType === 'session-scoped') {
+            const sessionId = typeof auth?.sessionId === 'string' ? auth.sessionId.trim() : ''
+            const sessionGeneration = typeof auth?.sessionGeneration === 'string'
+                ? auth.sessionGeneration.trim()
+                : ''
+            if (!sessionId || !sessionGeneration) {
+                return next(new Error('Invalid session-scoped client identity'))
+            }
+            socket.data.clientType = clientType
+            socket.data.sessionId = sessionId
+            socket.data.sessionGeneration = sessionGeneration
+        } else if (clientType === 'machine-scoped') {
+            const machineId = typeof auth?.machineId === 'string' ? auth.machineId.trim() : ''
+            if (!machineId) {
+                return next(new Error('Invalid machine-scoped client identity'))
+            }
+            socket.data.clientType = clientType
+            socket.data.machineId = machineId
+        } else {
+            return next(new Error('Invalid CLI client type'))
+        }
         next()
     })
     cliNs.on('connection', (socket) => registerCliHandlers(socket as CliSocketWithData, {
@@ -133,7 +156,8 @@ export function createSocketServer(deps: SocketServerDeps): {
         onBackgroundTaskDelta: deps.onBackgroundTaskDelta,
         onSessionActivity: deps.onSessionActivity,
         onSweepImmediateQueued: deps.onSweepImmediateQueued,
-        onMessagesConsumed: deps.onMessagesConsumed
+        onMessagesConsumed: deps.onMessagesConsumed,
+        acceptSessionOwner: deps.acceptSessionOwner
     }))
 
     terminalNs.use(async (socket, next) => {

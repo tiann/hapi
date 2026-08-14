@@ -9,16 +9,19 @@ export function LaunchEffortSelector(props: {
     isDisabled: boolean
     onEffortChange: (value: LaunchEffort) => void
     grokOptions?: Array<{ value: string; label: string }>
+    reasonixOptions?: Array<{ value: string; label: string }>
 }) {
     const { t } = useTranslation()
 
-    if (props.agent !== 'claude' && props.agent !== 'grok') {
+    if (props.agent !== 'claude' && props.agent !== 'grok' && props.agent !== 'reasonix') {
         return null
     }
 
     const options = props.agent === 'grok'
         ? (props.grokOptions ?? GROK_EFFORT_OPTIONS)
-        : CLAUDE_EFFORT_OPTIONS
+        : props.agent === 'reasonix'
+            ? (props.reasonixOptions ?? [{ value: 'auto', label: 'Default' }])
+            : CLAUDE_EFFORT_OPTIONS
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">

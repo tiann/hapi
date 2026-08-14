@@ -29,6 +29,7 @@ import type {
     OpencodeModelSummary,
     OpencodeReasoningEffortResponse,
     PathExistsResponse,
+    ReasonixConfigOptionsResponse,
     SlashCommandsResponse,
     StatFilesResponse,
     UploadFileResponse
@@ -82,6 +83,7 @@ export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 export type RpcListGrokModelsResponse = GrokModelsResponse
 export type RpcListCopilotModelsResponse = CopilotModelsResponse
 export type RpcListGrokReasoningEffortOptionsResponse = GrokReasoningEffortResponse
+export type RpcListReasonixConfigOptionsResponse = ReasonixConfigOptionsResponse
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 export type RpcListAgyModelsResponse = AgyModelsResponse
 
@@ -97,8 +99,9 @@ export class RpcGateway {
         requestId: string,
         mode?: PermissionMode,
         allowTools?: string[],
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
-        answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+        decision?: 'approved' | 'approved_for_session',
+        answers?: Record<string, string[]> | Record<string, { answers: string[] }>,
+        optionId?: string
     ): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
@@ -106,19 +109,22 @@ export class RpcGateway {
             mode,
             allowTools,
             decision,
-            answers
+            answers,
+            optionId
         })
     }
 
     async denyPermission(
         sessionId: string,
         requestId: string,
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+        decision?: 'denied' | 'abort',
+        optionId?: string
     ): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
-            decision
+            decision,
+            optionId
         })
     }
 
@@ -179,7 +185,8 @@ export class RpcGateway {
         // Hub session id to reuse for this spawn. When set, the runner boots the
         // CLI with `--hapi-session-id`, so the child reuses the existing hub
         // session row (same id) instead of minting a new one.
-        forkSession?: boolean
+        forkSession?: boolean,
+        sessionGeneration?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
@@ -203,7 +210,8 @@ export class RpcGateway {
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,
-                    forkSession: forkSession === true
+                    forkSession: forkSession === true,
+                    sessionGeneration
                 }
             )
             if (result && typeof result === 'object') {
@@ -393,6 +401,10 @@ export class RpcGateway {
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListGrokReasoningEffortOptions, {}) as RpcListGrokReasoningEffortOptionsResponse
+    }
+
+    async listReasonixConfigOptionsForSession(sessionId: string): Promise<RpcListReasonixConfigOptionsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListReasonixConfigOptions, {}) as RpcListReasonixConfigOptionsResponse
     }
 
     async listCopilotModelsForCwd(machineId: string, cwd: string): Promise<RpcListCopilotModelsResponse> {

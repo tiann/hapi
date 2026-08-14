@@ -13,6 +13,7 @@ const {
     runGrokMock,
     runPiMock,
     runAgyMock,
+    runReasonixMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ const {
     runGrokMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
+    runReasonixMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -53,6 +55,7 @@ vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
+vi.mock('@/reasonix/runReasonix', () => ({ runReasonix: runReasonixMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -84,6 +87,7 @@ describe('resumeCommand', () => {
         runGrokMock.mockClear()
         runPiMock.mockClear()
         runAgyMock.mockClear()
+        runReasonixMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -377,6 +381,93 @@ describe('resumeCommand', () => {
             model: 'deepseek-v3',
             effort: 'high'
         })
+    })
+
+    it('rejects an active Reasonix target without stopping the remote process', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-reasonix',
+            flavor: 'reasonix',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: true,
+            controlledByUser: false,
+            agentSessionId: 'reasonix-session-1',
+            model: 'deepseek-pro',
+            effort: 'high',
+            permissionMode: 'auto'
+        })
+
+        try {
+            await expect(resumeCommand.run(createContext(['hapi-session-reasonix']))).rejects.toThrow('process.exit:1')
+            expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+            expect(runReasonixMock).not.toHaveBeenCalled()
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('already connected remotely'))
+        } finally {
+            consoleErrorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
+    })
+
+    it('does not replay projected model/effort when resuming an inactive Reasonix target', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-reasonix-inactive',
+            flavor: 'reasonix',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'reasonix-session-2',
+            model: 'stale-model',
+            effort: 'stale-effort',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-reasonix-inactive']))
+
+        expect(runReasonixMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-reasonix-inactive',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'reasonix-session-2',
+            startedBy: 'terminal',
+            permissionModeExplicit: false,
+            startingMode: 'remote'
+        })
+    })
+
+    it('starts an unprompted Reasonix target fresh instead of replaying its transient native id', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-reasonix-empty',
+            flavor: 'reasonix',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'transient-reasonix-session',
+            freshStart: true,
+            model: 'deepseek/deepseek-v4-flash',
+            effort: 'high',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-reasonix-empty']))
+
+        expect(runReasonixMock).toHaveBeenCalledWith(expect.objectContaining({
+            existingSessionId: 'hapi-session-reasonix-empty',
+            resumeSessionId: undefined,
+            permissionMode: 'default',
+            permissionModeExplicit: true,
+            startingMode: 'remote',
+            model: 'deepseek/deepseek-v4-flash',
+            effort: 'high'
+        }))
     })
 
     it('keeps the non-TTY fallback and asks for an explicit session id', async () => {

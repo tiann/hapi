@@ -48,6 +48,11 @@ describe('hasCapability', () => {
         expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
     })
 
+    test('reasonix supports model-change and effort through ACP', () => {
+        expect(hasCapability('reasonix', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('reasonix', Capabilities.Effort)).toBe(true)
+    })
+
     test('kimi supports model-change but not effort', () => {
         expect(hasCapability('kimi', Capabilities.ModelChange)).toBe(true)
         expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
@@ -85,6 +90,7 @@ describe('getFlavorLabel', () => {
         expect(getFlavorLabel('kimi')).toBe('Kimi')
         expect(getFlavorLabel('copilot')).toBe('Copilot')
         expect(getFlavorLabel('grok')).toBe('Grok Build')
+        expect(getFlavorLabel('reasonix')).toBe('Reasonix')
     })
 
     test('unknown flavor returns Unknown', () => {
@@ -109,6 +115,7 @@ describe('isKnownFlavor', () => {
         expect(isKnownFlavor('kimi')).toBe(true)
         expect(isKnownFlavor('copilot')).toBe(true)
         expect(isKnownFlavor('grok')).toBe(true)
+        expect(isKnownFlavor('reasonix')).toBe(true)
     })
 
     test('returns false for unknown/null/undefined', () => {
@@ -121,6 +128,10 @@ describe('isKnownFlavor', () => {
 describe('convenience functions', () => {
     test('treats Grok as a generic ACP/Codex-family permission flow', () => {
         expect(isCodexFamilyFlavor('grok')).toBe(true)
+    })
+
+    test('treats Reasonix as a generic ACP/Codex-family permission flow', () => {
+        expect(isCodexFamilyFlavor('reasonix')).toBe(false)
     })
 
     test('supportsModelChange matches hasCapability', () => {
@@ -141,6 +152,7 @@ describe('convenience functions', () => {
         expect(supportsEffort('gemini')).toBe(false)
         expect(supportsEffort('pi')).toBe(true)
         expect(supportsEffort('grok')).toBe(true)
+        expect(supportsEffort('reasonix')).toBe(true)
         expect(supportsEffort('kimi')).toBe(false)
         expect(supportsEffort(null)).toBe(false)
     })

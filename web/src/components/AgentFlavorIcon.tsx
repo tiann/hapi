@@ -41,6 +41,14 @@ const UNKNOWN_FLAVOR_BADGE = {
     colors: 'bg-[var(--app-secondary-bg)] text-[var(--app-hint)]',
 }
 
+function ReasonixLogo() {
+    return (
+        <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" aria-hidden="true">
+            <path d="M5 4h7.2a4.8 4.8 0 0 1 0 9.6H5V4Zm0 9.6 6.2 6.4M12.2 8H19" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    )
+}
+
 export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null; className?: string }) {
     const normalized = (flavor ?? '').trim().toLowerCase()
     const sizeClass = className ?? 'h-4 w-4'
@@ -75,6 +83,17 @@ export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null;
                 className={`inline-flex items-center justify-center leading-none text-[var(--app-fg)] ${sizeClass}`}
             >
                 <PiLogo />
+            </span>
+        )
+    }
+
+    if (normalized === 'reasonix') {
+        return (
+            <span
+                aria-hidden="true"
+                className={`inline-flex items-center justify-center text-emerald-600 ${sizeClass}`}
+            >
+                <ReasonixLogo />
             </span>
         )
     }

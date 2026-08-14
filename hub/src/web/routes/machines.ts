@@ -7,6 +7,7 @@ import {
 } from '@hapi/protocol'
 import { Hono } from 'hono'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
@@ -80,6 +81,16 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const parsed = SpawnSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
+        }
+        // An older runner treats unknown agent flavors as Claude. Refuse the
+        // spawn unless the connected runner explicitly advertises the
+        // Reasonix ACP capability; silent fallback would launch the wrong
+        // backend under a user-visible Reasonix session.
+        if (parsed.data.agent === 'reasonix'
+            && !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ReasonixAcp)) {
+            return c.json({
+                error: 'Reasonix requires an upgraded HAPI runner with Reasonix ACP support'
+            }, 409)
         }
         if (parsed.data.agent === 'agy' && parsed.data.startingMode === 'remote') {
             return c.json({ error: 'AGY only supports PTY mode' }, 400)

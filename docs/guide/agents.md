@@ -15,6 +15,7 @@ HAPI is a wrapper around AI coding agents. One CLI (`hapi <agent>`) starts any s
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | Antigravity (agy) | `hapi agy` | Interactive PTY + hooks | ✓ | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
+| Reasonix | `hapi reasonix` | ACP v1 (`reasonix acp`) | — | ✓ | `default` `auto` `plan` `yolo` | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
 Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command that prints a clear error, and existing Gemini sessions remain viewable in the web UI but cannot be resumed.
@@ -23,7 +24,25 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, and OpenCode remote sessions all run over ACP.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and Reasonix remote sessions all run over ACP.
+
+## Reasonix
+
+Reasonix is the DeepSeek-Reasonix coding agent. HAPI starts its ACP stdio endpoint
+(`reasonix acp`) and keeps the native ACP session id for remote resume. Install
+the CLI and authenticate it before creating a session:
+
+```bash
+npm install --global reasonix
+reasonix setup
+```
+
+Alternatively, provide `DEEPSEEK_API_KEY` in the runner environment. HAPI sends
+model and effort changes through Reasonix ACP config options (`model` and
+`effort`), and maps permission modes to Reasonix `tool_approval` values. The
+current integration is remote-only; the native Reasonix terminal UI is not used
+as a local handoff surface yet. Reasonix's native `goal` collaboration mode and
+`agent_preset` controls are not independently exposed in the HAPI web UI.
 
 ### Permission modes
 

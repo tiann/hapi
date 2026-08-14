@@ -245,6 +245,7 @@ export interface ClientToServerEvents {
     message: (data: { sid: string; message: unknown; localId?: string; createdAt?: number }) => void
     'session-alive': (data: {
         sid: string
+        sessionGeneration: string
         time: number
         thinking: boolean
         mode?: 'local' | 'remote'
@@ -257,8 +258,8 @@ export interface ClientToServerEvents {
         copilotAgentMode?: CopilotAgentMode
     }) => void
   /** CLI agent finished session/load (or equivalent) and can accept prompts. */
-    'session-ready': (data: { sid: string; time: number }) => void
-    'session-end': (data: { sid: string; time: number; reason?: SessionEndReason }) => void
+    'session-ready': (data: { sid: string; sessionGeneration: string; time: number }) => void
+    'session-end': (data: { sid: string; sessionGeneration: string; time: number; reason?: SessionEndReason }) => void
     'messages-consumed': (data: { sid: string; localIds: string[] }) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: UpdateMetadataAck) => void) => void
     'update-state': (data: { sid: string; expectedVersion: number; agentState: unknown | null }, cb: (answer: UpdateStateAck) => void) => void

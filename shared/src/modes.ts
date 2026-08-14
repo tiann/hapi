@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi', 'reasonix'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -45,6 +45,9 @@ export type GrokPermissionMode = typeof GROK_PERMISSION_MODES[number]
 
 export const OPENCODE_PERMISSION_MODES = ['default', 'plan', 'yolo'] as const
 export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
+
+export const REASONIX_PERMISSION_MODES = ['default', 'auto', 'plan', 'yolo'] as const
+export type ReasonixPermissionMode = typeof REASONIX_PERMISSION_MODES[number]
 
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'] as const
 export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
@@ -158,6 +161,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         // Pi RPC mode has no runtime permission switching (always auto-approve);
         // no permission modes are offered.
         return []
+    }
+    if (flavor === 'reasonix') {
+        return REASONIX_PERMISSION_MODES
     }
     return CLAUDE_PERMISSION_MODES
 }

@@ -10,6 +10,8 @@ export interface SpawnSessionOptions {
     // with `--hapi-session-id` so the child reuses the existing hub row (stable
     // id) instead of minting a new one. Set only by the hub reopen/resume path.
     existingSessionId?: string
+    /** Hub-issued owner token for one runner-spawned lifecycle generation. */
+    sessionGeneration?: string
     resumeSessionId?: string
     approvedNewDirectoryCreation?: boolean
     agent?: AgentFlavor

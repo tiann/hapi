@@ -98,13 +98,33 @@ export type AgentSessionConfigOptionDescriptor = {
     options: Array<{ value: string; name?: string }>;
 };
 
+export type AgentSessionConfigOptionsUpdate = {
+    sessionId: string;
+    options: AgentSessionConfigOptionDescriptor[];
+};
+
+export type AgentSessionModeUpdate = {
+    sessionId: string;
+    modeId: string;
+};
+
+export type AgentSessionModeMetadata = {
+    currentModeId: string;
+};
+
 export interface AgentBackend {
     initialize(): Promise<void>;
     newSession(config: AgentSessionConfig): Promise<string>;
+    /** Resume a persisted ACP session without replaying its transcript, when
+     * the agent exposes the ACP session/resume method. */
+    resumeSession?(config: AgentSessionConfig & { sessionId: string }): Promise<string>;
     setModel?(sessionId: string, modelId: string, opts?: { flavor?: AgentFlavor }): Promise<void>;
     setConfigOption?(sessionId: string, configId: string, value: string): Promise<void>;
     getSessionModelsMetadata?(sessionId: string): AgentSessionModelsMetadata | undefined;
+    getSessionModeMetadata?(sessionId: string): AgentSessionModeMetadata | undefined;
+    setSessionConfigOptionsUpdateListener?(listener: ((update: AgentSessionConfigOptionsUpdate) => void) | null): void;
     getThoughtLevelConfigOption?(sessionId: string): AgentSessionConfigOptionDescriptor | undefined;
+    setSessionModeUpdateListener?(listener: ((update: AgentSessionModeUpdate) => void) | null): void;
     prompt(sessionId: string, content: PromptContent[], onUpdate: (msg: AgentMessage) => void): Promise<void>;
     cancelPrompt(sessionId: string): Promise<void>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;

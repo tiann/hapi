@@ -43,6 +43,45 @@ describe('resume schemas', () => {
         expect(parsed.success).toBe(true)
     })
 
+    it('accepts a status-only Reasonix row for a fresh start without a native token', () => {
+        const parsed = LocalResumeTargetSchema.safeParse({
+            sessionId: 'reasonix-empty-row',
+            flavor: 'reasonix',
+            directory: '/tmp/project',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            freshStart: true
+        })
+        expect(parsed.success).toBe(true)
+    })
+
+    it('requires a native token for ordinary resume targets', () => {
+        const parsed = LocalResumeTargetSchema.safeParse({
+            sessionId: 'codex-without-token',
+            flavor: 'codex',
+            directory: '/tmp/project',
+            active: false,
+            thinking: false,
+            controlledByUser: false
+        })
+        expect(parsed.success).toBe(false)
+    })
+
+    it('rejects freshStart on non-Reasonix targets', () => {
+        const parsed = LocalResumeTargetSchema.safeParse({
+            sessionId: 'claude-fresh-start',
+            flavor: 'claude',
+            directory: '/tmp/project',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'claude-native-id',
+            freshStart: true
+        })
+        expect(parsed.success).toBe(false)
+    })
+
     it('accepts handoff as a session end reason', () => {
         expect(SessionEndReasonSchema.parse('handoff')).toBe('handoff')
         expect(SessionEndReasonSchema.parse('cleared')).toBe('cleared')

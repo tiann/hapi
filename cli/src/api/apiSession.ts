@@ -172,6 +172,7 @@ export type PendingSessionSnapshot = {
 }
 
 export type ApiSessionClientOptions = {
+    sessionGeneration?: string
     materialize?: (snapshot: PendingSessionSnapshot, signal: AbortSignal) => Promise<Session>
     onMaterialized?: (session: Session, snapshot: PendingSessionSnapshot) => void
 }
@@ -233,6 +234,7 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string
     readonly sessionId: string
+    private readonly sessionGeneration: string
     private metadata: Metadata | null
     private metadataVersion: number
     private agentState: AgentState | null
@@ -282,6 +284,7 @@ export class ApiSessionClient extends EventEmitter {
         super()
         this.token = token
         this.sessionId = session.id
+        this.sessionGeneration = options.sessionGeneration ?? randomUUID()
         this.metadata = session.metadata
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
@@ -303,7 +306,8 @@ export class ApiSessionClient extends EventEmitter {
             auth: {
                 token: this.token,
                 clientType: 'session-scoped' as const,
-                sessionId: this.sessionId
+                sessionId: this.sessionId,
+                sessionGeneration: this.sessionGeneration
             },
             path: '/socket.io/',
             reconnection: true,
@@ -335,6 +339,7 @@ export class ApiSessionClient extends EventEmitter {
             this.hasConnectedOnce = true
             this.socket.emit('session-alive', {
                 sid: this.sessionId,
+                sessionGeneration: this.sessionGeneration,
                 time: Date.now(),
                 thinking: false
             })
@@ -1150,6 +1155,7 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.socket.volatile.emit('session-alive', {
             sid: this.sessionId,
+            sessionGeneration: this.sessionGeneration,
             time: Date.now(),
             thinking,
             mode,
@@ -1162,6 +1168,7 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('session-ready', {
                 sid: this.sessionId,
+                sessionGeneration: this.sessionGeneration,
                 time: Date.now()
             })
         }, 'droppable')
@@ -1190,7 +1197,12 @@ export class ApiSessionClient extends EventEmitter {
             void cleanupUploadDir(this.sessionId)
         }
         this.emitOrQueue(() => {
-            this.socket.emit('session-end', { sid: this.sessionId, time: Date.now(), reason })
+            this.socket.emit('session-end', {
+                sid: this.sessionId,
+                sessionGeneration: this.sessionGeneration,
+                time: Date.now(),
+                reason
+            })
         })
     }
 

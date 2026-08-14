@@ -521,7 +521,16 @@ function SessionPage() {
             )
         }
         try {
-            const target = api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
+            // Reasonix's native collaboration/approval state is richer than
+            // HAPI's cached permissionMode (notably native goal -> default).
+            // Sending the cached projection during automatic resume would
+            // overwrite the native state before the queued prompt runs.
+            const target = api.resumeSession(
+                currentSessionId,
+                session.metadata?.flavor === 'reasonix'
+                    ? undefined
+                    : { permissionMode: session.permissionMode ?? undefined }
+            )
             resolvedSessionRef.current = { source: currentSessionId, target }
             return { sessionId: await target, resumed: true }
         } catch (error) {

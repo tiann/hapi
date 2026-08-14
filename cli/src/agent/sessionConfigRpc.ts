@@ -18,7 +18,10 @@ type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = Pe
     modelReasoningEffortMode?: 'nullable' | 'ignore' | 'reject'
     effortMode?: 'nullable' | 'ignore' | 'reject'
     appliedFallback?: () => Record<string, unknown>
-    onApply: (config: SessionConfigState<TPermissionMode>) => void | Promise<void>
+    onApply: (config: SessionConfigState<TPermissionMode>) =>
+        | void
+        | SessionConfigState<TPermissionMode>
+        | Promise<void | SessionConfigState<TPermissionMode>>
     onAfterApply?: () => void | Promise<void>
 }
 
@@ -110,8 +113,20 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             }
         }
 
-        await onApply(next)
+        const confirmed = await onApply(next)
+        if (confirmed) {
+            Object.assign(next, confirmed)
+        }
         await onAfterApply?.()
+
+        // `onApply` may normalize or replace values after talking to the
+        // native backend. Read the possibly updated object back so callers
+        // persist only confirmed values (rather than the optimistic request).
+        for (const key of Object.keys(applied)) {
+            if (key in next) {
+                applied[key] = (next as Record<string, unknown>)[key]
+            }
+        }
 
         return {
             applied: Object.keys(applied).length > 0

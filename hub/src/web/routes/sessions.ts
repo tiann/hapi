@@ -650,6 +650,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (flavor === 'grok') {
                 return c.json({ error: 'Model selection can only be changed for remote Grok sessions' }, 409)
             }
+            if (flavor === 'reasonix') {
+                return c.json({ error: 'Model selection can only be changed for remote Reasonix sessions' }, 409)
+            }
         }
 
         try {
@@ -718,8 +721,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!supportsEffort(flavor)) {
             return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
-        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true) {
-            return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
+        if ((flavor === 'grok' || flavor === 'reasonix') && sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: `Effort can only be changed for remote ${flavor} sessions` }, 409)
         }
 
         try {
@@ -1375,6 +1378,27 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Grok effort options'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/reasonix-config-options', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'reasonix') {
+            return c.json({
+                success: false,
+                error: 'Reasonix config options are only available for Reasonix sessions'
+            }, 400)
+        }
+        try {
+            return c.json(await engine.listReasonixConfigOptionsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Reasonix config options'
             }, 500)
         }
     })

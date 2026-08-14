@@ -26,6 +26,7 @@ describe('parseRemoteAgentCommandOptions', () => {
             '--started-by', 'runner',
             '--hapi-starting-mode', 'remote',
             '--existing-session-id', 'hapi-session-1',
+            '--session-generation', 'hub-generation',
             '--permission-mode', 'yolo',
             '--resume', 'session-1',
             '--model', 'model-a'
@@ -33,7 +34,9 @@ describe('parseRemoteAgentCommandOptions', () => {
             startedBy: 'runner',
             startingMode: 'remote',
             existingSessionId: 'hapi-session-1',
+            sessionGeneration: 'hub-generation',
             permissionMode: 'yolo',
+            permissionModeExplicit: true,
             resumeSessionId: 'session-1',
             model: 'model-a'
         })
@@ -62,7 +65,21 @@ describe('parseRemoteAgentCommandOptions', () => {
         expect(parseRemoteAgentCommandOptions([
             '--permission-mode', 'default',
             '--yolo'
-        ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('default')
+        ], OPENCODE_PERMISSION_MODES)).toMatchObject({
+            permissionMode: 'default',
+            permissionModeExplicit: true
+        })
+    })
+
+    it('distinguishes an omitted permission mode from an explicit default', () => {
+        expect(parseRemoteAgentCommandOptions([], OPENCODE_PERMISSION_MODES))
+            .not.toHaveProperty('permissionModeExplicit')
+        expect(parseRemoteAgentCommandOptions([
+            '--permission-mode', 'default'
+        ], OPENCODE_PERMISSION_MODES)).toMatchObject({
+            permissionMode: 'default',
+            permissionModeExplicit: true
+        })
     })
 
     it('accepts OpenCode plan permission mode', () => {

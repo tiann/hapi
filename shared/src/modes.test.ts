@@ -8,6 +8,7 @@ import {
     getPermissionModeTone,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
+    REASONIX_PERMISSION_MODES,
 } from './modes'
 
 describe('Gemini CLI sunset (read-only, not creatable)', () => {
@@ -29,6 +30,11 @@ describe('Gemini CLI sunset (read-only, not creatable)', () => {
 })
 
 describe('getPermissionModesForFlavor', () => {
+    test('returns Reasonix ACP tool approval modes', () => {
+        expect(REASONIX_PERMISSION_MODES).toEqual(['default', 'auto', 'plan', 'yolo'])
+        expect(getPermissionModesForFlavor('reasonix')).toEqual(REASONIX_PERMISSION_MODES)
+    })
+
     test("returns the conservative Grok modes", () => {
         expect(getPermissionModesForFlavor('grok')).toEqual([
             'default',
@@ -63,6 +69,15 @@ describe('getPermissionModeOptionsForFlavor', () => {
 })
 
 describe('isPermissionModeAllowedForFlavor', () => {
+    test('allows only the supported Reasonix modes', () => {
+        expect(isPermissionModeAllowedForFlavor('default', 'reasonix')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('auto', 'reasonix')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('plan', 'reasonix')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('yolo', 'reasonix')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('read-only', 'reasonix')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('bypassPermissions', 'reasonix')).toBe(false)
+    })
+
     test("allows only the supported Grok modes", () => {
         expect(isPermissionModeAllowedForFlavor('default', 'grok')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('plan', 'grok')).toBe(true)

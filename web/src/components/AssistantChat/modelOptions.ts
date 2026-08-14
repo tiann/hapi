@@ -147,6 +147,12 @@ export function getModelOptionsForFlavor(
     if (flavor === 'grok') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
+    if (flavor === 'reasonix') {
+        // Reasonix advertises concrete model values only. ACP has no null/default
+        // reset value, so exposing one here would restore an arbitrary snapshot
+        // captured when the session connected rather than the native default.
+        return withCurrentModelOption([], currentModel)
+    }
     // Pi model list is provided dynamically via piModels prop in SessionChat,
     // not through this function. Show just the auto/default option here to
     // prevent falling through to the Claude preset cycler (which would
@@ -208,6 +214,9 @@ export function getNextModelForFlavor(
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'grok') {
+        return normalizeCurrentModel(currentModel)
+    }
+    if (flavor === 'reasonix') {
         return normalizeCurrentModel(currentModel)
     }
     // Pi model list is provided dynamically via piModels prop — pressing

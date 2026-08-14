@@ -580,7 +580,7 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
         return JSON.parse(raw) as unknown
     }
 
-    it('forwards collaborationMode and serviceTier to spawnSession', async () => {
+    it('forwards collaborationMode, serviceTier, and session generation to spawnSession', async () => {
         const machine = makeMachine('machine-spawn-1')
         const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
         const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-1' }))
@@ -596,7 +596,8 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
                 directory: workspaceRoot,
                 agent: 'codex',
                 serviceTier: 'fast',
-                collaborationMode: 'plan'
+                collaborationMode: 'plan',
+                sessionGeneration: 'hub-generation'
             })
 
             expect(result).toEqual({ type: 'success', sessionId: 'session-1' })
@@ -604,7 +605,8 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
                 directory: workspaceRoot,
                 agent: 'codex',
                 serviceTier: 'fast',
-                collaborationMode: 'plan'
+                collaborationMode: 'plan',
+                sessionGeneration: 'hub-generation'
             }))
         } finally {
             client.shutdown()

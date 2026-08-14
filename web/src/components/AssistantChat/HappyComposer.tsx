@@ -70,6 +70,38 @@ export interface TextInputState {
     selection: { start: number; end: number }
 }
 
+export function getComposerEffortOptions(
+    agentFlavor: string | null | undefined,
+    effort: string | null,
+    selectedPiModel: PiModelSummary | undefined,
+    availableEffortOptions: Array<{ value: string; name?: string }> | undefined
+): Array<{ value: string | null; label: string }> {
+    if (agentFlavor === 'pi') {
+        return getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
+    }
+    if (agentFlavor === 'grok' && availableEffortOptions && availableEffortOptions.length > 0) {
+        return [
+            { value: null, label: 'Default' },
+            ...availableEffortOptions.map((option) => ({
+                value: option.value,
+                label: option.name ?? option.value
+            }))
+        ]
+    }
+    if (agentFlavor === 'reasonix') {
+        return [
+            { value: 'auto', label: 'Auto' },
+            ...(availableEffortOptions ?? [])
+                .filter((option) => option.value !== 'auto')
+                .map((option) => ({
+                    value: option.value,
+                    label: option.name ?? option.value
+                }))
+        ]
+    }
+    return getClaudeComposerEffortOptions(effort)
+}
+
 export function getComposerEscapeAction(input: {
     hasSuggestions: boolean
     threadIsRunning: boolean
@@ -1058,17 +1090,12 @@ export function HappyComposer(props: {
         }
     }, [selectedPiModel, effort, onEffortChange])
     const claudeEffortOptions = useMemo(
-        () => agentFlavor === 'pi'
-            ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
-            : agentFlavor === 'grok' && availableEffortOptions && availableEffortOptions.length > 0
-                ? [
-                    { value: null, label: 'Default' },
-                    ...availableEffortOptions.map((option) => ({
-                        value: option.value,
-                        label: option.name ?? option.value
-                    }))
-                ]
-            : getClaudeComposerEffortOptions(effort),
+        () => getComposerEffortOptions(
+            agentFlavor,
+            effort,
+            selectedPiModel,
+            availableEffortOptions
+        ),
         [agentFlavor, effort, selectedPiModel, availableEffortOptions]
     )
     const permissionModes = useMemo(

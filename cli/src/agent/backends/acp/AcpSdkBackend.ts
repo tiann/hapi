@@ -1,5 +1,5 @@
 import type { AgentFlavor } from '@hapi/protocol';
-import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
+import type { AgentBackend, AgentMessage, AgentSessionConfig, AgentSessionConfigOptionsUpdate, AgentSessionModeUpdate, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
@@ -50,6 +50,15 @@ export type AcpConfigOptionDescriptor = {
     options: Array<{ value: string; name?: string }>;
 };
 
+export type AcpSessionConfigOptionsUpdate = {
+    sessionId: string;
+    options: AcpConfigOptionDescriptor[];
+};
+
+export type AcpSessionModeMetadata = {
+    currentModeId: string;
+};
+
 type AcpInitializeResult = {
     protocolVersion: number;
     authMethods?: Array<{ id: string; name?: string }>;
@@ -66,6 +75,7 @@ export class AcpSdkBackend implements AgentBackend {
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
+    private readonly sessionModeMetadata = new Map<string, AcpSessionModeMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private readonly sessionInfoRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly initialAvailableCommands = new Set<string>();
@@ -84,6 +94,8 @@ export class AcpSdkBackend implements AgentBackend {
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
+    private sessionConfigOptionsUpdateListener: ((update: AcpSessionConfigOptionsUpdate) => void) | null = null;
+    private sessionModeUpdateListener: ((update: AgentSessionModeUpdate) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
     private agentActivityListener: ((thinking: boolean) => void) | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
@@ -292,7 +304,13 @@ export class AcpSdkBackend implements AgentBackend {
             try {
                 await this.transport.sendRequest('session/set_mode', { sessionId, modeId });
                 this.setModeSupported = true;
-                this.updateThoughtLevelCurrentValue(sessionId, modeId);
+                // Reasonix uses session/set_mode for collaboration mode
+                // (normal/plan/goal), while its effort is a separate
+                // config option. Do not overwrite the cached effort value
+                // when switching collaboration mode.
+                if (this.options.flavor !== 'reasonix') {
+                    this.updateThoughtLevelCurrentValue(sessionId, modeId);
+                }
                 return;
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -361,6 +379,38 @@ export class AcpSdkBackend implements AgentBackend {
 
         const loadedSessionId = isObject(response) ? asString(response.sessionId) : null;
         const sessionId = loadedSessionId ?? config.sessionId;
+        this.activeSessionId = sessionId;
+        this.captureSessionMetadata(sessionId, response);
+        return sessionId;
+    }
+
+    /**
+     * Opens a persisted ACP session without replaying its transcript. HAPI
+     * already stores the conversation, so this is the correct resume path for
+     * agents such as Reasonix that expose both `session/load` and
+     * `session/resume`.
+     */
+    async resumeSession(config: AgentSessionConfig & { sessionId: string }): Promise<string> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        const response = await withRetry(
+            () => this.transport!.sendRequest('session/resume', {
+                sessionId: config.sessionId,
+                cwd: config.cwd,
+                mcpServers: config.mcpServers
+            }),
+            {
+                ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                onRetry: (error, attempt, nextDelayMs) => {
+                    logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
+                }
+            }
+        );
+
+        const resumedSessionId = isObject(response) ? asString(response.sessionId) : null;
+        const sessionId = resumedSessionId ?? config.sessionId;
         this.activeSessionId = sessionId;
         this.captureSessionMetadata(sessionId, response);
         return sessionId;
@@ -448,6 +498,10 @@ export class AcpSdkBackend implements AgentBackend {
         return this.sessionModelsMetadata.get(sessionId);
     }
 
+    getSessionModeMetadata(sessionId: string): AcpSessionModeMetadata | undefined {
+        return this.sessionModeMetadata.get(sessionId);
+    }
+
     getThoughtLevelConfigOption(sessionId: string): AcpConfigOptionDescriptor | undefined {
         return this.sessionConfigOptions.get(sessionId)?.find((option) => option.category === 'thought_level');
     }
@@ -468,6 +522,18 @@ export class AcpSdkBackend implements AgentBackend {
     /** Forwards stable ACP session metadata updates independently of prompt streaming. */
     setSessionInfoUpdateListener(listener: ((update: AcpSessionInfoUpdate) => void) | null): void {
         this.sessionInfoUpdateListener = listener;
+    }
+
+    /** Forwards complete ACP config snapshots (including asynchronous updates). */
+    setSessionConfigOptionsUpdateListener(
+        listener: ((update: AgentSessionConfigOptionsUpdate) => void) | null
+    ): void {
+        this.sessionConfigOptionsUpdateListener = listener;
+    }
+
+    /** Forwards ACP current_mode_update notifications to flavor adapters. */
+    setSessionModeUpdateListener(listener: ((update: AgentSessionModeUpdate) => void) | null): void {
+        this.sessionModeUpdateListener = listener;
     }
 
     /**
@@ -789,9 +855,13 @@ export class AcpSdkBackend implements AgentBackend {
         this.activeSessionId = null;
         this.isProcessingMessage = false;
         this.sessionModelsMetadata.clear();
+        this.sessionModeMetadata.clear();
+        this.sessionConfigOptions.clear();
         this.initialAvailableCommands.clear();
         this.sessionAvailableCommands.clear();
         this.autoPermissionModeEnabled = null;
+        this.sessionConfigOptionsUpdateListener = null;
+        this.sessionModeUpdateListener = null;
         this.notifyResponseComplete();
         await this.transport.close();
         this.transport = null;
@@ -809,6 +879,7 @@ export class AcpSdkBackend implements AgentBackend {
         // work is queued so async image registration preserves event order.
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
+            this.captureSessionUpdateMetadata(sessionId, update);
         }
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
@@ -828,6 +899,25 @@ export class AcpSdkBackend implements AgentBackend {
                     error instanceof Error ? error.message : String(error)
                 );
             });
+    }
+
+    private captureSessionUpdateMetadata(sessionId: string, update: unknown): void {
+        if (!isObject(update)) return;
+        if (update.sessionUpdate === 'current_mode_update') {
+            const modeId = asString(update.currentModeId);
+            if (modeId) {
+                this.sessionModeMetadata.set(sessionId, { currentModeId: modeId });
+                this.sessionModeUpdateListener?.({ sessionId, modeId });
+            }
+            return;
+        }
+        if (update.sessionUpdate !== 'config_option_update') return;
+        // ACP sends a complete replacement snapshot. Keep this path separate
+        // from request-response metadata capture so a provider can change its
+        // model/effort catalog while a session remains open.
+        this.captureSessionMetadata(sessionId, {
+            configOptions: update.configOptions
+        });
     }
 
     private notifyAgentActivity(update: unknown): void {
@@ -1138,8 +1228,17 @@ export class AcpSdkBackend implements AgentBackend {
 
     private captureSessionMetadata(sessionId: string, response: unknown): void {
         this.captureSessionModelsMetadata(sessionId, response);
+        this.captureSessionModeMetadata(sessionId, response);
         this.captureSessionConfigOptions(sessionId, response);
         this.captureAvailableCommands(sessionId, response);
+    }
+
+    private captureSessionModeMetadata(sessionId: string, response: unknown): void {
+        if (!isObject(response) || !isObject(response.modes)) return;
+        const currentModeId = asString(response.modes.currentModeId);
+        if (currentModeId) {
+            this.sessionModeMetadata.set(sessionId, { currentModeId });
+        }
     }
 
     private captureAvailableCommands(sessionId: string | null, source: unknown): void {
@@ -1218,8 +1317,12 @@ export class AcpSdkBackend implements AgentBackend {
             });
         }
 
-        if (options.length > 0) {
+        if (options.length > 0 || Array.isArray(response.configOptions)) {
             this.sessionConfigOptions.set(sessionId, options);
+            this.sessionConfigOptionsUpdateListener?.({
+                sessionId,
+                options: [...options]
+            });
         }
     }
 

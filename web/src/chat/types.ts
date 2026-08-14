@@ -162,6 +162,7 @@ export type ToolPermission = {
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+    options?: Array<{ optionId: string; name: string; kind: string }>
     date?: number
     createdAt?: number | null
     completedAt?: number | null

@@ -1483,9 +1483,15 @@ export function buildCliArgs(
             ? 'opencode'
             : agent === 'pi'
               ? 'pi'
+              : agent === 'reasonix'
+                ? 'reasonix'
               : agent === 'agy'
                 ? 'agy'
-                : 'claude';
+                : agent === 'claude'
+                  ? 'claude'
+                  : (() => {
+                    throw new Error(`Unsupported agent flavor: ${agent}`)
+                  })();
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -1513,11 +1519,15 @@ export function buildCliArgs(
   // forks reuse the original HAPI row via --existing-session-id.
   if (agent === 'codex' || agent === 'cursor' || agent === 'pi'
       || agent === 'opencode'
+      || agent === 'reasonix'
       || (agentCommand === 'claude' && options.forkSession)) {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
     if (existingSessionId) {
       args.push('--existing-session-id', existingSessionId);
     }
+  }
+  if (agent === 'reasonix' && options.sessionGeneration) {
+    args.push('--session-generation', options.sessionGeneration);
   }
   // Grok fork children also bind the pending HAPI session id.
   if (agent === 'grok') {
@@ -1529,7 +1539,7 @@ export function buildCliArgs(
   if (options.model) {
     args.push('--model', options.model);
   }
-  if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi')) {
+  if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi' || agent === 'reasonix')) {
     args.push('--effort', options.effort);
   }
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {

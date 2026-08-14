@@ -27,17 +27,6 @@ function normalizeAnswers(answers: AnswersFormat | undefined): Record<string, st
     return result
 }
 
-function isAnswerSelected(
-    answers: Record<string, string[]> | undefined,
-    questionIdx: number,
-    optionLabel: string
-): boolean {
-    if (!answers) return false
-    const questionAnswers = answers[String(questionIdx)]
-    if (!questionAnswers || !Array.isArray(questionAnswers)) return false
-    return questionAnswers.some(a => a.trim() === optionLabel.trim())
-}
-
 function AnswerOptionCard(props: {
     isMulti: boolean
     isSelected: boolean
@@ -65,14 +54,17 @@ function AnswerOptionCard(props: {
 function renderOtherAnswers(
     answers: Record<string, string[]>,
     questionIdx: number,
-    options: { label: string }[],
+    options: { label: string; id?: string }[],
     isMulti: boolean
 ): ReactNode {
     const questionAnswers = answers[String(questionIdx)]
     if (!questionAnswers || !Array.isArray(questionAnswers)) return null
 
-    const optionLabels = new Set(options.map(o => o.label.trim()))
-    const otherAnswers = questionAnswers.filter(a => !optionLabels.has(a.trim()))
+    const optionKeys = new Set(
+        options.flatMap((option) => [option.label.trim(), option.id?.trim() ?? ''])
+            .filter((key) => key.length > 0)
+    )
+    const otherAnswers = questionAnswers.filter(a => !optionKeys.has(a.trim()))
 
     if (otherAnswers.length === 0) return null
 
@@ -133,10 +125,21 @@ export function AskUserQuestionView(props: ToolViewProps) {
         return null
     }
 
+    const answersForQuestion = (question: typeof questions[number], index: number): string[] => {
+        if (!answers) return []
+        const keys = [question.id, String(index)].filter((key): key is string => Boolean(key))
+        for (const key of keys) {
+            const values = answers[key]
+            if (Array.isArray(values)) return values
+        }
+        return []
+    }
+
     return (
         <div className="flex flex-col gap-4">
             {questions.map((q, idx) => {
                 const isMulti = q.multiSelect
+                const questionAnswers = answersForQuestion(q, idx)
 
                 return (
                     <div key={idx} className="flex flex-col gap-3">
@@ -149,7 +152,10 @@ export function AskUserQuestionView(props: ToolViewProps) {
                         {q.options.length > 0 ? (
                             <div className="flex flex-col gap-1.5">
                                 {q.options.map((opt, optIdx) => {
-                                    const isSelected = isAnswerSelected(answers, idx, opt.label)
+                                    const isSelected = questionAnswers.some((answer) => (
+                                        answer.trim() === opt.label.trim()
+                                        || (opt.id !== undefined && answer.trim() === opt.id.trim())
+                                    ))
                                     return (
                                         <AnswerOptionCard
                                             key={optIdx}
@@ -162,11 +168,21 @@ export function AskUserQuestionView(props: ToolViewProps) {
                                     )
                                 })}
 
-                                {hasAnswers && renderOtherAnswers(answers, idx, q.options, isMulti)}
+                                {hasAnswers && questionAnswers.length > 0 ? (
+                                    renderOtherAnswers(
+                                        { [String(idx)]: questionAnswers },
+                                        0,
+                                        q.options,
+                                        isMulti
+                                    )
+                                ) : null}
                             </div>
                         ) : hasAnswers && answers ? (
                             // Freeform question (no options) - show the answer directly
-                            renderFreeformAnswers(answers, idx)
+                            renderFreeformAnswers(
+                                { [String(idx)]: questionAnswers },
+                                0
+                            )
                         ) : null}
                     </div>
                 )
