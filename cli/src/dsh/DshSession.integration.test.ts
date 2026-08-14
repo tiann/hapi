@@ -116,7 +116,9 @@ function fixtureBin(): string {
 }
 
 describe('DSH session end-to-end (fixture host, production paths)', () => {
-    it('create → prompt → streaming → tool/approval → result → interrupt → stop', async () => {
+    it('create → prompt → streaming → tool/approval → result → interrupt → stop', { timeout: 30_000 }, async () => {
+        // Slow CI runners need headroom beyond vitest's 5s default for the
+        // child-process fixture host + full scripted turn.
         const workDir = mkdtempSync(join(tmpdir(), 'hapi-dsh-e2e-work-'))
         cleanupDirs.push(workDir)
         const handle = await startDshHost({ cwd: workDir, runtimeBin: fixtureBin(), readyTimeoutMs: 10_000 })
