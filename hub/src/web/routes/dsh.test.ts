@@ -162,7 +162,7 @@ describe('DSH session routes', () => {
         })
         const response = await app.request('/api/sessions/session-1/dsh/models', { method: 'POST' })
         expect(response.status).toBe(200)
-        const body = await response.json()
+        const body = await response.json() as { current: { provider: string; model: string; reasoningEffort?: string }; groups: Array<{ models: Array<{ efforts?: Array<{ id: string; name: string }> }> }> }
         expect(body.current).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
         expect(body.groups[0].models[0].efforts).toEqual([{ id: 'high', name: 'High' }])
         expect(dshModels).toHaveBeenCalledWith('session-1')
@@ -177,7 +177,7 @@ describe('DSH session routes', () => {
         })
         const response = await app.request('/api/sessions/session-1/dsh/skills', { method: 'POST' })
         expect(response.status).toBe(200)
-        const body = await response.json()
+        const body = await response.json() as { skills: Array<{ name: string; description: string; modelInvocable: boolean }> }
         expect(body.skills).toEqual([{ name: 'frontend', description: 'Frontend work', modelInvocable: true }])
         expect(dshSkills).toHaveBeenCalledWith('session-1')
     })
@@ -195,6 +195,6 @@ describe('DSH session routes', () => {
             body: JSON.stringify({ type: 'interrupt' })
         })
         expect(response.status).toBe(502)
-        expect((await response.json()).error).toContain('CLI unreachable')
+        expect((await response.json() as { error: string }).error).toContain('CLI unreachable')
     })
 })

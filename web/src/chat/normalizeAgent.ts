@@ -1085,6 +1085,110 @@ export function normalizeAgentRecord(
             }
         }
 
+        // --- DeepSeek Harness projections (AgentMessage-shaped payloads) ---
+        // DSH session runner forwards its projected messages verbatim; the
+        // web renders the shared shapes here. dsh_native / dsh_state payloads
+        // are deliberately NOT rendered as blocks — DshSessionView folds them
+        // from the raw message stream into its per-session store.
+        if (data.type === 'text' && typeof data.text === 'string') {
+            const streamId = asString(data.id)
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'text',
+                    text: data.text,
+                    uuid: messageId,
+                    ...(streamId !== null ? { streamId } : {}),
+                    parentUUID: null
+                }],
+                meta
+            }
+        }
+
+        if (data.type === 'reasoning' && typeof data.text === 'string') {
+            const streamId = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{ type: 'reasoning', text: data.text, uuid: messageId, streamId, parentUUID: null }],
+                meta
+            }
+        }
+
+        if (data.type === 'tool_call' && typeof data.id === 'string' && typeof data.name === 'string') {
+            const uuid = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'tool-call',
+                    id: data.id,
+                    name: data.name,
+                    input: data.input,
+                    description: null,
+                    uuid,
+                    parentUUID: null
+                }],
+                meta
+            }
+        }
+
+        if (data.type === 'tool_result' && typeof data.id === 'string') {
+            const uuid = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'tool-result',
+                    tool_use_id: data.id,
+                    content: data.output,
+                    is_error: data.status === 'failed',
+                    uuid,
+                    parentUUID: null
+                }],
+                meta
+            }
+        }
+
+        if (data.type === 'usage') {
+            const usage = normalizeCodexTokenUsage({
+                last: {
+                    inputTokens: asNumber(data.inputTokens),
+                    outputTokens: asNumber(data.outputTokens),
+                    cachedInputTokens: asNumber(data.cacheReadTokens)
+                },
+                contextTokens: asNumber(data.contextTokens)
+            })
+            if (!usage) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'token-count', info: data },
+                isSidechain: false,
+                meta,
+                usage
+            }
+        }
+
+        if (data.type === 'turn_complete' || data.type === 'dsh_native' || data.type === 'dsh_state') {
+            return null
+        }
+
         if (data.type === 'tool-call' && typeof data.callId === 'string') {
             const uuid = asString(data.id) ?? messageId
             return {

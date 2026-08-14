@@ -581,6 +581,33 @@ export class ApiClient {
         )
     }
 
+    /** Allowlisted DeepSeek Harness session action (DshActionSchema). */
+    async dshAction<T = unknown>(sessionId: string, action: import('@hapi/protocol').DshAction): Promise<{ ok: true; result: T }> {
+        return await this.request<{ ok: true; result: T }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dsh/action`,
+            {
+                method: 'POST',
+                body: JSON.stringify(action)
+            }
+        )
+    }
+
+    /** Runtime-discovered DSH model catalog. */
+    async dshModels(sessionId: string): Promise<import('@hapi/protocol').DshModelsResponse> {
+        return await this.request<import('@hapi/protocol').DshModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dsh/models`,
+            { method: 'POST' }
+        )
+    }
+
+    /** User-invocable DSH skill catalog. */
+    async dshSkills(sessionId: string): Promise<import('@hapi/protocol').DshSkillsResponse> {
+        return await this.request<import('@hapi/protocol').DshSkillsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dsh/skills`,
+            { method: 'POST' }
+        )
+    }
+
     async archiveSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
             method: 'POST',
