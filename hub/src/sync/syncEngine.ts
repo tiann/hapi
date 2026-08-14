@@ -1486,7 +1486,6 @@ export class SyncEngine {
                 undefined,
                 rpcResult.nativeSessionId,
                 forkEffort,
-                undefined,
                 source.permissionMode,
                 source.serviceTier ?? undefined,
                 childId,
@@ -1917,13 +1916,13 @@ export class SyncEngine {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        preset?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string,
         existingSessionId?: string,
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
-        startingMode?: 'remote' | 'pty'
+        startingMode?: 'remote' | 'pty',
+        preset?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -1936,13 +1935,14 @@ export class SyncEngine {
             worktreeName,
             resumeSessionId,
             effort,
-            preset,
             permissionMode,
             serviceTier,
             existingSessionId,
             collaborationMode,
             copilotAgentMode,
-            startingMode
+            startingMode,
+            undefined,
+            preset
         )
     }
 
@@ -2189,7 +2189,6 @@ export class SyncEngine {
             undefined,
             undefined,
             source.effort ?? undefined,
-            undefined,
             source.permissionMode ?? metadata.preferredPermissionMode,
             source.serviceTier ?? undefined,
             operation.replacementSessionId,
@@ -2953,7 +2952,6 @@ export class SyncEngine {
                 undefined,
                 resumeToken,
                 session.effort ?? undefined,
-                undefined,
                 preferredPermissionMode,
                 session.serviceTier ?? undefined,
                 access.sessionId,

@@ -170,7 +170,6 @@ export class RpcGateway {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        preset?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string,
         existingSessionId?: string,
@@ -180,7 +179,8 @@ export class RpcGateway {
         // Hub session id to reuse for this spawn. When set, the runner boots the
         // CLI with `--hapi-session-id`, so the child reuses the existing hub
         // session row (same id) instead of minting a new one.
-        forkSession?: boolean
+        forkSession?: boolean,
+        preset?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
@@ -197,7 +197,6 @@ export class RpcGateway {
                     worktreeName,
                     resumeSessionId,
                     effort,
-                    preset,
                     permissionMode,
                     serviceTier,
                     existingSessionId,
@@ -205,7 +204,8 @@ export class RpcGateway {
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,
-                    forkSession: forkSession === true
+                    forkSession: forkSession === true,
+                    preset
                 }
             )
             if (result && typeof result === 'object') {
