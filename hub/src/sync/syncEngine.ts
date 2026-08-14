@@ -1113,6 +1113,21 @@ export class SyncEngine {
         await this.rpcGateway.denyPermission(sessionId, requestId, decision)
     }
 
+    /** Allowlisted DeepSeek Harness session action (see DshActionSchema). */
+    async dshAction(sessionId: string, action: import('@hapi/protocol').DshAction): Promise<unknown> {
+        return await this.rpcGateway.dshAction(sessionId, action)
+    }
+
+    /** Runtime-discovered DSH model catalog for one session. */
+    async dshModels(sessionId: string): Promise<unknown> {
+        return await this.rpcGateway.dshModels(sessionId)
+    }
+
+    /** User-invocable DSH skill catalog for one session. */
+    async dshSkills(sessionId: string): Promise<unknown> {
+        return await this.rpcGateway.dshSkills(sessionId)
+    }
+
     async abortSession(sessionId: string): Promise<void> {
         await this.rpcGateway.abortSession(sessionId)
     }

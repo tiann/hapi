@@ -433,6 +433,18 @@ export class RpcGateway {
         }
     }
 
+    async dshAction(sessionId: string, action: import('@hapi/protocol').DshAction): Promise<unknown> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.DshAction, action)
+    }
+
+    async dshModels(sessionId: string): Promise<unknown> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.DshModels, {})
+    }
+
+    async dshSkills(sessionId: string): Promise<unknown> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.DshSkills, {})
+    }
+
     async forkConversation(
         sessionId: string,
         params: { messageLocalId?: string }
