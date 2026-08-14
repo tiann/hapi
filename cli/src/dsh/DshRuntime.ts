@@ -208,6 +208,13 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         logger.debug(`[${logTag}] host stdout: ${chunk.toString().trimEnd()}`)
     })
 
+    const killChild = (signal: NodeJS.Signals): void => {
+        try {
+            child.kill(signal)
+        } catch {
+            // Already gone.
+        }
+    }
     const exitPromise = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
         child.once('exit', (code, signal) => resolve({ code, signal }))
     })
@@ -241,6 +248,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
             break
         } catch (error) {
             if (Date.now() >= deadline) {
+                killChild('SIGTERM')
                 throw new DshRuntimeStartErrorImpl(
                     'timeout',
                     `DSH host did not become ready within ${readyTimeoutMs}ms: ${error instanceof Error ? error.message : String(error)}`,
@@ -253,6 +261,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     }
 
     if (info === null) {
+        killChild('SIGTERM')
         throw new DshRuntimeStartErrorImpl(
             'timeout',
             `DSH host did not become ready within ${readyTimeoutMs}ms`,

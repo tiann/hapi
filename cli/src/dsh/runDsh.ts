@@ -62,6 +62,7 @@ export async function runDsh(opts: {
         session,
         logTag: 'dsh',
         onBeforeClose: () => {
+            stopKeepAlive();
             hostRef.current?.stop({ timeoutMs: 5_000 }).catch((error) => {
                 logger.debug('[dsh] host stop error during cleanup:', error);
             });
@@ -73,6 +74,18 @@ export async function runDsh(opts: {
 
     const hostRef: { current: DshHostHandle | null } = { current: null };
     const bridgeAbort = new AbortController();
+    // Hub keepalive: without session-alive heartbeats the hub marks the
+    // session inactive and drops the RPC target. The thinking flag follows
+    // the DSH host running status so the web spinner matches reality.
+    let dshThinking = false;
+    const syncKeepAlive = () => {
+        session.keepAlive(dshThinking, 'remote', {});
+    };
+    syncKeepAlive();
+    const keepAliveInterval = setInterval(syncKeepAlive, 2_000);
+    const stopKeepAlive = () => {
+        clearInterval(keepAliveInterval);
+    };
 
     // Approval state mirrored into HAPI agentState (web permission cards read
     // agentState.requests; the response RPC resolves through DshAction).
@@ -152,12 +165,8 @@ export async function runDsh(opts: {
                 updateApprovalState(approvalId, null);
             },
             onHostStatus: (running) => {
-                session.updateAgentState((currentState) => ({
-                    ...currentState,
-                    // Reuse the thinking flag so the web shows an active spinner
-                    // while the DSH agent is running.
-                    ...(running ? {} : {})
-                }));
+                dshThinking = running;
+                syncKeepAlive();
             },
             onAgentError: (message) => {
                 session.sendAgentMessage({ type: 'error', message });
