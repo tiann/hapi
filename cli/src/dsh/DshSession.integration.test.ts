@@ -122,6 +122,7 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
         const workDir = mkdtempSync(join(tmpdir(), 'hapi-dsh-e2e-work-'))
         cleanupDirs.push(workDir)
         const handle = await startDshHost({ cwd: workDir, runtimeBin: fixtureBin(), readyTimeoutMs: 10_000 })
+        console.log('[dsh-e2e] host ready', handle.baseUrl)
         const client = DshClient.connect(handle.baseUrl)
 
         // create-as-resume mapping (HAPI id = DSH id)
@@ -150,7 +151,9 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
         const pump = bridge.start(ac.signal)
 
         // Prompt → the fixture host plays the scripted turn.
+        console.log('[dsh-e2e] prompting')
         await client.prompt({ sessionId: 's1', mode: 'queue', content: [{ type: 'text', text: 'list files' }] })
+        console.log('[dsh-e2e] prompted')
 
         // Wait for the full scripted turn.
         const deadline = Date.now() + 5_000
@@ -158,6 +161,7 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
             if (messages.some((m) => m.type === 'turn_complete')) break
             await new Promise((resolve) => setTimeout(resolve, 50))
         }
+        console.log('[dsh-e2e] turn wait done, messages=', messages.length, 'types=', [...new Set(messages.map((m) => m.type))].join(','))
 
         const texts = messages.filter((m) => m.type === 'text')
         expect(texts.length).toBeGreaterThan(0)
