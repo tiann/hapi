@@ -32,6 +32,7 @@ Run Claude Code, Codex, Cursor Agent, Grok Build, or OpenCode sessions from your
   Local and remote modes supported; remote uses `agent -p` with stream-json.
 - `hapi grok` - Start Grok Build mode. See `src/grok/runGrok.ts`.
 - `hapi opencode` - Start OpenCode mode via ACP. See `src/opencode/runOpencode.ts`.
+- `hapi dsh` - Start a DeepSeek Harness session (spawns the official DSH host runtime over loopback; no DSH web UI). See `src/dsh/runDsh.ts` and `../docs/guide/deepseek-harness.md`.
   Note: OpenCode supports local and remote modes; local mode streams via OpenCode plugins.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.

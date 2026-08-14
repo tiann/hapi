@@ -15,6 +15,7 @@ HAPI is a wrapper around AI coding agents. One CLI (`hapi <agent>`) starts any s
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | Antigravity (agy) | `hapi agy` | Interactive PTY + hooks | ✓ | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
+| DeepSeek Harness | `hapi dsh` | Official DSH host runtime (loopback HTTP + WebSocket) | — | ✓ | DSH presets (runtime-discovered) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
 Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command that prints a clear error, and existing Gemini sessions remain viewable in the web UI but cannot be resumed.
