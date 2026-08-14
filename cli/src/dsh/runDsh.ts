@@ -300,6 +300,9 @@ export async function runDsh(opts: {
         // session/queue snapshots surface it through dsh_state).
         session.onUserMessage((message, localId) => {
             const text = message.content.text;
+            if (localId) {
+                pendingUserLocalIds.push(localId);
+            }
             void client.prompt({
                 sessionId: created.sessionId,
                 mode: 'queue',

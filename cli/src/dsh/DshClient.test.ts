@@ -127,6 +127,41 @@ describe('DshNodeTransport + DshClient (fixture host)', () => {
         await pump
     })
 
+    it('forkSession forwards the native seq anchor', async () => {
+        const h = await fixture()
+        h.onRequest = () => ({ ok: true, value: { sessionId: 'forked-native-1' } })
+
+        const client = DshClient.connect(h.baseUrl)
+        const result = await client.forkSession({ sessionId: 's1', atSeq: 42 })
+        expect(result.sessionId).toBe('forked-native-1')
+        expect(h.requests[0].payload).toEqual({ sessionId: 's1', atSeq: 42 })
+
+        const current = await client.forkSession({ sessionId: 's1' })
+        expect(current.sessionId).toBe('forked-native-1')
+        expect(h.requests[1].payload).toEqual({ sessionId: 's1' })
+    })
+
+    it('updateQueueAction and gatewayCall use the official endpoints', async () => {
+        const h = await fixture()
+        h.onRequest = (endpoint, payload) => {
+            if (endpoint === 'session.updateQueue') {
+                return { ok: true, value: { accepted: true } }
+            }
+            if (endpoint === 'messageFeedback/put') {
+                return { ok: true, value: {} }
+            }
+            return { ok: false, error: { code: 'bad-request', message: 'unexpected', details: { issues: [] } } }
+        }
+
+        const client = DshClient.connect(h.baseUrl)
+        await client.updateQueueAction({ sessionId: 's1', itemId: 'q-1', action: { kind: 'remove' } })
+        expect(h.requests[0]).toMatchObject({ endpoint: 'session.updateQueue' })
+        expect(h.requests[0].payload).toEqual({ sessionId: 's1', itemId: 'q-1', action: { kind: 'remove' } })
+
+        await client.gatewayCall('messageFeedback/put', { sessionId: 's1', messageId: 'm-1', rating: 'positive', ifVersion: null })
+        expect(h.requests[1]).toMatchObject({ endpoint: 'messageFeedback/put' })
+    })
+
     it('malformed frames are dropped without killing the stream', async () => {
         const h = await fixture()
         const client = DshClient.connect(h.baseUrl)

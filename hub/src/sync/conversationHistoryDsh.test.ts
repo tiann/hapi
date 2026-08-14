@@ -112,10 +112,10 @@ describe('DSH conversation-history hub integration', () => {
             // Source archived with supersededBySessionId pointing at the child.
             const archived = (engine as any).sessionCache.refreshSession(source.id)!
             expect(archived.metadata?.archiveReason).toContain('Rewound')
-            expect(archived.metadata?.supersededBySessionId).toBe(spawnedChild)
-            expect(killedSessionId).toBe(source.id)
+            expect(archived.metadata?.supersededBySessionId).toEqual(spawnedChild)
+            expect(killedSessionId === source.id).toBe(true)
             const child = engine.getSession(spawnedChild)
-            expect(child?.metadata?.dshSessionId).toBe('dsh-rewind-child-native')
+            expect((child?.metadata as Record<string, unknown> | undefined)?.dshSessionId).toBe('dsh-rewind-child-native')
         } finally {
             engine.stop()
         }
