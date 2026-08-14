@@ -124,3 +124,21 @@ All `@deepseek-ai/*` packages are pinned to `0.1.0-rc.6` (npm `latest`). The
 DSH protocol is a developer preview and changes fast — breaking changes are
 absorbed inside `cli/src/dsh/` (the HapiDshAdapter boundary); update the pin
 and the host-only overlay together.
+
+### Upgrading DSH
+
+1. Bump `DSH_RUNTIME_VERSION` (`cli/src/dsh/types.ts`) and the
+   `@deepseek-ai/dsh-host-apiproxy` / `@deepseek-ai/dsh-session` dependencies
+   to the new release (all `@deepseek-ai/*` packages ship in lockstep).
+2. Reinstall the runtime: delete `$HAPI_HOME/dsh-runtime` (or run the
+   auto-install path once; it pins the new version).
+3. Validate the host-only overlay against the new release:
+   - `HAPI_DSH_INTEGRATION=1` integration suite (spawns the real host and
+     asserts `GET /` → 404 while `/api` works);
+   - the fixture-host E2E for the wire contract;
+   - `hapi doctor` reports `Version: <new> (matches pinned ...)`.
+4. The overlay (`DSH_HOST_ONLY_OVERLAY` in `cli/src/dsh/overlay.ts`) lists
+   every disabled web row by id — if the new release renames or adds rows
+   that the `connection` plugin injects, adjust the overlay (the
+   `web-runtime` disable + `connection.inject: []` pair is the sensitive
+   part).

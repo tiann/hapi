@@ -1199,7 +1199,7 @@ export class SyncEngine {
     private async waitForExactNativeForkBound(
         childId: string,
         expectedNativeSessionId: string,
-        metadataKey: 'grokSessionId' | 'piSessionId',
+        metadataKey: 'grokSessionId' | 'piSessionId' | 'dshSessionId',
         requireSessionReady: boolean,
         timeoutMs: number = 60_000
     ): Promise<boolean> {
@@ -1454,6 +1454,10 @@ export class SyncEngine {
         } else if (flavor === 'claude') {
             // Child will bind the forked Claude id after --fork-session starts.
             childMetadata.claudeSessionId = rpcResult.forkSession ? undefined : rpcResult.nativeSessionId
+        } else if (flavor === 'dsh') {
+            // DSH fork returns the new native session id directly; the child
+            // CLI resumes it via create-as-resume (dshSessionId metadata).
+            childMetadata.dshSessionId = rpcResult.nativeSessionId
         }
 
         // A Pi native fork already carries the branch's authoritative model and
@@ -1545,6 +1549,15 @@ export class SyncEngine {
                 )
                 if (!bound) {
                     throw new Error('Pi fork could not load the exact native session before ready')
+                }
+            }
+
+            if (flavor === 'dsh') {
+                const bound = await this.waitForExactNativeForkBound(
+                    childId, rpcResult.nativeSessionId, 'dshSessionId', false
+                )
+                if (!bound) {
+                    throw new Error('DSH fork could not load the forked native session')
                 }
             }
 
@@ -1640,6 +1653,22 @@ export class SyncEngine {
             return { type: 'error', message: rpcResult?.error ?? 'Native rewind failed' }
         }
 
+        // DeepSeek Harness has no native rewind; its official "go back"
+        // semantics are fork. DSH rewind forks a child at the anchor message,
+        // archives the old session, and points it at the child — the web's
+        // followSupersedingSession flow navigates automatically.
+        if (this.resolveFlavor(session) === 'dsh') {
+            const forked = await this.forkConversationUnlocked(sessionId, namespace, messageLocalId)
+            if (forked.type === 'error') {
+                return { type: 'error', message: forked.message }
+            }
+            const archived = await this.archiveDshSessionForRewind(sessionId, namespace, forked.sessionId)
+            if (!archived) {
+                return { type: 'error', message: 'DSH rewind: old session could not be archived' }
+            }
+            return { type: 'success' }
+        }
+
         try {
             this.store.messages.truncateMessagesFromLocalId(
                 sessionId,
@@ -1660,6 +1689,50 @@ export class SyncEngine {
                 hydrateFailed: true
             }
         }
+    }
+
+    /**
+     * Archive a DSH session after a rewind-fork: stop its CLI, mark the hub
+     * row archived, and record supersededBySessionId so the web follows the
+     * forked child.
+     */
+    private async archiveDshSessionForRewind(
+        sessionId: string,
+        namespace: string,
+        replacementSessionId: string
+    ): Promise<boolean> {
+        try {
+            await this.rpcGateway.killSession(sessionId)
+        } catch (error) {
+            if (!(error instanceof RpcTargetMissingError)) {
+                return false
+            }
+        }
+        const session = this.sessionCache.refreshSession(sessionId)
+        if (!session?.metadata) {
+            return false
+        }
+        try {
+            this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...session.metadata,
+                    supersededBySessionId: replacementSessionId,
+                    lifecycleState: 'archived',
+                    lifecycleStateSince: Date.now(),
+                    archivedBy: 'hub',
+                    archiveReason: 'Rewound (DSH fork)'
+                },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+        } catch {
+            return false
+        }
+        this.sessionCache.refreshSession(sessionId)
+        this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+        return true
     }
 
     async archiveSession(sessionId: string): Promise<void> {

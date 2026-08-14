@@ -70,6 +70,13 @@ export const DshGoalRequestSchema = z.object({
     maxGoalRounds: z.number().int().positive().optional(),
     refId: z.string().optional(),
     revision: z.number().int().nonnegative().optional()
+}).superRefine((value, ctx) => {
+    if (value.action === 'create' && !value.objective) {
+        ctx.addIssue({ code: 'custom', message: 'goal.create requires objective' })
+    }
+    if (value.action !== 'create' && (value.refId === undefined || value.revision === undefined)) {
+        ctx.addIssue({ code: 'custom', message: `goal.${value.action} requires refId and revision` })
+    }
 })
 export type DshGoalRequest = z.infer<typeof DshGoalRequestSchema>
 
@@ -80,12 +87,23 @@ export const DshSubagentRequestSchema = z.object({
     beforeSeq: z.number().int().nonnegative().optional(),
     maxMessages: z.number().int().positive().max(200).optional(),
     text: z.string().min(1).max(200_000).optional()
+}).superRefine((value, ctx) => {
+    if (value.action !== 'list' && !value.childSessionId) {
+        ctx.addIssue({ code: 'custom', message: `subagent.${value.action} requires childSessionId` })
+    }
+    if (value.action === 'prompt' && !value.text) {
+        ctx.addIssue({ code: 'custom', message: 'subagent.prompt requires text' })
+    }
 })
 export type DshSubagentRequest = z.infer<typeof DshSubagentRequestSchema>
 
 export const DshAgentPresetsRequestSchema = z.object({
     action: z.enum(['list', 'select']),
     agentPreset: z.string().min(1).optional()
+}).superRefine((value, ctx) => {
+    if (value.action === 'select' && !value.agentPreset) {
+        ctx.addIssue({ code: 'custom', message: 'agentPresets.select requires agentPreset' })
+    }
 })
 export type DshAgentPresetsRequest = z.infer<typeof DshAgentPresetsRequestSchema>
 
@@ -109,23 +127,30 @@ export const DshFeedbackRequestSchema = z.object({
     note: z.string().max(8_192).optional(),
     /** Observed item version for CAS; null requires absence. */
     ifVersion: z.string().nullable().optional()
+}).superRefine((value, ctx) => {
+    if (value.action === 'put' && (!value.messageId || !value.rating)) {
+        ctx.addIssue({ code: 'custom', message: 'feedback.put requires messageId and rating' })
+    }
+    if (value.action === 'delete' && !value.messageId) {
+        ctx.addIssue({ code: 'custom', message: 'feedback.delete requires messageId' })
+    }
 })
 export type DshFeedbackRequest = z.infer<typeof DshFeedbackRequestSchema>
 
 /** Discriminated allowlist of every session-scoped DSH action. */
 export const DshActionSchema = z.discriminatedUnion('type', [
-    z.object({ type: z.literal('prompt'), ...DshPromptRequestSchema.shape }),
-    z.object({ type: z.literal('interrupt'), ...DshInterruptRequestSchema.shape }),
-    z.object({ type: z.literal('approval.respond'), ...DshApprovalRespondRequestSchema.shape }),
-    z.object({ type: z.literal('question.respond'), ...DshQuestionRespondRequestSchema.shape }),
-    z.object({ type: z.literal('queue.action'), ...DshQueueActionRequestSchema.shape }),
-    z.object({ type: z.literal('model.select'), ...DshSelectModelRequestSchema.shape }),
-    z.object({ type: z.literal('goal'), ...DshGoalRequestSchema.shape }),
-    z.object({ type: z.literal('subagent'), ...DshSubagentRequestSchema.shape }),
-    z.object({ type: z.literal('agentPresets'), ...DshAgentPresetsRequestSchema.shape }),
-    z.object({ type: z.literal('nativeHistory'), ...DshNativeHistoryRequestSchema.shape }),
-    z.object({ type: z.literal('fork'), ...DshForkRequestSchema.shape }),
-    z.object({ type: z.literal('feedback'), ...DshFeedbackRequestSchema.shape })
+    DshPromptRequestSchema.extend({ type: z.literal('prompt') }),
+    DshInterruptRequestSchema.extend({ type: z.literal('interrupt') }),
+    DshApprovalRespondRequestSchema.extend({ type: z.literal('approval.respond') }),
+    DshQuestionRespondRequestSchema.extend({ type: z.literal('question.respond') }),
+    DshQueueActionRequestSchema.extend({ type: z.literal('queue.action') }),
+    DshSelectModelRequestSchema.extend({ type: z.literal('model.select') }),
+    DshGoalRequestSchema.extend({ type: z.literal('goal') }),
+    DshSubagentRequestSchema.extend({ type: z.literal('subagent') }),
+    DshAgentPresetsRequestSchema.extend({ type: z.literal('agentPresets') }),
+    DshNativeHistoryRequestSchema.extend({ type: z.literal('nativeHistory') }),
+    DshForkRequestSchema.extend({ type: z.literal('fork') }),
+    DshFeedbackRequestSchema.extend({ type: z.literal('feedback') })
 ])
 export type DshAction = z.infer<typeof DshActionSchema>
 
