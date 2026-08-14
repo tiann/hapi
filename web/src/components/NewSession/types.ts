@@ -52,6 +52,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     opencode: [],
     grok: [],
     pi: [],
+    // DeepSeek Harness models are runtime-discovered from the DSH host
+    // (session.models); no static presets are offered at create time.
+    dsh: [],
 }
 
 export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; label: string }[] = [

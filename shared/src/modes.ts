@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'dsh', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -157,6 +157,12 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     if (flavor === 'pi') {
         // Pi RPC mode has no runtime permission switching (always auto-approve);
         // no permission modes are offered.
+        return []
+    }
+    if (flavor === 'dsh') {
+        // DeepSeek Harness permission presets are runtime-discovered from the
+        // DSH host (dsh-permission-presets plugin); the generic HAPI permission
+        // mode vocabulary does not apply, so no modes are offered here.
         return []
     }
     return CLAUDE_PERMISSION_MODES

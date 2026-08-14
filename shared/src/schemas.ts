@@ -83,6 +83,18 @@ export const MetadataSchema = z.object({
     kimiSessionId: z.string().optional(),
     copilotSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
+    // DeepSeek Harness native session id. For HAPI-created sessions this is
+    // identical to the HAPI session id (official session.create preallocation
+    // makes create idempotent per id+cwd), but it is recorded separately so a
+    // resume/reopen can always re-address the native session even if the two
+    // id spaces ever diverge.
+    dshSessionId: z.string().optional(),
+    // DSH host.describe().version captured at spawn time (e.g. '0.1.0-rc.6').
+    dshRuntimeVersion: z.string().optional(),
+    // Highest native session-event seq already forwarded to the hub. The CLI
+    // uses it as the replay cursor on reconnect/gap-fill so events are
+    // delivered at-most-once.
+    dshEventCursor: z.number().int().nonnegative().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),
         machineId: z.string(),

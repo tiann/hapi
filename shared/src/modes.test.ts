@@ -42,6 +42,11 @@ describe('getPermissionModesForFlavor', () => {
         expect(getPermissionModesForFlavor('pi')).toEqual([])
     })
 
+    test("returns [] for flavor 'dsh' (presets are runtime-discovered from the DSH host)", () => {
+        expect(getPermissionModesForFlavor('dsh')).toEqual([])
+        expect(getPermissionModesForFlavor('dsh')).not.toEqual(getPermissionModesForFlavor('claude'))
+    })
+
     test("returns [] for pi and does not fall back to Claude modes", () => {
         // Ensure Pi is opt-in empty, not silently inheriting Claude defaults.
         expect(getPermissionModesForFlavor('pi')).not.toEqual(getPermissionModesForFlavor('claude'))

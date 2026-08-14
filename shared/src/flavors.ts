@@ -20,6 +20,10 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
     pi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    // DeepSeek Harness: model switching is runtime-discovered via the DSH
+    // session.models / session.selectModel contract; effort rides the same
+    // model-selection payload (reasoningEffort), so no separate Effort cap.
+    dsh: new Set([Capabilities.ModelChange]),
 }
 
 // --- Flavor display names ---
@@ -34,6 +38,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     cursor: 'Cursor',
     opencode: 'OpenCode',
     pi: 'Pi',
+    dsh: 'DeepSeek Harness',
 }
 
 // --- Query functions ---
