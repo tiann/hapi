@@ -589,6 +589,7 @@ export const SpawnSessionRequestSchema = z.object({
     agent: AgentFlavorSchema.optional(),
     model: z.string().optional(),
     effort: z.string().optional(),
+    preset: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
     yolo: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
