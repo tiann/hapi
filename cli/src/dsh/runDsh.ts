@@ -63,6 +63,10 @@ export async function runDsh(opts: {
         logTag: 'dsh',
         onBeforeClose: () => {
             stopKeepAlive();
+            if (pendingHistoryMetadataFlush) {
+                clearTimeout(pendingHistoryMetadataFlush);
+                flushHistoryMetadata();
+            }
             hostRef.current?.stop({ timeoutMs: 5_000 }).catch((error) => {
                 logger.debug('[dsh] host stop error during cleanup:', error);
             });
@@ -74,6 +78,29 @@ export async function runDsh(opts: {
 
     const hostRef: { current: DshHostHandle | null } = { current: null };
     const bridgeAbort = new AbortController();
+    // Fork-at-message anchors: HAPI user-message localIds are matched to
+    // their native user/message event seqs (FIFO — the DSH host claims queued
+    // prompts in order). Persisted via conversationHistoryPoints/Indexes so
+    // the web shows fork/rewind affordances and the handlers can address the
+    // native log after reconnect too.
+    const userLocalIdToSeq = new Map<string, number>();
+    const historyMetadataDirty = { points: false, indexes: false };
+    let pendingHistoryMetadataFlush: ReturnType<typeof setTimeout> | null = null;
+    const flushHistoryMetadata = () => {
+        pendingHistoryMetadataFlush = null;
+        if (!historyMetadataDirty.points && !historyMetadataDirty.indexes) return;
+        historyMetadataDirty.points = false;
+        historyMetadataDirty.indexes = false;
+        session.updateMetadata((metadata) => {
+            const points = { ...(metadata.conversationHistoryPoints ?? {}) };
+            const indexes = { ...(metadata.conversationHistoryIndexes ?? {}) };
+            for (const [localId, seq] of userLocalIdToSeq) {
+                points[localId] = true;
+                indexes[localId] = seq;
+            }
+            return { ...metadata, conversationHistoryPoints: points, conversationHistoryIndexes: indexes };
+        });
+    };
     // Hub keepalive: without session-alive heartbeats the hub marks the
     // session inactive and drops the RPC target. The thinking flag follows
     // the DSH host running status so the web spinner matches reality.
@@ -140,12 +167,28 @@ export async function runDsh(opts: {
 
         const projector = new DshProjector(created.sessionId);
         let pendingCursorFlush: ReturnType<typeof setTimeout> | null = null;
+        let latestCursorSeq = 0;
+        const pendingUserLocalIds: string[] = [];
+        const noteUserMessageSeq = (seq: number) => {
+            const localId = pendingUserLocalIds.shift();
+            if (!localId) return;
+            userLocalIdToSeq.set(localId, seq);
+            historyMetadataDirty.points = true;
+            historyMetadataDirty.indexes = true;
+            if (!pendingHistoryMetadataFlush) {
+                pendingHistoryMetadataFlush = setTimeout(flushHistoryMetadata, 1_000);
+                pendingHistoryMetadataFlush.unref?.();
+            }
+        };
 
         const bridge = new DshEventBridge({
             client,
             dshSessionId: created.sessionId,
             projector,
             onMessage: (message: DshProjectedMessage) => {
+                if (message.type === 'dsh_native' && message.event.type === 'user/message') {
+                    noteUserMessageSeq(message.event.seq);
+                }
                 session.sendAgentMessage(message);
             },
             onStateSnapshot: (snapshot: DshStateSnapshot) => {
@@ -172,12 +215,15 @@ export async function runDsh(opts: {
                 session.sendAgentMessage({ type: 'error', message });
             },
             onCursor: (seq) => {
+                // Keep the LATEST seq: the throttle timer must read the
+                // current value at flush time, not the event that armed it.
+                latestCursorSeq = seq;
                 if (pendingCursorFlush) return;
                 pendingCursorFlush = setTimeout(() => {
                     pendingCursorFlush = null;
                     session.updateMetadata((metadata) => ({
                         ...metadata,
-                        dshEventCursor: seq
+                        dshEventCursor: latestCursorSeq
                     }));
                 }, CURSOR_FLUSH_MS);
                 pendingCursorFlush.unref?.();
@@ -203,6 +249,42 @@ export async function runDsh(opts: {
                 outcome: request.approved === true ? 'allowed-once' : 'rejected'
             });
             return { approved: request.approved === true };
+        });
+
+        // Fork: official session.fork anchored at the native seq of the
+        // message the user picked (forkCurrent has no localId → last turn).
+        session.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
+            const localId = payload && typeof payload === 'object'
+                && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
+                ? (payload as { messageLocalId: string }).messageLocalId
+                : undefined;
+            let atSeq: number | undefined;
+            if (localId) {
+                const recorded = userLocalIdToSeq.get(localId)
+                    ?? session.getMetadata()?.conversationHistoryIndexes?.[localId];
+                if (typeof recorded !== 'number') {
+                    throw new Error('Fork point not found for message');
+                }
+                atSeq = recorded;
+            }
+            const result = await client.forkSession({
+                sessionId: created.sessionId,
+                ...(atSeq !== undefined ? { atSeq } : {})
+            });
+            return { nativeSessionId: result.sessionId, forkSession: false as const };
+        });
+
+        // Rewind: no native DSH rewind exists — the hub archives this session
+        // and forks a child at the anchor (official fork semantics).
+        session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
+            const localId = payload && typeof payload === 'object'
+                && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
+                ? (payload as { messageLocalId: string }).messageLocalId
+                : undefined;
+            if (!localId) {
+                throw new Error('Rewind requires a message anchor');
+            }
+            return { success: true as const, truncateFromLocalId: localId, messages: [] as never[] };
         });
 
         registerDshRpcHandlers({

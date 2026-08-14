@@ -464,6 +464,38 @@ describe('createSpawnDeduplicator', () => {
     })
 })
 
+describe('buildCliArgs (dsh)', () => {
+    const base = {
+        directory: '/tmp/project',
+        agent: 'dsh' as const,
+        startingMode: 'remote' as const,
+        startedBy: 'runner' as const
+    }
+
+    it('uses the dsh command and remote starting mode', () => {
+        const args = buildCliArgs('dsh', { ...base })
+        expect(args[0]).toBe('dsh')
+        expect(args).toContain('--hapi-starting-mode')
+        expect(args).toContain('remote')
+        expect(args).toContain('--started-by')
+        expect(args).toContain('runner')
+    })
+
+    it('reuses the existing HAPI row on reopen/resume', () => {
+        const args = buildCliArgs('dsh', { ...base, existingSessionId: 'hapi-row-1' })
+        expect(args).toContain('--hapi-session-id')
+        expect(args).toContain('hapi-row-1')
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('hapi-row-1')
+    })
+
+    it('never passes permission-mode or yolo flags (runtime-discovered presets)', () => {
+        const args = buildCliArgs('dsh', { ...base, permissionMode: 'bypassPermissions' as never, yolo: true })
+        expect(args).not.toContain('--permission-mode')
+        expect(args).not.toContain('--yolo')
+    })
+})
+
 describe('classifyRecoveredProcessGeneration', () => {
     it('quarantines a live recovered child while its generation marker is unavailable', () => {
         expect(classifyRecoveredProcessGeneration(true, null, 'persisted-marker')).toBe('quarantined')

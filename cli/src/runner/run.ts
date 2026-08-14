@@ -1485,7 +1485,9 @@ export function buildCliArgs(
               ? 'pi'
               : agent === 'agy'
                 ? 'agy'
-                : 'claude';
+                : agent === 'dsh'
+                  ? 'dsh'
+                  : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -1549,9 +1551,10 @@ export function buildCliArgs(
   if (options.copilotAgentMode && options.copilotAgentMode !== 'interactive' && agent === 'copilot') {
     args.push('--copilot-agent-mode', options.copilotAgentMode);
   }
-  // Pi RPC mode has no permission switching; never pass these flags to it
-  // (the Pi parser rejects --permission-mode and ignores --yolo).
-  if (agent !== 'pi') {
+  // Pi RPC mode and DSH (runtime-discovered presets) have no HAPI permission
+  // switching; never pass these flags to them (both parsers reject
+  // --permission-mode).
+  if (agent !== 'pi' && agent !== 'dsh') {
     if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
       args.push('--permission-mode', options.permissionMode);
     } else if (yolo) {

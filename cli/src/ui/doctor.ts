@@ -5,13 +5,16 @@
  * for hapi CLI including configuration, runner status, logs, and links
  */
 
+import { execFileSync } from 'node:child_process'
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
 import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/runner/doctor'
+import { defaultDshRuntimeBin } from '@/dsh/DshRuntime'
+import { DSH_RUNTIME_VERSION } from '@/dsh/types'
 import { readRunnerState } from '@/persistence'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
@@ -81,6 +84,15 @@ export async function runDoctorRunner(): Promise<void> {
     return runDoctorCommand('runner');
 }
 
+function checkNodeAvailable(): boolean {
+    try {
+        const result = execFileSync('node', ['--version'], { stdio: 'pipe', timeout: 5_000 })
+        return result.toString().trim().length > 0
+    } catch {
+        return false
+    }
+}
+
 export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void> {
     // Default to 'all' if no filter specified
     if (!filter) {
@@ -141,6 +153,29 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
             console.log(chalk.red('❌ Failed to read settings'));
             settings = {};
         }
+
+        // DeepSeek Harness runtime
+        console.log(chalk.bold('\n🤖 DeepSeek Harness Runtime'));
+        const dshBin = defaultDshRuntimeBin();
+        if (existsSync(dshBin)) {
+            console.log(`Runtime: ${chalk.green('✓ Installed')} ${chalk.gray(dshBin)}`);
+            try {
+                const installed = JSON.parse(readFileSync(join(join(dshBin, '..', '..', '..', '..', '..'), 'package.json'), 'utf8')) as { version?: string };
+                const pinned = DSH_RUNTIME_VERSION;
+                if (installed.version === pinned) {
+                    console.log(`Version: ${chalk.green(installed.version)} (matches pinned ${pinned})`);
+                } else {
+                    console.log(`Version: ${chalk.yellow(installed.version)} (pinned ${pinned} — reinstall with: hapi dsh install)`);
+                }
+            } catch {
+                console.log(`Version: ${chalk.yellow('unknown (package.json unreadable)')}`);
+            }
+        } else {
+            console.log(`Runtime: ${chalk.red('❌ Not installed')} ${chalk.gray(dshBin)}`);
+            console.log(chalk.gray('  First `dsh` session auto-installs it; requires Node.js on the runner.'));
+        }
+        console.log(`Node available: ${chalk.green(existsSync(join(configuration.happyHomeDir, 'dsh-runtime')) ? 'n/a (install pending)' : checkNodeAvailable() ? '✓ yes' : '❌ no (DSH host needs Node.js)')}`);
+        console.log('');
 
         // Authentication status (direct-connect)
         console.log(chalk.bold('\n🔐 Direct Connect Auth'));

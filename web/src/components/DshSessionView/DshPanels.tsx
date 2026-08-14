@@ -67,29 +67,68 @@ export function DshGoalBar({ snapshot, dispatch }: { snapshot: DshStateSnapshot;
 export function DshQueueDock({ snapshot, dispatch }: { snapshot: DshStateSnapshot; dispatch: Dispatch }) {
     const { t } = useTranslation()
     const items = snapshot.queue?.items ?? []
+    const [editingId, setEditingId] = useState<string | null>(null)
+    const [editText, setEditText] = useState('')
     if (items.length === 0) return null
     return (
         <Panel title={t('dsh.queue')}>
             <div className="flex flex-col gap-1.5">
                 {items.map((item) => (
                     <div key={item.id} className="rounded-md border border-[var(--app-border)] px-2 py-1.5 text-xs">
-                        <div className="truncate">{item.text || t('dsh.queueEmptyItem')}</div>
-                        <div className="mt-1 flex gap-1">
-                            <button
-                                type="button"
-                                className="panel-btn"
-                                onClick={() => void dispatch({ type: 'queue.action', itemId: item.id, action: { kind: 'steer' } })}
-                            >
-                                {t('dsh.steer')}
-                            </button>
-                            <button
-                                type="button"
-                                className="panel-btn"
-                                onClick={() => void dispatch({ type: 'queue.action', itemId: item.id, action: { kind: 'remove' } })}
-                            >
-                                {t('dsh.remove')}
-                            </button>
-                        </div>
+                        {editingId === item.id ? (
+                            <div className="flex flex-col gap-1">
+                                <input
+                                    type="text"
+                                    value={editText}
+                                    onChange={(e) => setEditText(e.target.value)}
+                                    className="w-full rounded border border-[var(--app-border)] bg-transparent px-1.5 py-1 text-xs outline-none"
+                                    autoFocus
+                                />
+                                <div className="flex gap-1">
+                                    <button
+                                        type="button"
+                                        className="panel-btn"
+                                        disabled={editText.trim().length === 0}
+                                        onClick={() => {
+                                            void dispatch({ type: 'queue.action', itemId: item.id, action: { kind: 'edit', text: editText.trim() } })
+                                            setEditingId(null)
+                                        }}
+                                    >
+                                        {t('dsh.save')}
+                                    </button>
+                                    <button type="button" className="panel-btn" onClick={() => setEditingId(null)}>
+                                        {t('dsh.cancel')}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="truncate">{item.text || t('dsh.queueEmptyItem')}</div>
+                                <div className="mt-1 flex gap-1">
+                                    <button
+                                        type="button"
+                                        className="panel-btn"
+                                        onClick={() => void dispatch({ type: 'queue.action', itemId: item.id, action: { kind: 'steer' } })}
+                                    >
+                                        {t('dsh.steer')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="panel-btn"
+                                        onClick={() => { setEditingId(item.id); setEditText(item.text) }}
+                                    >
+                                        {t('dsh.edit')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="panel-btn"
+                                        onClick={() => void dispatch({ type: 'queue.action', itemId: item.id, action: { kind: 'remove' } })}
+                                    >
+                                        {t('dsh.remove')}
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 ))}
             </div>
