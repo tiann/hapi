@@ -99,6 +99,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.worktreeName,
             undefined, // resumeSessionId
             parsed.data.effort,
+            parsed.data.preset,
             parsed.data.permissionMode,
             parsed.data.serviceTier,
             undefined,
