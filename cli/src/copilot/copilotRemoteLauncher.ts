@@ -270,6 +270,11 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
                 break;
+            // DSH native projections never reach the Copilot launcher; keep the
+            // exhaustive switch total without inventing a terminal rendering.
+            case 'dsh_native':
+            case 'dsh_state':
+                break;
             default: {
                 const _exhaustive: never = message;
                 return _exhaustive;

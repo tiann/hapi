@@ -259,6 +259,11 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
                 break;
+            // DSH native projections never reach this launcher; keep the
+            // exhaustive switch total.
+            case 'dsh_native':
+            case 'dsh_state':
+                break;
             default: {
                 const _exhaustive: never = message;
                 return _exhaustive;

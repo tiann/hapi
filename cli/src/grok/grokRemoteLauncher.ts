@@ -421,6 +421,11 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
                 break
             case 'usage':
                 break
+            // DSH native projections never reach this launcher; keep the
+            // exhaustive switch total.
+            case 'dsh_native':
+            case 'dsh_state':
+                break
             default: {
                 const exhaustive: never = message
                 return exhaustive

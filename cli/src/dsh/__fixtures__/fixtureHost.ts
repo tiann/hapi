@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { serverResponseSchema } from '@deepseek-ai/dsh-host-apiproxy/api/rpc.schema'
 import type { ClientRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
-import type { MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { HostFrame, MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
 
 /**
  * Deterministic DSH host fixture for unit tests: a real loopback HTTP + WS
@@ -19,6 +19,8 @@ export type FixtureHost = {
     onRequest: (endpoint: string, payload: unknown) => Promise<unknown> | unknown
     /** Push one mux frame to all connected mux sockets. */
     pushMux(frame: MuxFrame): void
+    /** Push one host frame to all connected host sockets. */
+    pushHost(frame: HostFrame): void
     /** Last N client requests received, for assertions. */
     requests: Array<{ endpoint: string; payload: unknown }>
     /** Pending rpcIds of unanswered approval/question server-requests. */
@@ -46,6 +48,7 @@ export function createFixtureHost(): Promise<FixtureHost> {
         port: 0,
         onRequest: () => ({ ok: true, value: {} }),
         pushMux: () => {},
+        pushHost: () => {},
         requests: [],
         pendingServerRequests: new Map(),
         close: async () => {}
@@ -99,6 +102,7 @@ export function createFixtureHost(): Promise<FixtureHost> {
 
         const wss = new WebSocketServer({ noServer: true })
         const muxSockets = new Set<WebSocket>()
+        const hostSockets = new Set<WebSocket>()
         server.on('upgrade', (req, socket, head) => {
             const url = new URL(req.url ?? '/', 'http://dsh.test')
             if (url.pathname === '/api/events.mux') {
@@ -108,21 +112,30 @@ export function createFixtureHost(): Promise<FixtureHost> {
                 })
                 return
             }
+            if (url.pathname === '/api/events.host') {
+                wss.handleUpgrade(req, socket, head, (ws) => {
+                    hostSockets.add(ws)
+                    ws.on('close', () => hostSockets.delete(ws))
+                })
+                return
+            }
             socket.destroy()
         })
 
-        host.pushMux = (frame) => {
+        const pushTo = (sockets: Set<WebSocket>, frame: MuxFrame | HostFrame, method: string) => {
             const envelope: ServerRequest = {
                 type: 'server-request',
                 rpcId: RpcId(`fixture-${Math.random().toString(36).slice(2)}`),
-                method: 'session/event',
+                method,
                 payload: frame
             }
             const text = JSON.stringify(envelope)
-            for (const ws of muxSockets) {
+            for (const ws of sockets) {
                 ws.send(text)
             }
         }
+        host.pushMux = (frame) => pushTo(muxSockets, frame, 'session/event')
+        host.pushHost = (frame) => pushTo(hostSockets, frame, 'host/event')
 
         server.listen(0, '127.0.0.1', () => {
             const { port } = server.address() as AddressInfo
@@ -130,6 +143,9 @@ export function createFixtureHost(): Promise<FixtureHost> {
             host.port = port
             host.close = async () => {
                 for (const ws of muxSockets) {
+                    ws.close()
+                }
+                for (const ws of hostSockets) {
                     ws.close()
                 }
                 await new Promise<void>((resolveClose) => {

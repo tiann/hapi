@@ -31,7 +31,7 @@ export type PlanItem = {
 
 export type AgentMessage =
     | { type: 'text'; text: string; id?: string; live?: boolean; streamSnapshot?: boolean }
-    | { type: 'reasoning'; text: string; id?: string; live?: boolean }
+    | { type: 'reasoning'; text: string; id?: string; live?: boolean; streamSnapshot?: boolean }
     | {
         type: 'tool_call';
         id: string;
@@ -57,7 +57,29 @@ export type AgentMessage =
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
     | { type: 'turn_complete'; stopReason: string }
-    | { type: 'error'; message: string };
+    | { type: 'error'; message: string }
+    // --- DeepSeek Harness native projections ---
+    // One non-chunk native DSH session event, persisted verbatim-shaped so
+    // tool trees / subagent / workflow / job / plan / goal semantics survive
+    // replay without being flattened into plain text.
+    | { type: 'dsh_native'; event: import('@hapi/protocol').DshNativeEvent }
+    // Latest whole DSH session state snapshot (queue/jobs/goal/questions/…).
+    | { type: 'dsh_state'; state: import('@hapi/protocol').DshStateSnapshot }
+
+/**
+ * Projected DSH message: any HAPI agent message carrying the native event
+ * seq it was projected from. Web fork/rewind actions read `dshSeq` to address
+ * the DSH event log (session.fork anchors on event seq).
+ */
+export type DshProjectedMessage = AgentMessage & {
+    dshSeq?: number
+    /** DSH native assistant-message id (message feedback addressing). */
+    dshMessageId?: string
+}
+
+export function isDshMessage(message: AgentMessage): boolean {
+    return message.type === 'dsh_native' || message.type === 'dsh_state'
+};
 
 export type PermissionOption = {
     optionId: string;

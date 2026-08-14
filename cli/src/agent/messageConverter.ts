@@ -123,6 +123,11 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
             return { type: 'error', message: message.message };
         case 'turn_complete':
             return null;
+        // DSH native projections are forwarded verbatim by the DSH session
+        // runner (sendAgentMessage), not through this codex-payload converter.
+        case 'dsh_native':
+        case 'dsh_state':
+            return null;
         default: {
             // Unreachable while every AgentMessage variant is handled above —
             // the `never` binding is what enforces that at compile time. The

@@ -46,6 +46,12 @@ export const RPC_METHODS = {
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
+    /** Allowlisted session-scoped DeepSeek Harness action (typed union, see DshActionSchema). */
+    DshAction: 'dsh-action',
+    /** Runtime-discovered model catalog for a DSH session. */
+    DshModels: 'dsh-models',
+    /** User-invocable skill catalog for a DSH session. */
+    DshSkills: 'dsh-skills',
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
