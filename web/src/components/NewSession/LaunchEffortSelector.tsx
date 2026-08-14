@@ -1,5 +1,5 @@
 import type { AgentType, LaunchEffort } from './types'
-import { CLAUDE_EFFORT_OPTIONS, GROK_EFFORT_OPTIONS } from './types'
+import { CLAUDE_EFFORT_OPTIONS, DSH_EFFORT_OPTIONS, GROK_EFFORT_OPTIONS } from './types'
 import { useTranslation } from '@/lib/use-translation'
 import { SelectControl } from '@/components/ui/select-control'
 
@@ -12,13 +12,15 @@ export function LaunchEffortSelector(props: {
 }) {
     const { t } = useTranslation()
 
-    if (props.agent !== 'claude' && props.agent !== 'grok') {
+    if (props.agent !== 'claude' && props.agent !== 'grok' && props.agent !== 'dsh') {
         return null
     }
 
     const options = props.agent === 'grok'
         ? (props.grokOptions ?? GROK_EFFORT_OPTIONS)
-        : CLAUDE_EFFORT_OPTIONS
+        : props.agent === 'dsh'
+            ? DSH_EFFORT_OPTIONS
+            : CLAUDE_EFFORT_OPTIONS
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">

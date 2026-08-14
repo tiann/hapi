@@ -5,6 +5,8 @@ import {
     CLAUDE_EFFORT_LEVELS,
     CLAUDE_MODEL_LABELS,
     CLAUDE_MODEL_PRESETS,
+    DSH_EFFORTS,
+    DSH_PRESETS,
     GEMINI_MODEL_LABELS,
     GEMINI_MODEL_PRESETS
 } from '@hapi/protocol'
@@ -45,6 +47,10 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     copilot: [
         { value: 'auto', label: 'Auto' },
     ],
+    dsh: [
+        { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+        { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+    ],
     gemini: [
         { value: 'auto', label: 'Default' },
         ...modelPresetOptions(GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS),
@@ -73,4 +79,23 @@ export const GROK_EFFORT_OPTIONS: { value: LaunchEffort; label: string }[] = [
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
+]
+
+const DSH_EFFORT_LABELS: Record<string, string> = {
+    off: 'Off (no thinking)',
+    high: 'High',
+    max: 'Max',
+}
+
+export const DSH_EFFORT_OPTIONS: { value: LaunchEffort; label: string }[] = [
+    ...DSH_EFFORTS.map((value) => ({ value, label: DSH_EFFORT_LABELS[value] })),
+]
+
+const DSH_PRESET_LABELS: Record<string, string> = {
+    standard: 'Standard',
+    ptc: 'PTC',
+}
+
+export const DSH_PRESET_OPTIONS: { value: string; label: string }[] = [
+    ...DSH_PRESETS.map((value) => ({ value, label: DSH_PRESET_LABELS[value] })),
 ]

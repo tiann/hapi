@@ -26,6 +26,7 @@ describe('newSessionFormDraft', () => {
             yoloMode: false,
             codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
+            preset: 'standard',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -43,6 +44,7 @@ describe('newSessionFormDraft', () => {
             yoloMode: false,
             codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
+            preset: 'standard',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -73,6 +75,7 @@ describe('newSessionFormDraft', () => {
             yoloMode: false,
             codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
+            preset: 'standard',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -94,6 +97,7 @@ describe('newSessionFormDraft', () => {
             yoloMode: false,
             codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
+            preset: 'standard',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -117,6 +121,7 @@ describe('newSessionFormDraft', () => {
             yoloMode: true,
             codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
+            preset: 'standard',
             sessionType: 'simple',
             worktreeName: ''
         })

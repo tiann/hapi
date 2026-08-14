@@ -53,6 +53,7 @@ import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { LaunchEffortSelector } from './LaunchEffortSelector'
+import { DshPresetSelector } from './DshPresetSelector'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { buildGrokEffortOptions, buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
@@ -107,6 +108,7 @@ export function NewSession(props: {
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<LaunchEffort>('auto')
+    const [dshPreset, setDshPreset] = useState<string>('standard')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null>(null)
     const [serviceTier, setServiceTier] = useState<NewSessionServiceTier>('standard')
@@ -166,7 +168,8 @@ export function NewSession(props: {
         if (preserveRestoredDraftRef.current) {
             return
         }
-        setEffort('auto')
+        setEffort(agent === 'dsh' ? 'max' : 'auto')
+        setDshPreset('standard')
         setModelReasoningEffort('default')
         setGrokPermissionMode('default')
         setCodexFamilyPermissionMode('default')
@@ -234,6 +237,7 @@ export function NewSession(props: {
         setModel(draft.model)
         setCursorSelectedBase(draft.cursorSelectedBase)
         setEffort(draft.effort)
+        setDshPreset(draft.preset)
         setModelReasoningEffort(draft.modelReasoningEffort)
         setOpencodeSelectedModel(
             draft.agent === 'opencode' && draft.model !== 'auto' ? draft.model : null
@@ -1193,6 +1197,7 @@ export function NewSession(props: {
             yoloMode,
             codexFamilyPermissionMode,
             grokPermissionMode,
+            preset: dshPreset,
             sessionType,
             worktreeName
         })
@@ -1322,7 +1327,9 @@ export function NewSession(props: {
                     : (model !== 'auto' ? model : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok') && effort !== 'auto'
                 ? effort
-                : undefined
+                : agent === 'dsh'
+                    ? (effort === 'off' || effort === 'high' || effort === 'max' ? effort : 'max')
+                    : undefined
             const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
@@ -1416,6 +1423,7 @@ export function NewSession(props: {
                 agent,
                 model: resolvedModel,
                 effort: resolvedEffort,
+                preset: agent === 'dsh' ? dshPreset : undefined,
                 modelReasoningEffort: resolvedModelReasoningEffort,
                 yolo: agent === 'grok' || usesCodexFamilyPermissions ? undefined : yoloMode,
                 permissionMode: agent === 'grok'
@@ -1667,6 +1675,12 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onEffortChange={setEffort}
                 grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
+            />
+            <DshPresetSelector
+                agent={agent}
+                value={dshPreset}
+                isDisabled={isFormDisabled}
+                onChange={setDshPreset}
             />
             <ReasoningEffortSelector
                 agent={agent}

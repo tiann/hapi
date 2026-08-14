@@ -25,6 +25,7 @@ export type NewSessionFormDraft = {
     yoloMode: boolean
     codexFamilyPermissionMode: PermissionMode
     grokPermissionMode: GrokPermissionMode
+    preset: string
     sessionType: SessionType
     worktreeName: string
 }
@@ -87,6 +88,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 && GROK_PERMISSION_MODES.includes(parsed.grokPermissionMode as GrokPermissionMode)
                 ? parsed.grokPermissionMode as GrokPermissionMode
                 : 'default',
+            preset: agentPreserved && typeof parsed.preset === 'string' ? parsed.preset : 'standard',
             sessionType: (parsed.sessionType as SessionType | undefined) ?? 'simple',
             worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : ''
         }

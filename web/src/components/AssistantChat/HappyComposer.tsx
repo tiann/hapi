@@ -1068,6 +1068,12 @@ export function HappyComposer(props: {
                         label: option.name ?? option.value
                     }))
                 ]
+            : agentFlavor === 'dsh'
+                ? [
+                    { value: 'off', label: 'Off (no thinking)' },
+                    { value: 'high', label: 'High' },
+                    { value: 'max', label: 'Max' },
+                ]
             : getClaudeComposerEffortOptions(effort),
         [agentFlavor, effort, selectedPiModel, availableEffortOptions]
     )

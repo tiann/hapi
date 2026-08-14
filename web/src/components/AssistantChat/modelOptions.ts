@@ -155,6 +155,12 @@ export function getModelOptionsForFlavor(
     if (flavor === 'pi') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
+    if (flavor === 'dsh') {
+        return withCurrentModelOption([
+            { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+            { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+        ], currentModel)
+    }
     return getClaudeModelOptions(currentModel)
 }
 
@@ -214,6 +220,14 @@ export function getNextModelForFlavor(
     // Ctrl/Cmd+M must not fall through to the Claude preset cycler.
     if (flavor === 'pi') {
         return normalizeCurrentModel(currentModel)
+    }
+    if (flavor === 'dsh') {
+        const options = getModelOptionsForFlavor('dsh', currentModel)
+        const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
+        if (currentIndex === -1) {
+            return options[0]?.value ?? null
+        }
+        return options[(currentIndex + 1) % options.length]?.value ?? null
     }
     return getNextClaudeComposerModel(currentModel)
 }

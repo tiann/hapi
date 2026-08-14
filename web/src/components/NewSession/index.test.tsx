@@ -465,7 +465,7 @@ describe('NewSession launch preferences', () => {
             agent: 'agy', model: 'gemini-3.6-flash-low', cursorSelectedBase: 'auto', machineId: 'machine-1',
             effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
             copilotAgentMode: 'interactive', yoloMode: false, codexFamilyPermissionMode: 'default',
-            grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
+            grokPermissionMode: 'default', preset: 'standard', sessionType: 'simple', worktreeName: ''
         })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
@@ -477,7 +477,7 @@ describe('NewSession launch preferences', () => {
             agent: 'agy', model: 'removed-model', cursorSelectedBase: 'auto', machineId: 'machine-1',
             effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
             copilotAgentMode: 'interactive', yoloMode: false, codexFamilyPermissionMode: 'default',
-            grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
+            grokPermissionMode: 'default', preset: 'standard', sessionType: 'simple', worktreeName: ''
         })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
@@ -767,6 +767,7 @@ describe('NewSession launch preferences', () => {
             yoloMode: false,
             codexFamilyPermissionMode: 'default',
             grokPermissionMode: 'default',
+            preset: 'standard',
             sessionType: 'simple',
             worktreeName: ''
         })

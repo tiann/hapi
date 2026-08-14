@@ -10,6 +10,7 @@ type SpawnInput = {
     agent?: AgentFlavor
     model?: string
     effort?: string
+    preset?: string
     modelReasoningEffort?: string
     yolo?: boolean
     permissionMode?: PermissionMode
@@ -43,6 +44,7 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.sessionType,
                 input.worktreeName,
                 input.effort,
+                input.preset,
                 input.permissionMode,
                 input.serviceTier,
                 input.collaborationMode,
