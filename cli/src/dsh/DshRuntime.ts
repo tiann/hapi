@@ -98,6 +98,18 @@ export async function installDshRuntime(options?: { onProgress?: (line: string) 
         })
 
     const binPath = defaultDshRuntimeBin()
+    const nodeAvailable = await new Promise<boolean>((resolve) => {
+        const child = crossSpawn('node', ['--version'], { stdio: 'ignore' })
+        child.once('error', () => resolve(false))
+        child.once('exit', (code) => resolve(code === 0))
+    })
+    if (!nodeAvailable) {
+        throw new Error(
+            'The DeepSeek Harness runtime requires Node.js to execute (the DSH host ' +
+            'loads NAPI modules that are incompatible with Bun). Install Node.js and retry, ' +
+            `or set ${DSH_RUNTIME_PATH_ENV} to an existing dsh bin.`
+        )
+    }
     const bunAvailable = await new Promise<boolean>((resolve) => {
         const child = crossSpawn('bun', ['--version'], { stdio: 'ignore' })
         child.once('error', () => resolve(false))
@@ -163,12 +175,15 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     const args = ['--profile', 'web', '--patch', overlayFile, '--port', String(port)]
     logger.debug(`[${logTag}] spawning DSH host: ${binPath} ${args.join(' ')} (cwd=${options.cwd})`)
 
-    // bin.js is a Node script (#!/usr/bin/env node); run it under node so the
-    // spawn does not depend on the executable bit or a .bin shim. An explicit
-    // HAPI_DSH_RUNTIME_PATH may point at any executable, which is spawned as-is.
+    // bin.js is a Node script (#!/usr/bin/env node) and the DSH host loads
+    // NAPI modules (node-pty) that crash under Bun's libuv shim, so it MUST be
+    // run under node — never process.execPath (which is Bun when the HAPI CLI
+    // itself runs under Bun). An explicit HAPI_DSH_RUNTIME_PATH may point at
+    // any executable, which is spawned as-is.
     const isJsScript = binPath.endsWith('.js')
+    const nodeBin = process.env.HAPI_DSH_NODE_PATH?.trim() || 'node'
     const child = spawn(
-        isJsScript ? process.execPath : binPath,
+        isJsScript ? nodeBin : binPath,
         isJsScript ? [binPath, ...args] : args,
         {
             cwd: options.cwd,
