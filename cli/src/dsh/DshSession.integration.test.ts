@@ -62,6 +62,10 @@ server.on('upgrade', (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => { muxSocket = ws })
     return
   }
+  if (url.pathname === '/api/events.host') {
+    wss.handleUpgrade(req, socket, head, () => {})
+    return
+  }
   socket.destroy()
 })
 server.listen(port, '127.0.0.1')
@@ -122,7 +126,6 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
         const workDir = mkdtempSync(join(tmpdir(), 'hapi-dsh-e2e-work-'))
         cleanupDirs.push(workDir)
         const handle = await startDshHost({ cwd: workDir, runtimeBin: fixtureBin(), readyTimeoutMs: 10_000 })
-        console.log('[dsh-e2e] host ready', handle.baseUrl)
         const client = DshClient.connect(handle.baseUrl)
 
         // create-as-resume mapping (HAPI id = DSH id)
@@ -151,9 +154,8 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
         const pump = bridge.start(ac.signal)
 
         // Prompt → the fixture host plays the scripted turn.
-        console.log('[dsh-e2e] prompting')
         await client.prompt({ sessionId: 's1', mode: 'queue', content: [{ type: 'text', text: 'list files' }] })
-        console.log('[dsh-e2e] prompted')
+
 
         // Wait for the full scripted turn.
         const deadline = Date.now() + 5_000
@@ -161,7 +163,7 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
             if (messages.some((m) => m.type === 'turn_complete')) break
             await new Promise((resolve) => setTimeout(resolve, 50))
         }
-        console.log('[dsh-e2e] turn wait done, messages=', messages.length, 'types=', [...new Set(messages.map((m) => m.type))].join(','))
+
 
         const texts = messages.filter((m) => m.type === 'text')
         expect(texts.length).toBeGreaterThan(0)
@@ -197,7 +199,8 @@ describe('DSH session end-to-end (fixture host, production paths)', () => {
         interruptSent = true
 
         ac.abort()
-        await pump
+        // The pump is long-running by design (streams stay open until the
+        // abort); do not await it — the frames above already settled.
         await handle.stop({ timeoutMs: 3_000 })
         expect(interruptSent).toBe(true)
         expect(snapshots.length).toBeGreaterThan(0)
