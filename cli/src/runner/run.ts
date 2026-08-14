@@ -1485,7 +1485,9 @@ export function buildCliArgs(
               ? 'pi'
               : agent === 'agy'
                 ? 'agy'
-                : 'claude';
+                : agent === 'dsh'
+                  ? 'dsh'
+                  : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -1529,8 +1531,11 @@ export function buildCliArgs(
   if (options.model) {
     args.push('--model', options.model);
   }
-  if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi')) {
+  if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi' || agent === 'dsh')) {
     args.push('--effort', options.effort);
+  }
+  if (options.preset && agent === 'dsh') {
+    args.push('--preset', options.preset);
   }
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);

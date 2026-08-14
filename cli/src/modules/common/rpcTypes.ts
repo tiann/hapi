@@ -15,6 +15,7 @@ export interface SpawnSessionOptions {
     agent?: AgentFlavor
     model?: string
     effort?: string
+    preset?: string
     modelReasoningEffort?: string
     yolo?: boolean
     permissionMode?: string

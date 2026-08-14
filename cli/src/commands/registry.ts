@@ -10,6 +10,7 @@ import { resumeCommand } from './resume'
 import { doctorCommand } from './doctor'
 import { kimiCommand } from './kimi'
 import { copilotCommand } from './copilot'
+import { dshCommand } from './dsh'
 import { grokCommand } from './grok'
 import { opencodeCommand } from './opencode'
 import { piCommand } from './pi'
@@ -47,6 +48,7 @@ const COMMANDS: CommandDefinition[] = [
     grokCommand,
     kimiCommand,
     copilotCommand,
+    dshCommand,
     opencodeCommand,
     piCommand,
     mcpCommand,
