@@ -1,9 +1,8 @@
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
-import { convertAgentMessage } from '@/agent/messageConverter'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import type { Metadata } from '@/api/types'
-import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
+import { registerKillSessionHandler, type KillSessionLifecycle } from '@/claude/registerKillSessionHandler'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { hashObject } from '@/utils/deterministicJson'
 import { getInvokedCwd } from '@/utils/invokedCwd'
@@ -13,10 +12,12 @@ import { randomUUID } from 'node:crypto'
 import type { DshPermissionMode } from '@hapi/protocol'
 import type { DshModelsResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
-import { convertDshEvent } from './dshEvents'
+import { convertDshEvent, convertDshHistoryEntry } from './dshEvents'
 import { getDshModelsForSession } from './dshModels'
+import { readDshHistoryAfter } from './dshSessions'
 import {
     DshWebClient,
+    type DshHistoryEntry,
     type DshModelSelection,
     type DshModelSummary,
     type DshServerRequest,
@@ -104,6 +105,72 @@ export function advanceDshHistoryCursor(
     }
 }
 
+export async function bootstrapDshAfterPreflight<T>(
+    client: Pick<DshWebClient, 'describe'>,
+    bootstrap: () => Promise<T>
+): Promise<T> {
+    await client.describe()
+    return bootstrap()
+}
+
+export class DshContiguousEventBuffer {
+    private readonly pending = new Map<number, DshHistoryEntry>()
+
+    constructor(private lastEventSeq: number) {}
+
+    get cursor(): number {
+        return this.lastEventSeq
+    }
+
+    get hasPendingGap(): boolean {
+        return this.pending.size > 0 && !this.pending.has(this.lastEventSeq + 1)
+    }
+
+    enqueue(entry: DshHistoryEntry): void {
+        if (entry.event.seq <= this.lastEventSeq || this.pending.has(entry.event.seq)) return
+        this.pending.set(entry.event.seq, entry)
+    }
+
+    enqueueMany(entries: readonly DshHistoryEntry[]): void {
+        for (const entry of entries) this.enqueue(entry)
+    }
+
+    takeContiguous(): DshHistoryEntry[] {
+        const entries: DshHistoryEntry[] = []
+        while (true) {
+            const nextSeq = this.lastEventSeq + 1
+            const next = this.pending.get(nextSeq)
+            if (!next) break
+            this.pending.delete(nextSeq)
+            this.lastEventSeq = nextSeq
+            entries.push(next)
+        }
+        return entries
+    }
+}
+
+export function createDshKillSessionLifecycle(options: {
+    lifecycle: KillSessionLifecycle
+    client: Pick<DshWebClient, 'cancel'>
+    getNativeSessionId: () => string | null
+    isThinking: () => boolean
+}): KillSessionLifecycle {
+    return {
+        setArchiveReason: options.lifecycle.setArchiveReason,
+        cleanupAndExit: async () => {
+            const nativeSessionId = options.getNativeSessionId()
+            if (options.isThinking() && nativeSessionId) {
+                try {
+                    await options.client.cancel(nativeSessionId)
+                } catch (error) {
+                    logger.debug('[dsh] Failed to cancel native turn during explicit archive:', error)
+                }
+            }
+            await options.lifecycle.cleanupAndExit()
+        }
+    }
+}
+
 export async function runDsh(opts: {
     startedBy?: 'runner' | 'terminal'
     startingMode?: 'local' | 'remote'
@@ -121,25 +188,23 @@ export async function runDsh(opts: {
         logger.debug('[dsh] Local mode requested; forcing remote because DSH Web owns the native UI')
     }
 
-    const bootstrap = opts.existingSessionId
-        ? await bootstrapExistingSession({
+    const client = new DshWebClient()
+    const bootstrap = await bootstrapDshAfterPreflight(client, () => opts.existingSessionId
+        ? bootstrapExistingSession({
             sessionId: opts.existingSessionId,
             flavor: 'dsh',
             startedBy,
             workingDirectory
         })
-        : await bootstrapSession({
+        : bootstrapSession({
             flavor: 'dsh',
             startedBy,
             workingDirectory,
             model: opts.model,
             modelReasoningEffort: opts.modelReasoningEffort
-        })
+        }))
     const { session, sessionInfo } = bootstrap
     setControlledByUser(session, 'remote')
-
-    const client = new DshWebClient()
-    await client.describe()
 
     const muxAbort = new AbortController()
     const loopAbort = new AbortController()
@@ -160,7 +225,11 @@ export async function runDsh(opts: {
     let currentSelection: DshModelSelection | null = null
     let nativeTurnStateObserved = false
     let keepAliveInterval: ReturnType<typeof setInterval> | null = null
-    let latestEventSeq = sessionInfo.metadata?.dshHistoryLastEventSeq ?? -1
+    const eventBuffer = new DshContiguousEventBuffer(sessionInfo.metadata?.dshHistoryLastEventSeq ?? -1)
+    const bufferedMuxFrames: DshServerRequest[] = []
+    let muxReady = false
+    let historyReconciliation: Promise<void> | null = null
+    let historyReconciliationRequested = false
 
     const syncKeepAlive = () => {
         session.keepAlive(thinking, 'remote', {
@@ -202,28 +271,83 @@ export async function runDsh(opts: {
             if (keepAliveInterval) clearInterval(keepAliveInterval)
             keepAliveInterval = null
         },
-        onBeforeClose: async () => {
+        onBeforeClose: () => {
             stopped = true
             queue.close()
             loopAbort.abort()
             muxAbort.abort()
             failPendingTurns(new Error('DeepSeek Harness session stopped'))
             finishPendingApprovals('Session stopped')
-            if (thinking && nativeSessionId) {
-                try {
-                    await client.cancel(nativeSessionId)
-                } catch (error) {
-                    logger.debug('[dsh] Failed to cancel native turn during shutdown:', error)
-                }
-            }
         }
     })
     lifecycle.registerProcessHandlers()
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle)
+    registerKillSessionHandler(session.rpcHandlerManager, createDshKillSessionLifecycle({
+        lifecycle,
+        client,
+        getNativeSessionId: () => nativeSessionId,
+        isThinking: () => thinking
+    }))
 
-    const handleMuxFrame = (request: DshServerRequest) => {
+    const handleDshEvent = (entry: DshHistoryEntry) => {
+        const event = entry.event
+        const sourceRpcId = eventSourceRpcId(event)
+        if (sourceRpcId) {
+            const pending = pendingTurns.get(sourceRpcId)
+            if (pending) pending.userSeen = true
+        }
+
+        const preset = eventPermissionPreset(event)
+        if (preset) {
+            currentPermissionMode = preset
+            session.sendSessionEvent({ type: 'permission-mode-changed', mode: preset })
+        }
+
+        if (event.type === 'turn/start') {
+            nativeTurnStateObserved = true
+            thinking = true
+        } else if (event.type === 'turn/end') {
+            nativeTurnStateObserved = true
+            thinking = false
+            for (const [rpcId, pending] of pendingTurns) {
+                if (!pending.userSeen) continue
+                pendingTurns.delete(rpcId)
+                pending.resolve()
+            }
+            if (queue.size() === 0) session.sendSessionEvent({ type: 'ready' })
+        }
+
+        const converted = convertDshEvent(event, entry)
+        if (converted.model) currentModel = converted.model
+        if (converted.reasoningEffort) currentReasoningEffort = converted.reasoningEffort
+
+        if (!nativeSessionId) throw new Error('DeepSeek Harness event arrived before session attachment')
+        for (const message of convertDshHistoryEntry(nativeSessionId, entry)) {
+            if (message.content.role === 'user' && sourceRpcId && ownedRpcIds.has(sourceRpcId)) continue
+            session.sendImportedMessage(message.content, message.localId, message.createdAt)
+        }
+    }
+
+    const drainDshEvents = () => {
+        const entries = eventBuffer.takeContiguous()
+        if (entries.length === 0) return
+        for (const entry of entries) handleDshEvent(entry)
+        session.updateMetadata((metadata) => advanceDshHistoryCursor(metadata, entries.at(-1)!.event.seq))
+        syncKeepAlive()
+    }
+
+    const handleMuxFrameNow = (request: DshServerRequest, reconcileGaps: boolean) => {
         const frame = request.payload
         if (frame.sessionId !== nativeSessionId) return
+
+        if (frame.type === 'session/event' && frame.event) {
+            eventBuffer.enqueue({
+                event: frame.event,
+                ...(frame.view !== undefined ? { view: frame.view } : {})
+            })
+            drainDshEvents()
+            if (reconcileGaps && eventBuffer.hasPendingGap) scheduleHistoryReconciliation()
+            return
+        }
 
         if (frame.type === 'approval/requested') {
             const approvalId = typeof frame.approvalId === 'string' ? frame.approvalId : null
@@ -289,48 +413,44 @@ export async function runDsh(opts: {
             return
         }
 
-        if (frame.type !== 'session/event' || !frame.event) return
-        const event = frame.event
-        latestEventSeq = Math.max(latestEventSeq, event.seq)
-        const sourceRpcId = eventSourceRpcId(event)
-        if (sourceRpcId) {
-            const pending = pendingTurns.get(sourceRpcId)
-            if (pending) pending.userSeen = true
-        }
+    }
 
-        const preset = eventPermissionPreset(event)
-        if (preset) {
-            currentPermissionMode = preset
-            session.sendSessionEvent({ type: 'permission-mode-changed', mode: preset })
+    const handleMuxFrame = (request: DshServerRequest) => {
+        if (!muxReady) {
+            bufferedMuxFrames.push(request)
+            return
         }
+        handleMuxFrameNow(request, true)
+    }
 
-        if (event.type === 'turn/start') {
-            nativeTurnStateObserved = true
-            thinking = true
-        } else if (event.type === 'turn/end') {
-            nativeTurnStateObserved = true
-            thinking = false
-            for (const [rpcId, pending] of pendingTurns) {
-                if (!pending.userSeen) continue
-                pendingTurns.delete(rpcId)
-                pending.resolve()
-            }
-            if (queue.size() === 0) session.sendSessionEvent({ type: 'ready' })
-        }
+    const reconcileDshHistory = async () => {
+        if (!nativeSessionId) return
+        const entries = await readDshHistoryAfter(client, nativeSessionId, eventBuffer.cursor)
+        eventBuffer.enqueueMany(entries)
+        drainDshEvents()
+    }
 
-        const converted = convertDshEvent(event, { event, ...(frame.view !== undefined ? { view: frame.view } : {}) })
-        if (converted.model) currentModel = converted.model
-        if (converted.reasoningEffort) currentReasoningEffort = converted.reasoningEffort
-
-        if (converted.humanText && (!sourceRpcId || !ownedRpcIds.has(sourceRpcId))) {
-            session.sendUserMessage(converted.humanText)
+    function scheduleHistoryReconciliation(): void {
+        if (stopped) return
+        if (historyReconciliation) {
+            historyReconciliationRequested = true
+            return
         }
-        for (const message of converted.messages) {
-            const body = convertAgentMessage(message, converted.model ?? currentModel ?? undefined)
-            if (body) session.sendAgentMessage(body)
-        }
-        session.updateMetadata((metadata) => advanceDshHistoryCursor(metadata, latestEventSeq))
-        syncKeepAlive()
+        historyReconciliationRequested = false
+        historyReconciliation = reconcileDshHistory()
+            .catch((error) => {
+                if (stopped || muxAbort.signal.aborted) return
+                const normalized = error instanceof Error ? error : new Error(String(error))
+                session.sendSessionEvent({ type: 'error', message: normalized.message })
+                failPendingTurns(normalized)
+                loopAbort.abort(normalized)
+            })
+            .finally(() => {
+                historyReconciliation = null
+                if (historyReconciliationRequested && eventBuffer.hasPendingGap) {
+                    scheduleHistoryReconciliation()
+                }
+            })
     }
 
     try {
@@ -353,6 +473,12 @@ export async function runDsh(opts: {
             nativeSummary = (await client.listSessions()).find((entry) => entry.sessionId === nativeSessionId)
             if (!nativeSummary) throw new Error(`DeepSeek Harness session not found: ${nativeSessionId}`)
         }
+
+        await reconcileDshHistory()
+        for (const request of bufferedMuxFrames.splice(0)) handleMuxFrameNow(request, false)
+        muxReady = true
+        if (eventBuffer.hasPendingGap) scheduleHistoryReconciliation()
+
         if (!nativeTurnStateObserved) thinking = nativeSummary?.running === true
 
         const projectedPermission = summaryPermissionPreset(nativeSummary?.projections?.values.permissions)

@@ -239,10 +239,15 @@ export interface ServerToClientEvents {
 
 export interface ClientToServerEvents {
     // createdAt: optional client-provided timestamp (epoch ms) for the entry's
-    // own origin time (e.g. a Claude transcript entry's timestamp). Currently
-    // only honored by the hub for agent messages (no localId) — see
-    // messages.ts addMessage. Absent -> hub falls back to Date.now().
-    message: (data: { sid: string; message: unknown; localId?: string; createdAt?: number }) => void
+    // own origin time. imported=true additionally requires a stable localId;
+    // the hub then persists the message through its idempotent import path.
+    message: (data: {
+        sid: string
+        message: unknown
+        localId?: string
+        createdAt?: number
+        imported?: true
+    }) => void
     'session-alive': (data: {
         sid: string
         time: number

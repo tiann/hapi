@@ -84,6 +84,38 @@ describe('cli session handlers', () => {
         expect(webEvents).toHaveLength(0)
     })
 
+    it('persists native transcript messages idempotently with their source timestamp', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('dsh-live-history', {}, null, 'default')
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {},
+            onWebappEvent: (event) => webEvents.push(event)
+        })
+        const payload = {
+            sid: session.id,
+            message: { role: 'agent', content: { type: 'output', data: { type: 'text', text: 'hello' } } },
+            localId: 'dsh:native-1:5:agent:0',
+            createdAt: 1_000,
+            imported: true
+        }
+
+        socket.trigger('message', payload)
+        socket.trigger('message', payload)
+
+        expect(store.messages.getAllMessages(session.id)).toEqual([
+            expect.objectContaining({
+                localId: payload.localId,
+                createdAt: 1_000,
+                invokedAt: 1_000
+            })
+        ])
+        expect(webEvents.filter((event) => event.type === 'message-received')).toHaveLength(1)
+    })
+
     it('emits a structured todos patch when a TodoWrite message lands (closes second half of #884)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('todos-session', { path: '/tmp', host: 'h' }, null, 'default')

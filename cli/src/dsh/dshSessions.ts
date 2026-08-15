@@ -36,7 +36,11 @@ function toSummary(summary: DshSessionSummary): DshLocalSessionSummary {
     }
 }
 
-async function readAllHistory(client: DshWebClient, sessionId: string): Promise<DshHistoryEntry[]> {
+export async function readDshHistoryAfter(
+    client: DshWebClient,
+    sessionId: string,
+    afterSeq: number
+): Promise<DshHistoryEntry[]> {
     const pages: DshHistoryEntry[][] = []
     let beforeSeq: number | undefined
     let lastMinimum = Number.POSITIVE_INFINITY
@@ -51,12 +55,22 @@ async function readAllHistory(client: DshWebClient, sessionId: string): Promise<
         const minimum = Math.min(...page.entries.map((entry) => entry.event.seq))
         if (minimum >= lastMinimum) throw new Error(`DeepSeek Harness history cursor did not advance for ${sessionId}`)
         pages.unshift(page.entries)
-        if (!page.hasMore || minimum === 0) break
+        if (!page.hasMore || minimum <= afterSeq + 1) break
         lastMinimum = minimum
         beforeSeq = minimum
     }
 
-    return pages.flat()
+    const bySeq = new Map<number, DshHistoryEntry>()
+    for (const entry of pages.flat()) {
+        if (entry.event.seq > afterSeq && !bySeq.has(entry.event.seq)) {
+            bySeq.set(entry.event.seq, entry)
+        }
+    }
+    return [...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq)
+}
+
+async function readAllHistory(client: DshWebClient, sessionId: string): Promise<DshHistoryEntry[]> {
+    return readDshHistoryAfter(client, sessionId, -1)
 }
 
 async function loadTranscript(

@@ -163,6 +163,31 @@ function triggerIncomingUserMessage(
     })
 }
 
+describe('ApiSessionClient native transcript forwarding', () => {
+    it('emits stable identity and source time for imported messages', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+
+        client.sendImportedMessage(
+            { role: 'agent', content: { type: 'output', data: { type: 'text', text: 'hello' } } },
+            'dsh:native-1:5:agent:0',
+            1_000
+        )
+
+        expect(socketHarness.sockets[0]?.emitted).toContainEqual({
+            event: 'message',
+            args: [{
+                sid: '11111111-1111-4111-8111-111111111111',
+                message: { role: 'agent', content: { type: 'output', data: { type: 'text', text: 'hello' } } },
+                localId: 'dsh:native-1:5:agent:0',
+                createdAt: 1_000,
+                imported: true
+            }]
+        })
+        client.close()
+    })
+})
+
 describe('ApiSessionClient lazy materialization', () => {
     it('does not connect or materialize without a real user message', async () => {
         socketHarness.sockets.length = 0

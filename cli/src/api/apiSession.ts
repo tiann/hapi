@@ -1023,6 +1023,18 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
+    sendImportedMessage(message: unknown, localId: string, createdAt: number): void {
+        this.emitOrQueue(() => {
+            this.socket.emit('message', {
+                sid: this.sessionId,
+                message,
+                localId,
+                createdAt,
+                imported: true
+            })
+        })
+    }
+
     sendSessionEvent(event: {
         type: 'switch'
         mode: 'local' | 'remote'

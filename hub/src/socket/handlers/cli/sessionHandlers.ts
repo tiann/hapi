@@ -50,10 +50,18 @@ const messageSchema = z.object({
     sid: z.string(),
     message: z.union([z.string(), z.unknown()]),
     localId: z.string().optional(),
-    // Client-provided origin timestamp (epoch ms) — e.g. a Claude transcript
-    // entry's own `timestamp`. Only honored for agent messages (no localId);
-    // see addMessage in messages.ts.
-    createdAt: z.number().optional()
+    // Client-provided origin timestamp (epoch ms). imported=true pairs it with
+    // a stable localId and uses the idempotent transcript insertion path.
+    createdAt: z.number().optional(),
+    imported: z.literal(true).optional()
+}).superRefine((value, context) => {
+    if (value.imported !== true) return
+    if (!value.localId) {
+        context.addIssue({ code: 'custom', path: ['localId'], message: 'Imported messages require localId' })
+    }
+    if (value.createdAt === undefined) {
+        context.addIssue({ code: 'custom', path: ['createdAt'], message: 'Imported messages require createdAt' })
+    }
 })
 
 const updateMetadataSchema = z.object({
@@ -109,7 +117,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const { sid, localId, createdAt } = parsed.data
+        const { sid, localId, createdAt, imported } = parsed.data
         const raw = parsed.data.message
 
         const content = typeof raw === 'string'
@@ -133,7 +141,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        const stored = imported
+            ? store.messages.addImportedMessage(sid, content, localId!, createdAt!)
+            : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), inserted: true }
+        if (!stored.inserted) return
+        const msg = stored.message
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
         }

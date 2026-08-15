@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { listDshSessions } from './dshSessions'
+import { listDshSessions, readDshHistoryAfter } from './dshSessions'
 import type { DshHistoryEntry, DshSessionSummary, DshWebClient } from './dshWebClient'
 
 describe('DeepSeek Harness session history', () => {
@@ -43,5 +43,25 @@ describe('DeepSeek Harness session history', () => {
         expect('messages' in selected.sessions[0]!
             ? selected.sessions[0].messages.map((message) => message.eventSeq)
             : []).toEqual([1, 2, 5, 6])
+    })
+
+    it('reads backward only until it covers the requested live cursor', async () => {
+        const entries = (seqs: number[]): DshHistoryEntry[] => seqs.map((seq) => ({
+            event: { type: 'turn/start', seq, time: 1_000 + seq, data: {} }
+        }))
+        const calls: Array<number | undefined> = []
+        const client = {
+            getHistory: async ({ beforeSeq }: { beforeSeq?: number }) => {
+                calls.push(beforeSeq)
+                if (beforeSeq === undefined) return { entries: entries([8, 9]), hasMore: true }
+                if (beforeSeq === 8) return { entries: entries([5, 6, 7]), hasMore: true }
+                return { entries: entries([2, 3, 4]), hasMore: true }
+            }
+        } as unknown as DshWebClient
+
+        const history = await readDshHistoryAfter(client, 'native-1', 4)
+
+        expect(calls).toEqual([undefined, 8])
+        expect(history.map((entry) => entry.event.seq)).toEqual([5, 6, 7, 8, 9])
     })
 })
