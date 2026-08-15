@@ -869,7 +869,10 @@ function SessionChatInner(props: SessionChatProps) {
         if (agentFlavor !== 'dsh') {
             return undefined
         }
-        const current = props.session.model
+        // Effort belongs to the model selection; before the user picks a
+        // model, fall back to the host's current/default model so the effort
+        // picker is usable immediately (same posture as the catalog current).
+        const current = props.session.model ?? dshModelsState.models?.current?.model
         if (!current) {
             return undefined
         }
@@ -880,7 +883,7 @@ function SessionChatInner(props: SessionChatProps) {
             }
         }
         return undefined
-    }, [agentFlavor, dshModelsState.models, props.session.model])
+    }, [agentFlavor, dshModelsState.models, props.session.model, dshModelsState.models?.current?.model])
     const cursorModelsState = useCursorModels({
         api: props.api,
         sessionId: props.session.id,

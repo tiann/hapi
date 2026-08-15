@@ -335,13 +335,11 @@ export async function runDsh(opts: {
                     return;
                 }
                 if (config.modelReasoningEffort !== undefined) {
-                    // Effort is part of the DSH model selection; it only makes
-                    // sense once a model is chosen (the web shows effort
-                    // options only for the selected model).
-                    const target = currentModelId;
-                    if (!target) {
-                        throw new Error('No current DSH model to apply reasoning effort to');
-                    }
+                    // Effort is part of the DSH model selection. Before the
+                    // user picks a model explicitly, apply it to the host's
+                    // current/default model (catalog.current).
+                    const target = currentModelId
+                        ?? (await client.sessionModels(created.sessionId)).current.model;
                     const provider = await resolveModelProvider(target);
                     if (!provider) {
                         throw new Error(`Unknown DSH model: ${target}`);
