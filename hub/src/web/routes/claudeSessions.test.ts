@@ -325,6 +325,67 @@ describe('Claude session import', () => {
         expect(rpcCalls).toBe(0)
     })
 
+    it('releases an interrupted import when the transcript is no longer available', async () => {
+        const { store, engine, events } = setup()
+        const selectedMachine = machine()
+        const sessionId = 'native-missing-transcript'
+        const existing = store.sessions.getOrCreateSession(
+            'claude-missing-transcript',
+            {
+                path: '/tmp/project',
+                machineId: selectedMachine.id,
+                flavor: 'claude',
+                claudeSessionId: sessionId,
+                claudeImportState: {
+                    state: 'importing',
+                    machineId: selectedMachine.id,
+                    claudeSessionId: sessionId,
+                    sourceFile: `/tmp/${sessionId}.jsonl`,
+                    startedAt: 1,
+                    updatedAt: 1
+                }
+            },
+            {},
+            'default'
+        )
+        const failingEngine = {
+            ...engine,
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async () => ({
+                success: false as const,
+                error: 'Claude session transcript not found'
+            })
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => failingEngine }))
+
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ machineId: selectedMachine.id, sessionIds: [sessionId] })
+        })
+
+        expect(await response.json()).toMatchObject({
+            success: false,
+            results: [{
+                claudeSessionId: sessionId,
+                hapiSessionId: existing.id,
+                error: { code: 'not_found', message: 'Claude session transcript not found' }
+            }]
+        })
+        expect(store.sessions.getSession(existing.id)?.metadata).toMatchObject({
+            claudeImportState: {
+                state: 'failed',
+                error: 'Claude session transcript not found'
+            }
+        })
+        expect(events).toContainEqual({ type: 'session-updated', sessionId: existing.id })
+    })
+
     it('locks a newly created session until every import page is persisted', async () => {
         const store = new Store(':memory:')
         stores.push(store)

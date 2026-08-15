@@ -692,6 +692,29 @@ function markImportState(
     engine.handleRealtimeEvent({ type: 'session-updated', sessionId })
 }
 
+function markImportAnalysisFailure(
+    store: Store,
+    engine: SyncEngine,
+    sessionId: string,
+    namespace: string,
+    state: 'failed' | 'diverged',
+    error: string
+): void {
+    updateMetadataWithRetry(store, sessionId, namespace, (metadata) => {
+        const currentState = asRecord(metadata.claudeImportState) ?? {}
+        return {
+            ...metadata,
+            claudeImportState: {
+                ...currentState,
+                state,
+                updatedAt: Date.now(),
+                error
+            }
+        } as Metadata
+    })
+    engine.handleRealtimeEvent({ type: 'session-updated', sessionId })
+}
+
 function liveImportedSessionActive(
     engine: SyncEngine,
     sessionId: string,
@@ -772,12 +795,26 @@ async function importClaudeSessionFromPagesUnlocked(options: {
         })
     } catch (error) {
         const streamError = error instanceof ClaudeImportStreamError ? error : null
+        const message = error instanceof Error ? error.message : 'Failed to read Claude transcript'
+        if (stored) {
+            try {
+                markImportAnalysisFailure(
+                    store,
+                    engine,
+                    stored.id,
+                    namespace,
+                    streamError?.code === 'transcript_changed' ? 'diverged' : 'failed',
+                    message
+                )
+            } catch {
+                // Preserve the original import error if the session changed
+                // while the failed analysis was being recorded.
+            }
+        }
         return {
             claudeSessionId,
-            error: {
-                code: streamError?.code ?? 'import_failed',
-                message: error instanceof Error ? error.message : 'Failed to read Claude transcript'
-            }
+            ...(stored ? { hapiSessionId: stored.id } : {}),
+            error: { code: streamError?.code ?? 'import_failed', message }
         }
     }
     const transcript = analysis.summary
