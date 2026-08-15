@@ -293,30 +293,68 @@ export async function runDsh(opts: {
         // against the live catalog to find its provider route. Permission
         // modes and effort are rejected — DSH presets are runtime-discovered
         // and reasoning effort rides the model selection.
+        // Runtime-discovered model selection state (web model endpoint /
+        // reasoning-effort endpoint). A bare model id is resolved against the
+        // live catalog for its provider; a reasoning-effort change re-selects
+        // the current model with the new effort.
+        let currentModelId: string | null = null;
+        const resolveModelProvider = async (modelId: string): Promise<string | null> => {
+            const catalog = await client.sessionModels(created.sessionId);
+            const match = catalog.groups
+                .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
+                .find((m) => m.id === modelId);
+            return match?.provider ?? null;
+        };
         registerSessionConfigRpc({
             rpcHandlerManager: session.rpcHandlerManager,
             flavor: 'dsh',
             modelMode: 'nullable',
+            modelReasoningEffortMode: 'nullable',
             onApply: async (config) => {
-                if (config.model === undefined || config.model === null) {
+                if (config.model !== undefined) {
+                    if (config.model === null) {
+                        return;
+                    }
+                    const provider = await resolveModelProvider(config.model);
+                    if (!provider) {
+                        throw new Error(`Unknown DSH model: ${config.model}`);
+                    }
+                    currentModelId = config.model;
+                    const catalog = await client.sessionModels(created.sessionId);
+                    const match = catalog.groups
+                        .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
+                        .find((m) => m.id === config.model);
+                    await client.selectModel({
+                        sessionId: created.sessionId,
+                        provider,
+                        model: config.model,
+                        ...(match?.reasoning?.defaultEffort !== undefined
+                            ? { reasoningEffort: match.reasoning.defaultEffort }
+                            : {})
+                    });
                     return;
                 }
-                const modelId = config.model;
-                const catalog = await client.sessionModels(created.sessionId);
-                const match = catalog.groups
-                    .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
-                    .find((m) => m.id === modelId);
-                if (!match) {
-                    throw new Error(`Unknown DSH model: ${modelId}`);
+                if (config.modelReasoningEffort !== undefined) {
+                    // Effort is part of the DSH model selection; it only makes
+                    // sense once a model is chosen (the web shows effort
+                    // options only for the selected model).
+                    const target = currentModelId;
+                    if (!target) {
+                        throw new Error('No current DSH model to apply reasoning effort to');
+                    }
+                    const provider = await resolveModelProvider(target);
+                    if (!provider) {
+                        throw new Error(`Unknown DSH model: ${target}`);
+                    }
+                    await client.selectModel({
+                        sessionId: created.sessionId,
+                        provider,
+                        model: target,
+                        ...(config.modelReasoningEffort !== null
+                            ? { reasoningEffort: config.modelReasoningEffort }
+                            : {})
+                    });
                 }
-                await client.selectModel({
-                    sessionId: created.sessionId,
-                    provider: match.provider,
-                    model: modelId,
-                    ...(match.reasoning?.defaultEffort !== undefined
-                        ? { reasoningEffort: match.reasoning.defaultEffort }
-                        : {})
-                });
             }
         });
 

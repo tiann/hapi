@@ -1,7 +1,5 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import { useSendMessage } from '@/hooks/mutations/useSendMessage'
-import { makeClientSideId } from '@/lib/messages'
 import type { DecryptedMessage } from '@/types/api'
 import type { DshAction, DshStateSnapshot } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
@@ -10,12 +8,8 @@ import { useDshAction } from '@/hooks/mutations/useDshAction'
 import {
     DshGoalBar,
     DshJobsDock,
-    DshModelPicker,
-    DshPresetPicker,
     DshQueueDock,
-    DshQuestionsDialog,
-    DshSkillsPalette,
-    DshSubagentsPanel
+    DshQuestionsDialog
 } from './DshSessionView/DshPanels'
 
 type DshSessionPanelsProps = {
@@ -26,17 +20,16 @@ type DshSessionPanelsProps = {
 }
 
 /**
- * DeepSeek Harness side panels embedded in the standard HAPI session view:
- * goal bar, queue dock, jobs dock, model picker, presets, skills and
- * subagents, plus the pending user-questions dialog. Conversation, composer,
- * permissions and tool cards use the standard HAPI UI — DSH only adds its
- * native panels on top.
+ * DeepSeek Harness status strip embedded in the standard HAPI session view.
+ * The conversation/composer/tool/permission surfaces are the standard HAPI
+ * UI; this strip only carries DSH-native state (goal, queue, background
+ * jobs), collapsed by default so the thread stays clean.
  */
 export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsProps) {
     const { t } = useTranslation()
     const { snapshot } = useDshSessionState(messages)
     const dshAction = useDshAction(api, sessionId)
-    const sendMessage = useSendMessage(api, sessionId)
+    const [open, setOpen] = useState(false)
 
     const dispatch = useMemo(() => {
         const run = (action: DshAction): Promise<unknown> => {
@@ -49,32 +42,54 @@ export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsP
     }, [dshAction])
 
     const questions = snapshot.questions ?? null
+    const summary = statusSummary(snapshot) ?? []
+    if (summary.length === 0 && !questions) {
+        return null
+    }
 
     return (
-        <div className="flex flex-col gap-2">
-            {snapshot.goal?.objective ? <DshGoalBar snapshot={snapshot} dispatch={dispatch} /> : null}
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                <DshModelPicker sessionId={sessionId} api={api} snapshot={snapshot} dispatch={dispatch} />
-                <DshQueueDock snapshot={snapshot} dispatch={dispatch} />
-                <DshJobsDock snapshot={snapshot} />
-                <DshPresetPicker sessionId={sessionId} api={api} dispatch={dispatch} />
-                <DshSkillsPalette
-                    sessionId={sessionId}
-                    api={api}
-                    onInvoke={(name: string) => {
-                        void sendMessage.sendMessage(`/${name}`, undefined, null, 'queue')
-                    }}
-                />
-                <DshSubagentsPanel sessionId={sessionId} api={api} dispatch={dispatch} latestNativeSeq={0} />
-            </div>
-            {questions ? (
-                <DshQuestionsDialog
-                    questions={questions}
-                    dispatch={dispatch}
-                    onClose={() => {}}
-                />
+        <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-card-bg)]">
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+            >
+                <span className="font-medium">{t('dsh.sessionLabel')}</span>
+                {summary.map((part) => (
+                    <span key={part} className="rounded-full bg-[var(--app-secondary-bg)] px-2 py-0.5">
+                        {part}
+                    </span>
+                ))}
+                <span className="ml-auto">{open ? '▾' : '▸'}</span>
+            </button>
+            {open ? (
+                <div className="flex flex-col gap-2 border-t border-[var(--app-border)] p-2">
+                    {snapshot.goal?.objective ? <DshGoalBar snapshot={snapshot} dispatch={dispatch} /> : null}
+                    <div className="grid gap-2 sm:grid-cols-2">
+                        <DshQueueDock snapshot={snapshot} dispatch={dispatch} />
+                        <DshJobsDock snapshot={snapshot} />
+                    </div>
+                </div>
             ) : null}
-            <div className="text-[10px] text-[var(--app-hint)]">{t('dsh.sessionLabel')}</div>
+            {questions ? (
+                <DshQuestionsDialog questions={questions} dispatch={dispatch} onClose={() => {}} />
+            ) : null}
         </div>
     )
+}
+
+function statusSummary(snapshot: DshStateSnapshot): string[] | null {
+    const parts: string[] = []
+    if (snapshot.goal?.objective) {
+        parts.push(`goal: ${snapshot.goal.status ?? 'active'}`)
+    }
+    const queued = snapshot.queue?.items.filter((item) => item.placement === 'queued').length ?? 0
+    if (queued > 0) {
+        parts.push(`queue: ${queued}`)
+    }
+    const runningJobs = snapshot.jobs?.jobs.filter((job) => job.status === 'running' || job.status === 'stopping').length ?? 0
+    if (runningJobs > 0) {
+        parts.push(`jobs: ${runningJobs}`)
+    }
+    return parts.length > 0 ? parts : null
 }

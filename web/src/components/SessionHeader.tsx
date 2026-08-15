@@ -99,6 +99,17 @@ function headerToggleClass(active: boolean): string {
     }`
 }
 
+function DshSubagentsIcon(props: { className?: string }) {
+    return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
+            <circle cx="12" cy="7" r="3" />
+            <path d="M5.5 20a6.5 6.5 0 0 1 13 0" />
+            <circle cx="19" cy="9" r="1.5" />
+            <circle cx="5" cy="9" r="1.5" />
+        </svg>
+    )
+}
+
 function TerminalIcon(props: { className?: string }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
@@ -145,6 +156,10 @@ export function SessionHeader(props: {
     outlineActive?: boolean
     onToggleTerminal?: () => void
     terminalActive?: boolean
+    /** DeepSeek Harness: subagent status toggle (header button + badge). */
+    onToggleDshSubagents?: () => void
+    dshSubagentsActive?: boolean
+    dshSubagentCount?: number
     api: ApiClient | null
     titleSuggestionAvailable?: boolean
     canReopen?: boolean
@@ -491,6 +506,24 @@ export function SessionHeader(props: {
                             aria-pressed={props.terminalActive ?? false}
                         >
                             <TerminalIcon />
+                        </button>
+                    ) : null}
+
+                    {props.onToggleDshSubagents ? (
+                        <button
+                            type="button"
+                            onClick={props.onToggleDshSubagents}
+                            className={`relative ${headerToggleClass(props.dshSubagentsActive ?? false)}`}
+                            title={props.dshSubagentsActive ? 'DeepSeek Harness subagents: close' : 'DeepSeek Harness subagents'}
+                            aria-label={props.dshSubagentsActive ? 'DeepSeek Harness subagents: close' : 'DeepSeek Harness subagents'}
+                            aria-pressed={props.dshSubagentsActive ?? false}
+                        >
+                            <DshSubagentsIcon />
+                            {typeof props.dshSubagentCount === 'number' && props.dshSubagentCount > 0 ? (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-[var(--app-accent)] px-0.5 text-[9px] font-semibold text-white">
+                                    {props.dshSubagentCount}
+                                </span>
+                            ) : null}
                         </button>
                     ) : null}
 

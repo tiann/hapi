@@ -459,9 +459,31 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'Model reasoning effort is only supported for Codex and OpenCode sessions'
+            error: 'Model reasoning effort is only supported for Codex, OpenCode and DeepSeek Harness sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies model reasoning effort changes for remote DSH sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model-reasoning-effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modelReasoningEffort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { modelReasoningEffort: 'high' }]
+        ])
     })
 
     it('rejects model reasoning effort changes for local Codex sessions', async () => {
