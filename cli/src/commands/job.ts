@@ -316,6 +316,14 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         throw new SessionJobError('bad_args', '--status is not valid with job run')
     }
 
+    if (
+        result.command !== undefined
+        && result.action !== undefined
+        && result.action !== 'run'
+    ) {
+        throw new SessionJobError('bad_args', '-- <cmd> is only valid with job run')
+    }
+
     return result
 }
 

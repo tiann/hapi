@@ -111,6 +111,33 @@ function formatJobLine(job: AttachedJob): string {
     return parts.join(' · ')
 }
 
+function sessionJobMcpMutationFieldsUsed(args: SessionJobToolArgs): boolean {
+    return [
+        args.label,
+        args.status,
+        args.done,
+        args.total,
+        args.remaining,
+        args.unit,
+        args.detail
+    ].some((value) => value !== undefined)
+}
+
+function sessionJobMcpListExtraFields(args: SessionJobToolArgs): boolean {
+    return [
+        args.jobKey,
+        args.label,
+        args.status,
+        args.done,
+        args.total,
+        args.remaining,
+        args.unit,
+        args.detail,
+        args.expectedRunId,
+        args.startedAt
+    ].some((value) => value !== undefined)
+}
+
 export async function handleSessionJobTool(
     args: SessionJobToolArgs,
     defaultSessionId: string
@@ -128,6 +155,10 @@ export async function handleSessionJobTool(
     // Hard footgun close: MCP must not create orphan meters (set + idle agent).
     if (args.action === 'set') {
         return { text: SESSION_JOB_SET_REFUSED_TEXT, isError: true }
+    }
+
+    if (args.action === 'list' && sessionJobMcpListExtraFields(args)) {
+        return { text: 'action=list does not accept job fields', isError: true }
     }
 
     try {
@@ -156,6 +187,12 @@ export async function handleSessionJobTool(
         }
 
         if (args.action === 'clear') {
+            if (sessionJobMcpMutationFieldsUsed(args)) {
+                return {
+                    text: 'action=clear only accepts jobKey and expectedRunId',
+                    isError: true
+                }
+            }
             const result = await clearSessionJob({
                 sessionIdPrefix,
                 jobKey,

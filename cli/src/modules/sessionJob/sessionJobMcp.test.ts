@@ -91,6 +91,24 @@ describe('sessionJobMcp', () => {
         expect(result.text).toMatch(/sleep stub/)
     })
 
+    it('rejects list with extra job fields', async () => {
+        const result = await handleSessionJobTool(
+            { action: 'list', jobKey: 'beets' },
+            'sid-1'
+        )
+        expect(result.isError).toBe(true)
+        expect(result.text).toMatch(/does not accept job fields/)
+    })
+
+    it('rejects clear with mutation fields', async () => {
+        const result = await handleSessionJobTool(
+            { action: 'clear', jobKey: 'beets', status: 'completed' },
+            'sid-1'
+        )
+        expect(result.isError).toBe(true)
+        expect(result.text).toMatch(/only accepts jobKey and expectedRunId/)
+    })
+
     it('treats clear on missing job as idempotent (no job run recipe)', async () => {
         const { clearSessionJob } = await import('./sessionJob')
         const { SessionJobError } = await import('./sessionJob')

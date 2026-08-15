@@ -88,7 +88,8 @@ describe('parseJobArgs', () => {
     it.each([
         ['list', ['list', 'sid', '--label=x'], /job list does not accept mutation flags/],
         ['clear+status', ['clear', 'sid', 'beets', '--status', 'completed'], /job clear only accepts --expected-run-id/],
-        ['run+status', ['run', 'sid', 'beets', '--label=x', '--status', 'completed', '--', 'true'], /--status is not valid with job run/]
+        ['run+status', ['run', 'sid', 'beets', '--label=x', '--status', 'completed', '--', 'true'], /--status is not valid with job run/],
+        ['clear+cmd', ['clear', 'sid', 'beets', '--', 'rm', '-rf', '/'], /-- <cmd> is only valid with job run/]
     ] as const)('rejects unsupported flags for %s', (_name, argv, pattern) => {
         expect(() => parseJobArgs([...argv])).toThrow(pattern)
     })
