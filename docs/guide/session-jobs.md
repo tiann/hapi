@@ -130,6 +130,7 @@ hapi job set "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
   --started-at "$START_MS" \
   --remaining 0 --done 1787 --total 1787 --unit units \
+  --status completed \
   --detail 'ALL_DONE'
 
 # or, on hubs that honor explicit PUT startedAt without delete:
