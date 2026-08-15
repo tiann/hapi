@@ -49,6 +49,8 @@ export type HappyChatMessageMetadata = {
      * per-message footer is rendered unchanged.
      */
     turnCount?: number
+    /** Thread message id of the user prompt that precedes this assistant response. */
+    replyToMessageId?: string
 }
 
 export type HappyRuntimeExtras = Readonly<{
@@ -325,6 +327,36 @@ export function aggregateResponseGroups(
 export type BlockWithThreadMessageId = {
     block: VisibleChatBlock
     threadMessageId: string
+}
+
+/**
+ * Associate every assistant-role block with the latest real user prompt.
+ * The converter may join adjacent assistant blocks into one card and keeps
+ * metadata from its first block, so assigning the target to every block keeps
+ * the relationship intact regardless of where a joined response starts.
+ */
+export function buildAssistantReplyTargets(
+    blocks: readonly BlockWithThreadMessageId[]
+): Map<string, string> {
+    const targets = new Map<string, string>()
+    let latestUserMessageId: string | null = null
+
+    for (const { block, threadMessageId } of blocks) {
+        const role = visibleBlockRole(block)
+        if (role === 'user') {
+            const isPending = block.invokedAt === null
+            const isFailed = block.kind === 'user-text' && block.status === 'failed'
+            if (!isPending && !isFailed) {
+                latestUserMessageId = threadMessageId
+            }
+            continue
+        }
+        if (role === 'assistant' && latestUserMessageId !== null) {
+            targets.set(threadMessageId, latestUserMessageId)
+        }
+    }
+
+    return targets
 }
 
 /**
@@ -731,6 +763,11 @@ export function useHappyRuntime(props: {
         [props.blocks]
     )
 
+    const replyTargets = useMemo(
+        () => buildAssistantReplyTargets(blocksWithThreadIds),
+        [blocksWithThreadIds]
+    )
+
     const convertBlock = useCallback(
         ({ block, threadMessageId }: BlockWithThreadMessageId): ThreadMessageLike => {
             const message = toThreadMessageLike(
@@ -739,7 +776,8 @@ export function useHappyRuntime(props: {
                 responseGroupTimestamps.get(block) ?? getBlockPresentationTimestamp(block)
             )
             const aggregate = aggregates.get(block.id)
-            if (!aggregate) return message
+            const replyToMessageId = replyTargets.get(threadMessageId)
+            if (!aggregate && !replyToMessageId) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
             return {
                 ...message,
@@ -747,16 +785,19 @@ export function useHappyRuntime(props: {
                     ...message.metadata,
                     custom: {
                         ...(existing ?? { kind: 'assistant' }),
-                        usage: aggregate.usage,
-                        model: aggregate.model,
-                        invokedAt: aggregate.invokedAt,
-                        durationMs: aggregate.durationMs,
-                        turnCount: aggregate.turnCount
+                        ...(aggregate ? {
+                            usage: aggregate.usage,
+                            model: aggregate.model,
+                            invokedAt: aggregate.invokedAt,
+                            durationMs: aggregate.durationMs,
+                            turnCount: aggregate.turnCount
+                        } : {}),
+                        replyToMessageId
                     } satisfies HappyChatMessageMetadata
                 }
             }
         },
-        [aggregates, responseGroupTimestamps]
+        [aggregates, replyTargets, responseGroupTimestamps]
     )
 
     // Use cached message converter for performance optimization
