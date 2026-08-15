@@ -120,13 +120,16 @@ function buildAgyProbeEnv(): NodeJS.ProcessEnv {
     return env
 }
 
-// Fetch the live model list from `agy models` (the agy CLI's own listing) so the
-// picker always matches what agy currently offers — no redeploy when agy changes
-// models. The hardcoded mirror is only a fallback (timeout / spawn error /
-// unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
-async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
-    return await new Promise((resolve) => {
-        const child = spawn('agy', ['models'], {
+// `unreachable` covers the cases where agy never produced a listing at all
+// (spawn failure, timeout) and there is nothing to read either way.
+type AgyModelsProbe = { output: string } | { unreachable: true }
+
+// Run one `agy` invocation and hand back everything it wrote. Both streams are
+// joined because agy splits the listing from its progress line, and an auth
+// failure can surface on either.
+function probeAgyModels(args: string[]): Promise<AgyModelsProbe> {
+    return new Promise((resolve) => {
+        const child = spawn('agy', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: buildAgyProbeEnv(),
             windowsHide: process.platform === 'win32',
@@ -139,7 +142,7 @@ async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
             if (settled) return
             settled = true
             child.kill('SIGTERM')
-            resolve({ success: true, availableModels: buildModelList() })
+            resolve({ unreachable: true })
         }, PROBE_TIMEOUT_MS)
 
         child.stdout?.on('data', (chunk: Buffer) => {
@@ -152,26 +155,36 @@ async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
             if (settled) return
             settled = true
             clearTimeout(timeout)
-            resolve({ success: true, availableModels: buildModelList() })
+            resolve({ unreachable: true })
         })
         child.on('exit', () => {
             if (settled) return
             settled = true
             clearTimeout(timeout)
-
-            const output = stdout + stderr
-            const authError = checkOutputForAuthError(output)
-            if (authError) {
-                resolve({ success: false, error: authError })
-                return
-            }
-
-            // Prefer the live list; fall back to the hardcoded mirror if the
-            // output couldn't be parsed (format change, partial fetch, etc.).
-            const parsed = parseAgyModelsOutput(output)
-            resolve({ success: true, availableModels: parsed ?? buildModelList() })
+            resolve({ output: stdout + stderr })
         })
     })
+}
+
+// Fetch the live model list from `agy models` (the agy CLI's own listing) so the
+// picker always matches what agy currently offers — no redeploy when agy changes
+// models. The hardcoded mirror is only a fallback (timeout / spawn error /
+// unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
+async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
+    const probe = await probeAgyModels(['models'])
+    if ('unreachable' in probe) {
+        return { success: true, availableModels: buildModelList() }
+    }
+
+    const authError = checkOutputForAuthError(probe.output)
+    if (authError) {
+        return { success: false, error: authError }
+    }
+
+    // Prefer the live list; fall back to the hardcoded mirror if the output
+    // couldn't be parsed (format change, partial fetch, etc.).
+    const parsed = parseAgyModelsOutput(probe.output)
+    return { success: true, availableModels: parsed ?? buildModelList() }
 }
 
 export async function listAgyModels(): Promise<ListAgyModelsResponse> {
