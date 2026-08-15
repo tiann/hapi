@@ -29,11 +29,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null
 }
 
-function dshOwnedRpcIdRecord(value: unknown): Record<string, number> {
+type DshPendingPrompt = NonNullable<Metadata['dshPendingPrompts']>[string]
+
+function dshPendingPromptRecord(value: unknown): Record<string, DshPendingPrompt> {
     const record = asRecord(value)
     if (!record) return {}
-    return Object.fromEntries(Object.entries(record).filter(
-        (entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1])))
+    const prompts: Record<string, DshPendingPrompt> = {}
+    for (const [rpcId, raw] of Object.entries(record)) {
+        const prompt = asRecord(raw)
+        if (!prompt || !Array.isArray(prompt.localIds) || typeof prompt.createdAt !== 'number') continue
+        const localIds = prompt.localIds.filter((localId): localId is string =>
+            typeof localId === 'string' && localId.length > 0)
+        prompts[rpcId] = { localIds: [...new Set(localIds)], createdAt: prompt.createdAt }
+    }
+    return prompts
 }
 
 function storedMetadata(session: StoredSession): Record<string, unknown> {
@@ -85,11 +94,11 @@ function buildDshMetadata(
         : liveEventSeq === undefined
             ? transcript.lastEventSeq
             : Math.max(liveEventSeq, transcript.lastEventSeq)
-    const dshOwnedRpcIds = dshOwnedRpcIdRecord(existing.dshOwnedRpcIds)
+    const dshPendingPrompts = dshPendingPromptRecord(existing.dshPendingPrompts)
     if (state.state === 'complete') {
         for (const message of transcript.messages) {
             if (message.sourceRpcId && (completeEventSeq === undefined || message.eventSeq <= completeEventSeq)) {
-                delete dshOwnedRpcIds[message.sourceRpcId]
+                delete dshPendingPrompts[message.sourceRpcId]
             }
         }
     }
@@ -113,7 +122,7 @@ function buildDshMetadata(
         dshHistoryLastEventSeq: state.state === 'complete'
             ? completeEventSeq
             : liveEventSeq,
-        dshOwnedRpcIds,
+        dshPendingPrompts,
         dshImportState: {
             ...state,
             sourceUrl,
@@ -170,15 +179,19 @@ function classifyImportDelta(
     existing: StoredMessage[],
     transcript: DshLocalSessionWithMessages,
     observedEventSeq: number | null,
-    ownedRpcIds: ReadonlySet<string>
-): { messages: DshLocalSessionWithMessages['messages']; error?: string } {
+    pendingPrompts: Readonly<Record<string, DshPendingPrompt>>
+): { messages: DshLocalSessionWithMessages['messages']; consumedLocalIds: string[]; error?: string } {
     const sourceIndexByLocalId = new Map(transcript.messages.map((message, index) => [message.localId, index]))
     const storedImported = existing.filter((message) => message.localId?.startsWith(importedPrefix(transcript.id)))
     let priorSourceIndex = -1
     for (const message of storedImported) {
         const sourceIndex = sourceIndexByLocalId.get(message.localId!)
         if (sourceIndex === undefined || sourceIndex <= priorSourceIndex) {
-            return { messages: [], error: 'DeepSeek Harness history no longer extends the previously imported transcript' }
+            return {
+                messages: [],
+                consumedLocalIds: [],
+                error: 'DeepSeek Harness history no longer extends the previously imported transcript'
+            }
         }
         priorSourceIndex = sourceIndex
     }
@@ -189,18 +202,28 @@ function classifyImportDelta(
     ]))
     const changed = storedImported.find((message) => !isDeepStrictEqual(sourceByLocalId.get(message.localId!), message.content))
     if (changed?.localId) {
-        return { messages: [], error: `DeepSeek Harness history changed imported event ${changed.localId}` }
+        return {
+            messages: [],
+            consumedLocalIds: [],
+            error: `DeepSeek Harness history changed imported event ${changed.localId}`
+        }
     }
 
     const importedIds = new Set(storedImported.map((message) => message.localId!))
-    return {
-        messages: transcript.messages.filter((message) =>
-            !importedIds.has(message.localId)
+    const consumedLocalIds = new Set<string>()
+    const messages = transcript.messages.filter((message) => {
+        const pendingPrompt = message.sourceRpcId ? pendingPrompts[message.sourceRpcId] : undefined
+        const isOwnedUserEcho = message.content.role === 'user' && pendingPrompt !== undefined
+        if (isOwnedUserEcho) {
+            for (const localId of pendingPrompt.localIds) consumedLocalIds.add(localId)
+        }
+        return !importedIds.has(message.localId)
             && (observedEventSeq === null || message.eventSeq > observedEventSeq)
-            && !(message.content.role === 'user'
-                && message.sourceRpcId !== undefined
-                && ownedRpcIds.has(message.sourceRpcId))
-        )
+            && !isOwnedUserEcho
+    })
+    return {
+        messages,
+        consumedLocalIds: [...consumedLocalIds]
     }
 }
 
@@ -284,7 +307,7 @@ export function importDshSession(options: {
         store.messages.getAllMessages(stored.id),
         transcript,
         observedEventSeq,
-        new Set(Object.keys(dshOwnedRpcIdRecord(priorMetadata.dshOwnedRpcIds)))
+        dshPendingPromptRecord(priorMetadata.dshPendingPrompts)
     )
     if (delta.error) {
         markImportState({ store, engine, sessionId: stored.id, namespace, transcript, machineId: machine.id, sourceUrl, state: 'diverged', error: delta.error })
@@ -318,6 +341,30 @@ export function importDshSession(options: {
             dshSessionId: transcript.id,
             hapiSessionId: stored.id,
             error: { code: state === 'diverged' ? 'transcript_diverged' : 'import_failed', message }
+        }
+    }
+
+    let consumedActivityAt: number | null = null
+    if (delta.consumedLocalIds.length > 0) {
+        const invokedAt = Date.now()
+        try {
+            consumedActivityAt = store.recordMessagesConsumed(
+                stored.id,
+                delta.consumedLocalIds,
+                invokedAt,
+                namespace
+            )
+            engine.recordSessionActivity(stored.id, consumedActivityAt)
+            engine.handleRealtimeEvent({
+                type: 'messages-consumed',
+                sessionId: stored.id,
+                localIds: delta.consumedLocalIds,
+                invokedAt
+            })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to consume recovered HAPI prompts'
+            markImportState({ store, engine, sessionId: stored.id, namespace, transcript, machineId: machine.id, sourceUrl, state: 'failed', error: message })
+            return { dshSessionId: transcript.id, hapiSessionId: stored.id, error: { code: 'import_failed', message } }
         }
     }
 
@@ -356,7 +403,10 @@ export function importDshSession(options: {
             { touchUpdatedAt: false }
         )
     }
-    engine.recordSessionActivity(stored.id, appended.at(-1)?.createdAt ?? transcript.modifiedAt)
+    engine.recordSessionActivity(
+        stored.id,
+        Math.max(appended.at(-1)?.createdAt ?? transcript.modifiedAt, consumedActivityAt ?? 0)
+    )
     emitImportedMessages(engine, stored.id, appended)
     engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
     return {

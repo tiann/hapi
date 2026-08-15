@@ -91,15 +91,15 @@ export function advanceDshHistoryCursor(
     metadata: Metadata,
     eventSeq: number,
     now = Date.now(),
-    coveredOwnedRpcIds: readonly string[] = []
+    coveredPendingPromptRpcIds: readonly string[] = []
 ): Metadata {
     const nextEventSeq = Math.max(metadata.dshHistoryLastEventSeq ?? -1, eventSeq)
-    const dshOwnedRpcIds = { ...(metadata.dshOwnedRpcIds ?? {}) }
-    for (const rpcId of coveredOwnedRpcIds) delete dshOwnedRpcIds[rpcId]
+    const dshPendingPrompts = { ...(metadata.dshPendingPrompts ?? {}) }
+    for (const rpcId of coveredPendingPromptRpcIds) delete dshPendingPrompts[rpcId]
     return {
         ...metadata,
         dshHistoryLastEventSeq: nextEventSeq,
-        dshOwnedRpcIds,
+        dshPendingPrompts,
         ...(metadata.dshImportState ? {
             dshImportState: {
                 ...metadata.dshImportState,
@@ -110,35 +110,55 @@ export function advanceDshHistoryCursor(
     }
 }
 
+type DshPendingPrompt = NonNullable<Metadata['dshPendingPrompts']>[string]
 type DshMetadataSession = Pick<ApiSessionClient, 'updateMetadata' | 'flushMetadata'>
 
-export async function persistDshOwnedRpcId(
+export async function persistDshPendingPrompt(
     session: DshMetadataSession,
     rpcId: string,
+    localIds: readonly string[],
     now = Date.now()
 ): Promise<void> {
+    const pending: DshPendingPrompt = {
+        localIds: [...new Set(localIds.filter(Boolean))],
+        createdAt: now
+    }
     session.updateMetadata((metadata) => ({
         ...metadata,
-        dshOwnedRpcIds: { ...(metadata.dshOwnedRpcIds ?? {}), [rpcId]: now }
+        dshPendingPrompts: { ...(metadata.dshPendingPrompts ?? {}), [rpcId]: pending }
     }))
     if (!await session.flushMetadata(10_000)) {
         throw new Error(`Failed to persist DeepSeek Harness prompt identity: ${rpcId}`)
     }
 }
 
-async function removeDshOwnedRpcIds(
+async function removeDshPendingPrompts(
     session: DshMetadataSession,
     rpcIds: readonly string[]
 ): Promise<void> {
     if (rpcIds.length === 0) return
     session.updateMetadata((metadata) => {
-        const dshOwnedRpcIds = { ...(metadata.dshOwnedRpcIds ?? {}) }
-        for (const rpcId of rpcIds) delete dshOwnedRpcIds[rpcId]
-        return { ...metadata, dshOwnedRpcIds }
+        const dshPendingPrompts = { ...(metadata.dshPendingPrompts ?? {}) }
+        for (const rpcId of rpcIds) delete dshPendingPrompts[rpcId]
+        return { ...metadata, dshPendingPrompts }
     })
     if (!await session.flushMetadata(10_000)) {
         throw new Error('Failed to clear DeepSeek Harness prompt identity')
     }
+}
+
+export function findDshPendingPrompt(
+    pendingPrompts: ReadonlyMap<string, DshPendingPrompt>,
+    localIds: readonly string[]
+): { rpcId: string; prompt: DshPendingPrompt } | null {
+    if (localIds.length === 0) return null
+    for (const [rpcId, prompt] of pendingPrompts) {
+        if (prompt.localIds.length !== localIds.length) continue
+        if (prompt.localIds.every((localId, index) => localId === localIds[index])) {
+            return { rpcId, prompt }
+        }
+    }
+    return null
 }
 
 export async function bootstrapDshAfterPreflight<T>(
@@ -259,8 +279,11 @@ export async function runDsh(opts: {
     const queue = new MessageQueue2<DshQueueMode>((mode) => hashObject(mode))
     const pendingTurns = new Map<string, PendingTurn>()
     const ownedRpcIds = new Set<string>()
-    const durableOwnedRpcIds = new Set(Object.keys(sessionInfo.metadata?.dshOwnedRpcIds ?? {}))
-    const coveredOwnedRpcIds = new Set<string>()
+    const durablePendingPrompts = new Map(Object.entries(sessionInfo.metadata?.dshPendingPrompts ?? {}))
+    const recoveredPendingRpcIds = new Set(durablePendingPrompts.keys())
+    const recoveredConsumedLocalIds = new Set<string>()
+    const consumedPromptRpcIds = new Set<string>()
+    const coveredPendingPromptRpcIds = new Set<string>()
     const pendingApprovals = new Map<string, { rpcId: string; toolName: string; arguments: unknown; createdAt: number }>()
 
     let nativeSessionId = opts.resumeSessionId ?? sessionInfo.metadata?.dshSessionId ?? null
@@ -351,14 +374,24 @@ export async function runDsh(opts: {
     const handleDshEvent = async (entry: DshHistoryEntry) => {
         const event = entry.event
         const sourceRpcId = eventSourceRpcId(event)
+        const durablePrompt = sourceRpcId ? durablePendingPrompts.get(sourceRpcId) : undefined
         const submittedByHapi = sourceRpcId !== null
-            && (ownedRpcIds.has(sourceRpcId) || durableOwnedRpcIds.has(sourceRpcId))
+            && (ownedRpcIds.has(sourceRpcId) || durablePrompt !== undefined)
         if (sourceRpcId) {
             const pending = pendingTurns.get(sourceRpcId)
             if (pending) pending.userSeen = true
         }
         if (event.type === 'user/message' && sourceRpcId && submittedByHapi) {
-            coveredOwnedRpcIds.add(sourceRpcId)
+            if (durablePrompt && durablePrompt.localIds.length > 0) {
+                await session.acknowledgeMessagesConsumed(durablePrompt.localIds)
+                consumedPromptRpcIds.add(sourceRpcId)
+                if (recoveredPendingRpcIds.has(sourceRpcId)) {
+                    for (const localId of durablePrompt.localIds) {
+                        if (!queue.cancelByLocalId(localId)) recoveredConsumedLocalIds.add(localId)
+                    }
+                }
+            }
+            coveredPendingPromptRpcIds.add(sourceRpcId)
         }
 
         const preset = eventPermissionPreset(event)
@@ -397,15 +430,17 @@ export async function runDsh(opts: {
             buffer: eventBuffer,
             persistEntry: handleDshEvent,
             commitCursor: async (eventSeq) => {
-                const covered = [...coveredOwnedRpcIds]
+                const covered = [...coveredPendingPromptRpcIds]
                 session.updateMetadata((metadata) =>
                     advanceDshHistoryCursor(metadata, eventSeq, Date.now(), covered))
                 if (!await session.flushMetadata(10_000)) {
                     throw new Error('Failed to persist DeepSeek Harness history cursor')
                 }
                 for (const rpcId of covered) {
-                    coveredOwnedRpcIds.delete(rpcId)
-                    durableOwnedRpcIds.delete(rpcId)
+                    coveredPendingPromptRpcIds.delete(rpcId)
+                    durablePendingPrompts.delete(rpcId)
+                    recoveredPendingRpcIds.delete(rpcId)
+                    if (!ownedRpcIds.has(rpcId)) consumedPromptRpcIds.delete(rpcId)
                     ownedRpcIds.delete(rpcId)
                 }
             }
@@ -688,10 +723,15 @@ export async function runDsh(opts: {
         })
 
         const submitSteer = async (text: string, localId?: string): Promise<void> => {
-            const requestedRpcId = randomUUID()
-            await persistDshOwnedRpcId(session, requestedRpcId)
+            const localIds = localId ? [localId] : []
+            const recovered = findDshPendingPrompt(durablePendingPrompts, localIds)
+            const requestedRpcId = recovered?.rpcId ?? randomUUID()
+            if (!recovered) {
+                const createdAt = Date.now()
+                await persistDshPendingPrompt(session, requestedRpcId, localIds, createdAt)
+                durablePendingPrompts.set(requestedRpcId, { localIds, createdAt })
+            }
             ownedRpcIds.add(requestedRpcId)
-            durableOwnedRpcIds.add(requestedRpcId)
             const completion = new Promise<void>((resolve, reject) => {
                 pendingTurns.set(requestedRpcId, { userSeen: false, resolve, reject })
             })
@@ -703,13 +743,18 @@ export async function runDsh(opts: {
                     clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                     rpcId: requestedRpcId
                 })
-                if (localId) session.emitMessagesConsumed([localId])
+                if (localIds.length > 0 && !consumedPromptRpcIds.has(rpcId)) {
+                    await session.acknowledgeMessagesConsumed(localIds)
+                    consumedPromptRpcIds.add(rpcId)
+                }
                 if (command) {
                     pendingTurns.delete(rpcId)
                     ownedRpcIds.delete(rpcId)
                     try {
-                        await removeDshOwnedRpcIds(session, [rpcId])
-                        durableOwnedRpcIds.delete(rpcId)
+                        await removeDshPendingPrompts(session, [rpcId])
+                        durablePendingPrompts.delete(rpcId)
+                        recoveredPendingRpcIds.delete(rpcId)
+                        consumedPromptRpcIds.delete(rpcId)
                     } catch (error) {
                         logger.debug('[dsh] Failed to clear command prompt identity:', error)
                     }
@@ -717,9 +762,13 @@ export async function runDsh(opts: {
                     return
                 }
                 void completion.then(
-                    () => ownedRpcIds.delete(rpcId),
+                    () => {
+                        ownedRpcIds.delete(rpcId)
+                        consumedPromptRpcIds.delete(rpcId)
+                    },
                     (error) => {
                         ownedRpcIds.delete(rpcId)
+                        consumedPromptRpcIds.delete(rpcId)
                         logger.debug('[dsh] Steered prompt completion failed:', error)
                     }
                 )
@@ -756,6 +805,7 @@ export async function runDsh(opts: {
 
         session.onCancelQueuedMessage((localId) => queue.cancelByLocalId(localId))
         session.onUserMessage((message, localId) => {
+            if (localId && recoveredConsumedLocalIds.delete(localId)) return
             const text = formatMessageWithAttachments(message.content.text, message.content.attachments)
             const deliveryMode = message.meta?.deliveryMode ?? 'queue'
             if (thinking && deliveryMode === 'steer') {
@@ -777,10 +827,15 @@ export async function runDsh(opts: {
             if (!batch) break
 
             try {
-                const requestedRpcId = randomUUID()
-                await persistDshOwnedRpcId(session, requestedRpcId)
+                const localIds = batch.items.flatMap((item) => item.localId ? [item.localId] : [])
+                const recovered = findDshPendingPrompt(durablePendingPrompts, localIds)
+                const requestedRpcId = recovered?.rpcId ?? randomUUID()
+                if (!recovered) {
+                    const createdAt = Date.now()
+                    await persistDshPendingPrompt(session, requestedRpcId, localIds, createdAt)
+                    durablePendingPrompts.set(requestedRpcId, { localIds, createdAt })
+                }
                 ownedRpcIds.add(requestedRpcId)
-                durableOwnedRpcIds.add(requestedRpcId)
                 const completion = new Promise<void>((resolve, reject) => {
                     pendingTurns.set(requestedRpcId, { userSeen: false, resolve, reject })
                 })
@@ -791,13 +846,18 @@ export async function runDsh(opts: {
                     clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                     rpcId: requestedRpcId
                 })
-                session.emitMessagesConsumed(batch.items.flatMap((item) => item.localId ? [item.localId] : []))
+                if (localIds.length > 0 && !consumedPromptRpcIds.has(rpcId)) {
+                    await session.acknowledgeMessagesConsumed(localIds)
+                    consumedPromptRpcIds.add(rpcId)
+                }
                 if (command) {
                     pendingTurns.delete(rpcId)
                     ownedRpcIds.delete(rpcId)
                     try {
-                        await removeDshOwnedRpcIds(session, [rpcId])
-                        durableOwnedRpcIds.delete(rpcId)
+                        await removeDshPendingPrompts(session, [rpcId])
+                        durablePendingPrompts.delete(rpcId)
+                        recoveredPendingRpcIds.delete(rpcId)
+                        consumedPromptRpcIds.delete(rpcId)
                     } catch (error) {
                         logger.debug('[dsh] Failed to clear command prompt identity:', error)
                     }
@@ -812,6 +872,7 @@ export async function runDsh(opts: {
 
                 await completion
                 ownedRpcIds.delete(rpcId)
+                consumedPromptRpcIds.delete(rpcId)
             } catch (error) {
                 for (const rpcId of ownedRpcIds) {
                     if (!pendingTurns.has(rpcId)) continue

@@ -7,6 +7,7 @@ const socketHarness = vi.hoisted(() => ({
         connectCalls: number
         connectImmediately: boolean
         messageAck: unknown
+        messagesConsumedAck: unknown
         emitted: Array<{ event: string; args: unknown[] }>
         listeners: Map<string, Array<(...args: any[]) => void>>
         trigger: (event: string, ...args: any[]) => void
@@ -26,6 +27,7 @@ vi.mock('socket.io-client', () => ({
             connectCalls: 0,
             connectImmediately: true,
             messageAck: { ok: true },
+            messagesConsumedAck: { ok: true },
             emitted: [] as Array<{ event: string; args: unknown[] }>,
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
             trigger: () => {},
@@ -70,6 +72,10 @@ vi.mock('socket.io-client', () => ({
                     if (event === 'message') {
                         state.emitted.push({ event, args })
                         return state.messageAck
+                    }
+                    if (event === 'messages-consumed') {
+                        state.emitted.push({ event, args })
+                        return state.messagesConsumedAck
                     }
                     return {}
                 }
@@ -211,6 +217,22 @@ describe('ApiSessionClient native transcript forwarding', () => {
             'dsh:native-1:5:agent:0',
             1_000
         )).rejects.toThrow('Hub rejected imported message dsh:native-1:5:agent:0')
+        client.close()
+    })
+
+    it('waits for the hub to persist recovered prompt consumption', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+
+        await client.acknowledgeMessagesConsumed(['local-recovered'])
+
+        expect(socketHarness.sockets[0]?.emitted).toContainEqual({
+            event: 'messages-consumed',
+            args: [{
+                sid: '11111111-1111-4111-8111-111111111111',
+                localIds: ['local-recovered']
+            }]
+        })
         client.close()
     })
 })

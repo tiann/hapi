@@ -28,9 +28,13 @@ describe('MetadataSchema cursorSessionProtocol', () => {
     it('persists DSH-owned prompt ids across runner restarts', () => {
         const result = MetadataSchema.safeParse({
             ...base,
-            dshOwnedRpcIds: { 'rpc-1': 1_700_000_000_000 },
+            dshPendingPrompts: {
+                'rpc-1': { localIds: ['local-1'], createdAt: 1_700_000_000_000 }
+            },
         });
         expect(result.success).toBe(true);
-        expect(result.data?.dshOwnedRpcIds).toEqual({ 'rpc-1': 1_700_000_000_000 });
+        expect(result.data?.dshPendingPrompts).toEqual({
+            'rpc-1': { localIds: ['local-1'], createdAt: 1_700_000_000_000 }
+        });
     });
 });

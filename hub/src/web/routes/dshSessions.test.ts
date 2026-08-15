@@ -287,7 +287,7 @@ describe('DeepSeek Harness session import', () => {
     })
 
     it('does not import a native echo of a HAPI prompt after the live process exits', () => {
-        const { store, engine } = setup()
+        const { store, engine, events } = setup()
         const selectedMachine = machine('machine-1')
         const nativeSessionId = 'native-owned-prompt'
         const rpcId = 'rpc-owned-by-hapi'
@@ -299,12 +299,18 @@ describe('DeepSeek Harness session import', () => {
                 flavor: 'dsh',
                 machineId: selectedMachine.id,
                 dshSessionId: nativeSessionId,
-                dshOwnedRpcIds: { [rpcId]: 1_000 }
+                dshPendingPrompts: {
+                    [rpcId]: { localIds: ['local-owned-prompt'], createdAt: 1_000 }
+                }
             },
             {},
             'default'
         )
-        store.messages.addMessage(live.id, userMessage(nativeSessionId, 1, 'sent from HAPI').content)
+        store.messages.addMessage(
+            live.id,
+            userMessage(nativeSessionId, 1, 'sent from HAPI').content,
+            'local-owned-prompt'
+        )
 
         const result = importDshSession({
             store,
@@ -318,12 +324,19 @@ describe('DeepSeek Harness session import', () => {
         })
 
         expect(result).toMatchObject({ hapiSessionId: live.id, action: 'unchanged', appended: 0 })
-        expect(store.messages.getAllMessages(live.id)).toHaveLength(1)
+        expect(store.messages.getAllMessages(live.id)).toEqual([
+            expect.objectContaining({ localId: 'local-owned-prompt', invokedAt: expect.any(Number) })
+        ])
+        expect(events).toContainEqual(expect.objectContaining({
+            type: 'messages-consumed',
+            sessionId: live.id,
+            localIds: ['local-owned-prompt']
+        }))
         const metadata = store.sessions.getSession(live.id)?.metadata as {
             dshHistoryLastEventSeq?: number
-            dshOwnedRpcIds?: Record<string, number>
+            dshPendingPrompts?: Record<string, unknown>
         }
         expect(metadata.dshHistoryLastEventSeq).toBe(1)
-        expect(metadata.dshOwnedRpcIds).toEqual({})
+        expect(metadata.dshPendingPrompts).toEqual({})
     })
 })

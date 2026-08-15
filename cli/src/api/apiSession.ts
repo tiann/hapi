@@ -1213,6 +1213,25 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => this.socket.emit('messages-consumed', payload))
     }
 
+    async acknowledgeMessagesConsumed(localIds: string[]): Promise<void> {
+        if (localIds.length === 0) return
+        if (this.state !== 'active') {
+            throw new Error('Cannot acknowledge consumed messages before the HAPI session is active')
+        }
+        const response: unknown = await this.socket.timeout(10_000).emitWithAck('messages-consumed', {
+            sid: this.sessionId,
+            localIds
+        })
+        if (!response || typeof response !== 'object' || Array.isArray(response)) {
+            throw new Error('Hub returned an invalid messages-consumed acknowledgement')
+        }
+        const ack = response as { ok?: unknown; message?: unknown }
+        if (ack.ok !== true) {
+            const detail = typeof ack.message === 'string' ? `: ${ack.message}` : ''
+            throw new Error(`Hub rejected messages-consumed acknowledgement${detail}`)
+        }
+    }
+
     sendSessionDeath(reason?: SessionEndReason): void {
         if (this.state === 'active') {
             void cleanupUploadDir(this.sessionId)

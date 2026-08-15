@@ -162,9 +162,12 @@ export const MetadataSchema = z.object({
     // Latest DSH event observed through import or the live mux. Import uses
     // this append-only cursor to avoid copying turns already streamed live.
     dshHistoryLastEventSeq: z.number().int().nonnegative().optional(),
-    // DSH prompt RPC ids accepted from HAPI but not yet covered by the durable
-    // native history cursor. Used to suppress duplicate user echoes after restart.
-    dshOwnedRpcIds: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    // DSH prompts submitted by HAPI but not yet covered by the durable native
+    // history cursor. localIds let recovery consume the original hub queue rows.
+    dshPendingPrompts: z.record(z.string(), z.object({
+        localIds: z.array(z.string().min(1)),
+        createdAt: z.number().int().nonnegative()
+    })).optional(),
     // Set when native rewind succeeded but HAPI truncate/hydrate failed.
     conversationHistoryDiverged: z.boolean().optional(),
     worktree: WorktreeMetadataSchema.optional(),

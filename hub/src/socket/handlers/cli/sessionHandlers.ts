@@ -1,4 +1,4 @@
-import type { ClientToServerEvents, ImportedMessageAck } from '@hapi/protocol'
+import type { ClientToServerEvents, ImportedMessageAck, MessagesConsumedAck } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
@@ -390,17 +390,23 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {
+    socket.on('messages-consumed', (
+        data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean },
+        ack?: (response: MessagesConsumedAck) => void
+    ) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
+            ack?.({ ok: false, message: 'Invalid messages-consumed payload' })
             return
         }
         const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
         if (localIds.length === 0) {
+            ack?.({ ok: false, message: 'messages-consumed requires localIds' })
             return
         }
         const sessionAccess = resolveSessionAccess(data.sid)
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
+            ack?.({ ok: false, message: `Session access denied: ${sessionAccess.reason}` })
             return
         }
         const invokedAt = Date.now()
@@ -414,6 +420,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             )
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
+            ack?.({ ok: false, message: err instanceof Error ? err.message : 'Failed to persist messages-consumed' })
             return
         }
 
@@ -435,6 +442,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // batch contract, so preserve its original timestamp even when IDs are
         // heterogeneous, replayed, or unknown.
         onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
+        ack?.({ ok: true })
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {

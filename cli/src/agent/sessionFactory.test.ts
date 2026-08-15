@@ -151,7 +151,9 @@ describe('bootstrapExistingSession', () => {
             cursorSessionProtocol: 'acp',
             dshSessionId: 'dsh-thread-1',
             dshHistoryLastEventSeq: 41,
-            dshOwnedRpcIds: { 'rpc-pending': 123 },
+            dshPendingPrompts: {
+                'rpc-pending': { localIds: ['local-pending'], createdAt: 123 }
+            },
             piSessionId: 'pi-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
@@ -200,7 +202,9 @@ describe('bootstrapExistingSession', () => {
             cursorSessionProtocol: 'acp',
             dshSessionId: 'dsh-thread-1',
             dshHistoryLastEventSeq: 41,
-            dshOwnedRpcIds: { 'rpc-pending': 123 },
+            dshPendingPrompts: {
+                'rpc-pending': { localIds: ['local-pending'], createdAt: 123 }
+            },
             piSessionId: 'pi-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
@@ -230,7 +234,9 @@ describe('bootstrapExistingSession', () => {
         expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
-            dshOwnedRpcIds: { 'rpc-pending': 123 },
+            dshPendingPrompts: {
+                'rpc-pending': { localIds: ['local-pending'], createdAt: 123 }
+            },
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
         }))
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
@@ -238,7 +244,9 @@ describe('bootstrapExistingSession', () => {
             expect.objectContaining({
                 codexSessionId: 'codex-thread-1',
                 grokSessionId: 'grok-thread-1',
-                dshOwnedRpcIds: { 'rpc-pending': 123 },
+                dshPendingPrompts: {
+                    'rpc-pending': { localIds: ['local-pending'], createdAt: 123 }
+                },
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })
         )

@@ -137,6 +137,27 @@ describe('cli session handlers', () => {
         expect(webEvents.filter((event) => event.type === 'message-received')).toHaveLength(2)
     })
 
+    it('acknowledges durable prompt consumption after the queue row is persisted', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('consumed-ack', {}, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'queued' } }, 'local-1')
+        const socket = new FakeSocket()
+        const acknowledgements: unknown[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {}
+        })
+
+        socket.trigger('messages-consumed', {
+            sid: session.id,
+            localIds: ['local-1']
+        }, (ack) => acknowledgements.push(ack))
+
+        expect(acknowledgements).toEqual([{ ok: true }])
+        expect(store.messages.getAllMessages(session.id)[0]?.invokedAt).not.toBeNull()
+    })
+
     it('emits a structured todos patch when a TodoWrite message lands (closes second half of #884)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('todos-session', { path: '/tmp', host: 'h' }, null, 'default')

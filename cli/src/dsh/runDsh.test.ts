@@ -5,8 +5,9 @@ import {
     bootstrapDshAfterPreflight,
     createDshKillSessionLifecycle,
     DshContiguousEventBuffer,
+    findDshPendingPrompt,
     persistContiguousDshEvents,
-    persistDshOwnedRpcId
+    persistDshPendingPrompt
 } from './runDsh'
 import type { DshHistoryEntry, DshWebClient } from './dshWebClient'
 
@@ -45,13 +46,18 @@ describe('DeepSeek Harness live history cursor', () => {
             path: '/tmp/project',
             host: 'localhost',
             dshHistoryLastEventSeq: 4,
-            dshOwnedRpcIds: { 'rpc-covered': 100, 'rpc-pending': 200 }
+            dshPendingPrompts: {
+                'rpc-covered': { localIds: ['local-covered'], createdAt: 100 },
+                'rpc-pending': { localIds: ['local-pending'], createdAt: 200 }
+            }
         } as Metadata
 
         const advanced = advanceDshHistoryCursor(metadata, 5, 300, ['rpc-covered'])
 
         expect(advanced.dshHistoryLastEventSeq).toBe(5)
-        expect(advanced.dshOwnedRpcIds).toEqual({ 'rpc-pending': 200 })
+        expect(advanced.dshPendingPrompts).toEqual({
+            'rpc-pending': { localIds: ['local-pending'], createdAt: 200 }
+        })
     })
 
     it('holds a future mux event until history fills the sequence gap', () => {
@@ -96,6 +102,16 @@ describe('DeepSeek Harness live history cursor', () => {
 })
 
 describe('DeepSeek Harness lifecycle boundaries', () => {
+    it('finds the durable RPC only for the same queued local-id batch', () => {
+        const prompts = new Map([
+            ['rpc-1', { localIds: ['local-a', 'local-b'], createdAt: 100 }]
+        ])
+
+        expect(findDshPendingPrompt(prompts, ['local-a', 'local-b'])?.rpcId).toBe('rpc-1')
+        expect(findDshPendingPrompt(prompts, ['local-a'])).toBeNull()
+        expect(findDshPendingPrompt(prompts, ['local-b', 'local-a'])).toBeNull()
+    })
+
     it('waits for durable prompt identity before native submission can continue', async () => {
         let metadata = { path: '/tmp/project', host: 'localhost' } as Metadata
         const order: string[] = []
@@ -110,10 +126,12 @@ describe('DeepSeek Harness lifecycle boundaries', () => {
             }
         }
 
-        await persistDshOwnedRpcId(session, 'rpc-1', 100)
+        await persistDshPendingPrompt(session, 'rpc-1', ['local-1'], 100)
 
         expect(order).toEqual(['update', 'flush'])
-        expect(metadata.dshOwnedRpcIds).toEqual({ 'rpc-1': 100 })
+        expect(metadata.dshPendingPrompts).toEqual({
+            'rpc-1': { localIds: ['local-1'], createdAt: 100 }
+        })
     })
 
     it('rejects prompt identity setup when metadata cannot be confirmed', async () => {
@@ -122,7 +140,7 @@ describe('DeepSeek Harness lifecycle boundaries', () => {
             flushMetadata: async () => false
         }
 
-        await expect(persistDshOwnedRpcId(session, 'rpc-1', 100))
+        await expect(persistDshPendingPrompt(session, 'rpc-1', ['local-1'], 100))
             .rejects.toThrow('Failed to persist DeepSeek Harness prompt identity')
     })
 

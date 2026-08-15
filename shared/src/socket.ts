@@ -241,6 +241,10 @@ export type ImportedMessageAck =
     | { ok: true }
     | { ok: false; code: 'import_conflict' | 'persist_failed'; message: string }
 
+export type MessagesConsumedAck =
+    | { ok: true }
+    | { ok: false; message: string }
+
 export interface ClientToServerEvents {
     // createdAt: optional client-provided timestamp (epoch ms) for the entry's
     // own origin time. imported=true additionally requires a stable localId;
@@ -271,7 +275,10 @@ export interface ClientToServerEvents {
   /** CLI agent finished session/load (or equivalent) and can accept prompts. */
     'session-ready': (data: { sid: string; time: number }) => void
     'session-end': (data: { sid: string; time: number; reason?: SessionEndReason }) => void
-    'messages-consumed': (data: { sid: string; localIds: string[] }) => void
+    'messages-consumed': (
+        data: { sid: string; localIds: string[] },
+        ack?: (response: MessagesConsumedAck) => void
+    ) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: UpdateMetadataAck) => void) => void
     'update-state': (data: { sid: string; expectedVersion: number; agentState: unknown | null }, cb: (answer: UpdateStateAck) => void) => void
     'machine-alive': (data: { machineId: string; time: number; health?: unknown }) => void
