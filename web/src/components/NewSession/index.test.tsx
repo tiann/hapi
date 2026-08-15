@@ -85,6 +85,15 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
         error: null
     })
 }))
+vi.mock('@/hooks/queries/useDshModels', () => ({
+    useDshModels: () => ({
+        availableModels: [],
+        current: null,
+        isLoading: false,
+        error: null,
+        refetch: vi.fn()
+    })
+}))
 vi.mock('@/hooks/queries/useAgyModels', () => ({
     useAgyModels: () => ({
         availableModels: mocks.agyModels,

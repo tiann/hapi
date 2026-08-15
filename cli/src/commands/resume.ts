@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import React from 'react'
 import { render } from 'ink'
 import { existsSync } from 'node:fs'
-import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import type { DshPermissionMode, LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import type {
     AgyPermissionMode,
     ClaudePermissionMode,
@@ -107,6 +107,21 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
 
     if (target.flavor === 'gemini') {
         throw new Error('Gemini CLI is no longer supported and cannot be resumed (Google sunset the consumer Gemini CLI on 2026-06-18). The session history remains viewable in the web UI.')
+    }
+
+    if (target.flavor === 'dsh') {
+        const { runDsh } = await import('@/dsh/runDsh')
+        await runDsh({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as DshPermissionMode | undefined,
+            startingMode: 'remote',
+            model: target.model ?? undefined,
+            modelReasoningEffort: target.modelReasoningEffort ?? undefined
+        })
+        return
     }
 
     if (target.flavor === 'opencode') {

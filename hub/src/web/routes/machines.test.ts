@@ -103,6 +103,37 @@ describe('machines routes', () => {
         })
     })
 
+    it('returns DeepSeek Harness models for an online machine', async () => {
+        const machine = createMachine()
+        const result = {
+            success: true as const,
+            current: { provider: 'deepseek-official', modelId: 'deepseek-v4-pro' },
+            availableModels: [{
+                provider: 'deepseek-official',
+                providerName: 'DeepSeek',
+                modelId: 'deepseek-v4-pro',
+                name: 'DeepSeek V4 Pro',
+                reasoningEfforts: []
+            }]
+        }
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listDshModelsForMachine: async () => result
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/dsh-models')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(result)
+    })
+
     it('returns a stable code when the Codex machine RPC target is absent', async () => {
         const machine = createMachine()
         const engine = {

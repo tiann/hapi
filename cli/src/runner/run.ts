@@ -1473,6 +1473,8 @@ export function buildCliArgs(
     ? 'codex'
     : agent === 'cursor'
       ? 'cursor'
+      : agent === 'dsh'
+        ? 'dsh'
       : agent === 'grok'
         ? 'grok'
         : agent === 'kimi'
@@ -1509,9 +1511,9 @@ export function buildCliArgs(
   }
   const startingMode = options.startingMode || 'remote';
   args.push('--hapi-starting-mode', startingMode, '--started-by', 'runner');
-  // Codex, Cursor ACP, OpenCode, Pi native resume, and Claude message-level
+  // Codex, Cursor ACP, DSH, OpenCode, Pi native resume, and Claude message-level
   // forks reuse the original HAPI row via --existing-session-id.
-  if (agent === 'codex' || agent === 'cursor' || agent === 'pi'
+  if (agent === 'codex' || agent === 'cursor' || agent === 'dsh' || agent === 'pi'
       || agent === 'opencode'
       || (agentCommand === 'claude' && options.forkSession)) {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
@@ -1532,7 +1534,7 @@ export function buildCliArgs(
   if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi')) {
     args.push('--effort', options.effort);
   }
-  if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
+  if (options.modelReasoningEffort && (agent === 'codex' || agent === 'dsh' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
   if (options.serviceTier && agent === 'codex') {

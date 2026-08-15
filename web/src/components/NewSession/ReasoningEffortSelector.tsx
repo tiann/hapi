@@ -13,18 +13,20 @@ export function ReasoningEffortSelector(props: {
 }) {
     const { t } = useTranslation()
 
-    if (props.agent !== 'codex' && props.agent !== 'opencode') {
+    if (props.agent !== 'codex' && props.agent !== 'dsh' && props.agent !== 'opencode') {
         return null
     }
 
-    const options = props.agent === 'codex' && props.availableOptions?.length
+    const options = (props.agent === 'codex' || props.agent === 'dsh') && props.availableOptions?.length
         ? getCodexComposerReasoningEffortOptions(null, props.agent, props.availableOptions).map((option) => ({
             value: option.value ?? 'default',
             label: option.label
         }))
-        : CODEX_REASONING_EFFORT_OPTIONS.filter(
-            (option) => props.agent === 'opencode' ? option.value !== 'xhigh' : option.value !== 'max'
-        )
+        : CODEX_REASONING_EFFORT_OPTIONS.filter((option) => {
+            if (props.agent === 'opencode') return option.value !== 'xhigh'
+            if (props.agent === 'codex') return option.value !== 'max'
+            return true
+        })
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">

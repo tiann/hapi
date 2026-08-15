@@ -269,6 +269,51 @@ export type PiLocalSessionWithMessages = z.infer<typeof PiLocalSessionWithMessag
 export type ListPiSessionsRpcRequest = z.infer<typeof ListPiSessionsRpcRequestSchema>
 export type ListPiSessionsRpcResponse = z.infer<typeof ListPiSessionsRpcResponseSchema>
 
+export const DshImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    eventSeq: z.number().int().nonnegative(),
+    createdAt: z.number(),
+    content: CodexImportedMessageSchema
+})
+
+export const DshLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    modifiedAt: z.number(),
+    model: z.string().nullable().optional(),
+    reasoningEffort: z.string().nullable().optional(),
+    messageCount: z.number().int().nonnegative(),
+    running: z.boolean(),
+    parentSessionId: z.string().nullable().optional()
+})
+
+export const DshLocalSessionWithMessagesSchema = DshLocalSessionSummarySchema.extend({
+    messages: z.array(DshImportedMessageSchema),
+    lastEventSeq: z.number().int().nonnegative().nullable()
+})
+
+export const ListDshSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).optional()
+})
+
+export const ListDshSessionsRpcResponseSchema = z.union([
+    z.object({
+        success: z.literal(true),
+        sessions: z.array(z.union([DshLocalSessionWithMessagesSchema, DshLocalSessionSummarySchema])),
+        sourceUrl: z.string().url()
+    }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type DshImportedMessage = z.infer<typeof DshImportedMessageSchema>
+export type DshLocalSessionSummary = z.infer<typeof DshLocalSessionSummarySchema>
+export type DshLocalSessionWithMessages = z.infer<typeof DshLocalSessionWithMessagesSchema>
+export type ListDshSessionsRpcRequest = z.infer<typeof ListDshSessionsRpcRequestSchema>
+export type ListDshSessionsRpcResponse = z.infer<typeof ListDshSessionsRpcResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })
@@ -737,6 +782,35 @@ export type CodexModelsResponse = {
 }
 
 export type ListCodexModelsResponse = CodexModelsResponse
+
+export type DshReasoningEffortOption = {
+    id: string
+    name: string
+    isDefault: boolean
+}
+
+export type DshModelSummary = {
+    provider: string
+    providerName: string
+    modelId: string
+    name: string
+    reasoningEfforts: DshReasoningEffortOption[]
+}
+
+export type DshModelSelection = {
+    provider: string
+    modelId: string
+    reasoningEffort?: string
+}
+
+export type DshModelsResponse = {
+    success: boolean
+    availableModels?: DshModelSummary[]
+    current?: DshModelSelection | null
+    error?: string
+}
+
+export type ListDshModelsResponse = DshModelsResponse
 
 export type OpencodeModelSummary = {
     modelId: string

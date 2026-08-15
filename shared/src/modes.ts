@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'dsh', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -49,6 +49,9 @@ export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'] as const
 export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
 
+export const DSH_PERMISSION_MODES = ['default', 'read-only', 'workspace-write', 'danger-full-access'] as const
+export type DshPermissionMode = typeof DSH_PERMISSION_MODES[number]
+
 export const PERMISSION_MODES = [
     'default',
     'acceptEdits',
@@ -59,6 +62,8 @@ export const PERMISSION_MODES = [
     'debug',
     'autoReview',
     'read-only',
+    'workspace-write',
+    'danger-full-access',
     'safe-yolo',
     'yolo',
     'request-review',
@@ -77,6 +82,8 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     autoReview: 'Auto-review',
     bypassPermissions: 'Yolo',
     'read-only': 'Read Only',
+    'workspace-write': 'Workspace Write',
+    'danger-full-access': 'Full Access',
     'safe-yolo': 'Safe Yolo',
     yolo: 'Yolo',
     'request-review': 'Request Review',
@@ -95,6 +102,8 @@ export const PERMISSION_MODE_TONES: Record<PermissionMode, PermissionModeTone> =
     autoReview: 'warning',
     bypassPermissions: 'danger',
     'read-only': 'warning',
+    'workspace-write': 'warning',
+    'danger-full-access': 'danger',
     'safe-yolo': 'warning',
     yolo: 'danger',
     'request-review': 'neutral',
@@ -153,6 +162,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     }
     if (flavor === 'cursor') {
         return CURSOR_PERMISSION_MODES
+    }
+    if (flavor === 'dsh') {
+        return DSH_PERMISSION_MODES
     }
     if (flavor === 'pi') {
         // Pi RPC mode has no runtime permission switching (always auto-approve);

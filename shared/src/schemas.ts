@@ -80,6 +80,7 @@ export const MetadataSchema = z.object({
     //   undefined     = no migration in flight; banner hidden.
     // tiann/hapi#873.
     cursorMigrationState: z.enum(['in_progress', 'ambiguous']).optional(),
+    dshSessionId: z.string().optional(),
     kimiSessionId: z.string().optional(),
     copilotSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
@@ -148,6 +149,19 @@ export const MetadataSchema = z.object({
         leafEntryId: z.string().nullable().optional(),
         error: z.string().optional()
     }).optional(),
+    dshImportState: z.object({
+        state: z.enum(['importing', 'complete', 'failed', 'diverged']),
+        machineId: z.string(),
+        dshSessionId: z.string(),
+        sourceUrl: z.string().url(),
+        startedAt: z.number(),
+        updatedAt: z.number(),
+        lastEventSeq: z.number().int().nonnegative().nullable().optional(),
+        error: z.string().optional()
+    }).optional(),
+    // Latest DSH event observed through import or the live mux. Import uses
+    // this append-only cursor to avoid copying turns already streamed live.
+    dshHistoryLastEventSeq: z.number().int().nonnegative().optional(),
     // Set when native rewind succeeded but HAPI truncate/hydrate failed.
     conversationHistoryDiverged: z.boolean().optional(),
     worktree: WorktreeMetadataSchema.optional(),

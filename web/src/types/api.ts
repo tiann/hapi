@@ -9,12 +9,17 @@ import type {
     SyncEvent as ProtocolSyncEvent,
     WorktreeMetadata
 } from '@hapi/protocol/types'
+import type { DshLocalSessionSummary as ProtocolDshLocalSessionSummary } from '@hapi/protocol/apiTypes'
 
 export type {
     AgyModelsResponse,
     AgyModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
+    DshModelsResponse,
+    DshModelSelection,
+    DshModelSummary,
+    DshReasoningEffortOption,
     CommandResponse,
     CursorModelsResponse,
     CursorModelSummary,
@@ -266,6 +271,37 @@ export type PiImportResult = {
 export type PiImportSessionsResponse = {
     success: boolean
     results: PiImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type DshLocalSessionSummary = ProtocolDshLocalSessionSummary & {
+    hapiSessionId?: string
+    importState?: 'importing' | 'complete' | 'failed' | 'diverged'
+}
+
+export type DshLocalSessionsResponse = {
+    success: true
+    sessions: DshLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type DshImportResult = {
+    dshSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type DshImportSessionsResponse = {
+    success: boolean
+    results: DshImportResult[]
     machineId?: string
     error?: string
 }

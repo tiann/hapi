@@ -29,6 +29,15 @@ describe('Gemini CLI sunset (read-only, not creatable)', () => {
 })
 
 describe('getPermissionModesForFlavor', () => {
+    test('returns DeepSeek Harness native permission presets', () => {
+        expect(getPermissionModesForFlavor('dsh')).toEqual([
+            'default',
+            'read-only',
+            'workspace-write',
+            'danger-full-access'
+        ])
+    })
+
     test("returns the conservative Grok modes", () => {
         expect(getPermissionModesForFlavor('grok')).toEqual([
             'default',

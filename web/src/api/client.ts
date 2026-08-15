@@ -8,6 +8,8 @@ import type {
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
     CodexArchiveSessionResponse,
+    DshImportSessionsResponse,
+    DshLocalSessionsResponse,
     CodexCollaborationMode,
     CopilotAgentMode,
     FileSearchResponse,
@@ -32,6 +34,7 @@ import type {
 import type {
     AgyModelsResponse,
     CodexModelsResponse,
+    DshModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
     CursorChatStoreStatus,
@@ -290,6 +293,21 @@ export class ApiClient {
 
     async importPiSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<PiImportSessionsResponse> {
         return await this.request<PiImportSessionsResponse>('/api/pi/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getDshSessions(cwd?: string | null, machineId?: string | null): Promise<DshLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<DshLocalSessionsResponse>(`/api/dsh/sessions${query}`)
+    }
+
+    async importDshSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<DshImportSessionsResponse> {
+        return await this.request<DshImportSessionsResponse>('/api/dsh/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
@@ -847,6 +865,18 @@ export class ApiClient {
     async getSessionCodexModels(sessionId: string): Promise<CodexModelsResponse> {
         return await this.request<CodexModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/codex-models`
+        )
+    }
+
+    async getMachineDshModels(machineId: string): Promise<DshModelsResponse> {
+        return await this.request<DshModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/dsh-models`
+        )
+    }
+
+    async getSessionDshModels(sessionId: string): Promise<DshModelsResponse> {
+        return await this.request<DshModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dsh-models`
         )
     }
 

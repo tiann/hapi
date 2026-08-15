@@ -60,6 +60,7 @@ const SIMPLE_RESUME_TOKENS = [
     'opencodeSessionId',
     'grokSessionId',
     'cursorSessionId',
+    'dshSessionId',
     'kimiSessionId',
     'copilotSessionId',
     'piSessionId'

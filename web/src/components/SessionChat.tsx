@@ -84,6 +84,7 @@ import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useDshModels } from '@/hooks/queries/useDshModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import {
@@ -106,6 +107,7 @@ import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
+import { buildDshModelOptions, getDshReasoningOptions } from '@/lib/dshModelOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
@@ -751,6 +753,27 @@ function SessionChatInner(props: SessionChatProps) {
         machineId: props.session.metadata?.machineId ?? null,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
+    const dshModelsState = useDshModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'dsh' && props.session.active && !controlledByUser
+    })
+    const dshModelOptions = useMemo(
+        () => agentFlavor === 'dsh'
+            ? buildDshModelOptions(dshModelsState.availableModels, dshModelsState.current)
+            : undefined,
+        [agentFlavor, dshModelsState.availableModels, dshModelsState.current]
+    )
+    const dshReasoningEffortOptions = useMemo(
+        () => agentFlavor === 'dsh'
+            ? getDshReasoningOptions(
+                dshModelsState.availableModels,
+                dshModelsState.current,
+                props.session.model
+            )
+            : undefined,
+        [agentFlavor, dshModelsState.availableModels, dshModelsState.current, props.session.model]
+    )
     const effectiveCodexServiceTier = agentFlavor === 'codex'
         ? getEffectiveCodexServiceTier(
             props.session.serviceTier,
@@ -1276,13 +1299,21 @@ function SessionChatInner(props: SessionChatProps) {
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
         const previousModelReasoningEffort = props.session.modelReasoningEffort
-        const shouldClearReasoningEffort = agentFlavor === 'codex'
-            && Boolean(previousModelReasoningEffort)
-            && supportsCodexReasoningEffort(
-                codexModelsState.models,
-                model,
-                previousModelReasoningEffort
-            ) === false
+        const shouldClearReasoningEffort = Boolean(previousModelReasoningEffort) && (
+            agentFlavor === 'codex'
+                ? supportsCodexReasoningEffort(
+                    codexModelsState.models,
+                    model,
+                    previousModelReasoningEffort
+                ) === false
+                : agentFlavor === 'dsh' && typeof model === 'string'
+                    ? !getDshReasoningOptions(
+                        dshModelsState.availableModels,
+                        dshModelsState.current,
+                        model
+                    ).some((option) => option.value === previousModelReasoningEffort)
+                    : false
+        )
 
         try {
             await applyModelChangeWithReasoningRollback({
@@ -1292,6 +1323,7 @@ function SessionChatInner(props: SessionChatProps) {
                 setModel,
                 setModelReasoningEffort
             })
+            if (agentFlavor === 'dsh') await dshModelsState.refetch()
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
@@ -1301,6 +1333,9 @@ function SessionChatInner(props: SessionChatProps) {
     }, [
         agentFlavor,
         codexModelsState.models,
+        dshModelsState.availableModels,
+        dshModelsState.current,
+        dshModelsState.refetch,
         props.session.modelReasoningEffort,
         setModelReasoningEffort,
         setModel,
@@ -1352,13 +1387,14 @@ function SessionChatInner(props: SessionChatProps) {
     const handleModelReasoningEffortChange = useCallback(async (modelReasoningEffort: string | null) => {
         try {
             await setModelReasoningEffort(modelReasoningEffort)
+            if (agentFlavor === 'dsh') await dshModelsState.refetch()
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set model reasoning effort:', e)
         }
-    }, [setModelReasoningEffort, props.onRefresh, haptic])
+    }, [agentFlavor, dshModelsState.refetch, setModelReasoningEffort, props.onRefresh, haptic])
 
     const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
@@ -1730,7 +1766,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                canSteer={agentFlavor === 'pi' && props.session.thinking && !controlledByUser}
+                                canSteer={(agentFlavor === 'pi' || agentFlavor === 'dsh')
+                                    && props.session.thinking
+                                    && !controlledByUser}
                             />
                         </div>
 
@@ -1752,12 +1790,14 @@ function SessionChatInner(props: SessionChatProps) {
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
                         model={props.session.model}
-                        modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
+                        modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'dsh' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
+                                : agentFlavor === 'dsh'
+                                    ? dshModelOptions
                                 : agentFlavor === 'cursor'
                                     ? (
                                         cursorCatalogPending
@@ -1785,6 +1825,8 @@ function SessionChatInner(props: SessionChatProps) {
                         availableModelReasoningEffortOptions={
                             agentFlavor === 'codex'
                                 ? codexReasoningEffortOptions
+                                : agentFlavor === 'dsh' && dshReasoningEffortOptions && dshReasoningEffortOptions.length > 0
+                                    ? dshReasoningEffortOptions
                                 : agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
                                     ? opencodeReasoningEffortState.options
                                     : undefined
@@ -1847,6 +1889,8 @@ function SessionChatInner(props: SessionChatProps) {
                         onModelChange={
                             agentFlavor === 'codex'
                                 ? (props.session.active && !controlledByUser && !codexModelsState.error ? handleModelChange : undefined)
+                                : agentFlavor === 'dsh'
+                                    ? (props.session.active && !controlledByUser && !dshModelsState.error ? handleModelChange : undefined)
                                 : agentFlavor === 'cursor'
                                     ? (props.session.active
                                         && !controlledByUser
@@ -1878,10 +1922,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onModelReasoningEffortChange={
-                            (agentFlavor === 'codex' || agentFlavor === 'opencode')
+                            (agentFlavor === 'codex' || agentFlavor === 'dsh' || agentFlavor === 'opencode')
                                 && props.session.active
                                 && !controlledByUser
-                                && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)
+                            && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)
+                            && (agentFlavor !== 'dsh' || Boolean(dshReasoningEffortOptions?.length))
                                 ? handleModelReasoningEffortChange
                                 : undefined
                         }

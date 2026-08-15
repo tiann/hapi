@@ -44,6 +44,15 @@ describe('sessionResume', () => {
         })).toBeUndefined()
     })
 
+    it('resolveAgentSessionIdFromMetadata returns the DSH native session id', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'dsh',
+            dshSessionId: 'dsh-1'
+        })).toBe('dsh-1')
+    })
+
     it('resolveAgentSessionIdFromMetadata defaults to claude when flavor is missing', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',

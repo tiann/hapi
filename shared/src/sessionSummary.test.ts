@@ -128,6 +128,19 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.agentSessionId).toBe('pi-session-1')
     })
 
+    it('includes dshSessionId as the native resume token', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-session-1'
+            }
+        }))
+
+        expect(summary.metadata?.agentSessionId).toBe('dsh-session-1')
+    })
+
     it.each([
         undefined,
         'custom',

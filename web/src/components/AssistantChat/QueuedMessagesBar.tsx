@@ -366,7 +366,7 @@ export function QueuedMessagesBar({
                             })
                         }
 
-                        // Steer delivers this message into the active Pi turn. Gated
+                        // Steer delivers this message into the active native turn. Gated
                         // on the same server-echo + no-pending-op conditions as
                         // Edit/Cancel, and never offered for future-scheduled rows
                         // (the hub rejects those).

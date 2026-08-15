@@ -41,6 +41,8 @@ import {
     type RpcStatFilesResponse,
     type RpcListAgyModelsResponse,
     type RpcListCodexModelsResponse,
+    type RpcListDshSessionsResponse,
+    type RpcListDshModelsResponse,
     type RpcListPiSessionsResponse,
     type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
@@ -74,6 +76,8 @@ export type {
     RpcStatFilesResponse,
     RpcListAgyModelsResponse,
     RpcListCodexModelsResponse,
+    RpcListDshSessionsResponse,
+    RpcListDshModelsResponse,
     RpcListPiSessionsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
@@ -1024,11 +1028,7 @@ export class SyncEngine {
         return this.messageService.cancelQueuedMessage(sessionId, messageId)
     }
 
-    /**
-     * Ask the CLI to deliver one waiting-queue message into the active Pi turn
-     * (Pi native steer). Only pi sessions support this today; the CLI's
-     * `steer-queued-message` handler is registered by the pi runner alone.
-     */
+    /** Ask the CLI to deliver one waiting message into an active native turn. */
     async steerQueuedMessage(
         sessionId: string,
         messageId: string
@@ -1037,8 +1037,8 @@ export class SyncEngine {
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
-        if (session.metadata?.flavor !== 'pi') {
-            return { status: 'failed', error: 'Steering is only supported for Pi sessions', localId: null }
+        if (session.metadata?.flavor !== 'pi' && session.metadata?.flavor !== 'dsh') {
+            return { status: 'failed', error: 'Steering is only supported for Pi and DeepSeek Harness sessions', localId: null }
         }
         if (session.agentState?.controlledByUser === true) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
@@ -2389,6 +2389,7 @@ export class SyncEngine {
         if (flavor === 'grok') return metadata.grokSessionId ?? null
         if (flavor === 'agy') return metadata.agySessionId ?? null
         if (flavor === 'cursor') return metadata.cursorSessionId ?? null
+        if (flavor === 'dsh') return metadata.dshSessionId ?? null
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
         if (flavor === 'copilot') return metadata.copilotSessionId ?? null
         if (flavor === 'pi') return metadata.piSessionId ?? null
@@ -3526,6 +3527,7 @@ export class SyncEngine {
             && (prev?.opencodeSessionId ?? null) === (next.opencodeSessionId ?? null)
             && (prev?.grokSessionId ?? null) === (next.grokSessionId ?? null)
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
+            && (prev?.dshSessionId ?? null) === (next.dshSessionId ?? null)
             && (prev?.piSessionId ?? null) === (next.piSessionId ?? null)
             && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
             && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
@@ -3902,6 +3904,18 @@ export class SyncEngine {
 
     async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListPiSessionsResponse> {
         return await this.rpcGateway.listPiSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async listDshSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListDshSessionsResponse> {
+        return await this.rpcGateway.listDshSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
+        return await this.rpcGateway.listDshModelsForMachine(machineId)
+    }
+
+    async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
+        return await this.rpcGateway.listDshModelsForSession(sessionId)
     }
 
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {

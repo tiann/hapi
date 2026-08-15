@@ -164,6 +164,32 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--hapi-session-id')
     })
 
+    it('passes DSH native and HAPI session ids separately on resume', () => {
+        const args = buildCliArgs('dsh', {
+            directory: '/tmp',
+            resumeSessionId: 'dsh-session-1',
+            existingSessionId: 'hapi-session-1',
+            model: 'deepseek-v4-pro',
+            modelReasoningEffort: 'max'
+        })
+
+        expect(args).toEqual([
+            'dsh',
+            '--resume',
+            'dsh-session-1',
+            '--hapi-starting-mode',
+            'remote',
+            '--started-by',
+            'runner',
+            '--existing-session-id',
+            'hapi-session-1',
+            '--model',
+            'deepseek-v4-pro',
+            '--model-reasoning-effort',
+            'max'
+        ])
+    })
+
     it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
         const args = buildCliArgs('cursor', {
             directory: '/tmp',

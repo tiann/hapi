@@ -130,6 +130,7 @@ describe('convenience functions', () => {
         expect(supportsModelChange('codex')).toBe(true)
         expect(supportsModelChange('opencode')).toBe(true)
         expect(supportsModelChange('cursor')).toBe(true)
+        expect(supportsModelChange('dsh')).toBe(true)
         expect(supportsModelChange('pi')).toBe(true)
         expect(supportsModelChange('kimi')).toBe(true)
         expect(supportsModelChange(null)).toBe(false)

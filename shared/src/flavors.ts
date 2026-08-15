@@ -18,6 +18,7 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     grok: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     codex: new Set([Capabilities.ModelChange]),
     cursor: new Set([Capabilities.ModelChange]),
+    dsh: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
     pi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
 }
@@ -32,6 +33,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     grok: 'Grok Build',
     codex: 'Codex',
     cursor: 'Cursor',
+    dsh: 'DeepSeek Harness',
     opencode: 'OpenCode',
     pi: 'Pi',
 }

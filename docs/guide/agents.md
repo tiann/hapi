@@ -9,6 +9,7 @@ HAPI is a wrapper around AI coding agents. One CLI (`hapi <agent>`) starts any s
 | Claude Code | `hapi` / `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
 | Codex | `hapi codex` | TUI wrapper (local) + `codex app-server` JSON-RPC (remote) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
+| DeepSeek Harness | `hapi dsh` | DSH Web HTTP/WebSocket RPC | — | ✓ | `default` `read-only` `workspace-write` `danger-full-access` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
@@ -229,6 +230,7 @@ HAPI also exposes Grok's common slash commands, discovers skills from `.grok/ski
 
 - OAuth/device-code login must be completed outside the HAPI Web UI.
 - Grok subscription, credit, and model availability are controlled by xAI.
+- DeepSeek Harness structured question prompts are not yet mapped to HAPI's question UI.
 
 If a remote session reports authentication failure, run `grok login --device-auth` on the runner machine and retry.
 
@@ -236,6 +238,7 @@ If a remote session reports authentication failure, run `grok login --device-aut
 
 - **Claude Code** (`hapi` / `hapi claude`) — the default and recommended flavor; local sessions wrap the native TUI, remote sessions drive the Claude Agent SDK. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
 - **Codex** (`hapi codex`) — OpenAI's Codex CLI; remote sessions talk to `codex app-server` over JSON-RPC, with a dedicated `plan` collaboration mode. [openai/codex](https://github.com/openai/codex)
+- **DeepSeek Harness** (`hapi dsh`) — connects to the DSH Web runtime for native session creation, resume, model and reasoning selection, permission approvals, queued-message steering, and history import. Start `dsh web --port 3080` first; set `HAPI_DSH_URL` when it is not listening on the default `http://127.0.0.1:3080`. DSH sessions are remote-control only in HAPI because the Web runtime owns the native client.
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)

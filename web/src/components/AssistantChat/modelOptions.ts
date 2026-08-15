@@ -128,7 +128,7 @@ export function getModelOptionsForFlavor(
     // OpenCode discovers models dynamically via the listOpencodeModels RPC. Until
     // those options arrive, render an empty list rather than the Claude fallback —
     // the latter would surface unrelated Claude models in an OpenCode session.
-    if (flavor === 'opencode') {
+    if (flavor === 'opencode' || flavor === 'dsh') {
         return []
     }
     if (flavor === 'cursor') {
@@ -195,7 +195,7 @@ export function getNextModelForFlavor(
     // to the Claude preset cycler — that would post `sonnet`/`opus` into an
     // OpenCode session and the next turn would attempt `session/set_model` with a
     // Claude id. Keep the current model unchanged instead.
-    if (flavor === 'opencode') {
+    if (flavor === 'opencode' || flavor === 'dsh') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {
