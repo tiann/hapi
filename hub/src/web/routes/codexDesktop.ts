@@ -1315,6 +1315,17 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     const appendedMessages: StoredMessage[] = []
     let latestActivity = canonical.updatedAt
 
+    if (
+        !engine
+        && sessionStates.slice(1).some(
+            (source) => options.store.sessionJobs.list(source.sessionId).length > 0
+        )
+    ) {
+        throw new Error(
+            'Sync engine unavailable; retry merge so attached-job redirects are preserved'
+        )
+    }
+
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
         for (const message of source.storedMessages) {
@@ -1342,11 +1353,6 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
             await engine.deleteSession(source.sessionId)
         } else {
-            if (options.store.sessionJobs.list(source.sessionId).length > 0) {
-                throw new Error(
-                    'Sync engine unavailable; retry merge so attached-job redirects are preserved'
-                )
-            }
             const deleted = options.store.sessions.deleteSession(source.sessionId, options.namespace)
             if (!deleted) {
                 throw new Error(`Failed to delete duplicate Hapi session: ${source.sessionId}`)

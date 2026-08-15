@@ -624,13 +624,9 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
-        // Queue-idle debounced running is ignored (#1553); harness resume still lands.
+        // Foreground ACP activity maps to hub thinking (#1470); bucket flicker with
+        // attached jobs is handled in web/sessionInProgress (#1553).
         harness.agentActivityListener!(true, 'state_update_running');
-        harness.agentActivityListener!(true, 'state_update_running');
-        expect(session.thinking).toBe(false);
-        expect(keepAlive).not.toHaveBeenCalled();
-
-        harness.agentActivityListener!(true, 'state_update_requires_action');
         expect(session.thinking).toBe(true);
         expect(keepAlive).toHaveBeenCalled();
 

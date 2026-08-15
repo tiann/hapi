@@ -828,19 +828,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * #1470 / #1502 / #1553: ACP foreground state → hub thinking via keepalive.
-     * Suppress only debounced `state_update:running` while queue-idle — harness
-     * resume (`requires_action`, permission) and prompt() still own real work.
+     * #1470 / #1502: ACP foreground state → hub thinking via keepalive.
+     * Bucket flicker with attached jobs is handled in web/sessionInProgress (#1553).
      */
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
-        backend.setAgentActivityListener((thinking, source) => {
-            if (
-                thinking
-                && source === 'state_update_running'
-                && session.queue.size() === 0
-            ) {
-                return;
-            }
+        backend.setAgentActivityListener((thinking) => {
             if (session.thinking !== thinking) {
                 session.onThinkingChange(thinking);
             }
