@@ -81,34 +81,43 @@ export class DshProjector {
             }
             case 'assistant/message': {
                 const { turn, step, message, usage } = event.data
-                this.stepState(turn, step).finished = true
-                const text = message.content
-                    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-                    .map((block) => block.text)
-                    .join('\n\n')
-                if (text.length > 0) {
-                    out.push({
-                        type: 'text',
-                        text,
-                        id: `dsh-${this.dshSessionId.slice(0, 8)}-t${turn}-s${step}-final`,
-                        streamSnapshot: true,
-                        dshSeq: event.seq,
-                        dshMessageId: message.id
-                    })
-                }
-                const reasoningText = message.content
-                    .filter((block): block is { type: 'reasoning'; text: string } => block.type === 'reasoning')
-                    .map((block) => block.text)
-                    .filter((text) => text.length > 0)
-                    .join('\n')
-                if (reasoningText.length > 0) {
-                    out.push({
-                        type: 'reasoning',
-                        text: reasoningText,
-                        id: `dsh-${this.dshSessionId.slice(0, 8)}-t${turn}-s${step}-reasoning-final`,
-                        streamSnapshot: true,
-                        dshSeq: event.seq
-                    })
+                const state = this.stepState(turn, step)
+                state.finished = true
+                // Text/reasoning are already emitted per block when their
+                // block-end chunks arrive (same ids the live snapshots used).
+                // Re-emitting here with a different id would render a second
+                // copy of the same content. Only fall back to a full emit when
+                // the step produced no streamed blocks at all.
+                        const streamedBlocks = state.streamed
+                if (!streamedBlocks) {
+                    const text = message.content
+                        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+                        .map((block) => block.text)
+                        .join('\n\n')
+                    if (text.length > 0) {
+                        out.push({
+                            type: 'text',
+                            text,
+                            id: `dsh-${this.dshSessionId.slice(0, 8)}-t${turn}-s${step}-final`,
+                            streamSnapshot: true,
+                            dshSeq: event.seq,
+                            dshMessageId: message.id
+                        })
+                    }
+                    const reasoningText = message.content
+                        .filter((block): block is { type: 'reasoning'; text: string } => block.type === 'reasoning')
+                        .map((block) => block.text)
+                        .filter((text) => text.length > 0)
+                        .join('\n')
+                    if (reasoningText.length > 0) {
+                        out.push({
+                            type: 'reasoning',
+                            text: reasoningText,
+                            id: `dsh-${this.dshSessionId.slice(0, 8)}-t${turn}-s${step}-reasoning-final`,
+                            streamSnapshot: true,
+                            dshSeq: event.seq
+                        })
+                    }
                 }
                 if (usage) {
                     this.emitUsage(usage, out, event.seq)
@@ -186,6 +195,7 @@ export class DshProjector {
         const state = this.stepState(turn, step)
         switch (chunk.type) {
             case 'block-start': {
+                state.streamed = true
                 const kind: BlockState['kind'] = chunk.blockType === 'text' || chunk.blockType === 'reasoning' || chunk.blockType === 'tool-call'
                     ? chunk.blockType
                     : 'text'
@@ -343,6 +353,8 @@ type StepState = {
     turn: number
     step: number
     blocks: Map<number, BlockState>
+    /** Any block-start chunk observed (distinct from final assistant/message). */
+    streamed?: boolean
     finished?: boolean
 }
 

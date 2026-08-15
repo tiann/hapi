@@ -137,6 +137,40 @@ describe('DshProjector', () => {
         expect((failedOut[0] as { output: { error: { code: string } } }).output).toMatchObject({ error: { code: 'EXIT_1' } })
     })
 
+    it('does not re-emit streamed text when assistant/message arrives', () => {
+        const projector = new DshProjector(SESSION)
+        const streamed = [
+            ...projector.onEvent(ev('turn/start', 0, { turn: 1 })),
+            ...projector.onEvent(ev('assistant/chunk', 1, {
+                turn: 1, step: 1,
+                chunk: { type: 'block-start', index: 0, blockType: 'text' }
+            })),
+            ...projector.onEvent(ev('assistant/chunk', 2, {
+                turn: 1, step: 1,
+                chunk: { type: 'text-delta', index: 0, text: 'Hello!' }
+            })),
+            ...projector.onEvent(ev('assistant/chunk', 3, {
+                turn: 1, step: 1,
+                chunk: { type: 'block-end', index: 0, block: { type: 'text', text: 'Hello!' } }
+            }))
+        ]
+        expect(streamed.filter((m) => m.type === 'text' && m.live !== true)).toHaveLength(1)
+
+        const settled = projector.onEvent(ev('assistant/message', 4, {
+            turn: 1, step: 1,
+            message: {
+                id: 'm-1', role: 'assistant',
+                content: [{ type: 'text', text: 'Hello!' }],
+                source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4' }
+            },
+            usage: { inputTokens: 1, outputTokens: 1 }
+        }))
+        // No second text copy — only usage + the native journal entry.
+        expect(settled.filter((m) => m.type === 'text')).toHaveLength(0)
+        expect(settled.filter((m) => m.type === 'usage')).toHaveLength(1)
+        expect(settled.filter((m) => m.type === 'dsh_native')).toHaveLength(1)
+    })
+
     it('emits turn_complete on turn/end and persists the native events', () => {
         const projector = new DshProjector(SESSION)
         const out = [
