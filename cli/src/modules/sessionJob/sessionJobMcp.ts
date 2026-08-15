@@ -13,6 +13,7 @@ import {
     SessionJobError,
     SESSION_JOB_RUN_RECIPE,
     formatSessionJobNotFoundHint,
+    isSessionJobNotFoundError,
     clearSessionJob,
     listSessionJobs,
     updateSessionJob
@@ -185,7 +186,7 @@ export async function handleSessionJobTool(
             isError: false
         }
     } catch (error) {
-        if (error instanceof SessionJobError && error.code === 'not_found') {
+        if (isSessionJobNotFoundError(error)) {
             const action = args.action === 'clear' ? 'clear' : 'update'
             return {
                 text: `session_job failed: ${formatSessionJobNotFoundHint(action)}`,

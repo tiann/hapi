@@ -40,6 +40,24 @@ export function formatSessionJobNotFoundHint(action: 'update' | 'clear'): string
     ].join(' ')
 }
 
+/** True when hub/CLI reports a missing session job (incl. duplicate-class instanceof misses). */
+export function isSessionJobNotFoundError(error: unknown): boolean {
+    if (error instanceof SessionJobError && error.code === 'not_found') {
+        return true
+    }
+    if (typeof error === 'object' && error !== null) {
+        const candidate = error as { name?: string; code?: string }
+        if (candidate.code === 'not_found' && candidate.name === 'SessionJobError') {
+            return true
+        }
+    }
+    // MCP server bundles can load two SessionJobError identities; message still matches.
+    if (error instanceof Error && /\bjob not found\b/i.test(error.message)) {
+        return true
+    }
+    return false
+}
+
 /** Shown after update when progress reads done but status is still running. */
 export const SESSION_JOB_REMAINING_ZERO_HINT =
     'remaining is 0 but status is still running — pass --status completed when work is finished, or hapi job clear to drop the meter.'
