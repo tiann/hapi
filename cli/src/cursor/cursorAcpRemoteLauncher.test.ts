@@ -2279,7 +2279,8 @@ describe('cursorAcpRemoteLauncher', () => {
         };
 
         expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
-        expect(session.queue.pendingLocalIds()).toContain(`bridge:${eventId}`);
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === eventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
         expect(await bridgeHandler!(bridgePayload)).toEqual({
             ok: false,
             reason: 'not_bridgeable'
@@ -2293,7 +2294,8 @@ describe('cursorAcpRemoteLauncher', () => {
 
         expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
         expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
-        expect(session.queue.pendingLocalIds()).toContain(`bridge:${eventId}`);
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === eventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
 
         session.queue.close();
         nextWait.release?.();
@@ -2592,7 +2594,8 @@ describe('cursorAcpRemoteLauncher', () => {
             lastUserMessage: 'first',
             priorAssistantClaimsDone: false
         })).toEqual({ ok: true });
-        expect(session.queue.pendingLocalIds()).toContain(`bridge:${recorded?.eventId}`);
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === recorded?.eventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
 
         // Newer user intent arrives after Bridge is already at the head.
         session.queue.push('correction instead of retry', { permissionMode: 'default' });
@@ -2859,7 +2862,8 @@ describe('cursorAcpRemoteLauncher', () => {
             lastUserMessage: 'first',
             priorAssistantClaimsDone: false
         })).toEqual({ ok: true });
-        expect(session.queue.pendingLocalIds()).toContain(`bridge:${staleEventId}`);
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === staleEventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
 
         // Idle structural stderr supersedes the displayed error and drops the pending bridge.
         expect(harness.stderrErrorHandler).toBeTypeOf('function');
@@ -2872,7 +2876,7 @@ describe('cursorAcpRemoteLauncher', () => {
             (call) => call[0]?.type === 'modelError'
         ));
 
-        expect(session.queue.pendingLocalIds()).not.toContain(`bridge:${staleEventId}`);
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === staleEventId)).toBe(false);
         expect(await bridgeHandler!({
             eventId: staleEventId,
             kind: 'rate_limited',

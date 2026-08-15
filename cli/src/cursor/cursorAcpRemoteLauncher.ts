@@ -1302,11 +1302,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         };
 
         // Front of queue only when no newer user turn is waiting.
-        // Provenance is queue-owned (`internal`); localId is cancel/telemetry only.
+        // Provenance is queue-owned (`internal`). Omit synthetic localId so
+        // dequeue cannot ACK a client prompt that reused `bridge:${eventId}`.
         this.session.queue.unshiftIsolated(
             prompt,
             mode,
-            `bridge:${bridgedEventId}`,
+            undefined,
             { kind: 'model-error-bridge', eventId: bridgedEventId }
         );
         logger.debug(`[cursor-acp] modelError bridge enqueued for eventId=${bridgedEventId} source=${source}`);

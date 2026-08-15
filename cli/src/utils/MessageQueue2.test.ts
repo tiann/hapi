@@ -486,6 +486,29 @@ describe('MessageQueue2', () => {
         expect(queue.size()).toBe(0);
     });
 
+    it('does not ACK a later forged bridge: localId when dequeuing a synthetic Bridge', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const received: string[][] = [];
+        queue.onBatchConsumed = (localIds) => { received.push(localIds); };
+
+        const eventId = 'evt-ack';
+        queue.unshiftIsolated(
+            'bridge retry',
+            'local',
+            undefined,
+            { kind: 'model-error-bridge', eventId }
+        );
+        queue.push('real prompt', 'local', `bridge:${eventId}`);
+
+        const batch1 = await queue.waitForMessagesAndGetAsString();
+        expect(batch1?.message).toBe('bridge retry');
+        expect(received).toEqual([]);
+
+        const batch2 = await queue.waitForMessagesAndGetAsString();
+        expect(batch2?.message).toBe('real prompt');
+        expect(received).toEqual([[`bridge:${eventId}`]]);
+    });
+
     it('should skip onBatchConsumed when batch has no localIds', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         let called = false;
