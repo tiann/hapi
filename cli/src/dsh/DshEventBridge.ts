@@ -72,6 +72,31 @@ export class DshEventBridge {
         ])
     }
 
+    /** Seed foldable projections from the history tail's projections block. */
+    private async bootstrapProjections(): Promise<void> {
+        // The host computes projection watermarks lazily; a brand-new session
+        // may answer with an empty block for a moment, so retry briefly.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                const page = await this.options.client.sessionHistory({
+                    sessionId: this.options.dshSessionId,
+                    maxMessages: 1
+                })
+                const projections = page.projections
+                if (projections && typeof projections.asOfSeq === 'number') {
+                    for (const [key, value] of Object.entries(projections.values)) {
+                        if (value === undefined) continue
+                        this.handleProjection(key, value, projections.asOfSeq)
+                    }
+                    return
+                }
+            } catch (error) {
+                logger.debug(`[${this.logTag}] projection bootstrap attempt ${attempt + 1} failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1_500))
+        }
+    }
+
     private async pumpMux(mux: AsyncIterable<RpcRequest<MuxFrame>>, signal: AbortSignal): Promise<void> {
         for await (const envelope of mux) {
             if (signal.aborted) return
@@ -104,6 +129,14 @@ export class DshEventBridge {
             }
             case 'session/subscribed': {
                 logger.debug(`[${this.logTag}] subscribed ${frame.sessionId} lastSeq=${frame.lastSeq}`)
+                // The host only pushes projections on change; the history tail
+                // carries the current snapshot. Seed once, after the host has
+                // attached the session (subscribed), so permissions/goal/title
+                // are available before any change.
+                if (frame.sessionId === this.options.dshSessionId && !this.projectionsSeeded) {
+                    this.projectionsSeeded = true
+                    void this.bootstrapProjections()
+                }
                 break
             }
             case 'approval/requested': {
@@ -184,6 +217,13 @@ export class DshEventBridge {
         }
     }
 
+    private subagentIds = new Set<string>()
+    private projectionsSeeded = false
+
+    private emitSubagentCount(seq: number): void {
+        this.emitState({ seq, subagentCount: this.subagentIds.size })
+    }
+
     private handleHostFrame(frame: HostFrame): void {
         switch (frame.type) {
             case 'host/session-status': {
@@ -202,14 +242,25 @@ export class DshEventBridge {
             case 'host/session-added': {
                 if (frame.origin === 'subagent') {
                     this.childProjectors.set(frame.sessionId, new DshProjector(frame.sessionId))
+                    this.subagentIds.add(frame.sessionId)
+                    this.emitSubagentCount(this.seqOf())
                 }
                 break
             }
             case 'host/session-removed': {
                 this.childProjectors.delete(frame.sessionId)
+                if (this.subagentIds.delete(frame.sessionId)) {
+                    this.emitSubagentCount(this.seqOf())
+                }
                 break
             }
             case 'host/remote-event': {
+                if (frame.event === 'agent-preset/selected' && frame.args[0] !== undefined) {
+                    const preset = isObject(frame.args[0]) ? asString(frame.args[0].preset ?? frame.args[0].id) : undefined
+                    if (preset !== undefined) {
+                        this.emitState({ seq: this.seqOf(), agentPreset: preset })
+                    }
+                }
                 this.options.onRemoteEvent?.(frame.event, frame.args)
                 break
             }
@@ -249,6 +300,23 @@ export class DshEventBridge {
     }
 
     private handleProjection(key: string, value: unknown, seq: number): void {
+        if (key === 'permissions' && isObject(value)) {
+            const options = Array.isArray(value.options)
+                ? value.options
+                    .filter((o): o is Record<string, unknown> => isObject(o))
+                    .map((o) => ({
+                        value: asString(o.value) ?? '',
+                        name: asString(o.name) ?? asString(o.value) ?? '',
+                        ...(asString(o.description) !== undefined ? { description: asString(o.description)! } : {})
+                    }))
+                    .filter((o) => o.value.length > 0)
+                : []
+            const currentValue = asString(value.currentValue)
+            if (options.length > 0 && currentValue !== undefined) {
+                this.emitState({ seq, permissionPresets: { options, currentValue } })
+                return
+            }
+        }
         if (key === 'goal' && isObject(value)) {
             const goal: DshStateSnapshot['goal'] = {
                 id: asString(value.id),

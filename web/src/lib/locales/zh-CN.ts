@@ -1196,6 +1196,8 @@ export default {
   'dsh.deny': '拒绝',
   'dsh.approvalUnknownTool': '工具权限',
   'dsh.model': '模型',
+  'dsh.mode': '模式',
+  'dsh.permission': '权限',
   'dsh.noModels': 'Host 没有可用模型。',
   'dsh.presets': 'Agent 预设',
   'dsh.loadPresets': '加载预设',

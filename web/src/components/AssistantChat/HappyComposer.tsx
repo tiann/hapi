@@ -309,6 +309,12 @@ export function HappyComposer(props: {
      *  disambiguates when two providers share a modelId). */
     piSelectedModel?: { provider: string; modelId: string } | null
     availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
+    /** DeepSeek Harness agent modes (agent presets, runtime-discovered). */
+    dshModes?: Array<{ id: string; name?: string; description?: string; current?: boolean }>
+    /** DeepSeek Harness permission presets (permissions projection). */
+    dshPermissionPresets?: { options: Array<{ value: string; name: string }>; currentValue: string } | null
+    onDshModeSelect?: (id: string) => void
+    onDshPermissionSelect?: (value: string) => void
     availableEffortOptions?: Array<{ value: string; name?: string }>
     /** Cursor: selected base model key (not wire id). */
     selectedModelBase?: string | null
@@ -410,6 +416,10 @@ export function HappyComposer(props: {
         piModels,
         piSelectedModel,
         availableModelReasoningEffortOptions,
+        dshModes,
+        dshPermissionPresets,
+        onDshModeSelect,
+        onDshPermissionSelect,
         availableEffortOptions,
         selectedModelBase,
         selectedModelVariant,
@@ -1548,12 +1558,16 @@ export function HappyComposer(props: {
             && modelEffortOptions.length > 1
         )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
+    const showDshModeSettings = Boolean(onDshModeSelect && dshModes && dshModes.length > 0)
+    const showDshPermissionSettings = Boolean(onDshPermissionSelect && dshPermissionPresets && dshPermissionPresets.options.length > 0)
     // For Pi: hide effort when selected model explicitly has reasoning: false
     const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
     const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden)
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
-        showCollaborationSettings
+        showDshModeSettings
+        || showDshPermissionSettings
+        || showCollaborationSettings
         || showCopilotAgentModeSettings
         || showPermissionSettings
         || showModelSettings
@@ -1653,10 +1667,10 @@ export function HappyComposer(props: {
         }
 
         // Non-Pi flavors: original unified gear menu
-        if (showSettings && (showCollaborationSettings || showCopilotAgentModeSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
+        if (showSettings && (showCollaborationSettings || showCopilotAgentModeSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings || showDshModeSettings || showDshPermissionSettings)) {
             return (
                 <div ref={settingsOverlayRef} className={`${overlayPositionClass} w-full`}>
-                    <FloatingOverlay maxHeight={320}>
+                    <FloatingOverlay maxHeight={440}>
                         {showCollaborationSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
@@ -1863,7 +1877,90 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showModelSettings && showModelEffortSettings ? (
+                        {(showDshModeSettings || showDshPermissionSettings) && (showModelSettings || showModelEffortSettings) ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showDshModeSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('dsh.mode')}
+                                </div>
+                                {dshModes!.map((mode) => (
+                                    <button
+                                        key={mode.id}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => onDshModeSelect!(mode.id)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        title={mode.description}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                mode.current
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {mode.current && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={mode.current ? 'text-[var(--app-link)]' : ''}>
+                                            {mode.name ?? mode.id}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {showDshModeSettings && showDshPermissionSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showDshPermissionSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('dsh.permission')}
+                                </div>
+                                {dshPermissionPresets!.options.map((option) => (
+                                    <button
+                                        key={option.value}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => onDshPermissionSelect!(option.value)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                dshPermissionPresets!.currentValue === option.value
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {dshPermissionPresets!.currentValue === option.value && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={dshPermissionPresets!.currentValue === option.value ? 'text-[var(--app-link)]' : ''}>
+                                            {option.name}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {showDshPermissionSettings && showModelEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -1966,10 +2063,6 @@ export function HappyComposer(props: {
                                     </button>
                                 ))}
                             </div>
-                        ) : null}
-
-                        {(showModelReasoningEffortSettings || showEffortSettings) && showFastModeSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
                         {showFastModeSettings ? (

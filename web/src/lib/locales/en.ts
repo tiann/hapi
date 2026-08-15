@@ -1197,6 +1197,8 @@ export default {
   'dsh.deny': 'Deny',
   'dsh.approvalUnknownTool': 'Tool permission',
   'dsh.model': 'Model',
+  'dsh.mode': 'Mode',
+  'dsh.permission': 'Permission',
   'dsh.noModels': 'No models available from the host.',
   'dsh.presets': 'Agent presets',
   'dsh.loadPresets': 'Load presets',

@@ -49,9 +49,9 @@ export function DshSubagentsModal({ api, sessionId, onClose }: {
     const running = entries?.filter((entry) => entry.activity === 'running').length ?? 0
 
     return (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={onClose}>
             <div
-                className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-card-bg)] p-4"
+                className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 shadow-xl"
                 onClick={(e) => e.stopPropagation()}
             >
                 <div className="mb-3 flex items-center justify-between">

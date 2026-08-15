@@ -261,6 +261,19 @@ export const DshStateSnapshotSchema = z.object({
         model: z.string(),
         reasoningEffort: z.string().optional()
     }).optional(),
+    /** DSH permission presets (permissions projection). */
+    permissionPresets: z.object({
+        options: z.array(z.object({
+            value: z.string(),
+            name: z.string(),
+            description: z.string().optional()
+        })),
+        currentValue: z.string()
+    }).optional(),
+    /** Current agent preset (agentPreset/selected), e.g. 'standard'. */
+    agentPreset: z.string().optional(),
+    /** Direct subagent children currently known to the bridge. */
+    subagentCount: z.number().int().nonnegative().optional(),
     /** Session running status (host/session-status). */
     running: z.boolean().optional(),
     /** DSH-side session title (session/title projection). */

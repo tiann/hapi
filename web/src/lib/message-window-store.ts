@@ -458,8 +458,23 @@ function optimisticMessage(message: DecryptedMessage): boolean {
     return Boolean(message.localId && message.id === message.localId)
 }
 
+function isDshNativePayloadMessage(message: DecryptedMessage): boolean {
+    // dsh_state / dsh_native normalize to null (not rendered as blocks) but
+    // must stay in the window: the DSH panels fold them into session state.
+    const record = message.content && typeof message.content === 'object'
+        ? (message.content as { content?: unknown }).content
+        : null
+    const data = record && typeof record === 'object'
+        ? (record as { data?: unknown }).data
+        : null
+    return typeof data === 'object' && data !== null
+        && ((data as { type?: unknown }).type === 'dsh_state' || (data as { type?: unknown }).type === 'dsh_native')
+}
+
 function shouldRetainWindowMessage(message: DecryptedMessage): boolean {
-    return isQueuedForInvocation(message) || normalizeDecryptedMessage(message) !== null
+    return isQueuedForInvocation(message)
+        || isDshNativePayloadMessage(message)
+        || normalizeDecryptedMessage(message) !== null
 }
 
 function countNewRenderableMessages(

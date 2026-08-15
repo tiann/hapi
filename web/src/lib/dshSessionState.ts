@@ -26,7 +26,11 @@ export function useDshSessionState(messages: DecryptedMessage[] | undefined): {
             if (data.type === 'dsh_state' && isObject(data.state)) {
                 const candidate = data.state as DshStateSnapshot
                 if (typeof candidate.seq === 'number' && candidate.seq >= snapshot.seq) {
-                    snapshot = candidate
+                    // Merge per key (higher-seq wins per field): later
+                    // snapshots often carry only the changed sections (queue,
+                    // jobs, permissions...), so a whole-snapshot replace would
+                    // drop fields the last snapshot did not restate.
+                    snapshot = { ...snapshot, ...candidate, seq: candidate.seq }
                 }
             }
             if (data.type === 'dsh_native' && isObject(data.event)) {

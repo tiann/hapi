@@ -38,6 +38,8 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { DshSessionPanels } from '@/components/DshSessionPanels'
+import { useDshSessionState } from '@/lib/dshSessionState'
+import { useDshAction } from '@/hooks/mutations/useDshAction'
 import { DshSubagentsModal } from '@/components/DshSubagentsModal'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -748,6 +750,29 @@ function SessionChatInner(props: SessionChatProps) {
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
+    const { snapshot: dshState } = useDshSessionState(props.messages)
+    const dshSubagentCount = agentFlavor === 'dsh' ? (dshState.subagentCount ?? 0) : 0
+    const showDshSubagentsButton = agentFlavor === 'dsh' && (dshSubagentCount > 0 || dshSubagentsOpen)
+    const dshAction = useDshAction(props.api, props.session.id)
+    const [dshPresets, setDshPresets] = useState<import('@hapi/protocol').DshAgentPresetsResponse | null>(null)
+    useEffect(() => {
+        if (agentFlavor !== 'dsh') return
+        void props.api.dshAction<import('@hapi/protocol').DshAgentPresetsResponse>(
+            props.session.id,
+            { type: 'agentPresets', action: 'list' }
+        ).then((response) => setDshPresets(response.result)).catch(() => setDshPresets(null))
+    }, [agentFlavor, props.api, props.session.id])
+    const dshModes = agentFlavor === 'dsh' && dshPresets && dshPresets.presets.length > 0
+        ? dshPresets.presets.map((preset) => ({
+            id: preset.id,
+            name: preset.name ?? preset.id,
+            description: preset.description,
+            current: dshState.agentPreset === preset.id
+        }))
+        : undefined
+    const dshPermissionPresets = agentFlavor === 'dsh'
+        ? (dshState.permissionPresets ?? null)
+        : undefined
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
     const codexModelsState = useCodexModels({
         api: props.api,
@@ -1634,8 +1659,9 @@ function SessionChatInner(props: SessionChatProps) {
                 outlineActive={outlineOpen}
                 onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
                 terminalActive={terminalVisible}
-                onToggleDshSubagents={agentFlavor === 'dsh' ? () => setDshSubagentsOpen(v => !v) : undefined}
+                onToggleDshSubagents={showDshSubagentsButton ? () => setDshSubagentsOpen(v => !v) : undefined}
                 dshSubagentsActive={agentFlavor === 'dsh' ? dshSubagentsOpen : undefined}
+                dshSubagentCount={showDshSubagentsButton ? dshSubagentCount : undefined}
                 api={props.api}
                 titleSuggestionAvailable={props.titleSuggestionAvailable}
                 canReopen={inactiveCanResume}
@@ -1938,6 +1964,24 @@ function SessionChatInner(props: SessionChatProps) {
                                 && !cursorCatalogPending
                                 && !cursorModelsState.error
                                 ? handleCursorEffortChange
+                                : undefined
+                        }
+                        dshModes={dshModes}
+                        dshPermissionPresets={dshPermissionPresets}
+                        onDshModeSelect={
+                            agentFlavor === 'dsh' && props.session.active && !controlledByUser
+                                ? (id) => {
+                                    void dshAction.mutateAsync({ type: 'agentPresets', action: 'select', agentPreset: id })
+                                        .then(() => props.onRefresh())
+                                        .catch((e: unknown) => console.error('[dsh] mode select failed', e))
+                                }
+                                : undefined
+                        }
+                        onDshPermissionSelect={
+                            agentFlavor === 'dsh' && props.session.active && !controlledByUser
+                                ? (value) => {
+                                    void props.onSend(`/permission ${value}`, undefined, null, 'queue')
+                                }
                                 : undefined
                         }
                         onModelReasoningEffortChange={
