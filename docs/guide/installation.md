@@ -308,7 +308,7 @@ When the hub runs on one host and the runner on another, agents inside runner-sp
 [Runner host]  hapi runner start  → spawns session CLIs
                      │
                      ▼
-              agent session  → MCP list_peers / inspect_peer / ping_peer
+              agent session  → MCP list_peers / inspect_peer / ping_peer / spawn_peer
 ```
 
 On the runner host, configure the **same** hub URL and token the hub uses:

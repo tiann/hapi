@@ -24,6 +24,15 @@ export const INSPECT_PEER_TOOL_DESCRIPTION =
     'Extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT Grep, Glob, or Read it as a local filesystem path. ' +
     'Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl.'
 
+/** MCP `spawn_peer` tool description. Remit is required; empty shell is failure. */
+export const SPAWN_PEER_TOOL_DESCRIPTION =
+    'Spawn a new HAPI session on this machine and deliver a required first user message (the remit). ' +
+    'Creates the session, optionally names it, then uses the same delivery path as ping_peer. ' +
+    'Returns the new sessionId + name. Fails if the remit does not land (a sessionId with 0 user messages is a failed spawn). ' +
+    'Do not call POST /api/machines/.../spawn with a message field - the hub rejects it. Use spawn_peer to create and deliver the remit. ' +
+    'Prefer this (or `hapi spawn-peer`) over JWT+curl. Same hub/namespace as this session. ' +
+    'Does not clone the parent session\'s bypassPermissions; pass permissionMode only when the operator asked.'
+
 /** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
 export const PING_PEER_TOOL_DESCRIPTION =
     'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs on the same hub/namespace. ' +
@@ -131,6 +140,8 @@ export type SessionCitationSteerTools = {
     pingTool: string
     /** Flavor-specific discovery tool when no citation is available. */
     listPeersTool?: string
+    /** Flavor-specific spawn-with-remit tool, e.g. `mcp__hapi__spawn_peer`. */
+    spawnTool?: string
 }
 
 /**
@@ -150,6 +161,14 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
             ` To discover peers without a citation, call "${tools.listPeersTool}" ` +
             `(same hub/namespace; works from runner-spawned sessions). ` +
             `Shell fallback: hapi ping-peer --list.`
+    }
+    if (tools.spawnTool) {
+        text +=
+            ` To spawn a new peer with work attached, call "${tools.spawnTool}" ` +
+            `with directory and a required message (the remit). ` +
+            `Do not POST /api/machines/.../spawn with a message/prompt/text field - ` +
+            `the hub rejects it (HTTP 400). Use spawn_peer instead. ` +
+            `Shell fallback: hapi spawn-peer --dir PATH --name TITLE --message-file -.`
     }
     return text
 }

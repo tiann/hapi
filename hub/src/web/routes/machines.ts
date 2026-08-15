@@ -12,6 +12,20 @@ import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
 
+const SPAWN_REMIT_FIELDS = ['message', 'prompt', 'text'] as const
+
+function spawnRemitField(body: unknown): string | null {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return null
+    }
+    for (const key of SPAWN_REMIT_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(body, key)) {
+            return key
+        }
+    }
+    return null
+}
+
 export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -77,6 +91,13 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const body = await c.req.json().catch(() => null)
+        const remitField = spawnRemitField(body)
+        if (remitField) {
+            return c.json({
+                error: `POST /api/machines/:id/spawn does not accept '${remitField}'. Machine spawn creates an empty composer. Use hapi spawn-peer / MCP spawn_peer, or POST /api/sessions/:id/messages after spawn.`,
+                code: 'spawn_remit_not_supported'
+            }, 400)
+        }
         const parsed = SpawnSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
