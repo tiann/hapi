@@ -227,6 +227,64 @@ describe('runSessionJob', () => {
         expect(lastPatch.status).toBe('completed')
     })
 
+    it('exits 0 when child succeeds but meter was cleared before terminal write', async () => {
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async (_url: string, body: { status?: string }) => {
+                if (body.status === 'completed') {
+                    return { status: 404, data: { error: 'job not found' } }
+                }
+                return {
+                    status: 200,
+                    data: {
+                        job: {
+                            key: 'drain',
+                            label: 'drain',
+                            status: 'running',
+                            heartbeatAt: 2,
+                            startedAt: 1,
+                            updatedAt: 2
+                        }
+                    }
+                }
+            })
+        }
+
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => fakeChild(0)) as never,
+            setIntervalImpl: ((() => 1) as never),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async () => undefined
+        })
+
+        expect(exitCode).toBe(0)
+        expect(http.patch).toHaveBeenCalled()
+    })
+
     it('exits 1 when child succeeds but terminal status never persists', async () => {
         const http = {
             post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),

@@ -64,6 +64,15 @@ async function markTerminalWithRetry(options: {
             if (error instanceof SessionJobError && error.code === 'run_mismatch') {
                 break
             }
+            // Operator cleared the meter while the child still ran — detached, not a
+            // supervision failure. Retry transient 404s; accept absence on last attempt.
+            if (
+                error instanceof SessionJobError
+                && error.code === 'not_found'
+                && attempt === TERMINAL_STATUS_ATTEMPTS - 1
+            ) {
+                return
+            }
             if (attempt === TERMINAL_STATUS_ATTEMPTS - 1) {
                 break
             }
@@ -198,8 +207,10 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         })
     } catch (error) {
         // run_mismatch means another generation owns the key — not our meter to fix.
+        // not_found means the meter was cleared externally (e.g. session_job clear).
         terminalWriteFailed = !(
-            error instanceof SessionJobError && error.code === 'run_mismatch'
+            error instanceof SessionJobError
+            && (error.code === 'run_mismatch' || error.code === 'not_found')
         )
         const message = error instanceof Error ? error.message : String(error)
         console.error(`[hapi job run] failed to mark job ${terminalStatus}: ${message}`)
