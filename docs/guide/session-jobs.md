@@ -146,9 +146,12 @@ Then keep using `hapi job update` for counts/detail/status.
 Wrap the long process so something calls `hapi job update` on a timer (or on each unit completed). Minimum viable indeterminate job:
 
 ```bash
-hapi job set "$HAPI_SESSION_ID" rsync-backup --label 'rsync backup' --detail 'phase: copy'
+RUN_ID="$(uuidgen)"
+hapi job set "$HAPI_SESSION_ID" rsync-backup \
+  --run-id "$RUN_ID" --label 'rsync backup' --detail 'phase: copy'
 # in a loop / cron / companion script:
-hapi job update "$HAPI_SESSION_ID" rsync-backup --detail "phase: copy · $(date -u +%H:%M)Z"
+hapi job update "$HAPI_SESSION_ID" rsync-backup \
+  --expected-run-id "$RUN_ID" --detail "phase: copy · $(date -u +%H:%M)Z"
 ```
 
 When the process exits, mark completed/failed or clear. A stuck green/amber chip with a dead PID is worse than no chip.

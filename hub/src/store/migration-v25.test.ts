@@ -177,6 +177,35 @@ describe('Store V25→V26 migration: session_jobs table', () => {
         store.close()
     })
 
+    it('preserves runId when correcting startedAt without supplying runId', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'running',
+            runId: 'run-a'
+        }, 1_000)
+
+        const corrected = store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'running',
+            startedAt: 1_785_304_595_000
+        }, 2_000)
+        expect(corrected.outcome).toBe('upserted')
+        if (corrected.outcome !== 'upserted') throw new Error('unreachable')
+        expect(corrected.job.runId).toBe('run-a')
+        expect(corrected.job.startedAt).toBe(1_785_304_595_000)
+
+        const patched = store.sessionJobs.patch(
+            session.id,
+            'beets',
+            { status: 'completed', expectedRunId: 'run-a' },
+            3_000
+        )
+        expect(patched.outcome).toBe('patched')
+        store.close()
+    })
+
     it('fences delete with expectedRunId after key reuse', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
