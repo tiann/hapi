@@ -6,6 +6,12 @@ import { join } from 'node:path'
 import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
 
 describe('buildCliArgs', () => {
+    it('rejects unknown agent flavors instead of silently launching Claude', () => {
+        expect(() => buildCliArgs('unknown-agent', { directory: '/tmp' })).toThrow(
+            'Unsupported agent flavor: unknown-agent'
+        )
+    })
+
     it('adds --permission-mode for valid permission mode', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
@@ -342,6 +348,30 @@ describe('buildCliArgs', () => {
             '--model', 'grok-4.5',
             '--effort', 'low',
             '--permission-mode', 'plan'
+        ])
+    })
+
+    it('builds Reasonix ACP resume and config arguments', () => {
+        const args = buildCliArgs('reasonix', {
+            directory: '/tmp',
+            resumeSessionId: 'reasonix-session-1',
+            existingSessionId: 'hapi-session-1',
+            sessionGeneration: 'hub-generation',
+            model: 'deepseek-pro',
+            effort: 'high',
+            permissionMode: 'auto'
+        })
+
+        expect(args).toEqual([
+            'reasonix',
+            '--resume', 'reasonix-session-1',
+            '--hapi-starting-mode', 'remote',
+            '--started-by', 'runner',
+            '--existing-session-id', 'hapi-session-1',
+            '--session-generation', 'hub-generation',
+            '--model', 'deepseek-pro',
+            '--effort', 'high',
+            '--permission-mode', 'auto'
         ])
     })
     it('emits --hapi-session-id for agy reopen', () => {

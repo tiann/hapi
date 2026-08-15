@@ -104,6 +104,7 @@ import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
+import { useReasonixConfigOptions } from '@/hooks/queries/useReasonixConfigOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
@@ -823,6 +824,23 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, grokModelsState.availableModels])
+    const reasonixConfigState = useReasonixConfigOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'reasonix' && props.session.active && !controlledByUser
+    })
+    const reasonixModelOptions = useMemo(() => (
+        agentFlavor === 'reasonix'
+            ? reasonixConfigState.availableModels
+                .filter((model, index, all) => (
+                    all.findIndex((candidate) => candidate.modelId === model.modelId) === index
+                ))
+                .map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            : undefined
+    ), [agentFlavor, reasonixConfigState.availableModels])
     const copilotModelsState = useCopilotModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1770,6 +1788,8 @@ function SessionChatInner(props: SessionChatProps) {
                                         ? opencodeModelOptions
                                         : agentFlavor === 'grok'
                                             ? grokModelOptions
+                                        : agentFlavor === 'reasonix'
+                                            ? reasonixModelOptions
                                         : agentFlavor === 'copilot'
                                             ? copilotModelOptions
                                         // Pi uses its own provider-qualified picker (piModels prop).
@@ -1792,6 +1812,8 @@ function SessionChatInner(props: SessionChatProps) {
                         availableEffortOptions={
                             agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
+                                : agentFlavor === 'reasonix' && reasonixConfigState.effortOptions.length > 0
+                                    ? reasonixConfigState.effortOptions
                                 : undefined
                         }
                         active={props.session.active}
@@ -1862,6 +1884,10 @@ function SessionChatInner(props: SessionChatProps) {
                                             ? (props.session.active && !controlledByUser && !grokModelsState.error
                                                 ? handleModelChange
                                                 : undefined)
+                                        : agentFlavor === 'reasonix' && reasonixConfigState.availableModels.length > 0
+                                            ? (props.session.active && !controlledByUser && !reasonixConfigState.error
+                                                ? handleModelChange
+                                                : undefined)
                                         : agentFlavor === 'copilot'
                                             ? (props.session.active && !controlledByUser
                                                 ? handleModelChange
@@ -1890,7 +1916,13 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
                                     ? handleEffortChange
                                     : undefined)
-                                : handleEffortChange
+                                : agentFlavor === 'reasonix'
+                                    ? (props.session.active
+                                        && !controlledByUser
+                                        && reasonixConfigState.effortOptions.length > 0
+                                        ? handleEffortChange
+                                        : undefined)
+                                    : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
                         onServiceTierChange={

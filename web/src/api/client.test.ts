@@ -185,6 +185,43 @@ describe('ApiClient error mapping', () => {
         })
     })
 
+    it('forwards exact ACP permission option ids', async () => {
+        fetchMock
+            .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await api.approvePermission('session /?#', 'gate/1', {
+            decision: 'approved_for_session',
+            optionId: 'allow_always'
+        })
+        await api.denyPermission('session /?#', 'ask/1', {
+            decision: 'denied',
+            optionId: 'question:cancel'
+        })
+
+        expect(fetchMock.mock.calls[0]?.[0]).toBe(
+            '/api/sessions/session%20%2F%3F%23/permissions/gate%2F1/approve'
+        )
+        expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({
+                decision: 'approved_for_session',
+                optionId: 'allow_always'
+            })
+        })
+        expect(fetchMock.mock.calls[1]?.[0]).toBe(
+            '/api/sessions/session%20%2F%3F%23/permissions/ask%2F1/deny'
+        )
+        expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({
+                decision: 'denied',
+                optionId: 'question:cancel'
+            })
+        })
+    })
+
     it('posts a steer for a queued message', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(JSON.stringify({ status: 'steered', localId: 'local-1' }), { status: 200 })

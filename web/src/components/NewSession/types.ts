@@ -52,6 +52,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     opencode: [],
     grok: [],
     pi: [],
+    reasonix: [
+        { value: 'auto', label: 'Default' },
+    ],
 }
 
 export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; label: string }[] = [

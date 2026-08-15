@@ -67,13 +67,14 @@ import {
 } from './preferences'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { YoloToggle } from './YoloToggle'
-import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { usesFlavorPermissionModes } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import { useToast } from '@/lib/toast-context'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 
 
 
@@ -681,7 +682,7 @@ export function NewSession(props: {
         setCursorSelectedBase(preferred.cursorSelectedBase)
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
-        if (usesCodexFamilyPermissionModes(agent)) {
+        if (usesFlavorPermissionModes(agent)) {
             setCodexFamilyPermissionMode(preferred.permissionMode ?? 'default')
         }
         setOpencodeSelectedModel(
@@ -1284,6 +1285,13 @@ export function NewSession(props: {
 
     async function handleCreate() {
         if (!machineId || !trimmedDirectory || createInFlightRef.current) return
+        if (
+            agent === 'reasonix'
+            && selectedMachine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ReasonixAcp) !== true
+        ) {
+            setError('Selected runner does not support Reasonix ACP')
+            return
+        }
 
         createInFlightRef.current = true
         setIsCreating(true)
@@ -1320,13 +1328,13 @@ export function NewSession(props: {
                 : agent === 'agy'
                     ? (agySelectedModel ?? undefined)
                     : (model !== 'auto' ? model : undefined)
-            const resolvedEffort = (agent === 'claude' || agent === 'grok') && effort !== 'auto'
+            const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'reasonix') && effort !== 'auto'
                 ? effort
                 : undefined
             const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
-            const usesCodexFamilyPermissions = usesCodexFamilyPermissionModes(agent)
+            const usesCodexFamilyPermissions = usesFlavorPermissionModes(agent)
             const preferredLaunchSettings = {
                 model: agent === 'agy'
                     ? (agySelectedModel ?? 'auto')
@@ -1491,6 +1499,10 @@ export function NewSession(props: {
     const canCreate = Boolean(
         machineId
         && trimmedDirectory
+        && !(
+            agent === 'reasonix'
+            && selectedMachine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ReasonixAcp) !== true
+        )
         && !isFormDisabled
         && !missingWorktreeDirectory
         && !isLaunchPreferenceValidationPending
@@ -1538,6 +1550,7 @@ export function NewSession(props: {
             <AgentSelector
                 agent={agent}
                 isDisabled={isFormDisabled}
+                selectedMachine={selectedMachine}
                 onAgentChange={handleAgentChange}
             />
             {agent === 'codex' ? (
@@ -1706,7 +1719,7 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onChange={setServiceTier}
             />
-            {agent !== 'grok' && !usesCodexFamilyPermissionModes(agent) ? (
+            {agent !== 'grok' && !usesFlavorPermissionModes(agent) ? (
                 <YoloToggle
                     yoloMode={yoloMode}
                     isDisabled={isFormDisabled}

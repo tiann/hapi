@@ -775,6 +775,25 @@ export type GrokModelsResponse = {
 }
 export type ListGrokModelsResponse = GrokModelsResponse
 
+export type ReasonixModelSummary = {
+    modelId: string
+    name?: string
+}
+
+export type ReasonixConfigOption = {
+    value: string
+    name?: string
+}
+
+export type ReasonixConfigOptionsResponse = {
+    success: boolean
+    availableModels?: ReasonixModelSummary[]
+    currentModelId?: string | null
+    effortOptions?: ReasonixConfigOption[]
+    currentEffort?: string | null
+    error?: string
+}
+
 export type CopilotModelSummary = {
     modelId: string
     name?: string

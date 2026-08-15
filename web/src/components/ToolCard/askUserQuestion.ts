@@ -1,14 +1,14 @@
 import { isObject } from '@hapi/protocol'
 
 export type AskUserQuestionOption = {
-    /** Stable option id from agent protocol (Cursor ACP); falls back to label in UI submit. */
+    /** Stable option id from the agent protocol; falls back to label in UI submit. */
     id?: string
     label: string
     description: string | null
 }
 
 export type AskUserQuestionQuestion = {
-    /** Stable question id from agent protocol (Cursor ACP); falls back to index in UI submit. */
+    /** Stable question id from the agent protocol; falls back to index in UI submit. */
     id?: string
     header: string | null
     question: string
@@ -40,6 +40,9 @@ export function parseAskUserQuestionInput(input: unknown): { questions: AskUserQ
         const question = typeof raw.question === 'string' ? raw.question.trim() : ''
         const header = typeof raw.header === 'string' ? raw.header.trim() : ''
         const multiSelect = typeof raw.multiSelect === 'boolean' ? raw.multiSelect : false
+        const questionId = typeof raw.id === 'string' && raw.id.trim().length > 0
+            ? raw.id.trim()
+            : undefined
 
         const rawOptions = Array.isArray(raw.options) ? raw.options : []
         const options: AskUserQuestionOption[] = []
@@ -48,12 +51,16 @@ export function parseAskUserQuestionInput(input: unknown): { questions: AskUserQ
             const label = typeof opt.label === 'string' ? opt.label.trim() : ''
             if (!label) continue
             const description = typeof opt.description === 'string' ? opt.description.trim() : null
-            options.push({ label, description })
+            const optionId = typeof opt.id === 'string' && opt.id.trim().length > 0
+                ? opt.id.trim()
+                : undefined
+            options.push({ id: optionId, label, description })
         }
 
         if (!question && options.length === 0) continue
 
         questions.push({
+            id: questionId,
             header: header.length > 0 ? header : null,
             question,
             options,

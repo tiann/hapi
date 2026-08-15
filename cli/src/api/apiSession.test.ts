@@ -396,6 +396,32 @@ describe('ApiSessionClient lazy materialization', () => {
         client.close()
     })
 
+    it('uses one lifecycle generation for alive and end events', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }), {
+            sessionGeneration: 'hub-generation'
+        })
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        client.emitSessionReady()
+        client.sendSessionDeath('completed')
+        await client.flush({ timeoutMs: 500 })
+
+        const lifecycleEvents = socket.emitted.filter((entry) =>
+            entry.event === 'session-alive'
+            || entry.event === 'session-ready'
+            || entry.event === 'session-end'
+        )
+        expect(lifecycleEvents).toHaveLength(3)
+        const generations = lifecycleEvents.map((entry) => (
+            entry.args[0] as { sessionGeneration?: string }
+        ).sessionGeneration)
+        expect(generations[0]).toBe('hub-generation')
+        expect(new Set(generations).size).toBe(1)
+        client.close()
+    })
+
     it('reports an unconfirmed final flush when the socket cannot reconnect before the deadline', async () => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))

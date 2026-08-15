@@ -158,7 +158,8 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR = {
     cursor: 'cursorSessionId',
     kimi: 'kimiSessionId',
     copilot: 'copilotSessionId',
-    pi: 'piSessionId'
+    pi: 'piSessionId',
+    reasonix: 'reasonixSessionId'
 } as const satisfies Record<AgentFlavor, keyof Metadata>
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
@@ -181,6 +182,7 @@ function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
         ?? metadata.cursorSessionId
         ?? metadata.kimiSessionId
         ?? metadata.copilotSessionId
+        ?? metadata.reasonixSessionId
         ?? undefined
 }
 

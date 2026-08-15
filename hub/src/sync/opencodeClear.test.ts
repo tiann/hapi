@@ -632,6 +632,10 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 undefined,
                 undefined,
                 // startingMode — not applicable to an OpenCode clear replacement
+                undefined,
+                // forkSession — not applicable to an OpenCode clear replacement
+                undefined,
+                // sessionGeneration — Reasonix-only lifecycle fencing
                 undefined
             )
             expect(engine.getSessionByNamespace(replacementSessionId, 'default')?.metadata).toMatchObject({

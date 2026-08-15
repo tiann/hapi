@@ -62,7 +62,8 @@ const SIMPLE_RESUME_TOKENS = [
     'cursorSessionId',
     'kimiSessionId',
     'copilotSessionId',
-    'piSessionId'
+    'piSessionId',
+    'reasonixSessionId'
 ] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -120,6 +121,33 @@ function preserveCursorProtocolPair(
     return merged
 }
 
+function preserveReasonixTranscriptPair(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    const priorId = prior.reasonixSessionId
+    const nextId = next.reasonixSessionId
+    const keepsSameIdentity = typeof priorId === 'string'
+        && (nextId === undefined || nextId === priorId)
+
+    if (next.reasonixTranscriptPersisted === null) {
+        const result = merged ?? { ...next }
+        delete result.reasonixTranscriptPersisted
+        return result
+    }
+    if (
+        next.reasonixTranscriptPersisted === undefined
+        && keepsSameIdentity
+        && prior.reasonixTranscriptPersisted !== undefined
+    ) {
+        const result = merged ?? { ...next }
+        result.reasonixTranscriptPersisted = prior.reasonixTranscriptPersisted
+        return result
+    }
+    return merged
+}
+
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
@@ -129,6 +157,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = preserveCursorProtocolPair(prior, next, merged)
+    merged = preserveReasonixTranscriptPair(prior, next, merged)
     return merged ?? next
 }
 

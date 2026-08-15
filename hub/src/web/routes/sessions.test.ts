@@ -65,6 +65,7 @@ function createApp(session: Session, opts?: {
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
+    listReasonixConfigOptionsForSession?: SyncEngine['listReasonixConfigOptionsForSession']
     forkConversation?: SyncEngine['forkConversation']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
@@ -116,6 +117,13 @@ function createApp(session: Session, opts?: {
         options: [{ value: 'low', name: 'Low' }],
         currentValue: 'low'
     })
+    const listReasonixConfigOptionsForSession = opts?.listReasonixConfigOptionsForSession ?? (async () => ({
+        success: true,
+        availableModels: [{ modelId: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
+        currentModelId: 'deepseek/deepseek-v4-flash',
+        effortOptions: [{ value: 'high', name: 'High' }],
+        currentEffort: 'high'
+    }))
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const reopenSession = opts?.reopenSession ?? (async (sessionId: string) => ({
         type: 'success' as const,
@@ -138,6 +146,7 @@ function createApp(session: Session, opts?: {
         listOpencodeReasoningEffortOptionsForSession,
         listGrokModelsForSession,
         listGrokReasoningEffortOptionsForSession,
+        listReasonixConfigOptionsForSession,
         resumeSession,
         reopenSession,
         getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
@@ -868,6 +877,24 @@ describe('sessions routes', () => {
             success: true,
             options: [{ value: 'low', name: 'Low' }],
             currentValue: 'low'
+        })
+    })
+
+    it('returns Reasonix model and effort catalogs for active Reasonix sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'reasonix' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/reasonix-config-options')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
+            currentModelId: 'deepseek/deepseek-v4-flash',
+            effortOptions: [{ value: 'high', name: 'High' }],
+            currentEffort: 'high'
         })
     })
 

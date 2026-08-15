@@ -11,7 +11,8 @@ import type {
     GrokPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
-    OpencodePermissionMode
+    OpencodePermissionMode,
+    ReasonixPermissionMode
 } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
@@ -69,7 +70,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
     const base = {
         existingSessionId: target.sessionId,
         workingDirectory: target.directory,
-        resumeSessionId: target.agentSessionId,
+        resumeSessionId: target.freshStart ? undefined : target.agentSessionId,
         startedBy: 'terminal' as const,
         permissionMode: target.permissionMode
     }
@@ -199,6 +200,29 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
+    if (target.flavor === 'reasonix') {
+        const { runReasonix } = await import('@/reasonix/runReasonix')
+        const freshStart = target.freshStart === true
+        await runReasonix({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: freshStart ? undefined : base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: freshStart ? base.permissionMode as ReasonixPermissionMode | undefined : undefined,
+            // The stored HAPI mode is a lossy projection of Reasonix's two
+            // native axes (goal maps to default). A plain `hapi resume` did
+            // not explicitly request an override, so preserve ACP state.
+            permissionModeExplicit: freshStart && base.permissionMode !== undefined,
+            startingMode: 'remote',
+            // `session/resume` restores these axes from Reasonix's native
+            // store. A never-started row has no native store, so its cached
+            // HAPI values are valid initial settings for the fresh session.
+            model: freshStart ? target.model ?? undefined : undefined,
+            effort: freshStart ? target.effort ?? undefined : undefined
+        })
+        return
+    }
+
     const { runCursor } = await import('@/cursor/runCursor')
     await runCursor({
         existingSessionId: base.existingSessionId,
@@ -256,6 +280,13 @@ export const resumeCommand: CommandDefinition = {
 
             if (target.active && target.controlledByUser) {
                 throw new Error('Session is already controlled by a local terminal')
+            }
+
+            // Reasonix is remote-only. A second ACP process cannot attach to an
+            // active stdio transport, and the generic local handoff would stop
+            // the live process before the replacement could resume it.
+            if (target.active && target.flavor === 'reasonix') {
+                throw new Error('Active Reasonix sessions are already connected remotely; wait for the session to end before resuming it locally')
             }
 
             if (target.active) {

@@ -42,6 +42,7 @@ export type {
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode,
+    ReasonixPermissionMode,
     PermissionMode,
     PermissionModeOption,
     PermissionModeTone

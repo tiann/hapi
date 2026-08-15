@@ -88,6 +88,18 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.agentSessionId).toBe('grok-session-1')
     })
 
+    it('uses reasonixSessionId as the native resume token', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'reasonix',
+                reasonixSessionId: 'reasonix-session-1'
+            }
+        }))
+        expect(summary.metadata?.agentSessionId).toBe('reasonix-session-1')
+    })
+
     it('uses the native id matching the current flavor instead of a stale id', () => {
         const summary = toSessionSummary(makeSession({
             metadata: {

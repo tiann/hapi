@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
+    getComposerEffortOptions,
     ModelEffortSettingsSection,
     resolveVisibleModelEffortSelectedValue
 } from './HappyComposer';
@@ -35,6 +36,18 @@ describe('resolveVisibleModelEffortSelectedValue', () => {
             cursorDrillDownDefaultVariant: 'claude-opus-4-8',
             model: 'composer-2.5'
         })).toBe('claude-opus-4-8');
+    });
+});
+
+describe('getComposerEffortOptions', () => {
+    it('uses the native Reasonix auto value for its default effort', () => {
+        expect(getComposerEffortOptions('reasonix', 'auto', undefined, [
+            { value: 'auto', name: 'Automatic' },
+            { value: 'high', name: 'High' }
+        ])).toEqual([
+            { value: 'auto', label: 'Auto' },
+            { value: 'high', label: 'High' }
+        ]);
     });
 });
 

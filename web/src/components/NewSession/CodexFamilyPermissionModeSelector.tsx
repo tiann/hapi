@@ -1,6 +1,6 @@
 import { getPermissionModeOptionsForFlavor, type PermissionMode } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
-import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { usesFlavorPermissionModes } from '@/lib/codexFamilyPermissionAgents'
 import { SelectControl } from '@/components/ui/select-control'
 import type { AgentType } from './types'
 
@@ -12,7 +12,7 @@ export function CodexFamilyPermissionModeSelector(props: {
 }) {
     const { t } = useTranslation()
 
-    if (!usesCodexFamilyPermissionModes(props.agent)) {
+    if (!usesFlavorPermissionModes(props.agent)) {
         return null
     }
 

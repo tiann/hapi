@@ -32,6 +32,10 @@ function isCodexSession(metadata: SessionMetadataSummary | null, toolName: strin
         || toolName.startsWith('Cursor')
 }
 
+function isReasonixSession(metadata: SessionMetadataSummary | null): boolean {
+    return metadata?.flavor === 'reasonix'
+}
+
 function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
     return metadata?.flavor === 'claude'
 }
@@ -112,7 +116,13 @@ export function PermissionFooter(props: {
     const [loadingForSession, setLoadingForSession] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
-    const codex = useMemo(() => isCodexSession(props.metadata, props.tool.name), [props.metadata, props.tool.name])
+    const reasonix = useMemo(() => isReasonixSession(props.metadata), [props.metadata])
+    // Reasonix speaks ACP permission outcomes, not the Codex cancel/abort
+    // contract. Keep this guard even if the shared family list broadens later.
+    const codex = useMemo(
+        () => !reasonix && isCodexSession(props.metadata, props.tool.name),
+        [props.metadata, props.tool.name, reasonix]
+    )
     const claude = useMemo(() => isClaudeSession(props.metadata), [props.metadata])
 
     if (!permission) return null
@@ -146,13 +156,35 @@ export function PermissionFooter(props: {
         || toolName === 'ExitPlanMode'
         || toolName === 'CursorCreatePlan'
 
-    const canAllowForSession = !codex && isPending && !hideAllowForSession
+    // Reasonix's ACP permission options are authoritative per request. Render
+    // only the choices the native request advertises, then return the exact id
+    // so approval scope cannot be widened or narrowed by a generic fallback.
+    const reasonixAllowOnce = reasonix
+        ? permission.options?.find((option) => option.kind === 'allow_once')
+        : undefined
+    const reasonixAllowAlways = reasonix
+        ? permission.options?.find((option) => option.kind === 'allow_always')
+        : undefined
+    const reasonixRejectOnce = reasonix
+        ? permission.options?.find((option) => option.kind === 'reject_once')
+        : undefined
+    const canAllow = !reasonix || Boolean(reasonixAllowOnce)
+    const canDeny = !reasonix || Boolean(reasonixRejectOnce)
+    const canAllowForSession = !codex && isPending && (
+        reasonix ? Boolean(reasonixAllowAlways) : !hideAllowForSession
+    )
     const canAllowAllEdits = claude && isPending && isEditTool
 
     const approve = async () => {
         if (!isPending || loading || loadingAllEdits || loadingForSession) return
         setLoading('allow')
-        await run(() => props.api.approvePermission(props.sessionId, permission.id), 'success')
+        await run(() => props.api.approvePermission(
+            props.sessionId,
+            permission.id,
+            reasonixAllowOnce
+                ? { decision: 'approved', optionId: reasonixAllowOnce.optionId }
+                : undefined
+        ), 'success')
         setLoading(null)
     }
 
@@ -171,7 +203,10 @@ export function PermissionFooter(props: {
             const toolIdentifier = toolName === 'Bash' && command ? `Bash(${command})` : toolName
             await run(() => props.api.approvePermission(props.sessionId, permission.id, { allowTools: [toolIdentifier] }), 'success')
         } else {
-            await run(() => props.api.approvePermission(props.sessionId, permission.id, { decision: 'approved_for_session' }), 'success')
+            await run(() => props.api.approvePermission(props.sessionId, permission.id, {
+                decision: 'approved_for_session',
+                optionId: reasonixAllowAlways?.optionId
+            }), 'success')
         }
         setLoadingForSession(false)
     }
@@ -179,7 +214,13 @@ export function PermissionFooter(props: {
     const deny = async () => {
         if (!isPending || loading || loadingAllEdits || loadingForSession) return
         setLoading('deny')
-        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
+        await run(() => props.api.denyPermission(
+            props.sessionId,
+            permission.id,
+            reasonixRejectOnce
+                ? { decision: 'denied', optionId: reasonixRejectOnce.optionId }
+                : undefined
+        ), 'success')
         setLoading(null)
     }
 
@@ -253,16 +294,18 @@ export function PermissionFooter(props: {
                     </>
                 ) : (
                     <>
-                        <PermissionRowButton
-                            label={t('tool.allow')}
-                            tone="allow"
-                            loading={loading === 'allow'}
-                            disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
-                            onClick={approve}
-                        />
+                        {canAllow ? (
+                            <PermissionRowButton
+                                label={reasonixAllowOnce?.name ?? t('tool.allow')}
+                                tone="allow"
+                                loading={loading === 'allow'}
+                                disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
+                                onClick={approve}
+                            />
+                        ) : null}
                         {canAllowForSession ? (
                             <PermissionRowButton
-                                label={t('tool.allowForSession')}
+                                label={reasonixAllowAlways?.name ?? t('tool.allowForSession')}
                                 tone="muted"
                                 loading={loadingForSession}
                                 disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
@@ -278,13 +321,15 @@ export function PermissionFooter(props: {
                                 onClick={approveAllEdits}
                             />
                         ) : null}
-                        <PermissionRowButton
-                            label={t('tool.deny')}
-                            tone="deny"
-                            loading={loading === 'deny'}
-                            disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
-                            onClick={deny}
-                        />
+                        {canDeny ? (
+                            <PermissionRowButton
+                                label={reasonixRejectOnce?.name ?? t('tool.deny')}
+                                tone="deny"
+                                loading={loading === 'deny'}
+                                disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
+                                onClick={deny}
+                            />
+                        ) : null}
                     </>
                 )}
             </div>

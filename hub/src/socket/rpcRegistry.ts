@@ -1,15 +1,20 @@
 import type { Socket } from 'socket.io'
 
+type RpcRegistration = {
+    socketId: string
+    canUse: () => boolean
+}
+
 export class RpcRegistry {
-    private readonly methodToSocketId: Map<string, string> = new Map()
+    private readonly methodToRegistration: Map<string, RpcRegistration> = new Map()
     private readonly socketIdToMethods: Map<string, Set<string>> = new Map()
 
-    register(socket: Socket, method: string): void {
+    register(socket: Socket, method: string, canUse: () => boolean = () => true): void {
         if (!method) {
             return
         }
 
-        this.methodToSocketId.set(method, socket.id)
+        this.methodToRegistration.set(method, { socketId: socket.id, canUse })
 
         const existing = this.socketIdToMethods.get(socket.id)
         if (existing) {
@@ -20,9 +25,9 @@ export class RpcRegistry {
     }
 
     unregister(socket: Socket, method: string): void {
-        const socketId = this.methodToSocketId.get(method)
-        if (socketId === socket.id) {
-            this.methodToSocketId.delete(method)
+        const registration = this.methodToRegistration.get(method)
+        if (registration?.socketId === socket.id) {
+            this.methodToRegistration.delete(method)
         }
 
         const methods = this.socketIdToMethods.get(socket.id)
@@ -40,16 +45,32 @@ export class RpcRegistry {
             return
         }
         for (const method of methods) {
-            const socketId = this.methodToSocketId.get(method)
-            if (socketId === socket.id) {
-                this.methodToSocketId.delete(method)
+            const registration = this.methodToRegistration.get(method)
+            if (registration?.socketId === socket.id) {
+                this.methodToRegistration.delete(method)
             }
         }
         this.socketIdToMethods.delete(socket.id)
     }
 
     getSocketIdForMethod(method: string): string | null {
-        return this.methodToSocketId.get(method) ?? null
+        const registration = this.methodToRegistration.get(method)
+        if (!registration) return null
+        let usable = false
+        try {
+            usable = registration.canUse()
+        } catch {
+            usable = false
+        }
+        if (!usable) {
+            this.methodToRegistration.delete(method)
+            const methods = this.socketIdToMethods.get(registration.socketId)
+            methods?.delete(method)
+            if (methods?.size === 0) {
+                this.socketIdToMethods.delete(registration.socketId)
+            }
+            return null
+        }
+        return registration.socketId
     }
 }
-

@@ -201,7 +201,8 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         ['cursorSessionId', 'cursor-thread-x'],
         ['kimiSessionId', 'kimi-thread-x'],
         ['copilotSessionId', 'copilot-thread-x'],
-        ['piSessionId', 'pi-thread-x']
+        ['piSessionId', 'pi-thread-x'],
+        ['reasonixSessionId', 'reasonix-thread-x']
     ])('preserves %s across an archive metadata replacement', (field, value) => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -667,6 +668,69 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
         expect(metadata?.cursorSessionId).toBe('stable-id')
         expect(metadata?.cursorSessionProtocol).toBe('acp')
+    })
+
+    it('preserves Reasonix transcript durability across sparse metadata writes', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'reasonix-transcript-pair-preserve',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'reasonix',
+                reasonixSessionId: 'stable-id',
+                reasonixTranscriptPersisted: true
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                lifecycleState: 'archived'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.reasonixSessionId).toBe('stable-id')
+        expect(metadata?.reasonixTranscriptPersisted).toBe(true)
+    })
+
+    it('does not carry Reasonix transcript durability to a different native id', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'reasonix-transcript-pair-reset',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'reasonix',
+                reasonixSessionId: 'old-id',
+                reasonixTranscriptPersisted: true
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'reasonix',
+                reasonixSessionId: 'new-id'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.reasonixSessionId).toBe('new-id')
+        expect(metadata?.reasonixTranscriptPersisted).toBeUndefined()
     })
 
     it('respects an explicit cursorSessionProtocol on the next write even when the id is unchanged', () => {

@@ -38,6 +38,58 @@ function redundantGoalStatusContent(message: string): unknown {
 }
 
 describe('cli session handlers', () => {
+    it('accepts lifecycle events only from the socket-bound session generation', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('owned-lifecycle', {}, null, 'default')
+        const socket = new FakeSocket()
+        const received: string[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {},
+            lifecycleOwner: {
+                sessionId: session.id,
+                sessionGeneration: 'generation-current'
+            },
+            onSessionAlive: () => received.push('alive'),
+            onSessionReady: () => received.push('ready'),
+            onSessionEnd: () => received.push('end')
+        })
+
+        const emitLifecycle = (sid: string, sessionGeneration: string) => {
+            socket.trigger('session-alive', { sid, sessionGeneration, time: Date.now() })
+            socket.trigger('session-ready', { sid, sessionGeneration, time: Date.now() })
+            socket.trigger('session-end', { sid, sessionGeneration, time: Date.now() })
+        }
+        emitLifecycle(session.id, 'generation-forged')
+        emitLifecycle('different-session', 'generation-current')
+        expect(received).toEqual([])
+
+        emitLifecycle(session.id, 'generation-current')
+        expect(received).toEqual(['alive', 'ready', 'end'])
+    })
+
+    it('rejects lifecycle events from a machine-scoped socket', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('machine-lifecycle', {}, null, 'default')
+        const socket = new FakeSocket()
+        let received = false
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {},
+            lifecycleOwner: null,
+            onSessionAlive: () => { received = true }
+        })
+
+        socket.trigger('session-alive', {
+            sid: session.id,
+            sessionGeneration: 'forged-generation',
+            time: Date.now()
+        })
+        expect(received).toBe(false)
+    })
+
     it('preserves immediate queued rows for cleared handoff transfer', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('clear-end', {}, null, 'default')
@@ -50,7 +102,12 @@ describe('cli session handlers', () => {
             emitAccessError: () => {},
             onSweepImmediateQueued: () => { swept = true }
         })
-        socket.trigger('session-end', { sid: session.id, time: Date.now(), reason: 'cleared' })
+        socket.trigger('session-end', {
+            sid: session.id,
+            sessionGeneration: 'test-generation',
+            time: Date.now(),
+            reason: 'cleared'
+        })
         expect(swept).toBe(false)
         expect(store.messages.getAllMessages(session.id)).toEqual([
             expect.objectContaining({ localId: 'held-local', invokedAt: null })

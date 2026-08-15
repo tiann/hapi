@@ -16,6 +16,7 @@ import type { AccessErrorReason, AccessResult } from './types'
 
 type SessionAlivePayload = {
     sid: string
+    sessionGeneration: string
     time: number
     thinking?: boolean
     mode?: 'local' | 'remote'
@@ -30,12 +31,14 @@ type SessionAlivePayload = {
 
 type SessionEndPayload = {
     sid: string
+    sessionGeneration: string
     time: number
     reason?: SessionEndReason
 }
 
 type SessionReadyPayload = {
     sid: string
+    sessionGeneration: string
     time: number
 }
 
@@ -98,10 +101,19 @@ export type SessionHandlersDeps = {
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
+    /** `undefined` is reserved for direct unit-level registrations. Production
+     * always passes an owner or null, so machine sockets cannot emit lifecycle. */
+    lifecycleOwner?: { sessionId: string; sessionGeneration: string } | null
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed, lifecycleOwner } = deps
+    const ownsLifecycle = (payload: { sid: string; sessionGeneration: string }): boolean => (
+        lifecycleOwner === undefined
+        || (lifecycleOwner !== null
+            && payload.sid === lifecycleOwner.sessionId
+            && payload.sessionGeneration === lifecycleOwner.sessionGeneration)
+    )
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -341,9 +353,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
     socket.on('update-state', handleUpdateState)
 
     socket.on('session-alive', (data: SessionAlivePayload) => {
-        if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
+        if (!data || typeof data.sid !== 'string'
+            || typeof data.sessionGeneration !== 'string'
+            || data.sessionGeneration.length === 0
+            || typeof data.time !== 'number') {
             return
         }
+        if (!ownsLifecycle(data)) return
         const sessionAccess = resolveSessionAccess(data.sid)
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
@@ -353,9 +369,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
     })
 
     socket.on('session-ready', (data: SessionReadyPayload) => {
-        if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
+        if (!data || typeof data.sid !== 'string'
+            || typeof data.sessionGeneration !== 'string'
+            || data.sessionGeneration.length === 0
+            || typeof data.time !== 'number') {
             return
         }
+        if (!ownsLifecycle(data)) return
         const sessionAccess = resolveSessionAccess(data.sid)
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
@@ -412,9 +432,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {
-        if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
+        if (!data || typeof data.sid !== 'string'
+            || typeof data.sessionGeneration !== 'string'
+            || data.sessionGeneration.length === 0
+            || typeof data.time !== 'number') {
             return
         }
+        if (!ownsLifecycle(data)) return
         const sessionAccess = resolveSessionAccess(data.sid)
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)

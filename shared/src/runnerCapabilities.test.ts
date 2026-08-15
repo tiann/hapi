@@ -16,6 +16,11 @@ describe('runnerCapabilities', () => {
         ]))
     })
 
+    it('advertises the Reasonix ACP spawn capability on current runners', () => {
+        expect(MACHINE_CAPABILITIES.ReasonixAcp).toBe('reasonix-acp')
+        expect(CURRENT_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.ReasonixAcp)
+    })
+
     it('treats missing/empty advertised capabilities as skewed', () => {
         expect(isMachineCapabilitySkewed(undefined)).toBe(true)
         expect(isMachineCapabilitySkewed(null)).toBe(true)

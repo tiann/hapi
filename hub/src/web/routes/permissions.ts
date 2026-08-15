@@ -6,7 +6,8 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
-const decisionSchema = z.enum(['approved', 'approved_for_session', 'denied', 'abort'])
+const approveDecisionSchema = z.enum(['approved', 'approved_for_session'])
+const denyDecisionSchema = z.enum(['denied', 'abort'])
 
 // Flat format: Record<string, string[]> (AskUserQuestion)
 // Nested format: Record<string, { answers: string[] }> (request_user_input)
@@ -18,12 +19,14 @@ const answersSchema = z.union([
 const approveBodySchema = z.object({
     mode: PermissionModeSchema.optional(),
     allowTools: z.array(z.string()).optional(),
-    decision: decisionSchema.optional(),
+    decision: approveDecisionSchema.optional(),
+    optionId: z.string().min(1).optional(),
     answers: answersSchema.optional()
 })
 
 const denyBodySchema = z.object({
-    decision: decisionSchema.optional()
+    decision: denyDecisionSchema.optional(),
+    optionId: z.string().min(1).optional()
 })
 
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
@@ -63,8 +66,9 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
         const allowTools = parsed.data.allowTools
         const decision = parsed.data.decision
+        const optionId = parsed.data.optionId
         const answers = parsed.data.answers
-        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, optionId)
         return c.json({ ok: true })
     })
 
@@ -93,7 +97,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        await engine.denyPermission(sessionId, requestId, parsed.data.decision)
+        await engine.denyPermission(sessionId, requestId, parsed.data.decision, parsed.data.optionId)
         return c.json({ ok: true })
     })
 

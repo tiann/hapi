@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
+import type { SessionMetadataSummary } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -87,19 +88,28 @@ export function AskUserQuestionFooter(props: {
     api: ApiClient
     sessionId: string
     tool: ChatToolCall
+    metadata?: SessionMetadataSummary | null
     disabled: boolean
     onDone: () => void
 }) {
     const { t } = useTranslation()
     const { haptic } = usePlatform()
     const permission = props.tool.permission
-    const useStableQuestionIds = isCursorAskQuestionToolName(props.tool.name)
+    // Reasonix normalizes ACP questions to the generic AskUserQuestion shape,
+    // but its option IDs are the actual wire answer keys. Preserve those IDs
+    // just like Cursor instead of falling back to labels (which can repeat).
+    const isCursorQuestion = isCursorAskQuestionToolName(props.tool.name)
+    const isReasonixQuestion = props.metadata?.flavor === 'reasonix'
+    const useStableQuestionIds = isCursorQuestion || isReasonixQuestion
     const parsed = useMemo(() => (
-        useStableQuestionIds
+        isCursorQuestion
             ? parseCursorAskQuestionInput(props.tool.input)
             : parseAskUserQuestionInput(props.tool.input)
-    ), [props.tool.name, props.tool.input, useStableQuestionIds])
+    ), [props.tool.name, props.tool.input, isCursorQuestion])
     const questions = parsed.questions
+    const reasonixCancelOption = isReasonixQuestion
+        ? permission?.options?.find((option) => option.kind === 'reject_once')
+        : undefined
 
     const [step, setStep] = useState(0)
     const [selectedByQuestion, setSelectedByQuestion] = useState<number[][]>([])
@@ -194,6 +204,16 @@ export function AskUserQuestionFooter(props: {
 
         setLoading(true)
         await run(() => props.api.approvePermission(props.sessionId, permission.id, { answers }), 'success')
+        setLoading(false)
+    }
+
+    const cancel = async () => {
+        if (loading || !reasonixCancelOption) return
+        setLoading(true)
+        await run(() => props.api.denyPermission(props.sessionId, permission.id, {
+            decision: 'denied',
+            optionId: reasonixCancelOption.optionId
+        }), 'success')
         setLoading(false)
     }
 
@@ -354,30 +374,46 @@ export function AskUserQuestionFooter(props: {
                             )
                         })}
 
-                        <OptionRow
-                            checked={otherSelectedByQuestion[clampedStep] ?? false}
-                            mode={mode}
-                            disabled={props.disabled || loading}
-                            title={t('tool.other')}
-                            description={t('tool.otherDescription')}
-                            onClick={() => toggleOther(clampedStep)}
-                        />
+                        {isReasonixQuestion ? null : (
+                            <>
+                                <OptionRow
+                                    checked={otherSelectedByQuestion[clampedStep] ?? false}
+                                    mode={mode}
+                                    disabled={props.disabled || loading}
+                                    title={t('tool.other')}
+                                    description={t('tool.otherDescription')}
+                                    onClick={() => toggleOther(clampedStep)}
+                                />
 
-                        {(otherSelectedByQuestion[clampedStep] ?? false) ? (
-                            <textarea
-                                value={otherTextByQuestion[clampedStep] ?? ''}
-                                onChange={(e) => updateOtherText(clampedStep, e.target.value)}
-                                disabled={props.disabled || loading}
-                                placeholder={t('tool.askUserQuestion.otherPlaceholder')}
-                                className="mt-2 min-h-[88px] w-full resize-y rounded-xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] disabled:opacity-50"
-                            />
-                        ) : null}
+                                {(otherSelectedByQuestion[clampedStep] ?? false) ? (
+                                    <textarea
+                                        value={otherTextByQuestion[clampedStep] ?? ''}
+                                        onChange={(e) => updateOtherText(clampedStep, e.target.value)}
+                                        disabled={props.disabled || loading}
+                                        placeholder={t('tool.askUserQuestion.otherPlaceholder')}
+                                        className="mt-2 min-h-[88px] w-full resize-y rounded-xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] disabled:opacity-50"
+                                    />
+                                ) : null}
+                            </>
+                        )}
                     </div>
                 </div>
             )}
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3">
                 <div className="flex items-center gap-2">
+                    {reasonixCancelOption ? (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={props.disabled || loading}
+                            onClick={cancel}
+                            className={questionNavButtonClassName}
+                        >
+                            {reasonixCancelOption.name || t('tool.cancel')}
+                        </Button>
+                    ) : null}
                     {questions.length > 1 ? (
                         <Button
                             type="button"
