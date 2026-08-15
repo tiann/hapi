@@ -58,13 +58,14 @@ describe('DeepSeek Harness event conversion', () => {
     it('builds stable local ids from native event sequence numbers', () => {
         const entry = {
             event: event('user/message', {
-                source: { kind: 'user' },
+                source: { kind: 'user', rpcId: 'rpc-42' },
                 content: [{ type: 'text', text: 'hello' }]
             }, 42)
         }
         expect(convertDshHistoryEntry('session-1', entry)[0]).toMatchObject({
             localId: 'dsh:session-1:42:user',
             eventSeq: 42,
+            sourceRpcId: 'rpc-42',
             content: { role: 'user' }
         })
     })

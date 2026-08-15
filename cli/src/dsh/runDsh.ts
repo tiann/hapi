@@ -1,6 +1,7 @@
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
+import type { ApiSessionClient } from '@/api/apiSession'
 import type { Metadata } from '@/api/types'
 import { registerKillSessionHandler, type KillSessionLifecycle } from '@/claude/registerKillSessionHandler'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
@@ -89,12 +90,16 @@ function resolveRequestedModel(
 export function advanceDshHistoryCursor(
     metadata: Metadata,
     eventSeq: number,
-    now = Date.now()
+    now = Date.now(),
+    coveredOwnedRpcIds: readonly string[] = []
 ): Metadata {
     const nextEventSeq = Math.max(metadata.dshHistoryLastEventSeq ?? -1, eventSeq)
+    const dshOwnedRpcIds = { ...(metadata.dshOwnedRpcIds ?? {}) }
+    for (const rpcId of coveredOwnedRpcIds) delete dshOwnedRpcIds[rpcId]
     return {
         ...metadata,
         dshHistoryLastEventSeq: nextEventSeq,
+        dshOwnedRpcIds,
         ...(metadata.dshImportState ? {
             dshImportState: {
                 ...metadata.dshImportState,
@@ -102,6 +107,37 @@ export function advanceDshHistoryCursor(
                 lastEventSeq: Math.max(metadata.dshImportState.lastEventSeq ?? -1, nextEventSeq)
             }
         } : {})
+    }
+}
+
+type DshMetadataSession = Pick<ApiSessionClient, 'updateMetadata' | 'flushMetadata'>
+
+export async function persistDshOwnedRpcId(
+    session: DshMetadataSession,
+    rpcId: string,
+    now = Date.now()
+): Promise<void> {
+    session.updateMetadata((metadata) => ({
+        ...metadata,
+        dshOwnedRpcIds: { ...(metadata.dshOwnedRpcIds ?? {}), [rpcId]: now }
+    }))
+    if (!await session.flushMetadata(10_000)) {
+        throw new Error(`Failed to persist DeepSeek Harness prompt identity: ${rpcId}`)
+    }
+}
+
+async function removeDshOwnedRpcIds(
+    session: DshMetadataSession,
+    rpcIds: readonly string[]
+): Promise<void> {
+    if (rpcIds.length === 0) return
+    session.updateMetadata((metadata) => {
+        const dshOwnedRpcIds = { ...(metadata.dshOwnedRpcIds ?? {}) }
+        for (const rpcId of rpcIds) delete dshOwnedRpcIds[rpcId]
+        return { ...metadata, dshOwnedRpcIds }
+    })
+    if (!await session.flushMetadata(10_000)) {
+        throw new Error('Failed to clear DeepSeek Harness prompt identity')
     }
 }
 
@@ -223,6 +259,8 @@ export async function runDsh(opts: {
     const queue = new MessageQueue2<DshQueueMode>((mode) => hashObject(mode))
     const pendingTurns = new Map<string, PendingTurn>()
     const ownedRpcIds = new Set<string>()
+    const durableOwnedRpcIds = new Set(Object.keys(sessionInfo.metadata?.dshOwnedRpcIds ?? {}))
+    const coveredOwnedRpcIds = new Set<string>()
     const pendingApprovals = new Map<string, { rpcId: string; toolName: string; arguments: unknown; createdAt: number }>()
 
     let nativeSessionId = opts.resumeSessionId ?? sessionInfo.metadata?.dshSessionId ?? null
@@ -313,9 +351,14 @@ export async function runDsh(opts: {
     const handleDshEvent = async (entry: DshHistoryEntry) => {
         const event = entry.event
         const sourceRpcId = eventSourceRpcId(event)
+        const submittedByHapi = sourceRpcId !== null
+            && (ownedRpcIds.has(sourceRpcId) || durableOwnedRpcIds.has(sourceRpcId))
         if (sourceRpcId) {
             const pending = pendingTurns.get(sourceRpcId)
             if (pending) pending.userSeen = true
+        }
+        if (event.type === 'user/message' && sourceRpcId && submittedByHapi) {
+            coveredOwnedRpcIds.add(sourceRpcId)
         }
 
         const preset = eventPermissionPreset(event)
@@ -344,7 +387,7 @@ export async function runDsh(opts: {
 
         if (!nativeSessionId) throw new Error('DeepSeek Harness event arrived before session attachment')
         for (const message of convertDshHistoryEntry(nativeSessionId, entry)) {
-            if (message.content.role === 'user' && sourceRpcId && ownedRpcIds.has(sourceRpcId)) continue
+            if (message.content.role === 'user' && submittedByHapi) continue
             await session.sendImportedMessage(message.content, message.localId, message.createdAt)
         }
     }
@@ -353,8 +396,18 @@ export async function runDsh(opts: {
         const persisted = await persistContiguousDshEvents({
             buffer: eventBuffer,
             persistEntry: handleDshEvent,
-            commitCursor: (eventSeq) => {
-                session.updateMetadata((metadata) => advanceDshHistoryCursor(metadata, eventSeq))
+            commitCursor: async (eventSeq) => {
+                const covered = [...coveredOwnedRpcIds]
+                session.updateMetadata((metadata) =>
+                    advanceDshHistoryCursor(metadata, eventSeq, Date.now(), covered))
+                if (!await session.flushMetadata(10_000)) {
+                    throw new Error('Failed to persist DeepSeek Harness history cursor')
+                }
+                for (const rpcId of covered) {
+                    coveredOwnedRpcIds.delete(rpcId)
+                    durableOwnedRpcIds.delete(rpcId)
+                    ownedRpcIds.delete(rpcId)
+                }
             }
         })
         if (persisted) syncKeepAlive()
@@ -636,7 +689,9 @@ export async function runDsh(opts: {
 
         const submitSteer = async (text: string, localId?: string): Promise<void> => {
             const requestedRpcId = randomUUID()
+            await persistDshOwnedRpcId(session, requestedRpcId)
             ownedRpcIds.add(requestedRpcId)
+            durableOwnedRpcIds.add(requestedRpcId)
             const completion = new Promise<void>((resolve, reject) => {
                 pendingTurns.set(requestedRpcId, { userSeen: false, resolve, reject })
             })
@@ -652,6 +707,12 @@ export async function runDsh(opts: {
                 if (command) {
                     pendingTurns.delete(rpcId)
                     ownedRpcIds.delete(rpcId)
+                    try {
+                        await removeDshOwnedRpcIds(session, [rpcId])
+                        durableOwnedRpcIds.delete(rpcId)
+                    } catch (error) {
+                        logger.debug('[dsh] Failed to clear command prompt identity:', error)
+                    }
                     if (command.text) session.sendSessionEvent({ type: 'message', message: command.text })
                     return
                 }
@@ -717,7 +778,9 @@ export async function runDsh(opts: {
 
             try {
                 const requestedRpcId = randomUUID()
+                await persistDshOwnedRpcId(session, requestedRpcId)
                 ownedRpcIds.add(requestedRpcId)
+                durableOwnedRpcIds.add(requestedRpcId)
                 const completion = new Promise<void>((resolve, reject) => {
                     pendingTurns.set(requestedRpcId, { userSeen: false, resolve, reject })
                 })
@@ -732,6 +795,12 @@ export async function runDsh(opts: {
                 if (command) {
                     pendingTurns.delete(rpcId)
                     ownedRpcIds.delete(rpcId)
+                    try {
+                        await removeDshOwnedRpcIds(session, [rpcId])
+                        durableOwnedRpcIds.delete(rpcId)
+                    } catch (error) {
+                        logger.debug('[dsh] Failed to clear command prompt identity:', error)
+                    }
                     if (command.text) session.sendSessionEvent({ type: 'message', message: command.text })
                     thinking = false
                     syncKeepAlive()

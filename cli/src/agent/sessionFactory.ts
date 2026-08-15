@@ -132,6 +132,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.dshImportState !== undefined) preserved.dshImportState = metadata.dshImportState
     if (metadata.dshHistoryLastEventSeq !== undefined) preserved.dshHistoryLastEventSeq = metadata.dshHistoryLastEventSeq
+    if (metadata.dshOwnedRpcIds !== undefined) preserved.dshOwnedRpcIds = metadata.dshOwnedRpcIds
     if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId
     if (metadata.copilotSessionId !== undefined) preserved.copilotSessionId = metadata.copilotSessionId
     if (metadata.piSessionId !== undefined) preserved.piSessionId = metadata.piSessionId

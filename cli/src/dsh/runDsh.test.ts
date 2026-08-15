@@ -5,7 +5,8 @@ import {
     bootstrapDshAfterPreflight,
     createDshKillSessionLifecycle,
     DshContiguousEventBuffer,
-    persistContiguousDshEvents
+    persistContiguousDshEvents,
+    persistDshOwnedRpcId
 } from './runDsh'
 import type { DshHistoryEntry, DshWebClient } from './dshWebClient'
 
@@ -37,6 +38,20 @@ describe('DeepSeek Harness live history cursor', () => {
         const stale = advanceDshHistoryCursor(advanced, 3, 300)
         expect(stale.dshHistoryLastEventSeq).toBe(5)
         expect(stale.dshImportState?.lastEventSeq).toBe(5)
+    })
+
+    it('removes covered HAPI prompt identities in the cursor update', () => {
+        const metadata = {
+            path: '/tmp/project',
+            host: 'localhost',
+            dshHistoryLastEventSeq: 4,
+            dshOwnedRpcIds: { 'rpc-covered': 100, 'rpc-pending': 200 }
+        } as Metadata
+
+        const advanced = advanceDshHistoryCursor(metadata, 5, 300, ['rpc-covered'])
+
+        expect(advanced.dshHistoryLastEventSeq).toBe(5)
+        expect(advanced.dshOwnedRpcIds).toEqual({ 'rpc-pending': 200 })
     })
 
     it('holds a future mux event until history fills the sequence gap', () => {
@@ -81,6 +96,36 @@ describe('DeepSeek Harness live history cursor', () => {
 })
 
 describe('DeepSeek Harness lifecycle boundaries', () => {
+    it('waits for durable prompt identity before native submission can continue', async () => {
+        let metadata = { path: '/tmp/project', host: 'localhost' } as Metadata
+        const order: string[] = []
+        const session = {
+            updateMetadata: (transform: (current: Metadata) => Metadata) => {
+                order.push('update')
+                metadata = transform(metadata)
+            },
+            flushMetadata: async () => {
+                order.push('flush')
+                return true
+            }
+        }
+
+        await persistDshOwnedRpcId(session, 'rpc-1', 100)
+
+        expect(order).toEqual(['update', 'flush'])
+        expect(metadata.dshOwnedRpcIds).toEqual({ 'rpc-1': 100 })
+    })
+
+    it('rejects prompt identity setup when metadata cannot be confirmed', async () => {
+        const session = {
+            updateMetadata: (_transform: (current: Metadata) => Metadata) => {},
+            flushMetadata: async () => false
+        }
+
+        await expect(persistDshOwnedRpcId(session, 'rpc-1', 100))
+            .rejects.toThrow('Failed to persist DeepSeek Harness prompt identity')
+    })
+
     it('finishes DSH preflight before materializing a HAPI session', async () => {
         const order: string[] = []
         const client = {

@@ -273,6 +273,7 @@ export const DshImportedMessageSchema = z.object({
     localId: z.string().min(1),
     eventSeq: z.number().int().nonnegative(),
     createdAt: z.number(),
+    sourceRpcId: z.string().min(1).optional(),
     content: CodexImportedMessageSchema
 })
 

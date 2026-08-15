@@ -21,11 +21,17 @@ function machine(id: string): Machine {
     }
 }
 
-function userMessage(sessionId: string, eventSeq: number, text: string): DshImportedMessage {
+function userMessage(
+    sessionId: string,
+    eventSeq: number,
+    text: string,
+    sourceRpcId?: string
+): DshImportedMessage {
     return {
         localId: `dsh:${sessionId}:${eventSeq}:user`,
         eventSeq,
         createdAt: 1_000 + eventSeq,
+        ...(sourceRpcId ? { sourceRpcId } : {}),
         content: {
             role: 'user',
             content: { type: 'text', text },
@@ -278,5 +284,46 @@ describe('DeepSeek Harness session import', () => {
         }
         expect(metadata.dshHistoryLastEventSeq).toBe(5)
         expect(metadata.dshImportState?.lastEventSeq).toBe(5)
+    })
+
+    it('does not import a native echo of a HAPI prompt after the live process exits', () => {
+        const { store, engine } = setup()
+        const selectedMachine = machine('machine-1')
+        const nativeSessionId = 'native-owned-prompt'
+        const rpcId = 'rpc-owned-by-hapi'
+        const live = store.sessions.getOrCreateSession(
+            'dsh-live-owned-prompt',
+            {
+                path: '/tmp/project',
+                host: 'machine-1.local',
+                flavor: 'dsh',
+                machineId: selectedMachine.id,
+                dshSessionId: nativeSessionId,
+                dshOwnedRpcIds: { [rpcId]: 1_000 }
+            },
+            {},
+            'default'
+        )
+        store.messages.addMessage(live.id, userMessage(nativeSessionId, 1, 'sent from HAPI').content)
+
+        const result = importDshSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: selectedMachine,
+            sourceUrl: 'http://127.0.0.1:3080',
+            transcript: transcript(nativeSessionId, [
+                userMessage(nativeSessionId, 1, 'sent from HAPI', rpcId)
+            ])
+        })
+
+        expect(result).toMatchObject({ hapiSessionId: live.id, action: 'unchanged', appended: 0 })
+        expect(store.messages.getAllMessages(live.id)).toHaveLength(1)
+        const metadata = store.sessions.getSession(live.id)?.metadata as {
+            dshHistoryLastEventSeq?: number
+            dshOwnedRpcIds?: Record<string, number>
+        }
+        expect(metadata.dshHistoryLastEventSeq).toBe(1)
+        expect(metadata.dshOwnedRpcIds).toEqual({})
     })
 })

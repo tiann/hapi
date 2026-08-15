@@ -781,6 +781,7 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('create'))
 
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-dsh-1'))
+        expect(dshApi.getDshSessions).toHaveBeenCalledWith(null, 'machine-1')
         expect(dshApi.importDshSessions).toHaveBeenCalledWith({
             sessionIds: ['dsh-native-1'],
             cwd: 'C:\\repo',

@@ -151,6 +151,12 @@ describe('NewSession preferences', () => {
             modelReasoningEffort: 'xhigh',
             permissionMode: 'read-only'
         })
+        expect(resolvePreferredLaunchSettings('dsh', {
+            model: 'deepseek-official/deepseek-v4-pro',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'max'
+        }).model).toBe('deepseek-official/deepseek-v4-pro')
     })
 
     it('falls back when a remembered permission mode is invalid for the agent', () => {

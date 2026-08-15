@@ -29,6 +29,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null
 }
 
+function dshOwnedRpcIdRecord(value: unknown): Record<string, number> {
+    const record = asRecord(value)
+    if (!record) return {}
+    return Object.fromEntries(Object.entries(record).filter(
+        (entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1])))
+}
+
 function storedMetadata(session: StoredSession): Record<string, unknown> {
     return asRecord(session.metadata) ?? {}
 }
@@ -78,6 +85,14 @@ function buildDshMetadata(
         : liveEventSeq === undefined
             ? transcript.lastEventSeq
             : Math.max(liveEventSeq, transcript.lastEventSeq)
+    const dshOwnedRpcIds = dshOwnedRpcIdRecord(existing.dshOwnedRpcIds)
+    if (state.state === 'complete') {
+        for (const message of transcript.messages) {
+            if (message.sourceRpcId && (completeEventSeq === undefined || message.eventSeq <= completeEventSeq)) {
+                delete dshOwnedRpcIds[message.sourceRpcId]
+            }
+        }
+    }
     return {
         ...existing,
         path: transcript.cwd
@@ -98,6 +113,7 @@ function buildDshMetadata(
         dshHistoryLastEventSeq: state.state === 'complete'
             ? completeEventSeq
             : liveEventSeq,
+        dshOwnedRpcIds,
         dshImportState: {
             ...state,
             sourceUrl,
@@ -153,7 +169,8 @@ function importedPrefix(sessionId: string): string {
 function classifyImportDelta(
     existing: StoredMessage[],
     transcript: DshLocalSessionWithMessages,
-    observedEventSeq: number | null
+    observedEventSeq: number | null,
+    ownedRpcIds: ReadonlySet<string>
 ): { messages: DshLocalSessionWithMessages['messages']; error?: string } {
     const sourceIndexByLocalId = new Map(transcript.messages.map((message, index) => [message.localId, index]))
     const storedImported = existing.filter((message) => message.localId?.startsWith(importedPrefix(transcript.id)))
@@ -180,6 +197,9 @@ function classifyImportDelta(
         messages: transcript.messages.filter((message) =>
             !importedIds.has(message.localId)
             && (observedEventSeq === null || message.eventSeq > observedEventSeq)
+            && !(message.content.role === 'user'
+                && message.sourceRpcId !== undefined
+                && ownedRpcIds.has(message.sourceRpcId))
         )
     }
 }
@@ -260,7 +280,12 @@ export function importDshSession(options: {
             buildDshMetadata(transcript, machine, sourceUrl, metadata, importingState))
     }
 
-    const delta = classifyImportDelta(store.messages.getAllMessages(stored.id), transcript, observedEventSeq)
+    const delta = classifyImportDelta(
+        store.messages.getAllMessages(stored.id),
+        transcript,
+        observedEventSeq,
+        new Set(Object.keys(dshOwnedRpcIdRecord(priorMetadata.dshOwnedRpcIds)))
+    )
     if (delta.error) {
         markImportState({ store, engine, sessionId: stored.id, namespace, transcript, machineId: machine.id, sourceUrl, state: 'diverged', error: delta.error })
         return {

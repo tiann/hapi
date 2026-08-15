@@ -918,7 +918,7 @@ export function NewSession(props: {
     useEffect(() => {
         dshLoadGenerationRef.current += 1
         setIsLoadingDshImportSessions(false)
-    }, [agent, machineId, trimmedDirectory])
+    }, [agent, machineId])
 
     useEffect(() => () => {
         dshLoadGenerationRef.current += 1
@@ -930,7 +930,7 @@ export function NewSession(props: {
         setIsLoadingDshImportSessions(true)
         setDshImportError(null)
         try {
-            const result = await props.api.getDshSessions(trimmedDirectory || null, machineId)
+            const result = await props.api.getDshSessions(null, machineId)
             if (generation !== dshLoadGenerationRef.current) return
             if (!result.success) throw new Error(result.error)
             setDshImportSessions(result.sessions)
@@ -946,7 +946,7 @@ export function NewSession(props: {
         } finally {
             if (generation === dshLoadGenerationRef.current) setIsLoadingDshImportSessions(false)
         }
-    }, [agent, machineId, props.api, trimmedDirectory, t])
+    }, [agent, machineId, props.api, t])
 
     const formatDshImportError = useCallback((code?: string, message?: string): string => {
         if (code === 'transcript_diverged') return t('dshImport.error.diverged')

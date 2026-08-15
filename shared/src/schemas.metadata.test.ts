@@ -24,4 +24,13 @@ describe('MetadataSchema cursorSessionProtocol', () => {
         expect(result.success).toBe(true);
         expect(result.data?.conversationHistoryEntryIds).toEqual({ 'local-user-id': 'pi-entry-id' });
     });
+
+    it('persists DSH-owned prompt ids across runner restarts', () => {
+        const result = MetadataSchema.safeParse({
+            ...base,
+            dshOwnedRpcIds: { 'rpc-1': 1_700_000_000_000 },
+        });
+        expect(result.success).toBe(true);
+        expect(result.data?.dshOwnedRpcIds).toEqual({ 'rpc-1': 1_700_000_000_000 });
+    });
 });

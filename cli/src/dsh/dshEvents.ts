@@ -156,10 +156,14 @@ export function convertDshHistoryEntry(
     const converted = convertDshEvent(entry.event, entry)
     const result: DshImportedMessage[] = []
     if (converted.humanText) {
+        const data = isRecord(entry.event.data) ? entry.event.data : null
+        const source = data && isRecord(data.source) ? data.source : null
+        const sourceRpcId = asString(source?.rpcId)
         result.push({
             localId: `dsh:${sessionId}:${entry.event.seq}:user`,
             eventSeq: entry.event.seq,
             createdAt: entry.event.time,
+            ...(sourceRpcId ? { sourceRpcId } : {}),
             content: {
                 role: 'user',
                 content: { type: 'text', text: converted.humanText },
