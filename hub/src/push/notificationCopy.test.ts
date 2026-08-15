@@ -12,7 +12,8 @@ import {
     isTaskFailure,
     loadNotificationCopy,
     renderTemplate,
-    resolveCopy
+    resolveCopy,
+    truncateJsonString
 } from './notificationCopy'
 
 function createSession(overrides: Partial<Session> = {}): Session {
@@ -35,6 +36,17 @@ describe('renderTemplate', () => {
 
     it('handles empty vars', () => {
         expect(renderTemplate('{agentName} hello', {})).toBe('{agentName} hello')
+    })
+})
+
+describe('truncateJsonString', () => {
+    it('respects JSON-escaped byte budgets without splitting Unicode code points', () => {
+        const value = '你😀"\\\n'.repeat(1_000)
+        const result = truncateJsonString(value, 100)
+
+        expect(Buffer.byteLength(JSON.stringify(result), 'utf8') - 2).toBeLessThanOrEqual(100)
+        expect(result.length).toBeLessThan(value.length)
+        expect(result.endsWith('\uD83D')).toBe(false)
     })
 })
 
@@ -167,6 +179,33 @@ describe('build*Copy', () => {
         expect(result.isFailure).toBe(false)
         expect(result.title).toBe('Task completed')
         expect(result.body).toBe('Codex · Demo task · All green')
+    })
+
+    it('bounds repeated multibyte placeholders after rendering', () => {
+        const summary = '完成😀"\\\n'.repeat(1_000)
+        const result = buildTaskCopy(
+            createSession(),
+            { status: 'completed', summary },
+            {
+                taskCompleted: {
+                    title: '{summary}{summary}',
+                    body: '{summary}{summary}'
+                }
+            },
+            '/sessions/session-1'
+        )
+
+        expect(Buffer.byteLength(JSON.stringify(result.title), 'utf8') - 2).toBeLessThanOrEqual(512)
+        expect(Buffer.byteLength(JSON.stringify(result.body), 'utf8') - 2).toBeLessThanOrEqual(2_500)
+        expect(Buffer.byteLength(JSON.stringify({
+            title: result.title,
+            body: result.body,
+            data: {
+                type: 'task-notification',
+                sessionId: 'session-1',
+                url: '/sessions/session-1'
+            }
+        }), 'utf8')).toBeLessThan(4_096)
     })
 
     it('renders session completion copy with reason variable', () => {

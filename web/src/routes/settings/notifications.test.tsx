@@ -196,7 +196,24 @@ describe('SettingsNotificationsPage', () => {
             expect(updateNotificationCopy).toHaveBeenCalledWith({
                 ready: {
                     title: 'Custom {agentName}',
-                    body: '{agentName} is waiting in {sessionName}'
+                    body: ''
+                },
+            })
+        })
+    })
+
+    it('keeps a default title inheritable when only the body is customized', async () => {
+        renderPage()
+        const readyRow = await screen.findByRole('button', { name: /Session ready.*Ready for input/ })
+        fireEvent.click(readyRow)
+        fireEvent.change(screen.getByLabelText('Body'), { target: { value: 'Custom body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save copy' }))
+
+        await waitFor(() => {
+            expect(updateNotificationCopy).toHaveBeenCalledWith({
+                ready: {
+                    title: '',
+                    body: 'Custom body'
                 },
             })
         })

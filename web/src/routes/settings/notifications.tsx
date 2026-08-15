@@ -72,8 +72,14 @@ function getCopyOverrides(
     for (const { key } of COPY_BLOCKS) {
         const template = resolveCopyTemplate(draft, defaults, key)
         const fallback = defaults[key]
-        if (!fallback || template.title !== fallback.title || template.body !== fallback.body) {
+        if (!fallback) {
             overrides[key] = template
+            continue
+        }
+        const title = template.title === fallback.title ? '' : template.title
+        const body = template.body === fallback.body ? '' : template.body
+        if (title || body) {
+            overrides[key] = { title, body }
         }
     }
     return overrides

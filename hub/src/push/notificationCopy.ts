@@ -12,6 +12,9 @@ const copyTemplateSchema = z.object({
     body: z.string().max(500)
 })
 
+const MAX_RENDERED_TITLE_JSON_BYTES = 512
+const MAX_RENDERED_BODY_JSON_BYTES = 2_500
+
 export const notificationCopySchema = z.object({
     permissionRequest: copyTemplateSchema.optional(),
     ready: copyTemplateSchema.optional(),
@@ -76,15 +79,30 @@ export function renderTemplate(template: string, vars: Record<string, string>): 
     })
 }
 
+export function truncateJsonString(value: string, maxBytes: number): string {
+    if (maxBytes <= 0) return ''
+    let bytes = 0
+    let result = ''
+    for (const char of value) {
+        const charBytes = Buffer.byteLength(JSON.stringify(char), 'utf8') - 2
+        if (bytes + charBytes > maxBytes) break
+        bytes += charBytes
+        result += char
+    }
+    return result
+}
+
 export type NotificationCopyResult = {
     title: string
     body: string
 }
 
 function render(template: CopyTemplate, vars: Record<string, string>): NotificationCopyResult {
+    const title = renderTemplate(template.title, vars)
+    const body = renderTemplate(template.body, vars)
     return {
-        title: renderTemplate(template.title, vars),
-        body: renderTemplate(template.body, vars)
+        title: truncateJsonString(title, MAX_RENDERED_TITLE_JSON_BYTES),
+        body: truncateJsonString(body, MAX_RENDERED_BODY_JSON_BYTES)
     }
 }
 
