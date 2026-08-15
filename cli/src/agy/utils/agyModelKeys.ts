@@ -5,20 +5,24 @@ export type AgyModelPickerTarget = {
 }
 
 const TARGETS: Record<string, AgyModelPickerTarget> = {
-    'gemini-3.6-flash-low': { row: 0, effort: 0, label: 'Gemini 3.6 Flash (Low)' },
-    'gemini-3.6-flash-medium': { row: 0, effort: 1, label: 'Gemini 3.6 Flash (Medium)' },
-    'gemini-3.6-flash-high': { row: 0, effort: 2, label: 'Gemini 3.6 Flash (High)' },
-    'gemini-3.5-flash-low': { row: 1, effort: 0, label: 'Gemini 3.5 Flash (Low)' },
-    'gemini-3.5-flash-medium': { row: 1, effort: 1, label: 'Gemini 3.5 Flash (Medium)' },
-    'gemini-3.5-flash-high': { row: 1, effort: 2, label: 'Gemini 3.5 Flash (High)' },
-    'gemini-3.1-pro-low': { row: 2, effort: 0, label: 'Gemini 3.1 Pro (Low)' },
-    'gemini-3.1-pro-high': { row: 2, effort: 2, label: 'Gemini 3.1 Pro (High)' },
-    'claude-sonnet-4-6': { row: 3, effort: null, label: 'Claude Sonnet 4.6 (Thinking)' },
-    'claude-opus-4-6-thinking': { row: 4, effort: null, label: 'Claude Opus 4.6 (Thinking)' },
-    'gpt-oss-120b-medium': { row: 5, effort: null, label: 'GPT-OSS 120B (Medium)' },
+    'gemini-3.7-flash-low': { row: 0, effort: 0, label: 'Gemini 3.7 Flash (Low)' },
+    'gemini-3.7-flash-medium': { row: 0, effort: 1, label: 'Gemini 3.7 Flash (Medium)' },
+    'gemini-3.7-flash-high': { row: 0, effort: 2, label: 'Gemini 3.7 Flash (High)' },
+    'gemini-3.6-flash-low': { row: 1, effort: 0, label: 'Gemini 3.6 Flash (Low)' },
+    'gemini-3.6-flash-medium': { row: 1, effort: 1, label: 'Gemini 3.6 Flash (Medium)' },
+    'gemini-3.6-flash-high': { row: 1, effort: 2, label: 'Gemini 3.6 Flash (High)' },
+    'gemini-3.5-flash-low': { row: 2, effort: 0, label: 'Gemini 3.5 Flash (Low)' },
+    'gemini-3.5-flash-medium': { row: 2, effort: 1, label: 'Gemini 3.5 Flash (Medium)' },
+    'gemini-3.5-flash-high': { row: 2, effort: 2, label: 'Gemini 3.5 Flash (High)' },
+    'gemini-3.1-pro-low': { row: 3, effort: 0, label: 'Gemini 3.1 Pro (Low)' },
+    'gemini-3.1-pro-high': { row: 3, effort: 2, label: 'Gemini 3.1 Pro (High)' },
+    'claude-sonnet-4-6': { row: 4, effort: null, label: 'Claude Sonnet 4.6 (Thinking)' },
+    'claude-opus-4-6-thinking': { row: 5, effort: null, label: 'Claude Opus 4.6 (Thinking)' },
+    'gpt-oss-120b-medium': { row: 6, effort: null, label: 'GPT-OSS 120B (Medium)' },
 }
 
 const MODEL_ROWS = [
+    'Gemini 3.7 Flash',
     'Gemini 3.6 Flash',
     'Gemini 3.5 Flash',
     'Gemini 3.1 Pro',
