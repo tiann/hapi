@@ -16,6 +16,9 @@ export function ReasoningEffortSelector(props: {
     if (props.agent !== 'codex' && props.agent !== 'dsh' && props.agent !== 'opencode') {
         return null
     }
+    if (props.agent === 'dsh' && !props.availableOptions?.length) {
+        return null
+    }
 
     const options = (props.agent === 'codex' || props.agent === 'dsh') && props.availableOptions?.length
         ? getCodexComposerReasoningEffortOptions(null, props.agent, props.availableOptions).map((option) => ({
