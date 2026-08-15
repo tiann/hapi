@@ -337,6 +337,7 @@ export default {
   'newSession.type.worktree.placeholder': 'feature-x (default 1228-xxxx)',
   'newSession.agent': 'Agent',
   'newSession.model': 'Model',
+  'newSession.dshModelHint': 'DeepSeek Harness models are loaded after the session starts — pick one from the session settings.',
   'newSession.effort': 'Effort',
   'newSession.model.optional': 'optional',
   'newSession.model.default': 'Default',

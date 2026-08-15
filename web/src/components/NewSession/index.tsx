@@ -1588,6 +1588,14 @@ export function NewSession(props: {
                     onModelChange={setOpencodeSelectedModel}
                     onRetry={opencodeModelsState.refetch}
                 />
+            ) : agent === 'dsh' ? (
+                // DeepSeek Harness models are runtime-discovered per session
+                // (session.models from the DSH host); there is no machine-level
+                // catalog to pick from before the session exists. The picker
+                // lives in the session view instead.
+                <div className="px-3 py-2 text-xs text-[var(--app-hint)]">
+                    {t('newSession.dshModelHint')}
+                </div>
             ) : (
                 agent === 'cursor' ? (
                     <>

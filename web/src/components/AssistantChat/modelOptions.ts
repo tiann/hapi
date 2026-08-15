@@ -131,6 +131,14 @@ export function getModelOptionsForFlavor(
     if (flavor === 'opencode') {
         return []
     }
+    // DeepSeek Harness models are runtime-discovered from the DSH host
+    // (session.models). While the catalog is loading or the session is
+    // inactive, never fall back to the Claude template list.
+    if (flavor === 'dsh') {
+        return customOptions && customOptions.length > 0
+            ? withCurrentModelOption(customOptions, currentModel)
+            : []
+    }
     if (flavor === 'cursor') {
         return withCurrentModelOption([{ value: null, label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
     }

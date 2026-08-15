@@ -341,6 +341,7 @@ export default {
   'newSession.type.worktree.placeholder': 'feature-x (默认 1228-xxxx)',
   'newSession.agent': '代理',
   'newSession.model': '模型',
+  'newSession.dshModelHint': 'DeepSeek Harness 的模型會在 session 建立後動態載入 —— 建立後在 session 設定中選擇。',
   'newSession.effort': '思考强度',
   'newSession.model.optional': '可选',
   'newSession.model.default': '默认',
