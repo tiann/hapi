@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { logger } from '@/ui/logger'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
+import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import type { DshProjectedMessage } from '@/agent/types'
 import type { DshStateSnapshot } from '@hapi/protocol'
@@ -287,6 +288,38 @@ export async function runDsh(opts: {
             return { success: true as const, truncateFromLocalId: localId, messages: [] as never[] };
         });
 
+        // Standard session-config RPC (web model pickers / hub model endpoint):
+        // DSH models are runtime-discovered, so a bare model id is resolved
+        // against the live catalog to find its provider route. Permission
+        // modes and effort are rejected — DSH presets are runtime-discovered
+        // and reasoning effort rides the model selection.
+        registerSessionConfigRpc({
+            rpcHandlerManager: session.rpcHandlerManager,
+            flavor: 'dsh',
+            modelMode: 'nullable',
+            onApply: async (config) => {
+                if (config.model === undefined || config.model === null) {
+                    return;
+                }
+                const modelId = config.model;
+                const catalog = await client.sessionModels(created.sessionId);
+                const match = catalog.groups
+                    .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
+                    .find((m) => m.id === modelId);
+                if (!match) {
+                    throw new Error(`Unknown DSH model: ${modelId}`);
+                }
+                await client.selectModel({
+                    sessionId: created.sessionId,
+                    provider: match.provider,
+                    model: modelId,
+                    ...(match.reasoning?.defaultEffort !== undefined
+                        ? { reasoningEffort: match.reasoning.defaultEffort }
+                        : {})
+                });
+            }
+        });
+
         registerDshRpcHandlers({
             client,
             dshSessionId: created.sessionId,
@@ -307,6 +340,13 @@ export async function runDsh(opts: {
                 sessionId: created.sessionId,
                 mode: 'queue',
                 content: [{ type: 'text', text }]
+            }).then(() => {
+                // The DSH host owns the queue from here; mark the HAPI message
+                // invoked so the standard queued-messages bar stays empty (the
+                // dsh_state queue panel is the authoritative DSH queue view).
+                if (localId) {
+                    session.emitMessagesConsumed([localId]);
+                }
             }).catch((error) => {
                 logger.debug(`[dsh] prompt failed: ${error instanceof Error ? error.message : String(error)}`);
                 session.sendAgentMessage({

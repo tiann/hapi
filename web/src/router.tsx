@@ -15,7 +15,6 @@ import {
 import { getScrollRestorationKey } from '@/lib/scrollRestorationKey'
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
-import { DshSessionView } from '@/components/DshSessionView'
 import { SessionList } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
@@ -771,15 +770,6 @@ function SessionPage() {
             <div className="flex-1 flex items-center justify-center p-4">
                 <LoadingState label="Loading session…" className="text-sm" />
             </div>
-        )
-    }
-
-    if (session?.metadata?.flavor === 'dsh') {
-        return (
-            <DshSessionView
-                api={api}
-                session={session}
-            />
         )
     }
 

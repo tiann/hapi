@@ -455,10 +455,12 @@ export function DshPresetPicker({ sessionId, api, dispatch }: {
 // Skills (leading-/ invocation)
 // ---------------------------------------------------------------------------
 
-export function DshSkillsPalette({ sessionId, api, onInsert }: {
+export function DshSkillsPalette({ sessionId, api, onInsert, onInvoke }: {
     sessionId: string
     api: ApiClient | null
-    onInsert: (name: string) => void
+    onInsert?: (name: string) => void
+    /** Send the leading-/ skill reference directly (official invocation). */
+    onInvoke?: (name: string) => void
 }) {
     const { t } = useTranslation()
     const { skills, isLoading } = useDshSkills({ api, sessionId, enabled: true })
@@ -470,7 +472,7 @@ export function DshSkillsPalette({ sessionId, api, onInsert }: {
                     <button
                         key={skill.name}
                         type="button"
-                        onClick={() => onInsert(skill.name)}
+                        onClick={() => onInvoke ? onInvoke(skill.name) : onInsert?.(skill.name)}
                         className="rounded-md border border-[var(--app-border)] px-2 py-1 text-left text-xs hover:bg-[var(--app-secondary-bg)]"
                         title={skill.description}
                     >

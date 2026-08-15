@@ -37,6 +37,7 @@ import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimeP
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
+import { DshSessionPanels } from '@/components/DshSessionPanels'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
@@ -1732,6 +1733,13 @@ function SessionChatInner(props: SessionChatProps) {
                                 }}
                                 canSteer={agentFlavor === 'pi' && props.session.thinking && !controlledByUser}
                             />
+                            {agentFlavor === 'dsh' ? (
+                                <DshSessionPanels
+                                    api={props.api}
+                                    sessionId={props.session.id}
+                                    messages={props.messages}
+                                />
+                            ) : null}
                         </div>
 
                         <HappyComposer
