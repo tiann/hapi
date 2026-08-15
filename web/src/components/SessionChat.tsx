@@ -1700,6 +1700,10 @@ function SessionChatInner(props: SessionChatProps) {
     // Abort handler
     const handleAbort = useCallback(async () => {
         await abortSession()
+        // Abort cancels pending/in-flight Bridge without recovered/failed/superseded
+        // metadata, and the session stays active — drop the local latch so Bridge
+        // is not stuck as "Bridging…" until remount.
+        setPendingBridgeEventId(null)
         props.onRefresh()
     }, [abortSession, props.onRefresh])
 

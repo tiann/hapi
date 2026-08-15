@@ -91,6 +91,10 @@ describe('model error UI states', () => {
         expect(shouldKeepPendingBridge(false, true)).toBe(false)
         expect(shouldKeepPendingBridge(true, false)).toBe(false)
     })
+
+    it('drops local Bridge pending after Abort even while still active and unrecovered', () => {
+        expect(shouldKeepPendingBridge(true, true, true)).toBe(false)
+    })
 })
 
 describe('model error chat event labels', () => {
