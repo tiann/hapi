@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
+import { z } from 'zod'
 import { CLAUDE_IMPORT_PAGE_BYTES } from '@hapi/protocol/apiTypes'
 import {
     normalizeClaudeAgentEventForImport,
@@ -21,6 +23,18 @@ import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 
 const importLocks = new Map<string, Promise<ClaudeImportResult>>()
+const CLAUDE_IMPORT_MAX_BODY_BYTES = 128 * 1024
+const CLAUDE_IMPORT_MAX_SESSION_IDS = 200
+const CLAUDE_IMPORT_MAX_SESSION_ID_LENGTH = 256
+const claudeImportBodySchema = z.object({
+    sessionIds: z.array(
+        z.string().trim().min(1).max(CLAUDE_IMPORT_MAX_SESSION_ID_LENGTH)
+    ).min(1).max(CLAUDE_IMPORT_MAX_SESSION_IDS)
+}).passthrough()
+const claudeImportBodyLimit = bodyLimit({
+    maxSize: CLAUDE_IMPORT_MAX_BODY_BYTES,
+    onError: (c) => c.json({ success: false, error: 'Request body too large', results: [] }, 413)
+})
 
 export type ClaudeSessionListItem = ClaudeLocalSessionSummary & {
     hapiSessionId?: string
@@ -1113,15 +1127,22 @@ export function createClaudeSessionRoutes(options: { store: Store; getSyncEngine
         return c.json({ success: true, sessions, machineId: machine.id })
     })
 
-    app.post('/claude/import-sessions', async (c) => {
-        const body = asRecord(await c.req.json().catch(() => null))
-        const sessionIds = Array.isArray(body?.sessionIds)
-            ? body.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim())
-            : []
-        if (sessionIds.length === 0) return c.json({ success: false, error: 'No Claude sessions selected', results: [] }, 400)
-        const launchSettings = parseLaunchSettings(body ?? {})
+    app.post('/claude/import-sessions', claudeImportBodyLimit, async (c) => {
+        let json: unknown
+        try {
+            json = await c.req.json()
+        } catch (error) {
+            if (error instanceof Error && error.name === 'BodyLimitError') throw error
+            json = null
+        }
+        const parsed = claudeImportBodySchema.safeParse(json)
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid Claude import request', results: [] }, 400)
+        }
+        const body = parsed.data
+        const launchSettings = parseLaunchSettings(body)
         if (!launchSettings) return c.json({ success: false, error: 'Invalid Claude launch settings', results: [] }, 400)
-        const uniqueSessionIds = [...new Set(sessionIds)]
+        const uniqueSessionIds = [...new Set(body.sessionIds)]
         const namespace = c.get('namespace')
         const engine = options.getSyncEngine()
         const machine = resolveClaudeMachine(engine, namespace, typeof body?.machineId === 'string' ? body.machineId.trim() : null)

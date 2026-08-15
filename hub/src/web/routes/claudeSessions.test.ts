@@ -252,6 +252,79 @@ describe('Claude session import', () => {
         ])
     })
 
+    it.each([
+        ['too many session IDs', { sessionIds: Array.from({ length: 201 }, (_, index) => `native-${index}`) }],
+        ['an overlong session ID', { sessionIds: ['x'.repeat(257)] }]
+    ])('rejects %s before calling the Runner', async (_label, body) => {
+        const { store } = setup()
+        const selectedMachine = machine()
+        let rpcCalls = 0
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async () => {
+                rpcCalls += 1
+                return { success: false as const, error: 'must not be called' }
+            }
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ machineId: selectedMachine.id, ...body })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'Invalid Claude import request',
+            results: []
+        })
+        expect(rpcCalls).toBe(0)
+    })
+
+    it('rejects an oversized request body before calling the Runner', async () => {
+        const { store } = setup()
+        const selectedMachine = machine()
+        let rpcCalls = 0
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async () => {
+                rpcCalls += 1
+                return { success: false as const, error: 'must not be called' }
+            }
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                machineId: selectedMachine.id,
+                sessionIds: ['native-1'],
+                padding: 'x'.repeat(128 * 1024)
+            })
+        })
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'Request body too large',
+            results: []
+        })
+        expect(rpcCalls).toBe(0)
+    })
+
     it('locks a newly created session until every import page is persisted', async () => {
         const store = new Store(':memory:')
         stores.push(store)
