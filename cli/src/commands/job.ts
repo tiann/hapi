@@ -267,6 +267,14 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         throw new SessionJobError('bad_args', '--started-at is only valid with job set')
     }
 
+    if (
+        result.heartbeatSec !== undefined
+        && result.action !== undefined
+        && result.action !== 'run'
+    ) {
+        throw new SessionJobError('bad_args', '--heartbeat-sec is only valid with job run')
+    }
+
     const clearUsed =
         result.done === null
         || result.total === null

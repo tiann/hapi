@@ -91,6 +91,21 @@ describe('sessionJobMcp', () => {
         expect(result.text).toMatch(/sleep stub/)
     })
 
+    it('treats clear on missing job as idempotent (no job run recipe)', async () => {
+        const { clearSessionJob } = await import('./sessionJob')
+        const { SessionJobError } = await import('./sessionJob')
+        vi.mocked(clearSessionJob).mockRejectedValueOnce(
+            new SessionJobError('not_found', 'job not found')
+        )
+        const result = await handleSessionJobTool(
+            { action: 'clear', jobKey: 'beets' },
+            'sid-1'
+        )
+        expect(result.isError).toBe(false)
+        expect(result.text).toMatch(/already absent/)
+        expect(result.text).not.toMatch(/hapi job run/)
+    })
+
     it('steers when not_found loses instanceof across MCP bundle boundaries', async () => {
         const { updateSessionJob } = await import('./sessionJob')
         vi.mocked(updateSessionJob).mockRejectedValueOnce(

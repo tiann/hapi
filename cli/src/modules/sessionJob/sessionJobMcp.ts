@@ -187,9 +187,11 @@ export async function handleSessionJobTool(
         }
     } catch (error) {
         if (isSessionJobNotFoundError(error)) {
-            const action = args.action === 'clear' ? 'clear' : 'update'
+            if (args.action === 'clear') {
+                return { text: 'job is already absent; nothing to clear', isError: false }
+            }
             return {
-                text: `session_job failed: ${formatSessionJobNotFoundHint(action)}`,
+                text: `session_job failed: ${formatSessionJobNotFoundHint('update')}`,
                 isError: true
             }
         }

@@ -69,6 +69,22 @@ describe('parseJobArgs', () => {
         ])).toThrow(/--started-at is only valid with job set/)
     })
 
+    it('rejects --heartbeat-sec on non-run actions', () => {
+        expect(() => parseJobArgs([
+            'set',
+            'sid',
+            'beets',
+            '--label=beets',
+            '--heartbeat-sec=300'
+        ])).toThrow(/--heartbeat-sec is only valid with job run/)
+        expect(() => parseJobArgs([
+            'update',
+            'sid',
+            'beets',
+            '--heartbeat-sec=60'
+        ])).toThrow(/--heartbeat-sec is only valid with job run/)
+    })
+
     it('parses --clear-remaining as null for update patches', () => {
         const parsed = parseJobArgs([
             'update',
