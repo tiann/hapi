@@ -6,6 +6,7 @@ const socketHarness = vi.hoisted(() => ({
         connected: boolean
         connectCalls: number
         connectImmediately: boolean
+        messageAck: unknown
         emitted: Array<{ event: string; args: unknown[] }>
         listeners: Map<string, Array<(...args: any[]) => void>>
         trigger: (event: string, ...args: any[]) => void
@@ -24,6 +25,7 @@ vi.mock('socket.io-client', () => ({
             connected: false,
             connectCalls: 0,
             connectImmediately: true,
+            messageAck: { ok: true },
             emitted: [] as Array<{ event: string; args: unknown[] }>,
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
             trigger: () => {},
@@ -63,7 +65,15 @@ vi.mock('socket.io-client', () => ({
                 return socket
             },
             emitWithAck: async () => ({}),
-            timeout: () => ({ emitWithAck: async () => ({}) }),
+            timeout: () => ({
+                emitWithAck: async (event: string, ...args: unknown[]) => {
+                    if (event === 'message') {
+                        state.emitted.push({ event, args })
+                        return state.messageAck
+                    }
+                    return {}
+                }
+            }),
             connect: () => {
                 state.connectCalls += 1
                 if (state.connectImmediately) {
@@ -164,11 +174,11 @@ function triggerIncomingUserMessage(
 }
 
 describe('ApiSessionClient native transcript forwarding', () => {
-    it('emits stable identity and source time for imported messages', () => {
+    it('waits for acknowledgement after emitting stable identity and source time', async () => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
 
-        client.sendImportedMessage(
+        await client.sendImportedMessage(
             { role: 'agent', content: { type: 'output', data: { type: 'text', text: 'hello' } } },
             'dsh:native-1:5:agent:0',
             1_000
@@ -184,6 +194,23 @@ describe('ApiSessionClient native transcript forwarding', () => {
                 imported: true
             }]
         })
+        client.close()
+    })
+
+    it('rejects an imported message when the hub reports a persistence conflict', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        socketHarness.sockets[0]!.messageAck = {
+            ok: false,
+            code: 'import_conflict',
+            message: 'Imported message content changed'
+        }
+
+        await expect(client.sendImportedMessage(
+            { role: 'agent', content: { type: 'output', data: { type: 'text', text: 'changed' } } },
+            'dsh:native-1:5:agent:0',
+            1_000
+        )).rejects.toThrow('Hub rejected imported message dsh:native-1:5:agent:0')
         client.close()
     })
 })

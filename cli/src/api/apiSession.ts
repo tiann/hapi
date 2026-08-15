@@ -1023,16 +1023,25 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
-    sendImportedMessage(message: unknown, localId: string, createdAt: number): void {
-        this.emitOrQueue(() => {
-            this.socket.emit('message', {
-                sid: this.sessionId,
-                message,
-                localId,
-                createdAt,
-                imported: true
-            })
+    async sendImportedMessage(message: unknown, localId: string, createdAt: number): Promise<void> {
+        if (this.state !== 'active') {
+            throw new Error('Cannot persist an imported message before the HAPI session is active')
+        }
+        const response: unknown = await this.socket.timeout(10_000).emitWithAck('message', {
+            sid: this.sessionId,
+            message,
+            localId,
+            createdAt,
+            imported: true
         })
+        if (!response || typeof response !== 'object' || Array.isArray(response)) {
+            throw new Error(`Hub returned an invalid imported-message acknowledgement for ${localId}`)
+        }
+        const ack = response as { ok?: unknown; code?: unknown; message?: unknown }
+        if (ack.ok !== true) {
+            const detail = typeof ack.message === 'string' ? `: ${ack.message}` : ''
+            throw new Error(`Hub rejected imported message ${localId}${detail}`)
+        }
     }
 
     sendSessionEvent(event: {

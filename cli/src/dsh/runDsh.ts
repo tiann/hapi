@@ -149,6 +149,18 @@ export class DshContiguousEventBuffer {
     }
 }
 
+export async function persistContiguousDshEvents(options: {
+    buffer: DshContiguousEventBuffer
+    persistEntry: (entry: DshHistoryEntry) => Promise<void>
+    commitCursor: (eventSeq: number) => Promise<void> | void
+}): Promise<boolean> {
+    const entries = options.buffer.takeContiguous()
+    if (entries.length === 0) return false
+    for (const entry of entries) await options.persistEntry(entry)
+    await options.commitCursor(entries.at(-1)!.event.seq)
+    return true
+}
+
 export function createDshKillSessionLifecycle(options: {
     lifecycle: KillSessionLifecycle
     client: Pick<DshWebClient, 'cancel'>
@@ -230,6 +242,8 @@ export async function runDsh(opts: {
     let muxReady = false
     let historyReconciliation: Promise<void> | null = null
     let historyReconciliationRequested = false
+    let eventPersistenceError: Error | null = null
+    let eventDrainTail = Promise.resolve()
 
     const syncKeepAlive = () => {
         session.keepAlive(thinking, 'remote', {
@@ -264,6 +278,14 @@ export async function runDsh(opts: {
         pendingTurns.clear()
     }
 
+    const abortForDshError = (error: unknown) => {
+        if (stopped || loopAbort.signal.aborted) return
+        const normalized = error instanceof Error ? error : new Error(String(error))
+        session.sendSessionEvent({ type: 'error', message: normalized.message })
+        failPendingTurns(normalized)
+        loopAbort.abort(normalized)
+    }
+
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'dsh',
@@ -288,7 +310,7 @@ export async function runDsh(opts: {
         isThinking: () => thinking
     }))
 
-    const handleDshEvent = (entry: DshHistoryEntry) => {
+    const handleDshEvent = async (entry: DshHistoryEntry) => {
         const event = entry.event
         const sourceRpcId = eventSourceRpcId(event)
         if (sourceRpcId) {
@@ -323,19 +345,40 @@ export async function runDsh(opts: {
         if (!nativeSessionId) throw new Error('DeepSeek Harness event arrived before session attachment')
         for (const message of convertDshHistoryEntry(nativeSessionId, entry)) {
             if (message.content.role === 'user' && sourceRpcId && ownedRpcIds.has(sourceRpcId)) continue
-            session.sendImportedMessage(message.content, message.localId, message.createdAt)
+            await session.sendImportedMessage(message.content, message.localId, message.createdAt)
         }
     }
 
-    const drainDshEvents = () => {
-        const entries = eventBuffer.takeContiguous()
-        if (entries.length === 0) return
-        for (const entry of entries) handleDshEvent(entry)
-        session.updateMetadata((metadata) => advanceDshHistoryCursor(metadata, entries.at(-1)!.event.seq))
-        syncKeepAlive()
+    const drainDshEvents = async () => {
+        const persisted = await persistContiguousDshEvents({
+            buffer: eventBuffer,
+            persistEntry: handleDshEvent,
+            commitCursor: (eventSeq) => {
+                session.updateMetadata((metadata) => advanceDshHistoryCursor(metadata, eventSeq))
+            }
+        })
+        if (persisted) syncKeepAlive()
     }
 
-    const handleMuxFrameNow = (request: DshServerRequest, reconcileGaps: boolean) => {
+    const queueDshEventDrain = (): Promise<void> => {
+        const task = eventDrainTail.then(async () => {
+            if (eventPersistenceError) throw eventPersistenceError
+            try {
+                await drainDshEvents()
+            } catch (error) {
+                eventPersistenceError = error instanceof Error ? error : new Error(String(error))
+                throw eventPersistenceError
+            }
+        })
+        eventDrainTail = task.catch(() => {})
+        return task
+    }
+
+    const handleMuxFrameNow = (
+        request: DshServerRequest,
+        reconcileGaps: boolean,
+        scheduleDrain = true
+    ) => {
         const frame = request.payload
         if (frame.sessionId !== nativeSessionId) return
 
@@ -344,7 +387,7 @@ export async function runDsh(opts: {
                 event: frame.event,
                 ...(frame.view !== undefined ? { view: frame.view } : {})
             })
-            drainDshEvents()
+            if (scheduleDrain) void queueDshEventDrain().catch(abortForDshError)
             if (reconcileGaps && eventBuffer.hasPendingGap) scheduleHistoryReconciliation()
             return
         }
@@ -427,7 +470,7 @@ export async function runDsh(opts: {
         if (!nativeSessionId) return
         const entries = await readDshHistoryAfter(client, nativeSessionId, eventBuffer.cursor)
         eventBuffer.enqueueMany(entries)
-        drainDshEvents()
+        await queueDshEventDrain()
     }
 
     function scheduleHistoryReconciliation(): void {
@@ -438,13 +481,7 @@ export async function runDsh(opts: {
         }
         historyReconciliationRequested = false
         historyReconciliation = reconcileDshHistory()
-            .catch((error) => {
-                if (stopped || muxAbort.signal.aborted) return
-                const normalized = error instanceof Error ? error : new Error(String(error))
-                session.sendSessionEvent({ type: 'error', message: normalized.message })
-                failPendingTurns(normalized)
-                loopAbort.abort(normalized)
-            })
+            .catch(abortForDshError)
             .finally(() => {
                 historyReconciliation = null
                 if (historyReconciliationRequested && eventBuffer.hasPendingGap) {
@@ -459,9 +496,7 @@ export async function runDsh(opts: {
             onFrame: handleMuxFrame,
             onError: (error) => {
                 if (stopped || muxAbort.signal.aborted) return
-                session.sendSessionEvent({ type: 'error', message: error.message })
-                failPendingTurns(error)
-                loopAbort.abort(error)
+                abortForDshError(error)
             }
         })
 
@@ -475,7 +510,10 @@ export async function runDsh(opts: {
         }
 
         await reconcileDshHistory()
-        for (const request of bufferedMuxFrames.splice(0)) handleMuxFrameNow(request, false)
+        while (bufferedMuxFrames.length > 0) {
+            for (const request of bufferedMuxFrames.splice(0)) handleMuxFrameNow(request, false, false)
+            await queueDshEventDrain()
+        }
         muxReady = true
         if (eventBuffer.hasPendingGap) scheduleHistoryReconciliation()
 

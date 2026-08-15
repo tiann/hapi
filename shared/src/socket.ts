@@ -237,17 +237,24 @@ export interface ServerToClientEvents {
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
 }
 
+export type ImportedMessageAck =
+    | { ok: true }
+    | { ok: false; code: 'import_conflict' | 'persist_failed'; message: string }
+
 export interface ClientToServerEvents {
     // createdAt: optional client-provided timestamp (epoch ms) for the entry's
     // own origin time. imported=true additionally requires a stable localId;
     // the hub then persists the message through its idempotent import path.
-    message: (data: {
-        sid: string
-        message: unknown
-        localId?: string
-        createdAt?: number
-        imported?: true
-    }) => void
+    message: (
+        data: {
+            sid: string
+            message: unknown
+            localId?: string
+            createdAt?: number
+            imported?: true
+        },
+        ack?: (response: ImportedMessageAck) => void
+    ) => void
     'session-alive': (data: {
         sid: string
         time: number

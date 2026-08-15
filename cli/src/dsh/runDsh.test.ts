@@ -4,7 +4,8 @@ import {
     advanceDshHistoryCursor,
     bootstrapDshAfterPreflight,
     createDshKillSessionLifecycle,
-    DshContiguousEventBuffer
+    DshContiguousEventBuffer,
+    persistContiguousDshEvents
 } from './runDsh'
 import type { DshHistoryEntry, DshWebClient } from './dshWebClient'
 
@@ -58,6 +59,24 @@ describe('DeepSeek Harness live history cursor', () => {
 
         expect(buffer.takeContiguous()).toEqual([])
         expect(buffer.cursor).toBe(10)
+    })
+
+    it('does not commit the durable cursor when an imported-message write fails', async () => {
+        const buffer = new DshContiguousEventBuffer(4)
+        buffer.enqueueMany([historyEntry(5), historyEntry(6)])
+        const committed: number[] = []
+
+        await expect(persistContiguousDshEvents({
+            buffer,
+            persistEntry: async (entry) => {
+                if (entry.event.seq === 6) throw new Error('import conflict')
+            },
+            commitCursor: (eventSeq) => {
+                committed.push(eventSeq)
+            }
+        })).rejects.toThrow('import conflict')
+
+        expect(committed).toEqual([])
     })
 })
 

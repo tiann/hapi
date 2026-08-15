@@ -1,4 +1,4 @@
-import type { ClientToServerEvents } from '@hapi/protocol'
+import type { ClientToServerEvents, ImportedMessageAck } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
@@ -13,6 +13,7 @@ import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
+import { ImportedMessageConflictError } from '../../../store/messages'
 
 type SessionAlivePayload = {
     sid: string
@@ -111,7 +112,7 @@ export type SessionHandlersDeps = {
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
     const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
 
-    socket.on('message', (data: unknown) => {
+    socket.on('message', (data: unknown, ack?: (response: ImportedMessageAck) => void) => {
         const parsed = messageSchema.safeParse(data)
         if (!parsed.success) {
             return
@@ -141,9 +142,22 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const stored = imported
-            ? store.messages.addImportedMessage(sid, content, localId!, createdAt!)
-            : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), inserted: true }
+        let stored
+        if (imported) {
+            try {
+                stored = store.messages.addImportedMessage(sid, content, localId!, createdAt!)
+                ack?.({ ok: true })
+            } catch (error) {
+                ack?.({
+                    ok: false,
+                    code: error instanceof ImportedMessageConflictError ? 'import_conflict' : 'persist_failed',
+                    message: error instanceof Error ? error.message : 'Failed to persist imported message'
+                })
+                return
+            }
+        } else {
+            stored = { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), inserted: true }
+        }
         if (!stored.inserted) return
         const msg = stored.message
         if (shouldRecordSessionActivity(content)) {

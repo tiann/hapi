@@ -103,17 +103,38 @@ describe('cli session handlers', () => {
             imported: true
         }
 
-        socket.trigger('message', payload)
-        socket.trigger('message', payload)
+        const acknowledgements: unknown[] = []
+        socket.trigger('message', payload, (ack) => acknowledgements.push(ack))
+        socket.trigger('message', payload, (ack) => acknowledgements.push(ack))
+        socket.trigger('message', {
+            ...payload,
+            message: { role: 'agent', content: { type: 'output', data: { type: 'text', text: 'changed' } } }
+        }, (ack) => acknowledgements.push(ack))
+        socket.trigger('message', {
+            ...payload,
+            localId: 'dsh:native-1:6:agent:0',
+            createdAt: 2_000
+        }, (ack) => acknowledgements.push(ack))
 
         expect(store.messages.getAllMessages(session.id)).toEqual([
             expect.objectContaining({
                 localId: payload.localId,
                 createdAt: 1_000,
                 invokedAt: 1_000
+            }),
+            expect.objectContaining({
+                localId: 'dsh:native-1:6:agent:0',
+                createdAt: 2_000,
+                invokedAt: 2_000
             })
         ])
-        expect(webEvents.filter((event) => event.type === 'message-received')).toHaveLength(1)
+        expect(acknowledgements).toEqual([
+            { ok: true },
+            { ok: true },
+            expect.objectContaining({ ok: false, code: 'import_conflict' }),
+            { ok: true }
+        ])
+        expect(webEvents.filter((event) => event.type === 'message-received')).toHaveLength(2)
     })
 
     it('emits a structured todos patch when a TodoWrite message lands (closes second half of #884)', () => {
