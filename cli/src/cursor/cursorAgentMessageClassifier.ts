@@ -334,6 +334,12 @@ export function classifyAcpRpcRejection(error: unknown): CursorAgentStreamFailur
         return { kind: 'rpc_timeout', transient: true, raw, source: 'rpc' }
     }
 
+    // Plain JSON-RPC error.message (no [rate_limit] brackets). Same signatures
+    // as stderr promotion so Bridge can retry structural 429s.
+    if (STRONG_STDERR_PATTERNS.rate_limit.test(raw)) {
+        return { kind: 'rate_limited', transient: true, raw, source: 'rpc' }
+    }
+
     // Catch-all: the prompt rejected for SOME reason. Conservative:
     // fire modelError as 'prompt_failed' (non-transient) so the operator
     // sees the turn was degraded.

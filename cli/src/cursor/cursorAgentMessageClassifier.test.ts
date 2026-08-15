@@ -446,6 +446,20 @@ describe('classifyAcpRpcRejection (structural RPC signal)', () => {
         expect(out?.source).toBe('rpc')
     })
 
+    it('classifies plain Rate limit exceeded RPC messages as transient', () => {
+        const out = classifyAcpRpcRejection(new Error('Rate limit exceeded'))
+        expect(out?.kind).toBe('rate_limited')
+        expect(out?.transient).toBe(true)
+        expect(out?.source).toBe('rpc')
+    })
+
+    it('classifies status 429 RPC messages as transient', () => {
+        const out = classifyAcpRpcRejection(new Error('status 429 ratelimitexceeded'))
+        expect(out?.kind).toBe('rate_limited')
+        expect(out?.transient).toBe(true)
+        expect(out?.source).toBe('rpc')
+    })
+
     it('falls through to prompt_failed for unrecognised RPC errors', () => {
         const err = new Error('Some weird internal SDK assertion failed')
         const out = classifyAcpRpcRejection(err)

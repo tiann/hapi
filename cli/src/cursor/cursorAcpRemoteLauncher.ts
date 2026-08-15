@@ -677,6 +677,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.lastUserMessage = batch.message;
             this.lastTurnMode = batch.mode;
 
+            // applyLiveModel / applyCursorAcpMode can take time after dequeue.
+            if (this.bridgingForEventId !== null && this.session.queue.hasPendingNonBridgeTurn()) {
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
+                this.markModelErrorSupersededByUserTurn();
+                continue;
+            }
+
             const specialCommand = parseCursorSpecialCommand(batch.message);
             if (specialCommand.type === 'pass-through') {
                 messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
@@ -720,10 +728,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.attemptProducedToolActivity = false;
                     let turnCompleted = false;
                     try {
-                        await backend.prompt(acpSessionId, promptContent, (message) => {
+                        const sent = await backend.prompt(acpSessionId, promptContent, (message) => {
                             if (message.type === 'turn_complete') turnCompleted = true;
                             this.handleAgentMessage(message);
+                        }, {
+                            shouldSend: () => !(this.bridgingForEventId !== null
+                                && this.session.queue.hasPendingNonBridgeTurn())
                         });
+                        if (sent === false) {
+                            this.bridgingForEventId = null;
+                            this.bridgingSource = null;
+                            this.markModelErrorSupersededByUserTurn();
+                            break;
+                        }
                         if (this.userAbortRequested) break;
                         if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
                             this.pendingRetryableError = null;

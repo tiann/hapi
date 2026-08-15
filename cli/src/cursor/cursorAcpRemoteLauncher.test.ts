@@ -55,6 +55,9 @@ const harness = vi.hoisted(() => ({
     promptReject: null as Error | null,
     deferPrompt: null as Promise<void> | null,
     releasePrompt: null as (() => void) | null,
+    deferBeforeSend: null as Promise<void> | null,
+    releaseBeforeSend: null as (() => void) | null,
+    promptSends: 0,
     /** When cancelPrompt runs, reject the deferred prompt with this error. */
     rejectPromptOnCancel: null as Error | null,
     disconnectError: null as Error | null,
@@ -172,8 +175,20 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 }
                 return undefined;
             }),
-            prompt: vi.fn(async (_sessionId: string, content: unknown[], onMessage?: (message: AgentMessage) => void) => {
+            prompt: vi.fn(async (
+                _sessionId: string,
+                content: unknown[],
+                onMessage?: (message: AgentMessage) => void,
+                options?: { shouldSend?: () => boolean }
+            ) => {
                 harness.promptCalls++;
+                if (harness.deferBeforeSend) {
+                    await harness.deferBeforeSend;
+                    if (options?.shouldSend && !options.shouldSend()) {
+                        return false;
+                    }
+                }
+                harness.promptSends++;
                 harness.prompts.push(content);
                 const messages = harness.promptMessageBatches.shift() ?? harness.promptMessages.splice(0, 1);
                 for (const message of messages) onMessage?.(message);
@@ -191,6 +206,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (harness.promptReject) {
                     throw harness.promptReject;
                 }
+                return true;
             }),
             cancelPrompt: vi.fn(async () => {
                 // Settlement of a deferred prompt is owned by the test so
@@ -368,6 +384,9 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.promptReject = null;
         harness.deferPrompt = null;
         harness.releasePrompt = null;
+        harness.deferBeforeSend = null;
+        harness.releaseBeforeSend = null;
+        harness.promptSends = 0;
         harness.rejectPromptOnCancel = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
@@ -2888,6 +2907,61 @@ describe('cursorAcpRemoteLauncher', () => {
 
         session.queue.close();
         nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('does not dispatch Bridge session/prompt after a newer turn arrives during pre-send drain', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '33333333-3333-4333-8333-333333333333',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        harness.deferBeforeSend = new Promise<void>((resolve) => {
+            harness.releaseBeforeSend = resolve;
+        });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        session.queue.push('correction instead of retry', { permissionMode: 'default' });
+        harness.releaseBeforeSend?.();
+
+        await vi.waitFor(() => expect(harness.promptSends).toBe(2));
+        const dispatched = JSON.stringify(harness.prompts);
+        expect(dispatched).not.toContain('[HAPI bridge');
+        expect(dispatched).toContain('correction instead of retry');
+
+        session.queue.close();
         await launchPromise;
     });
 });
