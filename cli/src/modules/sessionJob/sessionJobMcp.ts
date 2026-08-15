@@ -11,6 +11,8 @@ import { z } from 'zod'
 import type { AttachedJob, AttachedJobPatch } from '@hapi/protocol'
 import {
     SessionJobError,
+    SESSION_JOB_RUN_RECIPE,
+    formatSessionJobNotFoundHint,
     clearSessionJob,
     listSessionJobs,
     updateSessionJob
@@ -18,9 +20,8 @@ import {
 
 export const SESSION_JOB_TOOL_NAME = 'session_job'
 
-/** Exact Shell recipe agents should run instead of MCP set. */
-export const SESSION_JOB_RUN_RECIPE =
-    'hapi job run "$HAPI_SESSION_ID" <job-key> --label "<label>" [--done N --total M|--remaining N] [--unit …] -- <cmd>…'
+/** Re-export for tests and steer copy. */
+export { SESSION_JOB_RUN_RECIPE }
 
 export const SESSION_JOB_SET_REFUSED_TEXT = [
     'action=set is refused over MCP.',
@@ -184,6 +185,13 @@ export async function handleSessionJobTool(
             isError: false
         }
     } catch (error) {
+        if (error instanceof SessionJobError && error.code === 'not_found') {
+            const action = args.action === 'clear' ? 'clear' : 'update'
+            return {
+                text: `session_job failed: ${formatSessionJobNotFoundHint(action)}`,
+                isError: true
+            }
+        }
         const message = error instanceof SessionJobError
             ? error.message
             : error instanceof Error

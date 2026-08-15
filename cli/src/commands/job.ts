@@ -3,8 +3,10 @@ import { initializeToken } from '@/ui/tokenInit'
 import type { AttachedJobPatch, AttachedJobUpsert } from '@hapi/protocol'
 import {
     SessionJobError,
+    SESSION_JOB_REMAINING_ZERO_HINT,
     clearSessionJob,
     exitCodeForSessionJobError,
+    formatSessionJobNotFoundHint,
     listSessionJobs,
     setSessionJob,
     updateSessionJob
@@ -447,12 +449,23 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         ...(parsed.expectedRunId !== undefined ? { expectedRunId: parsed.expectedRunId } : {})
     }
     // Empty body is a heartbeat-only update; hub stamps heartbeatAt.
-    const result = await updateSessionJob({
-        sessionIdPrefix: parsed.sessionIdPrefix,
-        jobKey: parsed.jobKey,
-        body
-    })
+    let result
+    try {
+        result = await updateSessionJob({
+            sessionIdPrefix: parsed.sessionIdPrefix,
+            jobKey: parsed.jobKey,
+            body
+        })
+    } catch (error) {
+        if (error instanceof SessionJobError && error.code === 'not_found') {
+            throw new SessionJobError('not_found', formatSessionJobNotFoundHint('update'))
+        }
+        throw error
+    }
     console.log(`updated ${formatJobLine(result.job)}`)
+    if (result.job.status === 'running' && result.job.remaining === 0) {
+        console.error(chalk.yellow('hapi job hint:'), SESSION_JOB_REMAINING_ZERO_HINT)
+    }
 }
 
 export const jobCommand: CommandDefinition = {

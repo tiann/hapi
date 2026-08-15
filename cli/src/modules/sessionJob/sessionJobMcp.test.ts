@@ -6,32 +6,29 @@ import {
     SESSION_JOB_TOOL_DESCRIPTION
 } from './sessionJobMcp'
 
-vi.mock('./sessionJob', () => ({
-    SessionJobError: class SessionJobError extends Error {
-        code: string
-        constructor(code: string, message: string) {
-            super(message)
-            this.code = code
-        }
-    },
-    setSessionJob: vi.fn(async () => {
-        throw new Error('setSessionJob must not be called from MCP')
-    }),
-    updateSessionJob: vi.fn(async () => ({
-        sessionId: 'sid-1',
-        job: {
-            key: 'beets',
-            label: 'beets import',
-            status: 'running',
-            remaining: 11,
-            heartbeatAt: 2,
-            startedAt: 1,
-            updatedAt: 2
-        }
-    })),
-    clearSessionJob: vi.fn(async () => ({ sessionId: 'sid-1' })),
-    listSessionJobs: vi.fn(async () => ({ sessionId: 'sid-1', jobs: [], primary: null }))
-}))
+vi.mock('./sessionJob', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./sessionJob')>()
+    return {
+        ...actual,
+        setSessionJob: vi.fn(async () => {
+            throw new Error('setSessionJob must not be called from MCP')
+        }),
+        updateSessionJob: vi.fn(async () => ({
+            sessionId: 'sid-1',
+            job: {
+                key: 'beets',
+                label: 'beets import',
+                status: 'running',
+                remaining: 11,
+                heartbeatAt: 2,
+                startedAt: 1,
+                updatedAt: 2
+            }
+        })),
+        clearSessionJob: vi.fn(async () => ({ sessionId: 'sid-1' })),
+        listSessionJobs: vi.fn(async () => ({ sessionId: 'sid-1', jobs: [], primary: null }))
+    }
+})
 
 describe('sessionJobMcp', () => {
     it('description steers to job run and forbids MCP set', () => {
@@ -77,6 +74,21 @@ describe('sessionJobMcp', () => {
         )
         expect(result.isError).toBe(true)
         expect(result.text).toMatch(/startedAt is not valid over MCP/)
+    })
+
+    it('steers update-before-create to job run recipe', async () => {
+        const { SessionJobError, updateSessionJob } = await import('./sessionJob')
+        vi.mocked(updateSessionJob).mockRejectedValueOnce(
+            new SessionJobError('not_found', 'job not found')
+        )
+        const result = await handleSessionJobTool(
+            { action: 'update', jobKey: 'beets', remaining: 2 },
+            'sid-1'
+        )
+        expect(result.isError).toBe(true)
+        expect(result.text).toMatch(/session_job failed:/)
+        expect(result.text).toMatch(/hapi job run/)
+        expect(result.text).toMatch(/sleep stub/)
     })
 
     it('forwards null remaining so done/total can take over after a leftover meter', async () => {

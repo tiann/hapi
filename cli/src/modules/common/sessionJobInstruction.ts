@@ -16,9 +16,11 @@ export const SESSION_JOB_INSTRUCTION = [
     'tooling as ping_peer / inspect_peer.',
     'REQUIRED for process-shaped work (idle agents cannot heartbeat):',
     'Shell → hapi job run "$HAPI_SESSION_ID" <job-key> --label <text> -- <cmd>…',
-    '(auto-heartbeats + completed/failed on exit).',
+    '(auto-heartbeats + completed/failed on exit). Wrap the real cmd — never a sleep',
+    'stub while work runs elsewhere (SSH/wget/nohup).',
     'Do NOT use MCP session_job action=set (refused) or bare set+nohup — that freezes the bar.',
     'MCP session_job is only update / clear / list after job run created the meter.',
+    'remaining=0 does not finish the job — pass --status completed or job clear when done.',
     'Prefer honest remaining or done+total; omit counts when unknown',
     '(UI shows "running" + elapsed). Never invent a fake percent.',
     'Full contract: hapi job --help.'

@@ -27,6 +27,23 @@ export class SessionJobError extends Error {
     }
 }
 
+/** Exact Shell recipe agents should run instead of MCP set or update-before-create. */
+export const SESSION_JOB_RUN_RECIPE =
+    'hapi job run "$HAPI_SESSION_ID" <job-key> --label "<label>" [--done N --total M|--remaining N] [--unit …] -- <cmd>…'
+
+export function formatSessionJobNotFoundHint(action: 'update' | 'clear'): string {
+    return [
+        `job not found on this session (${action} requires an existing meter).`,
+        'Create one with Shell (MCP action=set is refused):',
+        SESSION_JOB_RUN_RECIPE,
+        'Wrap the real long-running command — not a sleep stub while work runs elsewhere.',
+    ].join(' ')
+}
+
+/** Shown after update when progress reads done but status is still running. */
+export const SESSION_JOB_REMAINING_ZERO_HINT =
+    'remaining is 0 but status is still running — pass --status completed when work is finished, or hapi job clear to drop the meter.'
+
 const AUTH_RECOVERY_HINT =
     'On a remote runner, set HAPI_API_URL to the runner hub, and set CLI_API_TOKEN ' +
     'or run `hapi auth login`. Prefer `hapi job` over raw JWT+curl.'
