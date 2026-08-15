@@ -296,6 +296,26 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         throw new SessionJobError('bad_args', '--expected-run-id is only valid with job update or clear')
     }
 
+    const mutationFieldsUsed = [
+        result.label,
+        result.status,
+        result.done,
+        result.total,
+        result.remaining,
+        result.unit,
+        result.detail
+    ].some((value) => value !== undefined)
+
+    if (result.action === 'list' && mutationFieldsUsed) {
+        throw new SessionJobError('bad_args', 'job list does not accept mutation flags')
+    }
+    if (result.action === 'clear' && mutationFieldsUsed) {
+        throw new SessionJobError('bad_args', 'job clear only accepts --expected-run-id')
+    }
+    if (result.action === 'run' && result.status !== undefined) {
+        throw new SessionJobError('bad_args', '--status is not valid with job run')
+    }
+
     return result
 }
 

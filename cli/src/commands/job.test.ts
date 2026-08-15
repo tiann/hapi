@@ -85,6 +85,14 @@ describe('parseJobArgs', () => {
         ])).toThrow(/--heartbeat-sec is only valid with job run/)
     })
 
+    it.each([
+        ['list', ['list', 'sid', '--label=x'], /job list does not accept mutation flags/],
+        ['clear+status', ['clear', 'sid', 'beets', '--status', 'completed'], /job clear only accepts --expected-run-id/],
+        ['run+status', ['run', 'sid', 'beets', '--label=x', '--status', 'completed', '--', 'true'], /--status is not valid with job run/]
+    ] as const)('rejects unsupported flags for %s', (_name, argv, pattern) => {
+        expect(() => parseJobArgs([...argv])).toThrow(pattern)
+    })
+
     it('parses --clear-remaining as null for update patches', () => {
         const parsed = parseJobArgs([
             'update',
