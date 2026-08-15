@@ -70,6 +70,14 @@ function buildDshMetadata(
     state: NonNullable<Metadata['dshImportState']>
 ): Metadata {
     const summaryText = transcript.lastUserMessage ?? transcript.title
+    const liveEventSeq = typeof existing.dshHistoryLastEventSeq === 'number'
+        ? existing.dshHistoryLastEventSeq
+        : undefined
+    const completeEventSeq = transcript.lastEventSeq === null
+        ? liveEventSeq
+        : liveEventSeq === undefined
+            ? transcript.lastEventSeq
+            : Math.max(liveEventSeq, transcript.lastEventSeq)
     return {
         ...existing,
         path: transcript.cwd
@@ -88,11 +96,13 @@ function buildDshMetadata(
             ? existing.archiveReason
             : 'Imported from DeepSeek Harness history',
         dshHistoryLastEventSeq: state.state === 'complete'
-            ? transcript.lastEventSeq ?? undefined
-            : typeof existing.dshHistoryLastEventSeq === 'number'
-                ? existing.dshHistoryLastEventSeq
-                : undefined,
-        dshImportState: { ...state, sourceUrl }
+            ? completeEventSeq
+            : liveEventSeq,
+        dshImportState: {
+            ...state,
+            sourceUrl,
+            ...(state.state === 'complete' ? { lastEventSeq: completeEventSeq } : {})
+        }
     }
 }
 

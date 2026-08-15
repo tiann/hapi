@@ -331,11 +331,11 @@ export function NewSession(props: {
     )
     const dshModelOptions = useMemo(() => [
         { value: 'auto', label: 'Default' },
-        ...buildDshModelOptions(dshModelsState.availableModels, dshModelsState.current)
-    ], [dshModelsState.availableModels, dshModelsState.current])
+        ...buildDshModelOptions(dshModelsState.availableModels, null)
+    ], [dshModelsState.availableModels])
     const dshReasoningEffortOptions = useMemo(
-        () => getDshReasoningOptions(dshModelsState.availableModels, dshModelsState.current, model),
-        [dshModelsState.availableModels, dshModelsState.current, model]
+        () => getDshReasoningOptions(dshModelsState.availableModels, null, model),
+        [dshModelsState.availableModels, model]
     )
 
     useEffect(() => {
@@ -349,6 +349,19 @@ export function NewSession(props: {
         }
         setModelReasoningEffort('default')
     }, [agent, codexSupportedReasoningEfforts, modelReasoningEffort])
+
+    useEffect(() => {
+        if (
+            agent !== 'dsh'
+            || model === 'auto'
+            || dshModelsState.isLoading
+            || dshModelsState.error
+            || dshModelOptions.some((option) => option.value === model)
+        ) {
+            return
+        }
+        setModel('auto')
+    }, [agent, dshModelOptions, dshModelsState.error, dshModelsState.isLoading, model])
 
     useEffect(() => {
         if (

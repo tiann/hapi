@@ -16,6 +16,14 @@ const mocks = vi.hoisted(() => ({
     notification: vi.fn(),
     checkPathsExists: vi.fn(),
     codexModelsLoading: false,
+    dshModels: [] as Array<{
+        provider: string
+        providerName: string
+        modelId: string
+        name: string
+        reasoningEfforts: Array<{ id: string; name: string; isDefault: boolean }>
+    }>,
+    dshCurrent: null as { provider: string; modelId: string; reasoningEffort?: string } | null,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     directoryExists: undefined as boolean | undefined,
@@ -88,14 +96,8 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
 }))
 vi.mock('@/hooks/queries/useDshModels', () => ({
     useDshModels: () => ({
-        availableModels: [{
-            provider: 'deepseek',
-            providerName: 'DeepSeek',
-            modelId: 'deepseek-v4-pro',
-            name: 'DeepSeek V4 Pro',
-            reasoningEfforts: [{ id: 'max', name: 'Max', isDefault: false }]
-        }],
-        current: { provider: 'deepseek', modelId: 'deepseek-v4-pro', reasoningEffort: 'high' },
+        availableModels: mocks.dshModels,
+        current: mocks.dshCurrent,
         isLoading: false,
         error: null,
         refetch: vi.fn()
@@ -267,6 +269,14 @@ describe('NewSession launch preferences', () => {
         mocks.checkPathsExists.mockReset()
         mocks.checkPathsExists.mockImplementation(async () => ({ 'C:\\repo': mocks.directoryExists }))
         mocks.codexModelsLoading = false
+        mocks.dshModels = [{
+            provider: 'deepseek',
+            providerName: 'DeepSeek',
+            modelId: 'deepseek-v4-pro',
+            name: 'DeepSeek V4 Pro',
+            reasoningEfforts: [{ id: 'max', name: 'Max', isDefault: false }]
+        }]
+        mocks.dshCurrent = { provider: 'deepseek', modelId: 'deepseek-v4-pro', reasoningEffort: 'high' }
         mocks.agyModelsLoading = false
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
         mocks.directoryExists = true
@@ -586,6 +596,87 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
         expect(mocks.checkPathsExists).toHaveBeenCalledTimes(1)
         expect(mocks.spawnSession).toHaveBeenCalledTimes(1)
+    })
+
+    it('provider-qualifies duplicate DSH models before spawning a fresh native session', async () => {
+        savePreferredAgent('dsh')
+        mocks.dshModels = [
+            {
+                provider: 'deepseek-official',
+                providerName: 'DeepSeek',
+                modelId: 'deepseek-v4-pro',
+                name: 'DeepSeek V4 Pro',
+                reasoningEfforts: [{ id: 'max', name: 'Max', isDefault: true }]
+            },
+            {
+                provider: 'proxy',
+                providerName: 'Proxy',
+                modelId: 'deepseek-v4-pro',
+                name: 'DeepSeek V4 Pro',
+                reasoningEfforts: [{ id: 'high', name: 'High', isDefault: true }]
+            }
+        ]
+        mocks.dshCurrent = { provider: 'deepseek-official', modelId: 'deepseek-v4-pro', reasoningEffort: 'max' }
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByTestId('model'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: 'deepseek-official/deepseek-v4-pro'
+        }))
+    })
+
+    it('discards an ambiguous bare DSH model remembered before provider qualification', async () => {
+        savePreferredAgent('dsh')
+        savePreferredLaunchSettings('machine-1', 'dsh', {
+            model: 'deepseek-v4-pro',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+        mocks.dshModels = [
+            {
+                provider: 'deepseek-official',
+                providerName: 'DeepSeek',
+                modelId: 'deepseek-v4-pro',
+                name: 'DeepSeek V4 Pro',
+                reasoningEfforts: []
+            },
+            {
+                provider: 'proxy',
+                providerName: 'Proxy',
+                modelId: 'deepseek-v4-pro',
+                name: 'DeepSeek V4 Pro',
+                reasoningEfforts: []
+            }
+        ]
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('auto'))
     })
 
     it('imports the selected Pi history and resumes the canonical HAPI session', async () => {

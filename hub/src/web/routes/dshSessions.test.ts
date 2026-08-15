@@ -235,4 +235,48 @@ describe('DeepSeek Harness session import', () => {
         expect(result).toMatchObject({ hapiSessionId: live.id, action: 'updated', appended: 1 })
         expect(store.messages.getAllMessages(live.id)).toHaveLength(4)
     })
+
+    it('does not move the live cursor backward when the history snapshot lags', () => {
+        const { store, engine } = setup()
+        const selectedMachine = machine('machine-1')
+        const nativeSessionId = 'native-lagging-snapshot'
+        const live = store.sessions.getOrCreateSession(
+            'dsh-live-lagging-snapshot',
+            {
+                path: '/tmp/project',
+                host: 'machine-1.local',
+                flavor: 'dsh',
+                machineId: selectedMachine.id,
+                dshSessionId: nativeSessionId,
+                dshHistoryLastEventSeq: 5
+            },
+            {},
+            'default'
+        )
+        for (let eventSeq = 1; eventSeq <= 5; eventSeq += 1) {
+            store.messages.addMessage(live.id, userMessage(nativeSessionId, eventSeq, `live-${eventSeq}`).content)
+        }
+
+        const result = importDshSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: selectedMachine,
+            sourceUrl: 'http://127.0.0.1:3080',
+            transcript: transcript(nativeSessionId, [
+                userMessage(nativeSessionId, 1, 'live-1'),
+                userMessage(nativeSessionId, 2, 'live-2'),
+                userMessage(nativeSessionId, 3, 'live-3'),
+                userMessage(nativeSessionId, 4, 'live-4')
+            ])
+        })
+
+        expect(result).toMatchObject({ hapiSessionId: live.id, action: 'unchanged', appended: 0 })
+        const metadata = store.sessions.getSession(live.id)?.metadata as {
+            dshHistoryLastEventSeq?: number
+            dshImportState?: { lastEventSeq?: number | null }
+        }
+        expect(metadata.dshHistoryLastEventSeq).toBe(5)
+        expect(metadata.dshImportState?.lastEventSeq).toBe(5)
+    })
 })

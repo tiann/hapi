@@ -30,11 +30,22 @@ describe('DeepSeek Harness model options', () => {
         ])
     })
 
+    it('qualifies every duplicate when no native session owns the selection yet', () => {
+        expect(buildDshModelOptions(models, null)).toEqual([
+            { value: 'deepseek-official/deepseek-v4-pro', label: 'DeepSeek V4 Pro (DeepSeek)' },
+            { value: 'proxy/deepseek-v4-pro', label: 'DeepSeek V4 Pro (Proxy)' }
+        ])
+    })
+
     it('returns reasoning efforts for the selected provider-qualified model', () => {
         expect(getDshReasoningOptions(
             models,
             { provider: 'deepseek-official', modelId: 'deepseek-v4-pro' },
             'proxy/deepseek-v4-pro'
         )).toEqual([{ value: 'medium', name: 'Medium' }])
+    })
+
+    it('does not infer fresh-session reasoning options from another session current provider', () => {
+        expect(getDshReasoningOptions(models, null, 'auto')).toEqual([])
     })
 })
