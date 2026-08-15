@@ -34,7 +34,7 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null
+    agentActivityListener: null as ((thinking: boolean, source?: string) => void) | null
 }));
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
@@ -164,7 +164,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.stderrErrorHandler = handler ?? null;
             }),
             setUsageUpdateListener: vi.fn(),
-            setAgentActivityListener: vi.fn((listener: ((thinking: boolean) => void) | null) => {
+            setAgentActivityListener: vi.fn((listener: ((thinking: boolean, source?: string) => void) | null) => {
                 harness.agentActivityListener = listener;
             }),
             setSessionInfoUpdateListener: vi.fn(),
@@ -624,13 +624,21 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
-        // Queue-idle ambient running is ignored (#1553); idle clear still lands.
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(false);
-
+        // Queue-idle debounced running is ignored (#1553); harness resume still lands.
+        harness.agentActivityListener!(true, 'state_update_running');
+        harness.agentActivityListener!(true, 'state_update_running');
         expect(session.thinking).toBe(false);
         expect(keepAlive).not.toHaveBeenCalled();
+
+        harness.agentActivityListener!(true, 'state_update_requires_action');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        keepAlive.mockClear();
+        harness.agentActivityListener!(false, 'state_update_idle');
+
+        expect(session.thinking).toBe(false);
+        expect(keepAlive).toHaveBeenCalled();
 
         queue.close();
         await runPromise;
