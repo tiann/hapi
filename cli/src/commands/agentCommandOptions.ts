@@ -52,11 +52,12 @@ export function parseRemoteAgentCommandOptions<
             hasExplicitPermissionMode = true
         } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
             // --yolo means "auto-approve everything", but flavors name that mode
-            // differently (opencode/gemini: 'yolo', agy: 'always-proceed'). Pick
+            // differently (opencode/gemini: 'yolo', agy: 'always-proceed',
+            // DeepSeek Harness: 'danger-full-access'). Pick
             // whichever auto-approve mode this flavor actually allows instead of
             // hardcoding 'yolo' — otherwise agy gets a mode that isn't in its set
             // (AGY_PERMISSION_MODES) and downstream flavor validation rejects it.
-            const yoloEquivalent = (['yolo', 'always-proceed', 'bypassPermissions'] as const)
+            const yoloEquivalent = (['yolo', 'always-proceed', 'bypassPermissions', 'danger-full-access'] as const)
                 .find((m) => (allowedPermissionModes as readonly string[]).includes(m))
             if (yoloEquivalent) {
                 options.permissionMode = yoloEquivalent as TPermissionMode

@@ -675,8 +675,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex' && flavor !== 'opencode') {
-            return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
+        if (flavor !== 'codex' && flavor !== 'dsh' && flavor !== 'opencode') {
+            return c.json({ error: 'Model reasoning effort is only supported for Codex, DeepSeek Harness, and OpenCode sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true) {
             return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)

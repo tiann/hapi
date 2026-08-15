@@ -114,6 +114,7 @@ export function PermissionFooter(props: {
 
     const codex = useMemo(() => isCodexSession(props.metadata, props.tool.name), [props.metadata, props.tool.name])
     const claude = useMemo(() => isClaudeSession(props.metadata), [props.metadata])
+    const dsh = props.metadata?.flavor === 'dsh'
 
     if (!permission) return null
 
@@ -146,7 +147,7 @@ export function PermissionFooter(props: {
         || toolName === 'ExitPlanMode'
         || toolName === 'CursorCreatePlan'
 
-    const canAllowForSession = !codex && isPending && !hideAllowForSession
+    const canAllowForSession = !codex && !dsh && isPending && !hideAllowForSession
     const canAllowAllEdits = claude && isPending && isEditTool
 
     const approve = async () => {

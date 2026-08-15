@@ -1584,6 +1584,15 @@ export function NewSession(props: {
                 }
                 if (!imported?.hapiSessionId) throw new Error(result.error || t('dshImport.failed.body'))
                 const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                if (resolvedModel !== undefined) {
+                    await props.api.setModel(reopened.sessionId, resolvedModel)
+                }
+                if (resolvedModelReasoningEffort !== undefined) {
+                    await props.api.setModelReasoningEffort(reopened.sessionId, resolvedModelReasoningEffort)
+                }
+                if (codexFamilyPermissionMode !== 'default') {
+                    await props.api.setPermissionMode(reopened.sessionId, codexFamilyPermissionMode)
+                }
                 haptic.notification('success')
                 savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
                 clearNewSessionFormDraft()

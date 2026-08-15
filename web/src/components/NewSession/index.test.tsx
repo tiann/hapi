@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
     copilotModelsLoading: false,
     piDialogSelection: ['pi-native-1'] as string[],
+    dshDialogSelection: ['dsh-native-1'] as string[],
     refetchSessions: vi.fn(),
     addToast: vi.fn()
 }))
@@ -87,8 +88,14 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
 }))
 vi.mock('@/hooks/queries/useDshModels', () => ({
     useDshModels: () => ({
-        availableModels: [],
-        current: null,
+        availableModels: [{
+            provider: 'deepseek',
+            providerName: 'DeepSeek',
+            modelId: 'deepseek-v4-pro',
+            name: 'DeepSeek V4 Pro',
+            reasoningEfforts: [{ id: 'max', name: 'Max', isDefault: false }]
+        }],
+        current: { provider: 'deepseek', modelId: 'deepseek-v4-pro', reasoningEffort: 'high' },
         isLoading: false,
         error: null,
         refetch: vi.fn()
@@ -156,6 +163,17 @@ vi.mock('@/components/PiSessionImportDialog', () => ({
         </>
     ) : null
 }))
+vi.mock('@/components/DshSessionImportDialog', () => ({
+    DshSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onClose: () => void; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <>
+            <div data-testid="dsh-session-ids">{props.sessions.map((session) => session.id).join(',')}</div>
+            <button type="button" data-testid="close-dsh-history" onClick={props.onClose}>close dsh history</button>
+            <button type="button" data-testid="select-dsh-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.dshDialogSelection)}>
+                select dsh history
+            </button>
+        </>
+    ) : null
+}))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
 vi.mock('./MachineSelector', () => ({
     MachineSelector: (props: { machines: Machine[]; machineId: string | null; isDisabled: boolean; onChange: (machineId: string) => void }) => (
@@ -176,8 +194,8 @@ vi.mock('./CodexFamilyPermissionModeSelector', () => ({
         agent: string
         value: string
         onChange: (mode: string) => void
-    }) => props.agent === 'codex' || props.agent === 'copilot' ? (
-        <button type="button" data-testid="permission-mode" onClick={() => props.onChange('yolo')}>
+    }) => props.agent === 'codex' || props.agent === 'copilot' || props.agent === 'dsh' ? (
+        <button type="button" data-testid="permission-mode" onClick={() => props.onChange(props.agent === 'dsh' ? 'danger-full-access' : 'yolo')}>
             {props.value}
         </button>
     ) : null
@@ -204,7 +222,14 @@ vi.mock('./ModelSelector', () => ({
         onModelChange: (model: string) => void
     }) => (
         <>
-            <button type="button" data-testid="model" onClick={() => props.onModelChange('gpt-5.6-terra')}>
+            <button
+                type="button"
+                data-testid="model"
+                onClick={() => props.onModelChange(
+                    props.options?.find((option) => option.value.includes('deepseek-v4-pro'))?.value
+                        ?? 'gpt-5.6-terra'
+                )}
+            >
                 {props.model}
             </button>
             <div data-testid="model-options">{props.options?.map((option) => option.label).join(',')}</div>
@@ -247,6 +272,7 @@ describe('NewSession launch preferences', () => {
         mocks.directoryExists = true
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
+        mocks.dshDialogSelection = ['dsh-native-1']
         mocks.piDialogSelection = ['pi-native-1']
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
@@ -608,6 +634,73 @@ describe('NewSession launch preferences', () => {
             machineId: 'machine-1'
         })
         expect(piApi.reopenSession).toHaveBeenCalledWith('hapi-imported-1')
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('applies selected launch settings before opening imported DeepSeek Harness history', async () => {
+        savePreferredAgent('dsh')
+        const setModel = vi.fn().mockResolvedValue(undefined)
+        const setModelReasoningEffort = vi.fn().mockResolvedValue(undefined)
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined)
+        const dshApi = {
+            getDshSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [{
+                    id: 'dsh-native-1',
+                    title: 'Existing DSH session',
+                    lastUserMessage: 'hello',
+                    cwd: 'C:\\repo',
+                    modifiedAt: 1,
+                    messageCount: 2,
+                    model: 'deepseek-v4-flash',
+                    reasoningEffort: 'high',
+                    running: false
+                }]
+            }),
+            importDshSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                results: [{ dshSessionId: 'dsh-native-1', hapiSessionId: 'hapi-dsh-1', action: 'created', appended: 2 }]
+            }),
+            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-dsh-1', resumed: true }),
+            setModel,
+            setModelReasoningEffort,
+            setPermissionMode
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={dshApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByTestId('model'))
+        fireEvent.click(screen.getByTestId('reasoning'))
+        fireEvent.click(screen.getByTestId('permission-mode'))
+        fireEvent.click(screen.getByRole('button', { name: 'dshImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-dsh-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-dsh-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-dsh-1'))
+        expect(dshApi.importDshSessions).toHaveBeenCalledWith({
+            sessionIds: ['dsh-native-1'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1'
+        })
+        expect(dshApi.reopenSession).toHaveBeenCalledWith('hapi-dsh-1')
+        expect(setModel).toHaveBeenCalledWith('hapi-dsh-1', 'deepseek-v4-pro')
+        expect(setModelReasoningEffort).toHaveBeenCalledWith('hapi-dsh-1', 'max')
+        expect(setPermissionMode).toHaveBeenCalledWith('hapi-dsh-1', 'danger-full-access')
+        expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(mocks.onSuccess.mock.invocationCallOrder[0])
+        expect(setModelReasoningEffort.mock.invocationCallOrder[0]).toBeLessThan(mocks.onSuccess.mock.invocationCallOrder[0])
+        expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(mocks.onSuccess.mock.invocationCallOrder[0])
         expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 

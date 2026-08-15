@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AGY_PERMISSION_MODES, GEMINI_PERMISSION_MODES, OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes'
+import { AGY_PERMISSION_MODES, DSH_PERMISSION_MODES, GEMINI_PERMISSION_MODES, OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 describe('parseRemoteAgentCommandOptions', () => {
@@ -11,6 +11,8 @@ describe('parseRemoteAgentCommandOptions', () => {
         // Flavors that DO have a 'yolo' mode keep it.
         expect(parseRemoteAgentCommandOptions(['--yolo'], OPENCODE_PERMISSION_MODES).permissionMode)
             .toBe('yolo')
+        expect(parseRemoteAgentCommandOptions(['--yolo'], DSH_PERMISSION_MODES).permissionMode)
+            .toBe('danger-full-access')
     })
 
     it('parses --hapi-session-id into existingSessionId (pty reopen id reuse)', () => {
