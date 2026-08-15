@@ -584,6 +584,57 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('stages model and reasoning changes before reopening an inactive DeepSeek Harness session', async () => {
+        const session = createSession({
+            active: false,
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const modelResponse = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'deepseek-v4-pro' })
+        })
+        const reasoningResponse = await app.request('/api/sessions/session-1/model-reasoning-effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modelReasoningEffort: 'max' })
+        })
+
+        expect(modelResponse.status).toBe(200)
+        expect(reasoningResponse.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'deepseek-v4-pro' }],
+            ['session-1', { modelReasoningEffort: 'max' }]
+        ])
+    })
+
+    it('keeps model configuration unavailable for inactive non-DSH sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession({ active: false }))
+
+        const modelResponse = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5' })
+        })
+        const reasoningResponse = await app.request('/api/sessions/session-1/model-reasoning-effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modelReasoningEffort: 'xhigh' })
+        })
+
+        expect(modelResponse.status).toBe(409)
+        expect(reasoningResponse.status).toBe(409)
+        expect(await modelResponse.json()).toEqual({ error: 'Session is inactive', code: 'session_inactive' })
+        expect(await reasoningResponse.json()).toEqual({ error: 'Session is inactive', code: 'session_inactive' })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('applies fast service tier changes for remote Codex sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 

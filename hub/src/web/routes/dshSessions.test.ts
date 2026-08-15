@@ -146,4 +146,93 @@ describe('DeepSeek Harness session import', () => {
         })
         expect(first.hapiSessionId).not.toBe(second.hapiSessionId)
     })
+
+    it('does not duplicate events observed before a mid-turn process failure', () => {
+        const { store, engine } = setup()
+        const selectedMachine = machine('machine-1')
+        const initial = transcript('native-crash', [
+            userMessage('native-crash', 1, 'first'),
+            userMessage('native-crash', 2, 'second')
+        ])
+        const imported = importDshSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: selectedMachine,
+            sourceUrl: 'http://127.0.0.1:3080',
+            transcript: initial
+        })
+        const sessionId = imported.hapiSessionId!
+
+        store.messages.addMessage(sessionId, userMessage('native-crash', 3, 'mid-turn').content)
+        const stored = store.sessions.getSession(sessionId)!
+        const storedMetadata = stored.metadata && typeof stored.metadata === 'object'
+            ? stored.metadata as Record<string, unknown>
+            : {}
+        const metadataResult = store.sessions.updateSessionMetadata(
+            sessionId,
+            {
+                ...storedMetadata,
+                dshHistoryLastEventSeq: 3
+            },
+            stored.metadataVersion,
+            'default'
+        )
+        expect(metadataResult.result).toBe('success')
+
+        const afterCrash = importDshSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: selectedMachine,
+            sourceUrl: 'http://127.0.0.1:3080',
+            transcript: transcript('native-crash', [
+                ...initial.messages,
+                userMessage('native-crash', 3, 'mid-turn'),
+                userMessage('native-crash', 4, 'after-crash')
+            ])
+        })
+
+        expect(afterCrash).toMatchObject({ action: 'updated', appended: 1 })
+        expect(store.messages.getAllMessages(sessionId)).toHaveLength(4)
+    })
+
+    it('uses a live cursor when importing a HAPI-created session for the first time', () => {
+        const { store, engine } = setup()
+        const selectedMachine = machine('machine-1')
+        const nativeSessionId = 'native-live'
+        const live = store.sessions.getOrCreateSession(
+            'dsh-live-session',
+            {
+                path: '/tmp/project',
+                host: 'machine-1.local',
+                flavor: 'dsh',
+                machineId: selectedMachine.id,
+                dshSessionId: nativeSessionId,
+                dshHistoryLastEventSeq: 3
+            },
+            {},
+            'default'
+        )
+        for (let eventSeq = 1; eventSeq <= 3; eventSeq += 1) {
+            store.messages.addMessage(live.id, userMessage(nativeSessionId, eventSeq, `live-${eventSeq}`).content)
+        }
+
+        const result = importDshSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: selectedMachine,
+            sourceUrl: 'http://127.0.0.1:3080',
+            transcript: transcript(nativeSessionId, [
+                userMessage(nativeSessionId, 1, 'live-1'),
+                userMessage(nativeSessionId, 2, 'live-2'),
+                userMessage(nativeSessionId, 3, 'live-3'),
+                userMessage(nativeSessionId, 4, 'after-crash')
+            ])
+        })
+
+        expect(result).toMatchObject({ hapiSessionId: live.id, action: 'updated', appended: 1 })
+        expect(store.messages.getAllMessages(live.id)).toHaveLength(4)
+    })
 })

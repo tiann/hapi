@@ -222,9 +222,7 @@ export function importDshSession(options: {
         : existingSession
     const created = !stored
     const priorMetadata = stored ? storedMetadata(stored) : {}
-    const priorImportState = asRecord(priorMetadata.dshImportState)
     const observedEventSeq = typeof priorMetadata.dshHistoryLastEventSeq === 'number'
-        && priorImportState !== null
         ? priorMetadata.dshHistoryLastEventSeq
         : null
     const importingState: NonNullable<Metadata['dshImportState']> = {

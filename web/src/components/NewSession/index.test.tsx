@@ -642,6 +642,7 @@ describe('NewSession launch preferences', () => {
         const setModel = vi.fn().mockResolvedValue(undefined)
         const setModelReasoningEffort = vi.fn().mockResolvedValue(undefined)
         const setPermissionMode = vi.fn().mockResolvedValue(undefined)
+        const reopenSession = vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-dsh-1', resumed: true })
         const dshApi = {
             getDshSessions: vi.fn().mockResolvedValue({
                 success: true,
@@ -663,7 +664,7 @@ describe('NewSession launch preferences', () => {
                 machineId: 'machine-1',
                 results: [{ dshSessionId: 'dsh-native-1', hapiSessionId: 'hapi-dsh-1', action: 'created', appended: 2 }]
             }),
-            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-dsh-1', resumed: true }),
+            reopenSession,
             setModel,
             setModelReasoningEffort,
             setPermissionMode
@@ -698,6 +699,9 @@ describe('NewSession launch preferences', () => {
         expect(setModel).toHaveBeenCalledWith('hapi-dsh-1', 'deepseek-v4-pro')
         expect(setModelReasoningEffort).toHaveBeenCalledWith('hapi-dsh-1', 'max')
         expect(setPermissionMode).toHaveBeenCalledWith('hapi-dsh-1', 'danger-full-access')
+        expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(reopenSession.mock.invocationCallOrder[0])
+        expect(setModelReasoningEffort.mock.invocationCallOrder[0]).toBeLessThan(reopenSession.mock.invocationCallOrder[0])
+        expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(reopenSession.mock.invocationCallOrder[0])
         expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(mocks.onSuccess.mock.invocationCallOrder[0])
         expect(setModelReasoningEffort.mock.invocationCallOrder[0]).toBeLessThan(mocks.onSuccess.mock.invocationCallOrder[0])
         expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(mocks.onSuccess.mock.invocationCallOrder[0])

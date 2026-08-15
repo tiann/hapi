@@ -2,6 +2,7 @@ import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFacto
 import { convertAgentMessage } from '@/agent/messageConverter'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
+import type { Metadata } from '@/api/types'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { hashObject } from '@/utils/deterministicJson'
@@ -82,6 +83,25 @@ function resolveRequestedModel(
         throw new Error(`DeepSeek Harness model ${requested} exists in multiple providers; use provider/model`)
     }
     throw new Error(`DeepSeek Harness model not found: ${requested}`)
+}
+
+export function advanceDshHistoryCursor(
+    metadata: Metadata,
+    eventSeq: number,
+    now = Date.now()
+): Metadata {
+    const nextEventSeq = Math.max(metadata.dshHistoryLastEventSeq ?? -1, eventSeq)
+    return {
+        ...metadata,
+        dshHistoryLastEventSeq: nextEventSeq,
+        ...(metadata.dshImportState ? {
+            dshImportState: {
+                ...metadata.dshImportState,
+                updatedAt: now,
+                lastEventSeq: Math.max(metadata.dshImportState.lastEventSeq ?? -1, nextEventSeq)
+            }
+        } : {})
+    }
 }
 
 export async function runDsh(opts: {
@@ -290,17 +310,6 @@ export async function runDsh(opts: {
         } else if (event.type === 'turn/end') {
             nativeTurnStateObserved = true
             thinking = false
-            session.updateMetadata((metadata) => ({
-                ...metadata,
-                dshHistoryLastEventSeq: latestEventSeq,
-                ...(metadata.dshImportState ? {
-                    dshImportState: {
-                        ...metadata.dshImportState,
-                        updatedAt: Date.now(),
-                        lastEventSeq: latestEventSeq
-                    }
-                } : {})
-            }))
             for (const [rpcId, pending] of pendingTurns) {
                 if (!pending.userSeen) continue
                 pendingTurns.delete(rpcId)
@@ -320,6 +329,7 @@ export async function runDsh(opts: {
             const body = convertAgentMessage(message, converted.model ?? currentModel ?? undefined)
             if (body) session.sendAgentMessage(body)
         }
+        session.updateMetadata((metadata) => advanceDshHistoryCursor(metadata, latestEventSeq))
         syncKeepAlive()
     }
 
