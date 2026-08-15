@@ -30,6 +30,7 @@ function createApp(opts: {
         invokedLocalMessages: Array<{ localId: string; invokedAt: number }>
     }
     steerQueuedMessage?: (sessionId: string, messageId: string) => Promise<unknown>
+    cancelQueuedMessage?: SyncEngine['cancelQueuedMessage']
 }) {
     const sentMessages: Array<{ sessionId: string; payload: unknown }> = []
     const queuedStateCalls: Array<{ sessionId: string; localIds: string[] }> = []
@@ -71,7 +72,7 @@ function createApp(opts: {
         }),
         sendMessage,
         getQueuedState,
-        cancelQueuedMessage: async () => ({ status: 'cancelled' }),
+        cancelQueuedMessage: opts.cancelQueuedMessage ?? (async () => ({ status: 'cancelled', localId: null })),
         steerQueuedMessage: opts.steerQueuedMessage ?? (async () => ({ status: 'failed', error: 'Steer failed', localId: null })),
         getMessagesPage,
     } as unknown as SyncEngine
@@ -193,6 +194,25 @@ describe('GET /api/sessions/:id/messages', () => {
         expect(response.status).toBe(400)
         expect(await response.json()).toMatchObject({ error: 'Invalid query' })
         expect(called).toBe(false)
+    })
+})
+
+describe('DELETE /api/sessions/:id/messages/:messageId', () => {
+    it('returns 409 when cancellation races with a conversation history action', async () => {
+        const { app } = createApp({
+            cancelQueuedMessage: async () => {
+                throw new Error('Conversation history action already in progress')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages/message-1', {
+            method: 'DELETE'
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Conversation history action already in progress'
+        })
     })
 })
 

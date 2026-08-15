@@ -157,9 +157,16 @@ describe('session model', () => {
         )
 
         try {
-            const resumeResult = await engine.withSessionHistoryLock(
+            const session = engine.getOrCreateSession(
                 'history-locked-session',
-                () => engine.resumeSession('history-locked-session', 'default')
+                { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+                null,
+                'default'
+            )
+            const queued = store.messages.addMessage(session.id, { role: 'user', content: 'keep me' }, 'queued-1')
+            const resumeResult = await engine.withSessionHistoryLock(
+                session.id,
+                () => engine.resumeSession(session.id, 'default')
             )
             expect(resumeResult).toEqual({
                 type: 'error',
@@ -167,8 +174,8 @@ describe('session model', () => {
                 code: 'resume_failed'
             })
             const reopenResult = await engine.withSessionHistoryLock(
-                'history-locked-session',
-                () => engine.reopenSession('history-locked-session', 'default')
+                session.id,
+                () => engine.reopenSession(session.id, 'default')
             )
             expect(reopenResult).toEqual({
                 type: 'error',
@@ -176,14 +183,19 @@ describe('session model', () => {
                 code: 'resume_failed'
             })
             const targetResult = await engine.withSessionHistoryLock(
-                'history-locked-session',
-                () => engine.resolveLocalResumeTarget('history-locked-session', 'default')
+                session.id,
+                () => engine.resolveLocalResumeTarget(session.id, 'default')
             )
             expect(targetResult).toEqual({
                 type: 'error',
                 message: 'Conversation history action already in progress',
                 code: 'resume_failed'
             })
+            await expect(engine.withSessionHistoryLock(
+                session.id,
+                () => engine.cancelQueuedMessage(session.id, queued.id)
+            )).rejects.toThrow('Conversation history action already in progress')
+            expect(store.messages.lookupQueuedMessage(session.id, queued.id).status).toBe('queued')
         } finally {
             engine.stop()
         }
@@ -217,6 +229,7 @@ describe('session model', () => {
             null,
             'default'
         )
+        const queued = store.messages.addMessage(session.id, { role: 'user', content: 'keep me' }, 'queued-1')
         first.stop()
 
         const restarted = new SyncEngine(
@@ -244,9 +257,65 @@ describe('session model', () => {
             await expect(restarted.sendMessage(session.id, { text: 'must wait' })).rejects.toThrow(
                 'Conversation history action already in progress'
             )
+            await expect(restarted.cancelQueuedMessage(session.id, queued.id)).rejects.toThrow(
+                'Conversation history action already in progress'
+            )
+            expect(store.messages.lookupQueuedMessage(session.id, queued.id).status).toBe('queued')
             expect(await restarted.withSessionHistoryLock(session.id, async () => 'retry-import')).toBe('retry-import')
         } finally {
             restarted.stop()
+        }
+    })
+
+    it('keeps history actions out while queued-message cancellation is in flight', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const session = engine.getOrCreateSession(
+            'cancel-lock-session',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        let signalCancellationStarted!: () => void
+        let releaseCancellation!: () => void
+        const cancellationStarted = new Promise<void>((resolve) => {
+            signalCancellationStarted = resolve
+        })
+        const cancellationBlocked = new Promise<void>((resolve) => {
+            releaseCancellation = resolve
+        })
+        const messageService = (engine as unknown as {
+            messageService: {
+                cancelQueuedMessage: (
+                    sessionId: string,
+                    messageId: string
+                ) => Promise<{ status: 'cancelled'; localId: string | null }>
+            }
+        }).messageService
+        spyOn(messageService, 'cancelQueuedMessage').mockImplementation(async () => {
+            signalCancellationStarted()
+            await cancellationBlocked
+            return { status: 'cancelled', localId: 'queued-1' }
+        })
+
+        try {
+            const cancellation = engine.cancelQueuedMessage(session.id, 'queued-1')
+            await cancellationStarted
+
+            await expect(engine.withSessionHistoryLock(session.id, async () => 'import')).rejects.toThrow(
+                'Conversation history action already in progress'
+            )
+
+            releaseCancellation()
+            await expect(cancellation).resolves.toEqual({ status: 'cancelled', localId: 'queued-1' })
+        } finally {
+            releaseCancellation()
+            engine.stop()
         }
     })
 

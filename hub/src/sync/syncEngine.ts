@@ -1026,7 +1026,13 @@ export class SyncEngine {
         sessionId: string,
         messageId: string
     ): Promise<CancelQueuedMessageResult> {
-        return this.messageService.cancelQueuedMessage(sessionId, messageId)
+        if (this.isSessionHistoryUnavailable(sessionId)) {
+            throw new Error('Conversation history action already in progress')
+        }
+        return await this.withSessionHistoryLock(
+            sessionId,
+            () => this.messageService.cancelQueuedMessage(sessionId, messageId)
+        )
     }
 
     async retryIndeterminateMessage(

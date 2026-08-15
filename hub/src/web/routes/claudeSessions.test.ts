@@ -364,6 +364,113 @@ describe('Claude session import', () => {
         }
     })
 
+    it('keeps a matched queued message while import persistence is in progress', async () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        const engine = new SyncEngine(
+            store,
+            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const selectedMachine = machine()
+        const source = transcript('native-matched-cancel-lock', ['one', 'two'])
+        const existing = engine.getOrCreateSession(
+            'claude-matched-cancel-lock',
+            {
+                path: source.cwd,
+                host: 'machine-1.local',
+                machineId: selectedMachine.id,
+                flavor: 'claude',
+                claudeSessionId: source.id
+            },
+            null,
+            'default'
+        )
+        const queued = store.messages.addMessage(existing.id, source.messages[0]!.content, 'web-one')
+        let pageCalls = 0
+        let signalPersistencePaused!: () => void
+        let releasePersistence!: () => void
+        const persistencePaused = new Promise<void>((resolve) => {
+            signalPersistencePaused = resolve
+        })
+        const persistenceBlocked = new Promise<void>((resolve) => {
+            releasePersistence = resolve
+        })
+
+        Object.assign(engine, {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listClaudeSessionPageForMachine: async (_machineId: string, options: { cursor: number }) => {
+                pageCalls += 1
+                if (pageCalls === 4) {
+                    signalPersistencePaused()
+                    await persistenceBlocked
+                }
+                const messages = source.messages.slice(options.cursor, options.cursor + 1)
+                const next = options.cursor + messages.length
+                return {
+                    success: true as const,
+                    mode: 'messages' as const,
+                    page: {
+                        session: {
+                            id: source.id,
+                            title: source.title,
+                            lastUserMessage: source.lastUserMessage,
+                            cwd: source.cwd,
+                            file: source.file,
+                            modifiedAt: source.modifiedAt,
+                            model: source.model,
+                            messageCount: source.messageCount
+                        },
+                        messages,
+                        nextCursor: next < source.messages.length ? next : null
+                    }
+                }
+            }
+        })
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createClaudeSessionRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const responsePromise = app.request('/api/claude/import-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    machineId: selectedMachine.id,
+                    sessionIds: [source.id]
+                })
+            })
+            await persistencePaused
+
+            await expect(engine.cancelQueuedMessage(existing.id, queued.id)).rejects.toThrow(
+                'Conversation history action already in progress'
+            )
+            expect(store.messages.lookupQueuedMessage(existing.id, queued.id).status).toBe('queued')
+
+            releasePersistence()
+            const response = await responsePromise
+            expect(response.status).toBe(200)
+            expect(await response.json()).toMatchObject({
+                success: true,
+                results: [{
+                    claudeSessionId: source.id,
+                    hapiSessionId: existing.id,
+                    action: 'updated',
+                    appended: 1
+                }]
+            })
+            expect(store.messages.getAllMessages(existing.id).map(visibleMessageText)).toEqual(['one', 'two'])
+        } finally {
+            releasePersistence()
+            engine.stop()
+        }
+    })
+
     it('queues concurrent imports and applies each request launch settings in order', async () => {
         const { store } = setup()
         const selectedMachine = machine()
