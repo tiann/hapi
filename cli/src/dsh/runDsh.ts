@@ -121,15 +121,27 @@ export async function runDsh(opts: {
     let latestForwardedSeq = typeof session.getMetadata()?.dshEventCursor === 'number'
         ? session.getMetadata()!.dshEventCursor
         : 0;
+    // Latest child seq per child id, merged into metadata on cursor flush so
+    // subagent journals survive CLI restarts without replay.
+    const childCursorByChild = new Map<string, number>();
     const flushCursor = () => {
         if (pendingCursorFlush) {
             clearTimeout(pendingCursorFlush);
             pendingCursorFlush = null;
         }
-        if (latestCursorSeq <= 0) return;
+        const childCursors = childCursorByChild.size > 0
+            ? Object.fromEntries(childCursorByChild)
+            : undefined
+        if (latestCursorSeq <= 0 && !childCursors) return;
         session.updateMetadata((metadata) => ({
             ...metadata,
-            dshEventCursor: latestCursorSeq
+            ...(latestCursorSeq > 0 ? { dshEventCursor: latestCursorSeq } : {}),
+            ...(childCursors ? {
+                dshChildCursors: {
+                    ...((metadata as { dshChildCursors?: Record<string, number> }).dshChildCursors ?? {}),
+                    ...childCursors
+                }
+            } : {})
         }));
     };
 

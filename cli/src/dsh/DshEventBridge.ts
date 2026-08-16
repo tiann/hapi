@@ -71,9 +71,10 @@ export class DshEventBridge {
     private readonly childLastSeq = new Map<string, number>()
     /** Live child events buffered while that child's history replay is in flight. */
     private readonly childBuffers = new Map<string, Array<import('@deepseek-ai/dsh-session/types').SessionEvent>>()
-    /** True while root history backfill runs: ANY child event (known or not)
-     *  is buffered so its cursor can never advance past the outage gap. */
-    private rootBackfillInFlight = false
+    /** True while journal recovery (root history + child replays) runs: ANY
+     *  child event (known or not) is buffered so its cursor can never advance
+     *  past the outage gap. */
+    private journalRecoveryInFlight = false
     /** Highest forwarded seq per projection key — stale bootstrap responses
      *  (older than a live frame already forwarded) are dropped. */
     private readonly projectionSeqByKey = new Map<string, number>()
@@ -122,13 +123,13 @@ export class DshEventBridge {
             // buffered live events first would advance lastForwardedSeq past
             // the missing range, which a later reconnect could never recover.
             if (!initialBackfillDone) {
-                // While root history is being fetched, seal EVERY child
-                // journal — known or not — so no child cursor can advance
-                // past the outage gap.
-                this.rootBackfillInFlight = true
+                // While journal recovery runs, seal EVERY child journal —
+                // known or not — so no child cursor can advance past the
+                // outage gap (covers root history fetch AND child replays).
+                this.journalRecoveryInFlight = true
                 const backfilled = await this.backfillAfterCursor()
-                this.rootBackfillInFlight = false
                 if (!backfilled) {
+                    this.journalRecoveryInFlight = false
                     generation.abort()
                     await Promise.allSettled([muxDone, hostDone])
                     signal.removeEventListener('abort', onOuterAbort)
@@ -144,6 +145,11 @@ export class DshEventBridge {
                 // (buffers stay sealed; the retry re-runs the full gap).
                 const childBackfilled = await this.backfillChildJournals()
                 if (!childBackfilled) {
+                    // Re-run the WHOLE initial recovery on the next generation:
+                    // reset the flag (root backfill re-seals journals) and
+                    // keep initialRootEvents buffered until recovery succeeds.
+                    this.journalRecoveryInFlight = false
+                    initialBackfillDone = false
                     generation.abort()
                     await Promise.allSettled([muxDone, hostDone])
                     signal.removeEventListener('abort', onOuterAbort)
@@ -151,6 +157,7 @@ export class DshEventBridge {
                     retryMs = Math.min(retryMs * 2, 5_000)
                     continue
                 }
+                this.journalRecoveryInFlight = false
                 // Replay live events that arrived while the backfill ran,
                 // oldest first; handleSessionEvent's seq guard skips any
                 // already forwarded by the backfill itself.
@@ -496,8 +503,8 @@ export class DshEventBridge {
         // child's history replay is in flight, buffer instead of forwarding —
         // advancing the cursor mid-fetch would let the replay discard the gap.
         const childBuffer = this.childBuffers.get(sessionId)
-        if (childBuffer || this.rootBackfillInFlight) {
-            // Dynamic seal for children first seen during the root backfill.
+        if (childBuffer || this.journalRecoveryInFlight) {
+            // Dynamic seal for children first seen during journal recovery.
             const buffer = childBuffer ?? []
             buffer.push(event)
             this.childBuffers.set(sessionId, buffer)
@@ -541,8 +548,9 @@ export class DshEventBridge {
         for (const [childSessionId, mode] of known) {
             const anchor = this.childLastSeq.get(childSessionId) ?? -1
             // Buffer live frames for this child while its replay is in flight
-            // (advancing the cursor mid-fetch would discard the gap).
-            this.childBuffers.set(childSessionId, [])
+            // (advancing the cursor mid-fetch would discard the gap). Merge —
+            // never overwrite — a buffer sealed by a previous generation.
+            this.childBuffers.set(childSessionId, this.childBuffers.get(childSessionId) ?? [])
             const collected: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
             let beforeSeq: number | undefined
             let attemptMode: 'continuable' | 'one-shot' = mode
