@@ -71,6 +71,9 @@ export class DshEventBridge {
     private readonly childLastSeq = new Map<string, number>()
     /** Live child events buffered while that child's history replay is in flight. */
     private readonly childBuffers = new Map<string, Array<import('@deepseek-ai/dsh-session/types').SessionEvent>>()
+    /** True while root history backfill runs: ANY child event (known or not)
+     *  is buffered so its cursor can never advance past the outage gap. */
+    private rootBackfillInFlight = false
     /** Highest forwarded seq per projection key — stale bootstrap responses
      *  (older than a live frame already forwarded) are dropped. */
     private readonly projectionSeqByKey = new Map<string, number>()
@@ -119,13 +122,12 @@ export class DshEventBridge {
             // buffered live events first would advance lastForwardedSeq past
             // the missing range, which a later reconnect could never recover.
             if (!initialBackfillDone) {
-                // Seal every KNOWN child journal before the root backfill:
-                // child events forwarded while root history is being fetched
-                // would advance their cursors past the outage gap.
-                for (const childSessionId of this.childLastSeq.keys()) {
-                    this.childBuffers.set(childSessionId, this.childBuffers.get(childSessionId) ?? [])
-                }
+                // While root history is being fetched, seal EVERY child
+                // journal — known or not — so no child cursor can advance
+                // past the outage gap.
+                this.rootBackfillInFlight = true
                 const backfilled = await this.backfillAfterCursor()
+                this.rootBackfillInFlight = false
                 if (!backfilled) {
                     generation.abort()
                     await Promise.allSettled([muxDone, hostDone])
@@ -137,8 +139,18 @@ export class DshEventBridge {
                 initialBackfillDone = true
                 this.options.onReady?.()
                 // Subagent journals are separate from root history; close any
-                // gap left by the outage before resuming live forwarding.
-                await this.backfillChildJournals()
+                // gap left by the outage before resuming live forwarding. A
+                // failed child replay aborts the generation and reconnects
+                // (buffers stay sealed; the retry re-runs the full gap).
+                const childBackfilled = await this.backfillChildJournals()
+                if (!childBackfilled) {
+                    generation.abort()
+                    await Promise.allSettled([muxDone, hostDone])
+                    signal.removeEventListener('abort', onOuterAbort)
+                    await waitForAbortableDelay(retryMs, signal)
+                    retryMs = Math.min(retryMs * 2, 5_000)
+                    continue
+                }
                 // Replay live events that arrived while the backfill ran,
                 // oldest first; handleSessionEvent's seq guard skips any
                 // already forwarded by the backfill itself.
@@ -484,8 +496,11 @@ export class DshEventBridge {
         // child's history replay is in flight, buffer instead of forwarding —
         // advancing the cursor mid-fetch would let the replay discard the gap.
         const childBuffer = this.childBuffers.get(sessionId)
-        if (childBuffer) {
-            childBuffer.push(event)
+        if (childBuffer || this.rootBackfillInFlight) {
+            // Dynamic seal for children first seen during the root backfill.
+            const buffer = childBuffer ?? []
+            buffer.push(event)
+            this.childBuffers.set(sessionId, buffer)
             return
         }
         const seenChildSeq = this.childLastSeq.get(sessionId) ?? -1
@@ -510,7 +525,7 @@ export class DshEventBridge {
      *  during a mux outage would be permanently missing from the durable
      *  dsh_native journal. Children created entirely during the outage are
      *  discovered via subagent.list (which also carries each child's mode). */
-    private async backfillChildJournals(): Promise<void> {
+    private async backfillChildJournals(): Promise<boolean> {
         const known = new Map<string, 'one-shot' | 'continuable'>()
         for (const childSessionId of this.childLastSeq.keys()) {
             known.set(childSessionId, 'continuable')
@@ -552,18 +567,9 @@ export class DshEventBridge {
                     }
                     logger.debug(`[${this.logTag}] subagent backfill failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`)
                     // Failure: keep this child's buffer sealed and its cursor
-                    // untouched — the next reconnect retries the whole gap.
-                    // Bounded fallback: never let the sealed buffer grow
-                    // without bound while the host is unreachable.
-                    const pending = this.childBuffers.get(childSessionId) ?? []
-                    if (pending.length > 5_000) {
-                        logger.warn(`[${this.logTag}] subagent buffer overflow for ${childSessionId}; forcing release of ${pending.length} frames`)
-                        this.childBuffers.delete(childSessionId)
-                        pending
-                            .sort((a, b) => a.seq - b.seq)
-                            .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live'))
-                    }
-                    return
+                    // untouched. The caller aborts the generation, so the
+                    // reconnect retries the whole gap with backoff.
+                    return false
                 }
                 collected.push(...events)
                 const reachedAnchor = events.some((event) => event.seq <= anchor)
@@ -589,6 +595,7 @@ export class DshEventBridge {
                 .sort((a, b) => a.seq - b.seq)
                 .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live'))
         }
+        return true
     }
 
     private handleProjection(key: string, value: unknown, seq: number): void {

@@ -320,6 +320,16 @@ export async function runDsh(opts: {
         // Latest child seq per child id, merged into metadata on cursor flush
         // so subagent journals survive CLI restarts without replay.
         const childCursorByChild = new Map<string, number>()
+        const scheduleCursorFlush = () => {
+            if (pendingCursorFlush) return;
+            pendingCursorFlush = setTimeout(() => {
+                pendingCursorFlush = null;
+                // flushCursor persists BOTH the root cursor and the
+                // per-child journal cursors in one metadata write.
+                flushCursor();
+            }, CURSOR_FLUSH_MS);
+            pendingCursorFlush.unref?.();
+        };
         const bridge = new DshEventBridge({
             client,
             dshSessionId: created.sessionId,
@@ -331,6 +341,9 @@ export async function runDsh(opts: {
             ...(initialChildCursors ? { initialChildCursors } : {}),
             onChildCursor: (childSessionId, seq) => {
                 childCursorByChild.set(childSessionId, seq)
+                // Child-only activity never fires onCursor — arm the shared
+                // throttle so per-child cursors persist without root events.
+                scheduleCursorFlush();
             },
             onMessage: (message: DshProjectedMessage, source: 'live' | 'backfill') => {
                 // Only LIVE root-session user messages anchor fork/rewind
@@ -378,14 +391,7 @@ export async function runDsh(opts: {
                 // current value at flush time, not the event that armed it.
                 latestCursorSeq = seq;
                 latestForwardedSeq = seq;
-                if (pendingCursorFlush) return;
-                pendingCursorFlush = setTimeout(() => {
-                    pendingCursorFlush = null;
-                    // flushCursor persists BOTH the root cursor and the
-                    // per-child journal cursors in one metadata write.
-                    flushCursor();
-                }, CURSOR_FLUSH_MS);
-                pendingCursorFlush.unref?.();
+                scheduleCursorFlush();
             },
             logTag: 'dsh'
         });
