@@ -1457,7 +1457,12 @@ export class SyncEngine {
         } else if (flavor === 'dsh') {
             // DSH fork returns the new native session id directly; the child
             // CLI resumes it via create-as-resume (dshSessionId metadata).
+            // Seed the event cursor at the fork tail so the resumed bridge
+            // never backfills the (already copied) transcript prefix.
             childMetadata.dshSessionId = rpcResult.nativeSessionId
+            if (typeof rpcResult.nativeCursor === 'number' && rpcResult.nativeCursor >= 0) {
+                childMetadata.dshEventCursor = rpcResult.nativeCursor
+            }
         }
 
         // A Pi native fork already carries the branch's authoritative model and

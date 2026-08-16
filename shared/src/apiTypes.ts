@@ -568,6 +568,9 @@ export type ForkConversationRpcResult = {
     nativeSessionId: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
+    /** Native event cursor at the fork tail (DSH) — seeds the child bridge so
+     *  it never backfills the already-copied transcript prefix. */
+    nativeCursor?: number
 }
 
 export type RewindConversationRpcResult = {

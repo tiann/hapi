@@ -280,7 +280,19 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
             )
         }
         try {
-            const response = await transport.host.describe({})
+            // A host that binds the port but never completes describe() must
+            // not hang startup forever: enforce the deadline per request.
+            const remainingMs = Math.max(1, deadline - Date.now())
+            const response = await Promise.race([
+                transport.host.describe({}),
+                new Promise<never>((_, reject) => {
+                    const timer = setTimeout(
+                        () => reject(new Error('DSH readiness request timed out')),
+                        remainingMs
+                    )
+                    timer.unref?.()
+                })
+            ])
             if (!response.result.ok) {
                 throw new Error(`host.describe failed: ${response.result.error.message}`)
             }

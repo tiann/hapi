@@ -342,7 +342,20 @@ export async function runDsh(opts: {
                 sessionId: created.sessionId,
                 ...(atSeq !== undefined ? { atSeq } : {})
             });
-            return { nativeSessionId: result.sessionId, forkSession: false as const };
+            // The hub already copied the transcript prefix into the child row;
+            // seed the child's event cursor at the fork tail so its bridge
+            // never replays the full native history on the first reconnect.
+            let nativeCursor = -1;
+            try {
+                const tail = await client.sessionHistory({ sessionId: result.sessionId, maxMessages: 1 });
+                nativeCursor = tail.events.reduce(
+                    (max, entry) => Math.max(max, entry.event.seq),
+                    -1
+                );
+            } catch (error) {
+                logger.debug(`[dsh] fork cursor probe failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            return { nativeSessionId: result.sessionId, forkSession: false as const, nativeCursor };
         });
 
         // Rewind: no native DSH rewind exists — the hub archives this session
@@ -419,11 +432,14 @@ export async function runDsh(opts: {
                 const catalog = await client.sessionModels(created.sessionId)
                 const match = catalog.groups
                     .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
-                    .find((m) => m.id === modelId)
+                    .find((m) => m.provider === provider && m.id === modelId)
+                if (!match) {
+                    throw new Error(`Unknown DSH model: ${provider}::${modelId}`)
+                }
                 await applyModelSelection(
                     provider,
                     modelId,
-                    match?.reasoning?.defaultEffort ?? undefined
+                    match.reasoning?.defaultEffort ?? undefined
                 )
                 applied.model = { provider, modelId }
             }

@@ -912,9 +912,14 @@ function SessionChatInner(props: SessionChatProps) {
         if (qualified?.provider && qualified.modelId) {
             return `${qualified.provider}::${qualified.modelId}`
         }
-        const current = props.session.model ?? dshModelsState.models?.current?.model
-        return current ? `::${current}` : null
-    }, [props.session.metadata, props.session.model, dshModelsState.models?.current?.model])
+        // Fresh sessions: the catalog's qualified current matches the
+        // provider::model option encoding.
+        const current = dshModelsState.models?.current
+        if (current?.provider && current.model) {
+            return `${current.provider}::${current.model}`
+        }
+        return props.session.model ? `::${props.session.model}` : null
+    }, [props.session.metadata, props.session.model, dshModelsState.models?.current?.provider, dshModelsState.models?.current?.model])
     const dshReasoningEffortOptions = useMemo(() => {
         if (agentFlavor !== 'dsh') {
             return undefined
