@@ -9,7 +9,6 @@ import {
     type DshGoalResponse,
     type DshModelsResponse,
     type DshNativeHistoryResponse,
-    type DshSelectModelResponse,
     type DshSkillsResponse,
     type DshSubagentCatalog
 } from '@hapi/protocol'

@@ -38,7 +38,7 @@ export type DshHistoryPage = {
 }
 
 export type DshPromptResult = {
-    accepted: true
+    accepted: boolean
     command?: { kind: 'success'; text?: string }
     /** The rpcId this prompt was dispatched under; the host echoes it in the
      *  user/message event's MessageSource so the client can reconcile the
@@ -207,6 +207,8 @@ export class DshClient {
         clientTimeZone?: string
         /** Caller-owned rpcId (must match reservePromptRpcId's value). */
         rpcId?: string
+        /** Abort signal (session teardown) — cancels the in-flight POST. */
+        signal?: AbortSignal
     }): Promise<DshPromptResult> {
         const rpcId = (options.rpcId ?? crypto.randomUUID()) as import('@deepseek-ai/dsh-host-apiproxy/api/rpc').RpcId
         const payload = {
@@ -215,7 +217,7 @@ export class DshClient {
             content: options.content,
             ...(options.clientTimeZone !== undefined ? { clientTimeZone: options.clientTimeZone } : {})
         }
-        const response = await this.transport.promptDirect(payload, rpcId)
+        const response = await this.transport.promptDirect(payload, rpcId, options.signal)
         if (response.rpcId !== rpcId) {
             throw new Error(`rpcId mismatch for session.prompt: sent ${rpcId}, got ${response.rpcId}`)
         }
@@ -224,7 +226,7 @@ export class DshClient {
         }
         const value = response.result.value as { accepted?: boolean; command?: { kind: 'success'; text?: string } }
         return {
-            accepted: value.accepted === true ? (true as const) : (true as const),
+            accepted: value.accepted === true,
             ...(value.command ? { command: value.command } : {}),
             rpcId: response.rpcId
         }

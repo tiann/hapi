@@ -58,7 +58,13 @@ export class DshProjector {
                 break
             }
             case 'turn/end': {
-                out.push({ type: 'turn_complete', stopReason: event.data.reason.kind, dshSeq: event.seq })
+                const reason = event.data && typeof event.data === 'object'
+                    && (event.data as { reason?: { kind?: unknown } }).reason
+                out.push({
+                    type: 'turn_complete',
+                    ...(reason && typeof reason.kind === 'string' ? { stopReason: reason.kind } : {}),
+                    dshSeq: event.seq
+                })
                 for (const [key, state] of this.steps) {
                     if (state.turn === event.data.turn) {
                         this.steps.delete(key)
@@ -125,7 +131,11 @@ export class DshProjector {
             }
             case 'tool/result': {
                 const { message, error } = event.data
-                const resultBlock = message.content[0]
+                // The result block is not guaranteed to be content[0] — find
+                // the tool-result block instead of assuming position.
+                const resultBlock = Array.isArray(message?.content)
+                    ? message.content.find((block: { type?: string }) => block?.type === 'tool-result')
+                    : undefined
                 const callId = resultBlock?.type === 'tool-result' ? resultBlock.toolCallId : 'unknown'
                 const outputText = resultBlock?.content
                     ?.filter((block): block is { type: 'text'; text: string } => block.type === 'text')
@@ -220,7 +230,9 @@ export class DshProjector {
                 if (!block || block.kind !== 'tool-call') return
                 if (chunk.id !== undefined) block.callId = chunk.id
                 if (chunk.name !== undefined) block.name = chunk.name
-                block.args += chunk.argumentsDelta
+                if (typeof chunk.argumentsDelta === 'string') {
+                    block.args += chunk.argumentsDelta
+                }
                 if (block.callId !== undefined && block.name !== undefined) {
                     out.push({
                         type: 'tool_call',

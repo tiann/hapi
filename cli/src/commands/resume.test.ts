@@ -12,6 +12,7 @@ const {
     runClaudeMock,
     runGrokMock,
     runPiMock,
+    runDshMock,
     runAgyMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
@@ -27,6 +28,7 @@ const {
     runClaudeMock: vi.fn(async () => {}),
     runGrokMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
+    runDshMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
@@ -52,6 +54,7 @@ vi.mock('@/codex/runCodex', () => ({ runCodex: runCodexMock }))
 vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
+vi.mock('@/dsh/runDsh', () => ({ runDsh: runDshMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
@@ -83,6 +86,7 @@ describe('resumeCommand', () => {
         runClaudeMock.mockClear()
         runGrokMock.mockClear()
         runPiMock.mockClear()
+        runDshMock.mockClear()
         runAgyMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
@@ -376,6 +380,31 @@ describe('resumeCommand', () => {
             startingMode: 'remote',
             model: 'deepseek-v3',
             effort: 'high'
+        })
+    })
+
+    it('resumes a DSH target through runDsh (no cursor fallback)', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'dsh-native-123'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'dsh-native-123',
+            startedBy: 'terminal',
+            // DSH has no local TUI input path, so resume defaults to remote.
+            startingMode: 'remote'
         })
     })
 

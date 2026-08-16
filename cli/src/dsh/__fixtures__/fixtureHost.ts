@@ -80,6 +80,8 @@ export function createFixtureHost(): Promise<FixtureHost> {
         close: async () => {}
     }
 
+    let rpcCounter = 0
+
     return new Promise((resolve, reject) => {
         const server = createServer(async (req, res) => {
             if (req.method !== 'POST' || req.url === undefined || !req.url.startsWith('/api/')) {
@@ -87,7 +89,13 @@ export function createFixtureHost(): Promise<FixtureHost> {
                 return
             }
             const endpoint = req.url.slice('/api/'.length)
-            const body = await readBody(req)
+            let body: string
+            try {
+                body = await readBody(req)
+            } catch (error) {
+                sendJson(res, { type: 'server-response', rpcId: 'unknown', result: { ok: false, error: { code: 'bad-request', message: 'body read failed', details: { issues: [] } } } })
+                return
+            }
             let message: ClientRequest
             try {
                 const parsed = JSON.parse(body)
@@ -118,11 +126,18 @@ export function createFixtureHost(): Promise<FixtureHost> {
                     }
                 }
             }
-            const response = serverResponseSchema.parse({
-                type: 'server-response',
-                rpcId: message.rpcId,
-                result
-            })
+            let response: unknown
+            try {
+                response = serverResponseSchema.parse({
+                    type: 'server-response',
+                    rpcId: message.rpcId,
+                    result
+                })
+            } catch (error) {
+                // Never hang the client on a malformed stub result.
+                sendJson(res, { type: 'server-response', rpcId: message.rpcId, result: { ok: false, error: { code: 'internal', message: `fixture result failed schema: ${error instanceof Error ? error.message : String(error)}`, details: { issues: [] } } } })
+                return
+            }
             sendJson(res, response)
         })
 
@@ -144,7 +159,7 @@ export function createFixtureHost(): Promise<FixtureHost> {
                         }
                         const envelope: ServerRequest = {
                             type: 'server-request',
-                            rpcId: RpcId(`fixture-sub-${Math.random().toString(36).slice(2)}`),
+                            rpcId: RpcId(`fixture-sub-${rpcCounter++}`),
                             method: 'session/event',
                             payload: frame
                         }
@@ -166,14 +181,17 @@ export function createFixtureHost(): Promise<FixtureHost> {
         const pushTo = (sockets: Set<WebSocket>, frame: MuxFrame | HostFrame, method: string) => {
             const envelope: ServerRequest = {
                 type: 'server-request',
-                rpcId: RpcId(`fixture-${Math.random().toString(36).slice(2)}`),
+                rpcId: RpcId(`fixture-${rpcCounter++}`),
                 method,
                 payload: frame
             }
             const text = JSON.stringify(envelope)
             for (const ws of sockets) {
-                ws.send(text)
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(text)
+                }
             }
+            host.pendingServerRequests.set(envelope.rpcId, envelope)
         }
         host.pushMux = (frame) => pushTo(muxSockets, frame, 'session/event')
         host.pushHost = (frame) => pushTo(hostSockets, frame, 'host/event')

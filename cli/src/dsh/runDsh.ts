@@ -617,7 +617,8 @@ export async function runDsh(opts: {
                     sessionId: created.sessionId,
                     mode: 'queue',
                     content,
-                    rpcId: promptRpcId
+                    rpcId: promptRpcId,
+                    signal: bridgeAbort.signal
                 });
                 return result;
             }).then(() => {

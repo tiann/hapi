@@ -97,8 +97,18 @@ export async function installDshRuntime(options?: { onProgress?: (line: string) 
             child.stderr?.on('data', (chunk) => {
                 stderr += chunk.toString()
             })
-            child.once('error', reject)
+            // Watchdog: a stalled registry/network must not hang startup forever.
+            const watchdog = setTimeout(() => {
+                child.kill('SIGKILL')
+                reject(new Error(`${command} timed out after 5 minutes: ${stderr.slice(-1_000)}`))
+            }, 5 * 60_000)
+            watchdog.unref?.()
+            child.once('error', (error) => {
+                clearTimeout(watchdog)
+                reject(error)
+            })
             child.once('exit', (code) => {
+                clearTimeout(watchdog)
                 if (code === 0) {
                     resolve()
                 } else {
@@ -267,6 +277,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
 
     while (Date.now() < deadline) {
         if (exitState.exit !== null) {
+            rmSync(overlayDir, { recursive: true, force: true })
             throw new DshRuntimeStartErrorImpl(
                 spawnFailure !== null ? 'spawn' : 'exit',
                 spawnFailure !== null

@@ -56,7 +56,7 @@ export type AgentMessage =
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
-    | { type: 'turn_complete'; stopReason: string }
+    | { type: 'turn_complete'; stopReason?: string }
     | { type: 'error'; message: string }
     // --- DeepSeek Harness native projections ---
     // One non-chunk native DSH session event, persisted verbatim-shaped so
@@ -77,9 +77,6 @@ export type DshProjectedMessage = AgentMessage & {
     dshMessageId?: string
 }
 
-export function isDshMessage(message: AgentMessage): boolean {
-    return message.type === 'dsh_native' || message.type === 'dsh_state'
-};
 
 export type PermissionOption = {
     optionId: string;

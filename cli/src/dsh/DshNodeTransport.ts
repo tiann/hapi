@@ -43,23 +43,37 @@ export class DshNodeTransport extends AbstractApiClient {
      *  shared can be consumed out from under a queued prompt. */
     async promptDirect(
         payload: Record<string, unknown>,
-        rpcId: DshRpcId
+        rpcId: DshRpcId,
+        externalSignal?: AbortSignal
     ): Promise<{ rpcId: string; result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: unknown } } }> {
         const message = { type: 'client-request', rpcId, method: 'session.prompt', payload }
         // Same POST leg as the official callUnary, with the caller-owned id.
+        // Compose the caller's signal so a session stop cancels the in-flight
+        // prompt instead of lingering up to the 30s transport timeout.
+        const signal = externalSignal
+            ? AbortSignal.any([AbortSignal.timeout(30_000), externalSignal])
+            : AbortSignal.timeout(30_000)
         const response = await this.doFetch(new URL(SESSION_PROMPT_PATH, this.resolveBase()), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(message),
-            signal: AbortSignal.timeout(30_000)
+            signal
         })
         if (!response.ok) {
             throw new Error(`session.prompt HTTP ${response.status}`)
         }
-        const parsed = (await response.json()) as {
+        let parsed: {
             type: string
             rpcId: string
             result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: unknown } }
+        }
+        try {
+            parsed = await response.json() as typeof parsed
+        } catch {
+            throw new Error('session.prompt returned non-JSON body')
+        }
+        if (parsed?.type !== 'server-response' || !parsed.result) {
+            throw new Error('session.prompt returned an unexpected envelope')
         }
         return { rpcId: parsed.rpcId, result: parsed.result }
     }
@@ -109,11 +123,9 @@ export class DshNodeTransport extends AbstractApiClient {
         // Without an error handler an abrupt socket failure can leave the
         // generator parked forever (no close event); surface it as stream end
         // so the bridge's reconnect path takes over.
-        socket.addEventListener('error', () => {
+        const handleError = (): void => {
             enqueue({ kind: 'end' })
-            wake?.()
-            wake = undefined
-        })
+        }
         const handleMessage = (event: MessageEvent): void => {
             let full: ReturnType<typeof serverRequestSchema.parse>
             try {
@@ -144,13 +156,19 @@ export class DshNodeTransport extends AbstractApiClient {
         }
         const handleAbort = (): void => {
             if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
-                socket.close()
+                try {
+                    socket.close()
+                } catch {
+                    // CONNECTING close() throws in some runtimes; the socket
+                    // dies anyway once the connection attempt fails.
+                }
             }
         }
 
         socket.addEventListener('open', handleOpen)
         socket.addEventListener('message', handleMessage)
         socket.addEventListener('close', handleClose, { once: true })
+        socket.addEventListener('error', handleError)
         signal.addEventListener('abort', handleAbort, { once: true })
         if (signal.aborted) {
             handleAbort()
@@ -173,6 +191,7 @@ export class DshNodeTransport extends AbstractApiClient {
             socket.removeEventListener('open', handleOpen)
             socket.removeEventListener('message', handleMessage)
             socket.removeEventListener('close', handleClose)
+            socket.removeEventListener('error', handleError)
             handleAbort()
         }
     }

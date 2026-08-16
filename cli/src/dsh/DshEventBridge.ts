@@ -74,6 +74,10 @@ export class DshEventBridge {
      *  child event (known or not) is buffered so its cursor can never advance
      *  past the outage gap. */
     private journalRecoveryInFlight = false
+    /** Children whose replay finished: their buffers were released, so their
+     *  live events must forward even while other children are still being
+     *  replayed (otherwise they re-seal into a buffer nothing ever drains). */
+    private readonly childRecoveryReleased = new Set<string>()
     /** Highest forwarded seq per projection key — stale bootstrap responses
      *  (older than a live frame already forwarded) are dropped. */
     private readonly projectionSeqByKey = new Map<string, number>()
@@ -181,6 +185,7 @@ export class DshEventBridge {
             // leave a permanent hole once a live event advances the cursor.
             initialBackfillDone = false
             this.initialRootEvents = []
+            this.childRecoveryReleased.clear()
             // The host re-seeds subscribed + projection baseline on reconnect,
             // so allow re-seeding on the new generation too.
             this.projectionsSeeded = false
@@ -275,6 +280,9 @@ export class DshEventBridge {
             }
             await new Promise((resolve) => setTimeout(resolve, 1_500))
         }
+        // All attempts failed: allow a later session/subscribed (e.g. after a
+        // reconnect) to retry the bootstrap instead of staying unseeded.
+        this.projectionsSeeded = false
     }
 
     private async pumpMux(
@@ -292,7 +300,7 @@ export class DshEventBridge {
             try {
                 this.handleMuxFrame(frame, envelope.rpcId)
             } catch (error) {
-                logger.debug(`[${this.logTag}] mux frame handler error:`, error)
+                logger.warn(`[${this.logTag}] mux frame handler error: ${error instanceof Error ? error.message : String(error)}`)
             }
         }
     }
@@ -304,7 +312,7 @@ export class DshEventBridge {
             try {
                 this.handleHostFrame(frame)
             } catch (error) {
-                logger.debug(`[${this.logTag}] host frame handler error:`, error)
+                logger.warn(`[${this.logTag}] host frame handler error: ${error instanceof Error ? error.message : String(error)}`)
             }
         }
     }
@@ -463,6 +471,7 @@ export class DshEventBridge {
                 this.childProjectors.delete(frame.sessionId)
                 this.childLastSeq.delete(frame.sessionId)
                 this.childBuffers.delete(frame.sessionId)
+                this.childRecoveryReleased.delete(frame.sessionId)
                 if (this.subagentIds.delete(frame.sessionId)) {
                     this.emitSubagentCount(this.seqOf())
                 }
@@ -495,7 +504,14 @@ export class DshEventBridge {
             this.lastForwardedSeq = event.seq
             this.projector.markSeq(event.seq)
             for (const message of this.projector.onEvent(event)) {
-                this.options.onMessage(message, source)
+                try {
+                    this.options.onMessage(message, source)
+                } catch (error) {
+                    // A consumer failure (e.g. sendAgentMessage on a closing
+                    // session) must not wedge the pump; the seq is already
+                    // consumed from the stream either way.
+                    logger.warn(`[${this.logTag}] onMessage consumer error: ${error instanceof Error ? error.message : String(error)}`)
+                }
             }
             this.options.onCursor?.(event.seq)
             return
@@ -505,7 +521,7 @@ export class DshEventBridge {
         // child's history replay is in flight, buffer instead of forwarding —
         // advancing the cursor mid-fetch would let the replay discard the gap.
         const childBuffer = this.childBuffers.get(sessionId)
-        if (!forceForward && (childBuffer || this.journalRecoveryInFlight)) {
+        if (!forceForward && (childBuffer || (this.journalRecoveryInFlight && !this.childRecoveryReleased.has(sessionId)))) {
             // Dynamic seal for children first seen during journal recovery.
             const buffer = childBuffer ?? []
             buffer.push(event)
@@ -597,9 +613,12 @@ export class DshEventBridge {
             // Release buffered live frames, oldest first; the seq guard skips
             // anything the replay already forwarded. forceForward bypasses the
             // still-active recovery seal — the buffer is already deleted, so
-            // re-buffering would trap these frames forever.
+            // re-buffering would trap these frames forever. The child is then
+            // marked released so its FUTURE live events forward too, even
+            // while sibling children are still being replayed.
             const buffered = this.childBuffers.get(childSessionId) ?? []
             this.childBuffers.delete(childSessionId)
+            this.childRecoveryReleased.add(childSessionId)
             buffered
                 .sort((a, b) => a.seq - b.seq)
                 .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live', true))
