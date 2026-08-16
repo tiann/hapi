@@ -112,9 +112,16 @@ export class DshEventBridge {
             await Promise.allSettled([muxDone, hostDone])
             signal.removeEventListener('abort', onOuterAbort)
             if (signal.aborted) break
-            logger.debug(`[${this.logTag}] streams closed; backfilling after seq ${this.lastForwardedSeq}`)
-            await this.backfillAfterCursor()
-            // Reconnect: the host re-seeds subscribed + projection baseline,
+            logger.debug(`[${this.logTag}] streams closed; reconnecting after seq ${this.lastForwardedSeq}`)
+            // Reconnect goes through the SAME generation-safe path as the
+            // first generation: streams attach first, live root events are
+            // buffered, and only a successful backfill releases them. Fetching
+            // history while no stream is attached could skip events committed
+            // between the fetch and resubscription, and a failed fetch would
+            // leave a permanent hole once a live event advances the cursor.
+            initialBackfillDone = false
+            this.initialRootEvents = []
+            // The host re-seeds subscribed + projection baseline on reconnect,
             // so allow re-seeding on the new generation too.
             this.projectionsSeeded = false
             // Exponential backoff up to 5s before the next connect attempt.

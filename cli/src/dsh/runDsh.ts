@@ -250,6 +250,30 @@ export async function runDsh(opts: {
                 }
             }
         }));
+
+        // Launch-time model selection: apply it to the runtime BEFORE the
+        // first prompt so `hapi dsh --model X` actually runs X instead of
+        // merely reporting it in metadata.
+        if (opts.model) {
+            const catalog = await client.sessionModels(created.sessionId);
+            const matches = catalog.groups.flatMap((group) =>
+                group.models
+                    .filter((model) => model.id === opts.model)
+                    .map((model) => ({ provider: group.id, modelId: model.id }))
+            );
+            if (matches.length !== 1) {
+                throw new Error(`Unknown or ambiguous DSH model: ${opts.model}`);
+            }
+            await client.selectModel({
+                sessionId: created.sessionId,
+                provider: matches[0].provider,
+                model: matches[0].modelId
+            });
+            session.updateMetadata((metadata) => ({
+                ...metadata,
+                dshSelectedModel: matches[0]
+            }));
+        }
         // Fork children wait for session-ready before reporting success, so
         // the hub can verify the child actually resumed the forked native id.
         session.emitSessionReady();
