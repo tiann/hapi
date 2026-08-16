@@ -274,10 +274,6 @@ export async function runDsh(opts: {
                 dshSelectedModel: matches[0]
             }));
         }
-        // Fork children wait for session-ready before reporting success, so
-        // the hub can verify the child actually resumed the forked native id.
-        session.emitSessionReady();
-
         const projector = new DshProjector(created.sessionId);
         const pendingUserLocalIds: string[] = [];
         const noteUserMessageSeq = (seq: number) => {
@@ -292,10 +288,19 @@ export async function runDsh(opts: {
             }
         };
 
+        // Fork children wait for session-ready before reporting success, so
+        // the hub can verify the child actually resumed the forked native id.
+        // session-ready (and user-message dispatch) is gated on the bridge's
+        // first-generation readiness: a prompt committed before the root mux
+        // subscription would be replayed as backfill, which must not consume
+        // its pending localId (that would corrupt fork/rewind anchors).
+        let bridgeReadyResolve: (() => void) | undefined
+        const bridgeReady = new Promise<void>((resolve) => { bridgeReadyResolve = resolve })
         const bridge = new DshEventBridge({
             client,
             dshSessionId: created.sessionId,
             projector,
+            onReady: () => bridgeReadyResolve?.(),
             ...(typeof session.getMetadata()?.dshEventCursor === 'number'
                 ? { initialCursor: session.getMetadata()!.dshEventCursor }
                 : {}),
@@ -528,6 +533,9 @@ export async function runDsh(opts: {
         // the FIFO localId→native-seq mapping must not interleave across
         // concurrent user messages (that would corrupt fork/rewind anchors).
         let promptChain: Promise<void> = Promise.resolve();
+        const bridgeRun = bridge.start(bridgeAbort.signal);
+        await bridgeReady;
+        session.emitSessionReady();
         session.onUserMessage((message, localId) => {
             const text = message.content.text;
             if (localId) {
@@ -569,7 +577,7 @@ export async function runDsh(opts: {
 
         // Event bridge runs until the session ends; the host stream keeps the
         // process alive through keepAlive (session-alive heartbeats).
-        await bridge.start(bridgeAbort.signal);
+        await bridgeRun;
 
         lifecycle.setSessionEndReason('completed');
     } catch (error) {

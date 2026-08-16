@@ -10,8 +10,6 @@ import {
 describe('DshActionSchema (allowlisted typed protocol)', () => {
     it('accepts every documented action with its typed payload', () => {
         const valid: unknown[] = [
-            { type: 'prompt', mode: 'queue', text: 'hello' },
-            { type: 'prompt', mode: 'steer', text: 'now' },
             { type: 'interrupt' },
             { type: 'approval.respond', approvalId: 'a-1', outcome: 'allowed-once' },
             { type: 'approval.respond', approvalId: 'a-1', outcome: 'rejected' },
@@ -19,7 +17,6 @@ describe('DshActionSchema (allowlisted typed protocol)', () => {
             { type: 'queue.action', itemId: 'm-1', action: { kind: 'remove' } },
             { type: 'queue.action', itemId: 'm-1', action: { kind: 'steer' } },
             { type: 'queue.action', itemId: 'm-1', action: { kind: 'edit', text: 'edited' } },
-            { type: 'model.select', provider: 'deepseek-official', model: 'deepseek-v4', reasoningEffort: 'high' },
             { type: 'goal', action: 'create', objective: 'ship it', maxGoalRounds: 5 },
             { type: 'goal', action: 'clear', refId: 'g-1', revision: 2 },
             { type: 'subagent', action: 'list' },
@@ -27,7 +24,6 @@ describe('DshActionSchema (allowlisted typed protocol)', () => {
             { type: 'agentPresets', action: 'list' },
             { type: 'agentPresets', action: 'select', agentPreset: 'standard' },
             { type: 'nativeHistory', beforeSeq: 10, maxMessages: 50 },
-            { type: 'fork', atSeq: 42 },
             { type: 'feedback', action: 'put', messageId: 'm-9', rating: 'positive', note: 'nice', ifVersion: null }
         ]
         for (const action of valid) {
@@ -38,15 +34,16 @@ describe('DshActionSchema (allowlisted typed protocol)', () => {
     it('rejects unknown actions and malformed payloads', () => {
         const invalid: unknown[] = [
             { type: 'not-an-action' },
+            { type: 'prompt', mode: 'queue', text: 'hello' },
             { type: 'prompt', mode: 'teleport', text: 'x' },
-            { type: 'prompt', mode: 'queue' },
+            { type: 'model.select', provider: 'deepseek-official', model: 'deepseek-v4' },
+            { type: 'fork', atSeq: 42 },
             { type: 'approval.respond', approvalId: 'a-1', outcome: 'allowed-forever' },
             { type: 'queue.action', itemId: 'm-1', action: { kind: 'explode' } },
             { type: 'goal', action: 'create' },
             { type: 'subagent', action: 'prompt', childSessionId: 's-2' },
             { type: 'agentPresets', action: 'select' },
             { type: 'feedback', action: 'put', messageId: 'm-1' },
-            { type: 'fork', atSeq: -1 },
             'interrupt',
             null,
             42

@@ -138,18 +138,20 @@ export const DshFeedbackRequestSchema = z.object({
 export type DshFeedbackRequest = z.infer<typeof DshFeedbackRequestSchema>
 
 /** Discriminated allowlist of every session-scoped DSH action. */
+// Orchestration-owned mutations (prompt / model.select / fork) are excluded:
+// HAPI routes them through its own message persistence, localId mapping,
+// session-config metadata, and child-session creation, so a direct remote
+// call would produce assistant output with no stored user prompt, stale
+// model metadata, or a native fork with no HAPI child row.
 export const DshActionSchema = z.discriminatedUnion('type', [
-    DshPromptRequestSchema.extend({ type: z.literal('prompt') }),
     DshInterruptRequestSchema.extend({ type: z.literal('interrupt') }),
     DshApprovalRespondRequestSchema.extend({ type: z.literal('approval.respond') }),
     DshQuestionRespondRequestSchema.extend({ type: z.literal('question.respond') }),
     DshQueueActionRequestSchema.extend({ type: z.literal('queue.action') }),
-    DshSelectModelRequestSchema.extend({ type: z.literal('model.select') }),
     DshGoalRequestSchema.extend({ type: z.literal('goal') }),
     DshSubagentRequestSchema.extend({ type: z.literal('subagent') }),
     DshAgentPresetsRequestSchema.extend({ type: z.literal('agentPresets') }),
     DshNativeHistoryRequestSchema.extend({ type: z.literal('nativeHistory') }),
-    DshForkRequestSchema.extend({ type: z.literal('fork') }),
     DshFeedbackRequestSchema.extend({ type: z.literal('feedback') })
 ])
 export type DshAction = z.infer<typeof DshActionSchema>

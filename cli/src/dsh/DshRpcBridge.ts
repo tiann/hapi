@@ -40,14 +40,6 @@ export function registerDshRpcHandlers(options: DshRpcBridgeOptions): void {
     rpcHandlerManager.registerHandler(RPC_METHODS.DshAction, async (payload: unknown) => {
         const action = DshActionSchema.parse(payload)
         switch (action.type) {
-            case 'prompt': {
-                const result = await client.prompt({
-                    sessionId: dshSessionId,
-                    mode: action.mode,
-                    content: [{ type: 'text', text: action.text }]
-                })
-                return { accepted: result.accepted }
-            }
             case 'interrupt': {
                 await client.cancel(dshSessionId)
                 return { accepted: true }
@@ -80,22 +72,6 @@ export function registerDshRpcHandlers(options: DshRpcBridgeOptions): void {
                         : { kind: action.action.kind }
                 })
                 return { accepted: true }
-            }
-            case 'model.select': {
-                const result = await client.selectModel({
-                    sessionId: dshSessionId,
-                    provider: action.provider,
-                    model: action.model,
-                    ...(action.reasoningEffort !== undefined ? { reasoningEffort: action.reasoningEffort } : {})
-                })
-                const selected: DshSelectModelResponse = {
-                    selected: {
-                        provider: result.selected.provider,
-                        model: result.selected.model,
-                        ...(result.selected.reasoningEffort !== undefined ? { reasoningEffort: result.selected.reasoningEffort } : {})
-                    }
-                }
-                return selected
             }
             case 'goal': {
                 const goalResult = await dispatchGoal(client, sid, action)
@@ -146,13 +122,6 @@ export function registerDshRpcHandlers(options: DshRpcBridgeOptions): void {
                     hasMore: page.hasMore
                 }
                 return response
-            }
-            case 'fork': {
-                const result = await client.forkSession({
-                    sessionId: dshSessionId,
-                    ...(action.atSeq !== undefined ? { atSeq: action.atSeq } : {})
-                })
-                return { sessionId: result.sessionId }
             }
             case 'feedback': {
                 return await dispatchFeedback(client, sid, action)

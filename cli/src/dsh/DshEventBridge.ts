@@ -20,6 +20,10 @@ export type DshEventBridgeOptions = {
     initialCursor?: number
     /** Forward one projected agent message (text/tool/usage/native/state…). */
     onMessage: (message: DshProjectedMessage, source: 'live' | 'backfill') => void
+    /** Called once the first generation attached and its initial backfill
+     *  completed (root subscribed + gap released). Session orchestration uses
+     *  this to gate session-ready and prompt dispatch. */
+    onReady?: () => void
     /** Forward a state snapshot message (dsh_state). */
     onStateSnapshot: (snapshot: DshStateSnapshot) => void
     /** Register a pending approval in HAPI agentState.requests. */
@@ -87,7 +91,8 @@ export class DshEventBridge {
             const hostDone = this.pumpHost(host, generation.signal)
             const attached = await Promise.race([
                 subscribed.then(() => true),
-                muxDone.then(() => false)
+                muxDone.then(() => false),
+                hostDone.then(() => false)
             ])
             if (!attached) {
                 generation.abort()
@@ -115,6 +120,7 @@ export class DshEventBridge {
                     continue
                 }
                 initialBackfillDone = true
+                this.options.onReady?.()
                 // Replay live events that arrived while the backfill ran,
                 // oldest first; handleSessionEvent's seq guard skips any
                 // already forwarded by the backfill itself.
