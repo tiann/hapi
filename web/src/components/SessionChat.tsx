@@ -762,10 +762,20 @@ function SessionChatInner(props: SessionChatProps) {
             { type: 'agentPresets', action: 'list' }
         ).then((response) => setDshPresets(response.result)).catch(() => setDshPresets(null))
     }, [agentFlavor, props.api, props.session.id])
+    // Mirror the official web UI (presetDisplayText): shipped (system)
+    // presets are localized through the i18n dictionary by id; user-authored
+    // presets render their file metadata verbatim.
+    const dshPresetLabel = (preset: { id: string; trust: 'system' | 'user'; name?: string }): string => {
+        if (preset.trust === 'system') {
+            const localized = t(`dsh.mode.${preset.id}`)
+            if (localized !== `dsh.mode.${preset.id}`) return localized
+        }
+        return preset.name ?? preset.id
+    }
     const dshModes = agentFlavor === 'dsh' && dshPresets && dshPresets.presets.length > 0
         ? dshPresets.presets.map((preset) => ({
             id: preset.id,
-            name: preset.name ?? preset.id,
+            name: dshPresetLabel(preset),
             description: preset.description,
             current: dshState.agentPreset === preset.id
         }))
