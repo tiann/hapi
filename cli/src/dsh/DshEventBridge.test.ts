@@ -28,6 +28,7 @@ type Sink = {
 
 function setup(): { bridge: DshEventBridge; sink: Sink; client: DshClient } {
     const h = host!
+    h.subscribedOnOpen = { sessionId: SESSION, lastSeq: 0 }
     const client = DshClient.connect(h.baseUrl)
     const sink: Sink = {
         messages: [],

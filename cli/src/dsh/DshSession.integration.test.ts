@@ -59,7 +59,17 @@ let muxSocket = null
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://dsh.test')
   if (url.pathname === '/api/events.mux') {
-    wss.handleUpgrade(req, socket, head, (ws) => { muxSocket = ws })
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      muxSocket = ws
+      // Root subscription barrier: the bridge waits for session/subscribed
+      // before its first history backfill.
+      ws.send(JSON.stringify({
+        type: 'server-request',
+        rpcId: 'fixture-sub',
+        method: 'session/event',
+        payload: { type: 'session/subscribed', sessionId: 's1', lastSeq: 0 }
+      }))
+    })
     return
   }
   if (url.pathname === '/api/events.host') {

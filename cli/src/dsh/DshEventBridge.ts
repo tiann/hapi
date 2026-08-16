@@ -78,8 +78,25 @@ export class DshEventBridge {
             signal.addEventListener('abort', onOuterAbort, { once: true })
             const mux = this.options.client.muxStream(generation.signal)
             const host = this.options.client.hostStream(generation.signal)
-            const muxDone = this.pumpMux(mux, generation.signal)
+            // Backfill must not start before the root mux subscription is
+            // active: events committed between the history response and the
+            // subscription would be returned by neither path.
+            let resolveSubscribed: (() => void) | undefined
+            const subscribed = new Promise<void>((resolve) => { resolveSubscribed = resolve })
+            const muxDone = this.pumpMux(mux, generation.signal, () => resolveSubscribed?.())
             const hostDone = this.pumpHost(host, generation.signal)
+            const attached = await Promise.race([
+                subscribed.then(() => true),
+                muxDone.then(() => false)
+            ])
+            if (!attached) {
+                generation.abort()
+                await Promise.allSettled([muxDone, hostDone])
+                signal.removeEventListener('abort', onOuterAbort)
+                await waitForAbortableDelay(retryMs, signal)
+                retryMs = Math.min(retryMs * 2, 5_000)
+                continue
+            }
             // First generation: a freshly spawned host sends a subscribed
             // baseline, not historical events — backfill the gap since the
             // last persisted cursor so events committed before the previous
@@ -214,10 +231,18 @@ export class DshEventBridge {
         }
     }
 
-    private async pumpMux(mux: AsyncIterable<RpcRequest<MuxFrame>>, signal: AbortSignal): Promise<void> {
+    private async pumpMux(
+        mux: AsyncIterable<RpcRequest<MuxFrame>>,
+        signal: AbortSignal,
+        onRootSubscribed?: () => void
+    ): Promise<void> {
         for await (const envelope of mux) {
             if (signal.aborted) return
             const frame = envelope.payload
+            if (frame.type === 'session/subscribed'
+                && frame.sessionId === this.options.dshSessionId) {
+                onRootSubscribed?.()
+            }
             try {
                 this.handleMuxFrame(frame, envelope.rpcId)
             } catch (error) {

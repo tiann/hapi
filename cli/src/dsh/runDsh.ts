@@ -534,7 +534,10 @@ export async function runDsh(opts: {
                 pendingUserLocalIds.push(localId);
             }
             promptChain = promptChain.then(async () => {
-                const content = await prepareDshPromptContent(text, created.sessionId, message.content.attachments);
+                // Uploads are registered under the HAPI row id; fork children
+                // carry a distinct native DSH id, so validate against the
+                // HAPI id or every fork-child image would be rejected.
+                const content = await prepareDshPromptContent(text, hapiSessionId, message.content.attachments);
                 return await client.prompt({
                     sessionId: created.sessionId,
                     mode: 'queue',

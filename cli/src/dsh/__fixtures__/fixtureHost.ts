@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { serverResponseSchema } from '@deepseek-ai/dsh-host-apiproxy/api/rpc.schema'
 import type { ClientRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { HostFrame, MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
 
 /**
@@ -19,6 +20,8 @@ export type FixtureHost = {
     onRequest: (endpoint: string, payload: unknown) => Promise<unknown> | unknown
     /** Push one mux frame to all connected mux sockets. */
     pushMux(frame: MuxFrame): void
+    /** Emit a root session/subscribed frame when a mux socket opens. */
+    subscribedOnOpen: { sessionId: string; lastSeq: number } | null
     /** Push one host frame to all connected host sockets. */
     pushHost(frame: HostFrame): void
     /** Last N client requests received, for assertions. */
@@ -56,6 +59,7 @@ export function createFixtureHost(): Promise<FixtureHost> {
         },
         pushMux: () => {},
         pushHost: () => {},
+        subscribedOnOpen: null,
         requests: [],
         pendingServerRequests: new Map(),
         close: async () => {}
@@ -116,6 +120,21 @@ export function createFixtureHost(): Promise<FixtureHost> {
                 wss.handleUpgrade(req, socket, head, (ws) => {
                     muxSockets.add(ws)
                     ws.on('close', () => muxSockets.delete(ws))
+                    const subscribed = host.subscribedOnOpen
+                    if (subscribed) {
+                        const frame: MuxFrame = {
+                            type: 'session/subscribed',
+                            sessionId: SessionId(subscribed.sessionId),
+                            lastSeq: subscribed.lastSeq
+                        }
+                        const envelope: ServerRequest = {
+                            type: 'server-request',
+                            rpcId: RpcId(`fixture-sub-${Math.random().toString(36).slice(2)}`),
+                            method: 'session/event',
+                            payload: frame
+                        }
+                        ws.send(JSON.stringify(envelope))
+                    }
                 })
                 return
             }
