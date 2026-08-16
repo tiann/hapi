@@ -290,7 +290,6 @@ export class DshProjector {
             thoughtTokens: Number(usage.reasoningTokens ?? 0),
             cacheReadTokens: Number(usage.cacheReadTokens ?? 0),
             cacheCreationTokens: Number(usage.cacheWriteTokens ?? 0),
-            contextTokens: this.latestContextWindow !== null ? 0 : undefined,
             contextWindow: this.latestContextWindow ?? undefined,
             dshSeq
         })

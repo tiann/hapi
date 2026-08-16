@@ -4,6 +4,8 @@ import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFacto
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { readBoundedAttachmentFile } from '@/modules/common/attachmentFile'
+import { MAX_UPLOAD_BYTES } from '@/modules/common/attachmentLimits'
+import { isAuthorizedUploadFile, isPathWithinUploadDir } from '@/modules/common/handlers/uploads'
 import type { PromptContentPart } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
@@ -28,14 +30,26 @@ const CURSOR_FLUSH_MS = 1_000
  */
 async function prepareDshPromptContent(
     text: string,
+    sessionId: string,
     attachments: Array<{ id: string; filename: string; mimeType: string; size: number; path: string; previewUrl?: string }> | undefined
 ): Promise<PromptContentPart[]> {
     const parts: PromptContentPart[] = []
     let body = text
+    let remainingBytes = MAX_UPLOAD_BYTES
     for (const attachment of attachments ?? []) {
         if (attachment.mimeType.toLowerCase().startsWith('image/')) {
             try {
-                const buffer = await readBoundedAttachmentFile(attachment.path)
+                // Only session-uploaded paths may be opened; enforce the
+                // aggregate image budget across every attachment.
+                if (!isPathWithinUploadDir(attachment.path, sessionId)) {
+                    throw new Error('invalid upload path')
+                }
+                const buffer = await readBoundedAttachmentFile(
+                    attachment.path,
+                    remainingBytes,
+                    (identity) => isAuthorizedUploadFile(attachment.path, sessionId, identity)
+                )
+                remainingBytes -= buffer.length
                 parts.push({
                     type: 'image',
                     mediaType: attachment.mimeType as ImageMediaType,
@@ -97,19 +111,20 @@ export async function runDsh(opts: {
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'dsh',
-        onBeforeClose: () => {
+        onBeforeClose: async () => {
             stopKeepAlive();
             if (pendingHistoryMetadataFlush) {
                 clearTimeout(pendingHistoryMetadataFlush);
                 flushHistoryMetadata();
             }
             // Mark BEFORE stopping so the host-exit listener never mistakes
-            // our graceful shutdown for an unexpected crash.
+            // our graceful shutdown for an unexpected crash; await the stop so
+            // the SIGKILL fallback is not cut short by process.exit.
             stoppingHost.value = true;
-            hostRef.current?.stop({ timeoutMs: 5_000 }).catch((error) => {
+            bridgeAbort.abort();
+            await hostRef.current?.stop({ timeoutMs: 5_000 }).catch((error) => {
                 logger.debug('[dsh] host stop error during cleanup:', error);
             });
-            bridgeAbort.abort();
         }
     });
     lifecycle.registerProcessHandlers();
@@ -360,70 +375,66 @@ export async function runDsh(opts: {
                 .find((m) => m.id === modelId);
             return match?.provider ?? null;
         };
-        registerSessionConfigRpc({
-            rpcHandlerManager: session.rpcHandlerManager,
-            flavor: 'dsh',
-            modelMode: 'nullable',
-            modelReasoningEffortMode: 'nullable',
-            onApply: async (config) => {
-                if (config.model !== undefined) {
-                    if (config.model === null) {
-                        return;
+        // Raw SetSessionConfig handler: resolves the ORIGINAL payload so
+        // provider-qualified {provider, modelId} selections keep their
+        // provider identity (the shared registerSessionConfigRpc helper
+        // collapses objects to a bare modelId).
+        const applyModelSelection = async (provider: string, modelId: string, reasoningEffort?: string | null) => {
+            currentModelId = modelId;
+            await client.selectModel({
+                sessionId: created.sessionId,
+                provider,
+                model: modelId,
+                ...(reasoningEffort !== undefined && reasoningEffort !== null ? { reasoningEffort } : {})
+            });
+        };
+        session.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
+            const config = payload && typeof payload === 'object'
+                ? payload as { model?: unknown; modelReasoningEffort?: unknown }
+                : {}
+            const applied: Record<string, unknown> = {}
+            if (config.model !== undefined && config.model !== null) {
+                let provider: string | null = null
+                let modelId = ''
+                if (typeof config.model === 'object') {
+                    const selection = config.model as { provider?: unknown; modelId?: unknown }
+                    if (typeof selection.provider === 'string' && typeof selection.modelId === 'string') {
+                        provider = selection.provider
+                        modelId = selection.modelId
                     }
-                    // Provider-qualified selection ({provider, modelId} from
-                    // the web) keeps its provider identity; a bare id is
-                    // resolved against the live catalog.
-                    let provider: string | null
-                    let modelId: string
-                    if (typeof config.model === 'object' && config.model !== null) {
-                        provider = typeof (config.model as { provider?: unknown }).provider === 'string'
-                            ? (config.model as { provider: string }).provider
-                            : null
-                        modelId = typeof (config.model as { modelId?: unknown }).modelId === 'string'
-                            ? (config.model as { modelId: string }).modelId
-                            : ''
-                    } else {
-                        modelId = config.model
-                        provider = await resolveModelProvider(modelId)
-                    }
-                    if (!provider || modelId.length === 0) {
-                        throw new Error(`Unknown DSH model: ${JSON.stringify(config.model)}`);
-                    }
-                    currentModelId = modelId;
-                    const catalog = await client.sessionModels(created.sessionId);
-                    const match = catalog.groups
-                        .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
-                        .find((m) => m.id === modelId);
-                    await client.selectModel({
-                        sessionId: created.sessionId,
-                        provider,
-                        model: modelId,
-                        ...(match?.reasoning?.defaultEffort !== undefined
-                            ? { reasoningEffort: match.reasoning.defaultEffort }
-                            : {})
-                    });
-                    return;
+                } else if (typeof config.model === 'string') {
+                    modelId = config.model
+                    provider = await resolveModelProvider(modelId)
                 }
-                if (config.modelReasoningEffort !== undefined) {
-                    // Effort is part of the DSH model selection. Before the
-                    // user picks a model explicitly, apply it to the host's
-                    // current/default model (catalog.current).
-                    const target = currentModelId
-                        ?? (await client.sessionModels(created.sessionId)).current.model;
-                    const provider = await resolveModelProvider(target);
-                    if (!provider) {
-                        throw new Error(`Unknown DSH model: ${target}`);
-                    }
-                    await client.selectModel({
-                        sessionId: created.sessionId,
-                        provider,
-                        model: target,
-                        ...(config.modelReasoningEffort !== null
-                            ? { reasoningEffort: config.modelReasoningEffort }
-                            : {})
-                    });
+                if (!provider || modelId.length === 0) {
+                    throw new Error(`Unknown DSH model: ${JSON.stringify(config.model)}`)
                 }
+                const catalog = await client.sessionModels(created.sessionId)
+                const match = catalog.groups
+                    .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
+                    .find((m) => m.id === modelId)
+                await applyModelSelection(
+                    provider,
+                    modelId,
+                    match?.reasoning?.defaultEffort ?? undefined
+                )
+                applied.model = { provider, modelId }
             }
+            if (config.modelReasoningEffort !== undefined) {
+                const target = currentModelId
+                    ?? (await client.sessionModels(created.sessionId)).current.model
+                const provider = await resolveModelProvider(target)
+                if (!provider) {
+                    throw new Error(`Unknown DSH model: ${target}`)
+                }
+                await applyModelSelection(
+                    provider,
+                    target,
+                    typeof config.modelReasoningEffort === 'string' ? config.modelReasoningEffort : null
+                )
+                applied.modelReasoningEffort = config.modelReasoningEffort
+            }
+            return { applied }
         });
 
         registerDshRpcHandlers({
@@ -447,7 +458,7 @@ export async function runDsh(opts: {
                 pendingUserLocalIds.push(localId);
             }
             promptChain = promptChain.then(async () => {
-                const content = await prepareDshPromptContent(text, message.content.attachments);
+                const content = await prepareDshPromptContent(text, created.sessionId, message.content.attachments);
                 return await client.prompt({
                     sessionId: created.sessionId,
                     mode: 'queue',

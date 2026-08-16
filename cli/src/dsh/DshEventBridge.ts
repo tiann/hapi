@@ -66,6 +66,8 @@ export class DshEventBridge {
         // socket must not wait on the other), then backfill the gap since the
         // last forwarded seq and re-open both streams. Each generation gets
         // its own AbortController so the loser of the race is torn down.
+        // Persistent failures back off so a dead host cannot spin the CPU.
+        let retryMs = 500
         while (!signal.aborted) {
             const generation = new AbortController()
             const onOuterAbort = () => generation.abort()
@@ -84,6 +86,9 @@ export class DshEventBridge {
             // Reconnect: the host re-seeds subscribed + projection baseline,
             // so allow re-seeding on the new generation too.
             this.projectionsSeeded = false
+            // Exponential backoff up to 5s before the next connect attempt.
+            await waitForAbortableDelay(retryMs, signal)
+            retryMs = Math.min(retryMs * 2, 5_000)
         }
     }
 
@@ -438,6 +443,16 @@ export class DshEventBridge {
     }
 
     private approvals: DshPendingApproval[] = []
+}
+
+function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms)
+        signal.addEventListener('abort', () => {
+            clearTimeout(timer)
+            resolve()
+        }, { once: true })
+    })
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

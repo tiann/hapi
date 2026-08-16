@@ -446,11 +446,12 @@ function trimPreservingQueued(
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
     const agentRuns = nonQueued.filter(isCodexAgentRunMessage)
     const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
-    // DSH journal/state rows are invisible (folded into panels); keep only
-    // the newest state snapshot alongside and never let them consume the
+    // DSH journal/state rows are invisible (folded into panels): dsh_native
+    // rows are never rendered and never folded, so exclude them entirely;
+    // keep only the newest dsh_state snapshot. Neither may consume the
     // visible message budget.
     const latestState = regular.filter(isDshStateRow).slice(-1)
-    const visible = regular.filter((message) => !isDshStateRow(message))
+    const visible = regular.filter((message) => !isDshNativePayloadMessage(message))
     const visibleTrim = sliceForTrim(visible, Math.max(0, regularLimit - queued.length), mode)
     const agentRunTrim = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, mode)
     return {

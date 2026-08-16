@@ -164,7 +164,8 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
             return false
         }
     })()
-    if (runtimeMissing || runtimeOutdated) {
+    const managedRuntime = options.runtimeBin === undefined && !process.env[DSH_RUNTIME_PATH_ENV]
+    if (managedRuntime && (runtimeMissing || runtimeOutdated)) {
         const noInstall = process.env[DSH_RUNTIME_NO_INSTALL_ENV] === '1'
         if (noInstall) {
             throw new DshRuntimeStartErrorImpl(
@@ -174,6 +175,19 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         }
         logger.debug(`[${logTag}] DSH runtime ${runtimeMissing ? 'missing' : `outdated (wanted ${DSH_RUNTIME_VERSION})`}; installing ${DSH_RUNTIME_PACKAGE}...`)
         await installDshRuntime({ onProgress: (line) => logger.debug(`[${logTag}] ${line}`) })
+    } else if (!managedRuntime && runtimeMissing) {
+        // Explicit override (HAPI_DSH_RUNTIME_PATH / options.runtimeBin):
+        // never install behind it; fail loud with the exact path.
+        if (process.env[DSH_RUNTIME_NO_INSTALL_ENV] === '1') {
+            throw new DshRuntimeStartErrorImpl(
+                'install',
+                `DSH runtime not found at ${binPath} (${DSH_RUNTIME_NO_INSTALL_ENV}=1)`
+            )
+        }
+        throw new DshRuntimeStartErrorImpl(
+            'spawn',
+            `DSH runtime not found at ${binPath}`
+        )
     }
 
     const port = options.port ?? await probeFreePort()

@@ -96,7 +96,11 @@ function normalizeCodexTokenUsage(value: unknown, data?: Record<string, unknown>
             ?? usageSource.contextTokens
             ?? usageSource.context_tokens
         ) ?? inputTokens,
-        context_window: asNumber(info.modelContextWindow ?? info.model_context_window) ?? undefined,
+        context_window: asNumber(
+            info.modelContextWindow
+            ?? info.model_context_window
+            ?? (data && isObject(data) ? data.contextWindow : undefined)
+        ) ?? undefined,
         thread_id: asString(
             data?.thread_id
             ?? data?.threadId
@@ -1171,7 +1175,7 @@ export function normalizeAgentRecord(
                     cachedInputTokens: asNumber(data.cacheReadTokens)
                 },
                 contextTokens: asNumber(data.contextTokens)
-            })
+            }, data)
             if (!usage) return null
             return {
                 id: messageId,
