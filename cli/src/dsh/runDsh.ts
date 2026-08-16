@@ -113,6 +113,7 @@ export async function runDsh(opts: {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     const hostRef: { current: DshHostHandle | null } = { current: null };
+    let stoppingHost = false;
     const bridgeAbort = new AbortController();
     // Fork-at-message anchors: HAPI user-message localIds are matched to
     // their native user/message event seqs (FIFO — the DSH host claims queued
@@ -173,6 +174,16 @@ export async function runDsh(opts: {
             logTag: 'dsh'
         });
         hostRef.current = host;
+        // Unexpected host death (crash, OOM kill, manual kill) must end the
+        // session instead of leaving an active zombie behind the reconnect
+        // loop. Our own graceful stop sets stoppingHost first.
+        host.process.once('exit', (code) => {
+            if (stoppingHost) return;
+            logger.debug(`[dsh] host exited unexpectedly (code=${code}); ending session`);
+            bridgeAbort.abort();
+            lifecycle.markCrash(new Error(`DSH host exited unexpectedly (code=${code})`));
+            void lifecycle.cleanupAndExit(1);
+        });
 
         const client = DshClient.connect(host.baseUrl);
 

@@ -101,7 +101,7 @@ export class DshEventBridge {
         const anchor = this.lastForwardedSeq
         const collected: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
         let beforeSeq: number | undefined
-        for (let page = 0; page < 10; page += 1) {
+        while (true) {
             let events: Array<import('@deepseek-ai/dsh-session/types').SessionEvent>
             let hasMore = false
             try {
