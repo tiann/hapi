@@ -965,6 +965,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = makeClient() as unknown as ApiSessionClient & {
             sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
         };
         const session = new CursorSession({
             api: {} as never,
@@ -990,6 +991,12 @@ describe('cursorAcpRemoteLauncher', () => {
             type: 'error',
             message: expect.stringContaining('not retried')
         }));
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
     });
 
     it('removes the Cursor MCP overlay even when backend.disconnect rejects', async () => {

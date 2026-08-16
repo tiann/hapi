@@ -766,6 +766,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
                     if (this.attemptProducedToolActivity) {
                         this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
+                        const failure = settleFailure(
+                            this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
+                        );
+                        this.pendingStderrFailure = null;
+                        this.pendingTextFailure = null;
+                        if (failure) this.recordModelError(failure);
                         break;
                     }
                     if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
