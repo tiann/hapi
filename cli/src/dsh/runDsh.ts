@@ -303,6 +303,16 @@ export async function runDsh(opts: {
         // its pending localId (that would corrupt fork/rewind anchors).
         let bridgeReadyResolve: (() => void) | undefined
         const bridgeReady = new Promise<void>((resolve) => { bridgeReadyResolve = resolve })
+        const initialChildCursors = (() => {
+            const meta = session.getMetadata()
+            const stored = meta && typeof meta === 'object'
+                ? (meta as { dshChildCursors?: Record<string, number> }).dshChildCursors
+                : null
+            return stored && typeof stored === 'object' ? stored : undefined
+        })()
+        // Latest child seq per child id, merged into metadata on cursor flush
+        // so subagent journals survive CLI restarts without replay.
+        const childCursorByChild = new Map<string, number>()
         const bridge = new DshEventBridge({
             client,
             dshSessionId: created.sessionId,
@@ -311,6 +321,10 @@ export async function runDsh(opts: {
             ...(typeof session.getMetadata()?.dshEventCursor === 'number'
                 ? { initialCursor: session.getMetadata()!.dshEventCursor }
                 : {}),
+            ...(initialChildCursors ? { initialChildCursors } : {}),
+            onChildCursor: (childSessionId, seq) => {
+                childCursorByChild.set(childSessionId, seq)
+            },
             onMessage: (message: DshProjectedMessage, source: 'live' | 'backfill') => {
                 // Only LIVE root-session user messages anchor fork/rewind
                 // boundaries. Backfill replays historical events (their HAPI
@@ -421,6 +435,17 @@ export async function runDsh(opts: {
                 );
             } catch (error) {
                 logger.debug(`[dsh] fork cursor probe failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            // A transient probe failure must not replay the already-copied
+            // prefix: fall back to the fork point (atSeq) — or the latest
+            // persisted root cursor for fork-current — so the child bridge
+            // never re-persists rows the hub already hydrated.
+            if (nativeCursor < 0) {
+                const fallback = atSeq
+                    ?? session.getMetadata()?.dshEventCursor
+                    ?? -1;
+                nativeCursor = fallback;
+                logger.debug(`[dsh] fork cursor fallback to ${nativeCursor}`);
             }
             return { nativeSessionId: result.sessionId, forkSession: false as const, nativeCursor };
         });
@@ -565,7 +590,8 @@ export async function runDsh(opts: {
                 const result = await client.prompt({
                     sessionId: created.sessionId,
                     mode: 'queue',
-                    content
+                    content,
+                    rpcId: promptRpcId
                 });
                 return result;
             }).then(() => {

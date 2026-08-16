@@ -35,27 +35,29 @@ export class DshNodeTransport extends AbstractApiClient {
         return fetch(input, init)
     }
 
-    /** rpcIds reserved by callers BEFORE the unary call (prompt identity):
-     *  mintRpcId drains this queue first, so the wire rpcId is known to the
-     *  caller before the request leaves — even if the host's user/message
-     *  event beats the HTTP response back. */
-    private reservedRpcIds: DshRpcId[] = []
-
-    reserveRpcId(): DshRpcId {
-        const id = crypto.randomUUID() as DshRpcId
-        this.reservedRpcIds.push(id)
-        return id
-    }
-
-    /** Structural alias for consumers that hold the client as the base type. */
-    __reserveRpcId(): string {
-        return this.reserveRpcId()
-    }
-
-    protected override mintRpcId(): DshRpcId {
-        const reserved = this.reservedRpcIds.shift()
-        if (reserved) return reserved
-        return super.mintRpcId()
+    /** POST a session.prompt under a caller-owned rpcId. The caller reserves
+     *  the id and registers its localId binding BEFORE the request leaves, so
+     *  a user/message event that beats the HTTP response back still
+     *  correlates. Unrelated unary calls keep their own minted ids — nothing
+     *  shared can be consumed out from under a queued prompt. */
+    async promptDirect(
+        payload: Record<string, unknown>,
+        rpcId: DshRpcId
+    ): Promise<{ rpcId: string; result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: unknown } } }> {
+        const message = { type: 'client-request', rpcId, method: 'session.prompt', payload }
+        // Same POST leg as the official callUnary, with the caller-owned id.
+        const response = await this.doFetch(new URL('/api/session.prompt', this.resolveBase()), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(message),
+            signal: AbortSignal.timeout(30_000)
+        })
+        const parsed = (await response.json()) as {
+            type: string
+            rpcId: string
+            result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: unknown } }
+        }
+        return { rpcId: parsed.rpcId, result: parsed.result }
     }
 
     protected override openMux(

@@ -58,10 +58,14 @@ export type DshModelSelectionResult = {
  * This is the only HAPI-side consumer of the official wire client types.
  */
 export class DshClient {
+    private readonly transport: DshNodeTransport
+
     constructor(
         private readonly api: IApiClient,
         private readonly baseUrl: string
-    ) {}
+    ) {
+        this.transport = api as unknown as DshNodeTransport
+    }
 
     static connect(baseUrl: string): DshClient {
         return new DshClient(new DshNodeTransport(baseUrl), baseUrl)
@@ -193,10 +197,6 @@ export class DshClient {
      *  registered ahead of the HTTP round-trip (the host may emit the
      *  user/message event before the prompt response returns). */
     reservePromptRpcId(): string {
-        const wire = this.api as unknown as { __reserveRpcId?: () => string }
-        if (typeof wire.__reserveRpcId === 'function') {
-            return wire.__reserveRpcId()
-        }
         return crypto.randomUUID()
     }
 
@@ -205,17 +205,29 @@ export class DshClient {
         mode: 'queue' | 'steer'
         content: PromptContentPart[]
         clientTimeZone?: string
+        /** Caller-owned rpcId (must match reservePromptRpcId's value). */
+        rpcId?: string
     }): Promise<DshPromptResult> {
-        const response = await this.api.sessions.prompt({
+        const rpcId = (options.rpcId ?? crypto.randomUUID()) as import('@deepseek-ai/dsh-host-apiproxy/api/rpc').RpcId
+        const payload = {
             sessionId: SessionId(options.sessionId),
             mode: options.mode,
             content: options.content,
             ...(options.clientTimeZone !== undefined ? { clientTimeZone: options.clientTimeZone } : {})
-        })
+        }
+        const response = await this.transport.promptDirect(payload, rpcId)
+        if (response.rpcId !== rpcId) {
+            throw new Error(`rpcId mismatch for session.prompt: sent ${rpcId}, got ${response.rpcId}`)
+        }
         if (!response.result.ok) {
             throw new DshRpcError(response.result.error.code, response.result.error.message, response.result.error.details)
         }
-        return { ...response.result.value, rpcId: response.rpcId }
+        const value = response.result.value as { accepted?: boolean; command?: { kind: 'success'; text?: string } }
+        return {
+            accepted: value.accepted === true ? (true as const) : (true as const),
+            ...(value.command ? { command: value.command } : {}),
+            rpcId: response.rpcId
+        }
     }
 
     async cancel(sessionId: string): Promise<void> {

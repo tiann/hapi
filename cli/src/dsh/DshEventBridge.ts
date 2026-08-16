@@ -24,6 +24,11 @@ export type DshEventBridgeOptions = {
      *  completed (root subscribed + gap released). Session orchestration uses
      *  this to gate session-ready and prompt dispatch. */
     onReady?: () => void
+    /** Persisted per-child cursor map (survives CLI restarts so subagent
+     *  journals are never replayed into a fresh HAPI row). */
+    initialChildCursors?: Record<string, number>
+    /** Forwarded native seq for one child session (durable journal cursor). */
+    onChildCursor?: (childSessionId: string, seq: number) => void
     /** Forward a state snapshot message (dsh_state). */
     onStateSnapshot: (snapshot: DshStateSnapshot) => void
     /** Register a pending approval in HAPI agentState.requests. */
@@ -168,6 +173,9 @@ export class DshEventBridge {
         this.logTag = options.logTag ?? 'dsh'
         this.lastForwardedSeq = options.initialCursor ?? -1
         this.initialRootEvents = []
+        for (const [childId, seq] of Object.entries(options.initialChildCursors ?? {})) {
+            this.childLastSeq.set(childId, seq)
+        }
     }
 
     /** Root session/event frames arriving while the initial history backfill
@@ -393,6 +401,11 @@ export class DshEventBridge {
 
     private subagentIds = new Set<string>()
     private projectionsSeeded = false
+    /** Highest seq ever emitted in a dsh_state snapshot: the web compares
+     *  whole snapshots, so a bootstrap projection carrying an older asOfSeq
+     *  must never regress the overall sequence (its per-key content is
+     *  already guarded by projectionSeqByKey). */
+    private lastStateSeq = 0
 
     private emitSubagentCount(seq: number): void {
         this.emitState({ seq, subagentCount: this.subagentIds.size })
@@ -472,6 +485,7 @@ export class DshEventBridge {
         const seenChildSeq = this.childLastSeq.get(sessionId) ?? -1
         if (event.seq <= seenChildSeq) return
         this.childLastSeq.set(sessionId, event.seq)
+        this.options.onChildCursor?.(sessionId, event.seq)
         let child = this.childProjectors.get(sessionId)
         if (!child) {
             child = new DshProjector(sessionId)
@@ -531,7 +545,10 @@ export class DshEventBridge {
                         continue
                     }
                     logger.debug(`[${this.logTag}] subagent backfill failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`)
-                    break
+                    // Keep the live buffer sealed and leave the cursor
+                    // untouched: the next reconnect retries the gap instead
+                    // of permanently skipping it.
+                    return
                 }
                 collected.push(...events)
                 const reachedAnchor = events.some((event) => event.seq <= anchor)
@@ -612,7 +629,13 @@ export class DshEventBridge {
     }
 
     private emitState(patch: Partial<DshStateSnapshot>): void {
-        const snapshot = this.projector.foldState(patch)
+        if (typeof patch.seq === 'number' && patch.seq > this.lastStateSeq) {
+            this.lastStateSeq = patch.seq
+        }
+        const snapshot = this.projector.foldState({
+            ...patch,
+            ...(typeof patch.seq === 'number' ? { seq: this.lastStateSeq } : {})
+        })
         this.options.onStateSnapshot(snapshot)
     }
 
