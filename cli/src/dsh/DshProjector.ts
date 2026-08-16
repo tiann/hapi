@@ -83,41 +83,30 @@ export class DshProjector {
                 const { turn, step, message, usage } = event.data
                 const state = this.stepState(turn, step)
                 state.finished = true
-                // Text/reasoning finals are emitted per block when their
-                // block-end chunks arrive (same ids as the live snapshots).
-                // Re-emitting the same content under a different id would
-                // render a second copy. Fall back to a full emit only when
-                // some block finals are still missing (no block-end seen).
-                const textBlocks = message.content
-                    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-                    .map((block) => block.text)
-                const textMissing = textBlocks.length !== state.finalizedTexts.length
-                    || textBlocks.some((text, index) => text !== state.finalizedTexts[index])
-                if (textMissing && textBlocks.length > 0) {
-                    out.push({
-                        type: 'text',
-                        text: textBlocks.join('\n\n'),
-                        id: `dsh-${this.dshSessionId.slice(0, 8)}-t${turn}-s${step}-final`,
-                        streamSnapshot: true,
-                        dshSeq: event.seq,
-                        dshMessageId: message.id
-                    })
-                }
-                const reasoningBlocks = message.content
-                    .filter((block): block is { type: 'reasoning'; text: string } => block.type === 'reasoning')
-                    .map((block) => block.text)
-                    .filter((text) => text.length > 0)
-                const reasoningMissing = reasoningBlocks.length !== state.finalizedReasonings.length
-                    || reasoningBlocks.some((text, index) => text !== state.finalizedReasonings[index])
-                if (reasoningMissing && reasoningBlocks.length > 0) {
-                    out.push({
-                        type: 'reasoning',
-                        text: reasoningBlocks.join('\n'),
-                        id: `dsh-${this.dshSessionId.slice(0, 8)}-t${turn}-s${step}-reasoning-final`,
-                        streamSnapshot: true,
-                        dshSeq: event.seq
-                    })
-                }
+                // Emit each block with the SAME stream id the chunk stream used
+                // (blockId per block index), so the reducer merges instead of
+                // duplicating. block-end already emitted live finals with these
+                // ids; re-emitting the settled value replaces them in place.
+                message.content.forEach((block, index) => {
+                    if (block.type === 'text' && block.text.length > 0) {
+                        out.push({
+                            type: 'text',
+                            text: block.text,
+                            id: this.blockId(turn, step, index, 'text'),
+                            streamSnapshot: true,
+                            dshSeq: event.seq,
+                            dshMessageId: message.id
+                        })
+                    } else if (block.type === 'reasoning' && block.text.length > 0) {
+                        out.push({
+                            type: 'reasoning',
+                            text: block.text,
+                            id: this.blockId(turn, step, index, 'reasoning'),
+                            streamSnapshot: true,
+                            dshSeq: event.seq
+                        })
+                    }
+                })
                 if (usage) {
                     this.emitUsage(usage, out, event.seq)
                 }

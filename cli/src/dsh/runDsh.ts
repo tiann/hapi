@@ -3,6 +3,9 @@ import { logger } from '@/ui/logger'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
+import { readBoundedAttachmentFile } from '@/modules/common/attachmentFile'
+import type { PromptContentPart } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import type { DshProjectedMessage } from '@/agent/types'
 import type { DshStateSnapshot } from '@hapi/protocol'
@@ -17,6 +20,38 @@ import { DSH_RUNTIME_VERSION, type DshHostHandle } from './types'
 import type { AgentState } from '@/api/types'
 
 const CURSOR_FLUSH_MS = 1_000
+
+/**
+ * Build the official prompt content from the standard HAPI message: text
+ * plus image attachments as base64 image parts (non-image attachments are
+ * referenced by path like the other agents do).
+ */
+async function prepareDshPromptContent(
+    text: string,
+    attachments: Array<{ id: string; filename: string; mimeType: string; size: number; path: string; previewUrl?: string }> | undefined
+): Promise<PromptContentPart[]> {
+    const parts: PromptContentPart[] = []
+    let body = text
+    for (const attachment of attachments ?? []) {
+        if (attachment.mimeType.toLowerCase().startsWith('image/')) {
+            try {
+                const buffer = await readBoundedAttachmentFile(attachment.path)
+                parts.push({
+                    type: 'image',
+                    mediaType: attachment.mimeType as ImageMediaType,
+                    data: buffer.toString('base64'),
+                    ...(attachment.filename ? { name: attachment.filename } : {})
+                })
+            } catch (error) {
+                body += `\n[Failed to read image attachment: ${attachment.filename}]`
+                logger.debug(`[dsh] image attachment read failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+        } else {
+            body += `\n[Attached file: ${attachment.path}]`
+        }
+    }
+    return [{ type: 'text', text: body }, ...parts]
+}
 
 export async function runDsh(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -165,6 +200,9 @@ export async function runDsh(opts: {
                 }
             }
         }));
+        // Fork children wait for session-ready before reporting success, so
+        // the hub can verify the child actually resumed the forked native id.
+        session.emitSessionReady();
 
         const projector = new DshProjector(created.sessionId);
         let pendingCursorFlush: ReturnType<typeof setTimeout> | null = null;
@@ -372,11 +410,14 @@ export async function runDsh(opts: {
             if (localId) {
                 pendingUserLocalIds.push(localId);
             }
-            void client.prompt({
-                sessionId: created.sessionId,
-                mode: 'queue',
-                content: [{ type: 'text', text }]
-            }).then(() => {
+            void (async () => {
+                const content = await prepareDshPromptContent(text, message.content.attachments);
+                return await client.prompt({
+                    sessionId: created.sessionId,
+                    mode: 'queue',
+                    content
+                });
+            })().then(() => {
                 // The DSH host owns the queue from here; mark the HAPI message
                 // invoked so the standard queued-messages bar stays empty (the
                 // dsh_state queue panel is the authoritative DSH queue view).
@@ -385,6 +426,14 @@ export async function runDsh(opts: {
                 }
             }).catch((error) => {
                 logger.debug(`[dsh] prompt failed: ${error instanceof Error ? error.message : String(error)}`);
+                // Do not let a rejected prompt corrupt the localId→seq FIFO
+                // mapping used by fork/rewind anchors.
+                if (localId) {
+                    const index = pendingUserLocalIds.indexOf(localId);
+                    if (index >= 0) {
+                        pendingUserLocalIds.splice(index, 1);
+                    }
+                }
                 session.sendAgentMessage({
                     type: 'error',
                     message: `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`

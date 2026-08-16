@@ -64,12 +64,50 @@ export class DshEventBridge {
     }
 
     async start(signal: AbortSignal): Promise<void> {
-        const mux = this.options.client.muxStream(signal)
-        const host = this.options.client.hostStream(signal)
-        await Promise.all([
-            this.pumpMux(mux, signal),
-            this.pumpHost(host, signal)
-        ])
+        // Reconnect loop: either stream closing ends the generation; before
+        // the next one, backfill the gap since the last forwarded seq so no
+        // native event is lost, then re-open both streams.
+        while (!signal.aborted) {
+            const mux = this.options.client.muxStream(signal)
+            const host = this.options.client.hostStream(signal)
+            await Promise.all([
+                this.pumpMux(mux, signal),
+                this.pumpHost(host, signal)
+            ])
+            if (signal.aborted) break
+            logger.debug(`[${this.logTag}] streams closed; backfilling after seq ${this.lastForwardedSeq}`)
+            await this.backfillAfterCursor()
+        }
+    }
+
+    /** Highest native seq already forwarded (dedupe + gap-fill anchor). */
+    private lastForwardedSeq = -1
+
+    /** Replay native events after the last forwarded seq from session.history. */
+    private async backfillAfterCursor(): Promise<void> {
+        let beforeSeq: number | undefined
+        for (let page = 0; page < 10; page += 1) {
+            try {
+                const pageResult = await this.options.client.sessionHistory({
+                    sessionId: this.options.dshSessionId,
+                    ...(beforeSeq !== undefined ? { beforeSeq } : {}),
+                    maxMessages: 200
+                })
+                const pending = pageResult.events
+                    .map((entry) => entry.event)
+                    .filter((event) => event.seq > this.lastForwardedSeq)
+                    .sort((a, b) => a.seq - b.seq)
+                for (const event of pending) {
+                    if (event.seq <= this.lastForwardedSeq) continue
+                    this.handleSessionEvent(this.options.dshSessionId, event)
+                }
+                if (!pageResult.hasMore || pending.length === 0) return
+                beforeSeq = pending[0].seq
+            } catch (error) {
+                logger.debug(`[${this.logTag}] backfill page failed: ${error instanceof Error ? error.message : String(error)}`)
+                return
+            }
+        }
     }
 
     /** Seed foldable projections from the history tail's projections block. */
@@ -277,6 +315,8 @@ export class DshEventBridge {
 
     private handleSessionEvent(sessionId: string, event: SessionEvent): void {
         if (sessionId === this.options.dshSessionId) {
+            if (event.seq <= this.lastForwardedSeq) return
+            this.lastForwardedSeq = event.seq
             this.projector.markSeq(event.seq)
             for (const message of this.projector.onEvent(event)) {
                 this.options.onMessage(message)

@@ -165,8 +165,12 @@ describe('DshProjector', () => {
             },
             usage: { inputTokens: 1, outputTokens: 1 }
         }))
-        // No second text copy — only usage + the native journal entry.
-        expect(settled.filter((m) => m.type === 'text')).toHaveLength(0)
+        // The settled emit reuses the SAME stream id as the live/block-end
+        // copies (dsh-…-text-0), so the reducer merges instead of rendering a
+        // second copy; usage + native journal still arrive.
+        const settledTexts = settled.filter((m) => m.type === 'text')
+        expect(settledTexts).toHaveLength(1)
+        expect(settledTexts[0].id).toBe('dsh-hapi-tes-t1-s1-text-0')
         expect(settled.filter((m) => m.type === 'usage')).toHaveLength(1)
         expect(settled.filter((m) => m.type === 'dsh_native')).toHaveLength(1)
     })

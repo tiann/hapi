@@ -1554,10 +1554,10 @@ export class SyncEngine {
 
             if (flavor === 'dsh') {
                 const bound = await this.waitForExactNativeForkBound(
-                    childId, rpcResult.nativeSessionId, 'dshSessionId', false
+                    childId, rpcResult.nativeSessionId, 'dshSessionId', true
                 )
                 if (!bound) {
-                    throw new Error('DSH fork could not load the forked native session')
+                    throw new Error('DSH fork could not load the exact native session before ready')
                 }
             }
 

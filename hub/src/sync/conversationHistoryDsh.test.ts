@@ -61,7 +61,7 @@ describe('DSH conversation-history hub integration', () => {
                 conversationHistoryPoints: { local1: true, local2: true },
                 conversationHistoryIndexes: { local1: 7, local2: 15 },
             })
-            expect(exactBinds).toEqual([[result.sessionId, 'dsh-clone-native', 'dshSessionId', false]])
+            expect(exactBinds).toEqual([[result.sessionId, 'dsh-clone-native', 'dshSessionId', true]])
             expect(spawnArgs[2]).toBe('dsh')
             // Child reuses the fork native id as the resume target.
             expect(spawnArgs[8]).toBe('dsh-clone-native')
