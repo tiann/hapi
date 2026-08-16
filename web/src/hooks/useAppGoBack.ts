@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { useLocation, useNavigate, useRouter } from '@tanstack/react-router'
+import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 
 export function getSettingsBackTarget(pathname: string): string | null {
     if (pathname === '/settings') return '/sessions'
@@ -32,7 +33,10 @@ export function useAppGoBack(): () => void {
     return useCallback(() => {
         // Use explicit path navigation for consistent behavior across all environments
         if (pathname === '/sessions/new') {
-            navigate({ to: '/sessions' })
+            navigate({
+                to: '/sessions',
+                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+            })
             return
         }
 
@@ -50,19 +54,29 @@ export function useAppGoBack(): () => void {
                 ? (search as { origin?: unknown }).origin
                 : undefined
             if (origin === 'chat') {
-                navigate({ to: pathname.replace(/\/file$/, '') })
+                navigate({
+                    to: pathname.replace(/\/file$/, ''),
+                    ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+                })
                 return
             }
 
             const filesPath = pathname.replace(/\/file$/, '/files')
-            navigate({ to: filesPath, search: getSessionFilesBackSearch(search) })
+            navigate({
+                to: filesPath,
+                search: getSessionFilesBackSearch(search),
+                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+            })
             return
         }
 
         // For session routes, navigate to parent path
         if (pathname.startsWith('/sessions/')) {
             const parentPath = pathname.replace(/\/[^/]+$/, '') || '/sessions'
-            navigate({ to: parentPath })
+            navigate({
+                to: parentPath,
+                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+            })
             return
         }
 

@@ -47,6 +47,7 @@ import type {
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
     OpencodeReasoningEffortResponse,
+    PiModelsResponse,
     QueuedStateResponse,
     ReopenSessionResponse,
     SqliteStorageUsageResponse,
@@ -835,6 +836,12 @@ export class ApiClient {
     async getMachineAgyModels(machineId: string): Promise<AgyModelsResponse> {
         return await this.request<AgyModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/agy-models`
+        )
+    }
+
+    async getMachinePiModels(machineId: string): Promise<PiModelsResponse> {
+        return await this.request<PiModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/pi-models`
         )
     }
 

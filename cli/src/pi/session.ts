@@ -47,6 +47,14 @@ export class PiSession {
     // Startup model from opts.model — prevents get_state from overwriting it
     // with Pi's default. Applied once when get_available_models returns.
     readonly initialModel: string | null;
+    /**
+     * Settles once the startup model attempt has finished (applied, rejected,
+     * or absent). Startup effort waits on it so set_thinking_level never races
+     * ahead of set_model — a level the default model rejects would otherwise
+     * be lost before the requested model is confirmed.
+     */
+    readonly startupModelSettled: Promise<void>;
+    resolveStartupModelSettled: (() => void) | null = null;
     // A runner/native resume must prove that Pi loaded this exact session with
     // a non-empty get_state sessionId. Missing or contradictory IDs fail closed.
     expectedNativeSessionId: string | null;
@@ -118,6 +126,14 @@ export class PiSession {
         // resume before Pi reports its real state.
         this.currentModel = undefined;
         this.initialModel = opts.model?.trim() || null;
+        this.startupModelSettled = new Promise<void>((resolve) => {
+            this.resolveStartupModelSettled = resolve;
+        });
+        // No requested startup model → nothing to serialize; release waiters
+        // immediately so the effort path keeps its current timing.
+        if (!this.initialModel) {
+            this.resolveStartupModelSettled?.();
+        }
         this.expectedNativeSessionId = opts.expectedNativeSessionId?.trim() || null;
         this.currentThinkingLevel = undefined;
     }

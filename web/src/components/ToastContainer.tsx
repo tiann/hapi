@@ -1,4 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
+import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { Toast } from '@/components/ui/Toast'
 import { useToast } from '@/lib/toast-context'
 
@@ -26,7 +27,8 @@ export function ToastContainer() {
                         if (toast.sessionId) {
                             void navigate({
                                 to: '/sessions/$sessionId',
-                                params: { sessionId: toast.sessionId }
+                                params: { sessionId: toast.sessionId },
+                                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
                             })
                             return
                         }

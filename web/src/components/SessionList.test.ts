@@ -403,6 +403,23 @@ describe('session list search helpers', () => {
         expect(sessionMatchesQuery(session, normalizeSearch('sidebar-search'), 'desktop')).toBe(true)
         expect(sessionMatchesQuery(session, normalizeSearch('hapi-worktrees'), 'desktop')).toBe(true)
     })
+
+    it('supports complete wildcard patterns without changing plain text matching', () => {
+        const session = makeSession({
+            id: 'session-123',
+            metadata: {
+                path: '/work/hapi',
+                name: 'Fix Bot Review',
+                flavor: 'codex'
+            }
+        })
+
+        expect(sessionMatchesQuery(session, normalizeSearch('*bot*'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('Fix*Review'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('session-???'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('bot*review'), 'desktop')).toBe(false)
+        expect(sessionMatchesQuery(session, normalizeSearch('bot review'), 'desktop')).toBe(true)
+    })
 })
 
 describe('session list time filter helpers', () => {

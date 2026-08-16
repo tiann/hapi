@@ -1454,9 +1454,15 @@ export async function runPi(opts: {
         // default (already reported by get_state). Detached so the run loop is
         // not blocked; sent after get_state so the authoritative baseline lands
         // first and a late get_state response does not clobber the confirmed
-        // value (get_state runs on the wire before this await resolves).
+        // value (get_state runs on the wire before this await resolves). When a
+        // startup model is also requested, wait for it to settle first so
+        // set_thinking_level cannot be rejected against Pi's default model
+        // before set_model confirms the requested one.
         if (startupThinkingLevel) {
             void (async () => {
+                if (opts.model) {
+                    await piSession.startupModelSettled;
+                }
                 try {
                     await piSession.runRuntimeMutation(async () => {
                         await sendPiRpcAndWait(piSession, transport, {

@@ -64,6 +64,11 @@
       "default": true,
       "description": "Enable ServerChan notifications. ENV: SERVERCHAN_NOTIFICATION"
     },
+    "serverChanBackgroundOnly": {
+      "type": "boolean",
+      "default": false,
+      "description": "Only send ServerChan notifications when no visible HAPI connection exists in the namespace. ENV: SERVERCHAN_BACKGROUND_ONLY"
+    },
     "relayAuthKey": {
       "type": "string",
       "description": "Per-hub relay auth key issued by the relay server. Auto-obtained if not set. ENV: HAPI_RELAY_AUTH"

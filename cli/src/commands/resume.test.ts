@@ -120,7 +120,37 @@ describe('resumeCommand', () => {
         })
     })
 
-    it('resumes an AGY target in PTY mode instead of falling through to Cursor', async () => {
+    it('rejects resuming an active AGY session (turn could start before handoff)', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-agy',
+            flavor: 'agy',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'agy-brain-1',
+            model: 'gemini-3.1-pro',
+            permissionMode: 'default'
+        })
+
+        try {
+            await expect(resumeCommand.run(createContext(['hapi-session-agy']))).rejects.toThrow('process.exit:1')
+            expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+            expect(runAgyMock).not.toHaveBeenCalled()
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('is active'))
+        } finally {
+            consoleErrorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
+    })
+
+    it('resumes an AGY target in remote mode instead of falling through to Cursor', async () => {
         getLocalResumeTargetMock.mockResolvedValue({
             sessionId: 'hapi-session-agy',
             flavor: 'agy',
@@ -144,7 +174,7 @@ describe('resumeCommand', () => {
             resumeSessionId: 'agy-brain-1',
             startedBy: 'terminal',
             permissionMode: 'default',
-            startingMode: 'pty',
+            startingMode: 'remote',
             model: 'gemini-3.1-pro',
             effort: 'high'
         })

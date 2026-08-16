@@ -114,6 +114,8 @@ export interface CursorLegacyMigratorDeps {
      * Codex review #34 P2 v8.
      */
     checkpointLegacyStore?: (storeDbPath: string) => void
+    /** Remove the legacy store.db. Override in tests to exercise cleanup failure paths. */
+    removeSourceFile?: (storeDbPath: string) => void
     /** Where to allocate the verify staging temp dir. Default: os.tmpdir(). */
     tmpDir?: () => string
     /** Time source for telemetry. Default: Date.now. */
@@ -474,7 +476,7 @@ export function preflightSession(session: Session | undefined, now: () => number
 
 export class CursorLegacyMigrator {
     private readonly opts: Required<Pick<CursorLegacyMigratorOptions, 'lockReleaseTimeoutMs' | 'verifyTimeoutMs' | 'verifyPromptText'>>
-    private readonly deps: Required<Pick<CursorLegacyMigratorDeps, 'homeDir' | 'hostName' | 'createProbe' | 'tmpDir' | 'now' | 'awaitLockRelease' | 'isAgentAcpTransportActive' | 'getCurrentSession' | 'logger' | 'acquireAcpActiveLock' | 'checkpointLegacyStore'>>
+    private readonly deps: Required<Pick<CursorLegacyMigratorDeps, 'homeDir' | 'hostName' | 'createProbe' | 'tmpDir' | 'now' | 'awaitLockRelease' | 'isAgentAcpTransportActive' | 'getCurrentSession' | 'logger' | 'acquireAcpActiveLock' | 'checkpointLegacyStore' | 'removeSourceFile'>>
         & Pick<CursorLegacyMigratorDeps, 'archiveSession' | 'updateSessionAfterMigrate' | 'getHapiMessageCount'>
 
     constructor(opts: CursorLegacyMigratorOptions, deps: CursorLegacyMigratorDeps) {
@@ -508,6 +510,7 @@ export class CursorLegacyMigrator {
             // behavior can inject `() => tryAcquireAcpActiveLock(home)`.
             acquireAcpActiveLock: deps.acquireAcpActiveLock ?? (() => ({ release() {} })),
             checkpointLegacyStore: deps.checkpointLegacyStore ?? defaultCheckpointLegacyStore,
+            removeSourceFile: deps.removeSourceFile ?? ((storeDbPath) => rmSync(storeDbPath, { force: true })),
             tmpDir: deps.tmpDir ?? (() => tmpdir()),
             now: deps.now ?? (() => Date.now()),
             awaitLockRelease: deps.awaitLockRelease ?? defaultAwaitLockRelease,
@@ -986,27 +989,12 @@ export class CursorLegacyMigrator {
             return refusal(session.id, 'metadata_write_failed', `hapi.db write failed: ${updateResult.reason}`, start, this.deps.now)
         }
 
-        // Remove source unless --keep-source. The rm is the LAST step; if it
-        // fails, the migration is still considered successful because the ACP
-        // target is intact and metadata is flipped.
-        let sourceRemoved = false
-        if (!opts.keepSource) {
-            try {
-                rmSync(legacy.storeDbPath, { force: true })
-                // Also drop SQLite sidecars if present (WAL + SHM).
-                tryRm(`${legacy.storeDbPath}-wal`)
-                tryRm(`${legacy.storeDbPath}-shm`)
-                // ONLY rmdir the parent if empty. We never recursively delete
-                // unknown files - a future cursor-agent version that drops
-                // additional artifacts in the chat dir would otherwise see
-                // them silently destroyed.
-                try { rmdirSync(dirname(legacy.storeDbPath)) } catch {}
-                sourceRemoved = true
-                log.info('[migrator] removed legacy source', { sessionId: session.id, path: legacy.storeDbPath })
-            } catch (err) {
-                log.warn('[migrator] legacy source rm failed (target intact, treating as success)', { sessionId: session.id, error: err instanceof Error ? err.message : String(err) })
-            }
-        }
+        // Remove source unless --keep-source. The cleanup is the LAST step;
+        // if it ultimately fails, the migration is still considered
+        // successful because the ACP target is intact and metadata is flipped.
+        const sourceRemoved = opts.keepSource
+            ? false
+            : await removeLegacySource(legacy.storeDbPath, session.id, log, this.deps.removeSourceFile)
 
         // tiann/hapi#872: diagnostic log on every successful transplant.
         // Uses pre-rm snapshots captured at discovery time so the count
@@ -1215,6 +1203,63 @@ function tryRm(path: string): void {
     } catch {
         // best-effort; caller logs
     }
+}
+
+const WINDOWS_SOURCE_CLEANUP_RETRY_DELAYS_MS = [0, 50, 250] as const
+
+function isRetryableWindowsSourceCleanupError(error: unknown): boolean {
+    if (process.platform !== 'win32') return false
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    return code === 'EBUSY' || code === 'EPERM'
+}
+
+function collectWindowsSqliteGarbage(): void {
+    if (process.platform !== 'win32') return
+    // Bun's sqlite3_close_v2 can leave unreachable prepared statements holding
+    // Windows file handles until the next GC cycle. This mirrors Store.close()
+    // and must happen before the legacy source removal attempt.
+    try { Bun.gc(true) } catch {}
+}
+
+async function removeLegacySource(
+    storeDbPath: string,
+    sessionId: string,
+    log: NonNullable<CursorLegacyMigratorDeps['logger']>,
+    removeSourceFile: (storeDbPath: string) => void
+): Promise<boolean> {
+    const delays = process.platform === 'win32'
+        ? WINDOWS_SOURCE_CLEANUP_RETRY_DELAYS_MS
+        : [0] as const
+    let lastError: unknown = null
+
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        const delayMs = delays[attempt]
+        if (delayMs > 0) await sleep(delayMs)
+        collectWindowsSqliteGarbage()
+
+        try {
+            removeSourceFile(storeDbPath)
+            // Also drop SQLite sidecars if present (WAL + SHM).
+            tryRm(`${storeDbPath}-wal`)
+            tryRm(`${storeDbPath}-shm`)
+            // ONLY rmdir the parent if empty. We never recursively delete
+            // unknown files - a future cursor-agent version that drops
+            // additional artifacts in the chat dir would otherwise see
+            // them silently destroyed.
+            try { rmdirSync(dirname(storeDbPath)) } catch {}
+            log.info('[migrator] removed legacy source', { sessionId, path: storeDbPath, attempts: attempt + 1 })
+            return true
+        } catch (error) {
+            lastError = error
+            if (!isRetryableWindowsSourceCleanupError(error) || attempt === delays.length - 1) break
+        }
+    }
+
+    log.warn('[migrator] legacy source rm failed (target intact, treating as success)', {
+        sessionId,
+        error: lastError instanceof Error ? lastError.message : String(lastError)
+    })
+    return false
 }
 
 /**

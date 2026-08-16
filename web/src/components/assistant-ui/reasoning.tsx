@@ -1,5 +1,9 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, type FC, type KeyboardEvent, type PropsWithChildren, type UIEvent } from 'react'
-import { useMessage } from '@assistant-ui/react'
+import {
+    useAuiState,
+    type ReasoningGroupProps,
+    type ReasoningMessagePartComponent,
+} from '@assistant-ui/react'
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { cn } from '@/lib/utils'
 import { useReasoningCollapse } from '@/hooks/useReasoningCollapse'
@@ -43,10 +47,32 @@ function ShimmerDot() {
     )
 }
 
-export const Reasoning: FC = () => {
+export const Reasoning: ReasoningMessagePartComponent = ({ text, status }) => {
+    const previousTextRef = useRef(text)
+    const runStartedWithRunningRef = useRef(status.type === 'running')
+    const hasTextChangedDuringRunRef = useRef(false)
+
+    // The runtime keeps resumed reasoning history complete until a new output
+    // block exists. Once this part is actually running, preserve assistant-ui's
+    // typewriter from its first paint. A complete -> running transition with
+    // unchanged text is still treated as hydration, not new reasoning output.
+    if (status.type !== 'running') {
+        runStartedWithRunningRef.current = false
+        hasTextChangedDuringRunRef.current = false
+    } else if (
+        text !== previousTextRef.current
+    ) {
+        hasTextChangedDuringRunRef.current = true
+    }
+    const smooth = status.type === 'running'
+        && (runStartedWithRunningRef.current || hasTextChangedDuringRunRef.current)
+
+    previousTextRef.current = text
+
     return (
         <UriConfirmProvider>
             <MarkdownTextPrimitive
+                smooth={smooth}
                 remarkPlugins={MARKDOWN_PLUGINS}
                 rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
                 components={defaultComponents}
@@ -58,7 +84,15 @@ export const Reasoning: FC = () => {
     )
 }
 
-export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
+type HappyReasoningGroupProps = PropsWithChildren<
+    Partial<Pick<ReasoningGroupProps, 'startIndex' | 'endIndex'>>
+>
+
+export const ReasoningGroup: FC<HappyReasoningGroupProps> = ({
+    children,
+    startIndex = 0,
+    endIndex,
+}) => {
     const [isOpen, setIsOpen] = useState(false)
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const followLatestRef = useRef(true)
@@ -66,10 +100,10 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
     const pointerCleanupRef = useRef<(() => void) | null>(null)
     const followSyncFrameRef = useRef<number | null>(null)
 
-    const message = useMessage()
-    const isStreaming = message.status?.type === 'running'
-        && message.content.length > 0
-        && message.content[message.content.length - 1]?.type === 'reasoning'
+    const isStreaming = useAuiState((state) => {
+        const parts = state.message.parts.slice(startIndex, endIndex === undefined ? undefined : endIndex + 1)
+        return parts.some((part) => part.type === 'reasoning' && part.status.type === 'running')
+    })
     const { reasoningCollapsed } = useReasoningCollapse()
     const chatContext = useOptionalHappyChatContext()
 

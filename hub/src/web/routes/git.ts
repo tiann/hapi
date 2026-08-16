@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { isWildcardSearch, matchesSearchQuery, toSearchGlob } from '@hapi/protocol'
 import { z } from 'zod'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -235,11 +236,16 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
             : query
         const limit = parsed.data.limit ?? 200
         const args = ['--files']
-        if (normalizedQuery) {
-            args.push('--iglob', `*${normalizedQuery}*`)
+        if (normalizedQuery && !isWildcardSearch(normalizedQuery)) {
+            args.push('--iglob', toSearchGlob(normalizedQuery))
         }
 
-        const result = await runRpc(() => engine.runRipgrep(sessionResult.sessionId, args, sessionPath))
+        const result = await runRpc(() => engine.runRipgrep(
+            sessionResult.sessionId,
+            args,
+            sessionPath,
+            { query: normalizedQuery, limit }
+        ))
         if (!result.success) {
             return c.json({ success: false, error: result.error ?? 'Failed to list files' })
         }
@@ -253,6 +259,7 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
             .map((line) => line.trim())
             .filter((line) => line.length > 0)
             .map(normalizePath)
+            .filter((path) => !normalizedQuery || matchesSearchQuery(path, normalizedQuery))
             .slice(0, limit)
 
         const metadataResult = await runRpc(() => engine.statFiles(sessionResult.sessionId, paths))

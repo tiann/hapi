@@ -81,7 +81,50 @@ function normalizeModel(entry: unknown): CodexModelSummary | null {
     };
 }
 
+interface CacheEntry {
+    expiresAt: number;
+    models: CodexModelSummary[];
+}
+
+// The Codex catalog is account-scoped and changes rarely. Each uncached call
+// spawns a fresh `codex app-server` subprocess and validates the ChatGPT
+// session, which can take 2-30s when a token refresh or network round trip is
+// involved. Cache successful lists for 5 minutes (same shape as the opencode
+// model cache) and coalesce concurrent requests into a single spawn.
+const CACHE_TTL_MS = 5 * 60_000;
+const cache = new Map<boolean, CacheEntry>();
+const inflight = new Map<boolean, Promise<CodexModelSummary[]>>();
+
 export async function listCodexModels(includeHidden: boolean = false): Promise<CodexModelSummary[]> {
+    const cached = cache.get(includeHidden);
+    if (cached && cached.expiresAt > Date.now()) {
+        return cached.models;
+    }
+
+    const existing = inflight.get(includeHidden);
+    if (existing) {
+        return existing;
+    }
+
+    const promise = fetchCodexModelsFromAppServer(includeHidden)
+        .then((models) => {
+            if (models.length > 0) {
+                cache.set(includeHidden, {
+                    expiresAt: Date.now() + CACHE_TTL_MS,
+                    models
+                });
+            }
+            return models;
+        })
+        .finally(() => {
+            inflight.delete(includeHidden);
+        });
+
+    inflight.set(includeHidden, promise);
+    return promise;
+}
+
+async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<CodexModelSummary[]> {
     // Model discovery is account-scoped. Never inherit a session/runner cwd:
     // project config or a deleted worktree must not alter or break the catalog.
     const client = new CodexAppServerClient({ cwd: homedir() });
@@ -99,14 +142,20 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
         });
 
         const response = await client.listModels({ includeHidden });
-        const models = Array.isArray(response.data)
+        return Array.isArray(response.data)
             ? response.data.map(normalizeModel).filter((model): model is CodexModelSummary => model !== null)
             : [];
-
-        return models;
     } catch (error) {
         throw new Error(getErrorMessage(error, 'Failed to list Codex models'));
     } finally {
         await client.disconnect().catch(() => undefined);
     }
+}
+
+/**
+ * Clear the in-process cache and any in-flight probe. Exposed for tests.
+ */
+export function _resetCodexModelsCacheForTests(): void {
+    cache.clear();
+    inflight.clear();
 }

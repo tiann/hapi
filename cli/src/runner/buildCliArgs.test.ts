@@ -344,21 +344,22 @@ describe('buildCliArgs', () => {
             '--permission-mode', 'plan'
         ])
     })
-    it('emits --hapi-session-id for agy reopen', () => {
+    it('emits --existing-session-id for agy reopen', () => {
         const args = buildCliArgs('agy', {
             directory: '/tmp',
             existingSessionId: 'existing-hub-id',
-            startingMode: 'pty',
+            startingMode: 'remote',
         })
-        expect(args).toContain('--hapi-session-id')
-        expect(args[args.indexOf('--hapi-session-id') + 1]).toBe('existing-hub-id')
+        expect(args).toContain('--existing-session-id')
+        expect(args[args.indexOf('--existing-session-id') + 1]).toBe('existing-hub-id')
+        expect(args).not.toContain('--hapi-session-id')
     })
 
     it('does not emit --hapi-session-id for a non-pty flavor', () => {
         const args = buildCliArgs('opencode', {
             directory: '/tmp',
             existingSessionId: 'existing-hub-id',
-            startingMode: 'pty',
+            startingMode: 'remote',
         })
         expect(args).not.toContain('--hapi-session-id')
     })

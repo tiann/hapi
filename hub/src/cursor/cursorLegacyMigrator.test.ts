@@ -24,7 +24,7 @@
  *   - skipVerify path (load + prompt both skipped, no probe spawned)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -205,7 +205,7 @@ function cleanupHarness(h: Harness): void {
     try { rmSync(h.tmp, { recursive: true, force: true }) } catch {}
 }
 
-function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null, opts: { archiveSession?: (id: string) => Promise<void>; updateOverride?: (sessionId: string, namespace: string, lastUsedModel: string | null) => { ok: true } | { ok: false; reason: 'version_mismatch_or_missing' } | { ok: false; reason: 'session_active' }; isAgentAcpTransportActive?: () => { active: boolean; holderPid: number | null }; getCurrentSession?: (sessionId: string, namespace: string) => { active: boolean; lifecycleState?: string; cursorSessionProtocol?: string } | null; acquireAcpActiveLock?: () => { release(): void } | null; checkpointLegacyStore?: (storeDbPath: string) => void; getHapiMessageCount?: (sessionId: string, namespace: string) => number } = {}): CursorLegacyMigrator {
+function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null, opts: { archiveSession?: (id: string) => Promise<void>; updateOverride?: (sessionId: string, namespace: string, lastUsedModel: string | null) => { ok: true } | { ok: false; reason: 'version_mismatch_or_missing' } | { ok: false; reason: 'session_active' }; isAgentAcpTransportActive?: () => { active: boolean; holderPid: number | null }; getCurrentSession?: (sessionId: string, namespace: string) => { active: boolean; lifecycleState?: string; cursorSessionProtocol?: string } | null; acquireAcpActiveLock?: () => { release(): void } | null; checkpointLegacyStore?: (storeDbPath: string) => void; removeSourceFile?: (storeDbPath: string) => void; getHapiMessageCount?: (sessionId: string, namespace: string) => number } = {}): CursorLegacyMigrator {
     return new CursorLegacyMigrator({}, {
         homeDir: () => h.home,
         hostName: () => 'h', // matches the test sessions' metadata.host
@@ -229,6 +229,7 @@ function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null
         // implementations to simulate post-checkpoint WAL growth.
         // Codex review #34 P2 v8.
         checkpointLegacyStore: opts.checkpointLegacyStore ?? (() => {}),
+        removeSourceFile: opts.removeSourceFile,
         getCurrentSession: opts.getCurrentSession,
         logger: { debug() {}, info() {}, warn() {}, error() {} },
         archiveSession: opts.archiveSession ?? (async (id) => { h.archiveCalls.push(id) }),
@@ -238,6 +239,12 @@ function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null
         }),
         getHapiMessageCount: opts.getHapiMessageCount
     })
+}
+
+function stubPlatform(value: NodeJS.Platform): () => void {
+    const original = process.platform
+    Object.defineProperty(process, 'platform', { value, configurable: true })
+    return () => Object.defineProperty(process, 'platform', { value: original, configurable: true })
 }
 
 /* ---------- tests ---------- */
@@ -785,6 +792,78 @@ describe('CursorLegacyMigrator.migrateOne — happy path', () => {
         if (!out.ok) return
         expect(out.lastUsedModelPreserved).toBeNull()
         expect(h.updateCalls[0].lastUsedModel).toBeNull()
+    })
+
+    it('runs Windows-style source cleanup GC and retries sharing failures without rolling back ACP', async () => {
+        const cursorSessionId = 'windows-cleanup-retry-uuid'
+        const sourceStore = h.placeLegacyStore(cursorSessionId)
+        let removeCalls = 0
+        const gcSpy = spyOn(Bun, 'gc')
+        const restorePlatform = stubPlatform('win32')
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        try {
+            const migrator = makeMigrator(h, makeMockProbe(), {
+                removeSourceFile: (storeDbPath) => {
+                    removeCalls += 1
+                    if (removeCalls < 2) {
+                        const error = new Error('resource busy or locked') as NodeJS.ErrnoException
+                        error.code = 'EBUSY'
+                        throw error
+                    }
+                    rmSync(storeDbPath, { force: true })
+                }
+            })
+
+            const out = await migrator.migrateOne(session, {})
+
+            expect(out.ok).toBe(true)
+            if (!out.ok) return
+            expect(out.sourceRemoved).toBe(true)
+            expect(removeCalls).toBe(2)
+            expect(gcSpy.mock.calls.length).toBe(2)
+            expect(existsSync(sourceStore)).toBe(false)
+            expect(existsSync(join(h.acpSessionsDir, cursorSessionId, 'store.db'))).toBe(true)
+        } finally {
+            gcSpy.mockRestore()
+            restorePlatform()
+        }
+    })
+
+    it('keeps the ACP target when source cleanup ultimately fails', async () => {
+        const cursorSessionId = 'cleanup-failure-target-intact-uuid'
+        const sourceStore = h.placeLegacyStore(cursorSessionId)
+        let removeCalls = 0
+        const gcSpy = spyOn(Bun, 'gc')
+        const restorePlatform = stubPlatform('win32')
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        try {
+            const migrator = makeMigrator(h, makeMockProbe(), {
+                removeSourceFile: () => {
+                    removeCalls += 1
+                    const error = new Error('resource busy or locked') as NodeJS.ErrnoException
+                    error.code = 'EBUSY'
+                    throw error
+                }
+            })
+
+            const out = await migrator.migrateOne(session, {})
+
+            expect(out.ok).toBe(true)
+            if (!out.ok) return
+            expect(out.sourceRemoved).toBe(false)
+            expect(removeCalls).toBe(3)
+            expect(gcSpy.mock.calls.length).toBe(3)
+            expect(existsSync(sourceStore)).toBe(true)
+            expect(existsSync(join(h.acpSessionsDir, cursorSessionId, 'store.db'))).toBe(true)
+            expect(h.updateCalls).toHaveLength(1)
+        } finally {
+            gcSpy.mockRestore()
+            restorePlatform()
+        }
     })
 })
 

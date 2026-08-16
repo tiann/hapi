@@ -123,11 +123,11 @@ export const RemoteModeDisplay: React.FC<RemoteModeDisplayProps> = ({ messageBuf
                             ⏸️  Press space again to switch to local mode
                         </Text>
                     ) : (
-                        <>
-                            <Text color="green" bold>
-                                📱 Press space to switch to local mode • Ctrl-C to exit
-                            </Text>
-                        </>
+                        <Text color="green" bold>
+                            {onSwitchToLocal
+                                ? '📱 Press space to switch to local mode • Ctrl-C to exit'
+                                : '📱 Ctrl-C to exit'}
+                        </Text>
                     )}
                     {process.env.DEBUG && logPath && (
                         <Text color="gray" dimColor>

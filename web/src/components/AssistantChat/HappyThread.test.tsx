@@ -198,6 +198,48 @@ describe('ConversationOutlinePanel', () => {
         expect(onLoadMore).toHaveBeenCalledTimes(1)
     })
 
+    it('supports wildcard patterns in outline search', () => {
+        renderPanel()
+
+        const searchbox = screen.getByRole('searchbox', { name: 'Search outline items' })
+        fireEvent.change(searchbox, { target: { value: 'Implement*' } })
+
+        expect(screen.getByText('Implement the panel')).toBeInTheDocument()
+        expect(screen.queryByText('Second user prompt')).not.toBeInTheDocument()
+
+        fireEvent.change(searchbox, { target: { value: 'Second user p?????' } })
+
+        expect(screen.queryByText('Implement the panel')).not.toBeInTheDocument()
+        expect(screen.getByText('Second user prompt')).toBeInTheDocument()
+    })
+
+    it('lets the shared matcher normalize outline queries consistently', () => {
+        const toLocaleLowerCase = vi.spyOn(String.prototype, 'toLocaleLowerCase').mockImplementation(function (this: string) {
+            return this.toString() === 'I' ? 'ı' : this.toLowerCase()
+        })
+        try {
+            renderPanel({
+                items: [
+                    ...outlineItems,
+                    {
+                        id: 'outline:user-text:m3',
+                        targetMessageId: 'user-text:m3',
+                        kind: 'user',
+                        label: 'Istanbul deployment',
+                        createdAt: 3000
+                    }
+                ]
+            })
+            fireEvent.change(screen.getByRole('searchbox', { name: 'Search outline items' }), {
+                target: { value: 'I' }
+            })
+
+            expect(screen.getByText('Istanbul deployment')).toBeInTheDocument()
+        } finally {
+            toLocaleLowerCase.mockRestore()
+        }
+    })
+
     it('shows a search-specific empty state', () => {
         renderPanel()
 

@@ -4,6 +4,8 @@ export function YoloToggle(props: {
     yoloMode: boolean
     isDisabled: boolean
     onToggle: (value: boolean) => void
+    /** Native permission mode this preference maps to for the current agent. */
+    nativeHint?: string
 }) {
     const { t } = useTranslation()
 
@@ -20,6 +22,11 @@ export function YoloToggle(props: {
                     <span className="text-xs text-[var(--app-hint)]">
                         {t('newSession.yolo.desc')}
                     </span>
+                    {props.nativeHint ? (
+                        <span className="text-xs text-[var(--app-hint)]">
+                            {t('newSession.yolo.mapsTo', { mode: props.nativeHint })}
+                        </span>
+                    ) : null}
                 </div>
                 <label className="relative inline-flex h-5 w-9 items-center">
                     <input

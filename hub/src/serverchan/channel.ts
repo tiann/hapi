@@ -2,6 +2,7 @@ import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import type { VisibilityTracker } from '../visibility/visibilityTracker'
 
 function buildSessionUrl(baseUrl: string, sessionId: string): string {
     try {
@@ -15,11 +16,13 @@ function buildSessionUrl(baseUrl: string, sessionId: string): string {
 export class ServerChanChannel implements NotificationChannel {
     constructor(
         private readonly sendKey: string,
-        private readonly publicUrl: string
+        private readonly publicUrl: string,
+        private readonly visibilityTracker: VisibilityTracker | null = null,
+        private readonly backgroundOnly = false
     ) {}
 
     async sendReady(session: Session): Promise<void> {
-        if (!session.active) {
+        if (!session.active || this.shouldSuppress(session)) {
             return
         }
 
@@ -30,7 +33,7 @@ export class ServerChanChannel implements NotificationChannel {
     }
 
     async sendPermissionRequest(session: Session): Promise<void> {
-        if (!session.active) {
+        if (!session.active || this.shouldSuppress(session)) {
             return
         }
 
@@ -44,7 +47,7 @@ export class ServerChanChannel implements NotificationChannel {
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
-        if (!session.active) {
+        if (!session.active || this.shouldSuppress(session)) {
             return
         }
 
@@ -60,6 +63,10 @@ export class ServerChanChannel implements NotificationChannel {
     }
 
     async sendSessionCompletion(session: Session, _reason: SessionEndReason): Promise<void> {
+        if (this.shouldSuppress(session)) {
+            return
+        }
+
         const agentName = getAgentName(session)
         const name = getSessionName(session)
         const url = buildSessionUrl(this.publicUrl, session.id)
@@ -85,5 +92,11 @@ export class ServerChanChannel implements NotificationChannel {
             const text = await response.text().catch(() => '')
             throw new Error(`Server酱发送失败: HTTP ${response.status} ${response.statusText}${text ? ` - ${text}` : ''}`)
         }
+    }
+
+    private shouldSuppress(session: Session): boolean {
+        return this.backgroundOnly
+            && this.visibilityTracker !== null
+            && this.visibilityTracker.hasVisibleConnection(session.namespace)
     }
 }

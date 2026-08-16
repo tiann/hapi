@@ -1,13 +1,14 @@
 import { logger } from '@/ui/logger'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
-import { run as runRipgrep } from '@/modules/ripgrep/index'
+import { run as runRipgrep, runFileSearch, type FileSearchOptions } from '@/modules/ripgrep/index'
 import { validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface RipgrepRequest {
     args: string[]
     cwd?: string
+    fileSearch?: FileSearchOptions
 }
 
 interface RipgrepResponse {
@@ -30,7 +31,9 @@ export function registerRipgrepHandlers(rpcHandlerManager: RpcHandlerManager, wo
         }
 
         try {
-            const result = await runRipgrep(data.args, { cwd: data.cwd })
+            const result = data.fileSearch
+                ? await runFileSearch(data.args, { ...data.fileSearch, cwd: data.cwd })
+                : await runRipgrep(data.args, { cwd: data.cwd })
             return {
                 success: true,
                 exitCode: result.exitCode,

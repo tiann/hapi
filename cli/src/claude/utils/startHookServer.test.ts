@@ -194,17 +194,12 @@ describe('startHookServer', () => {
         })
     })
 
-    describe('agy-pre-invocation', () => {
+    describe('agy-pre-invocation (legacy no-op route)', () => {
         const sendAgyInvocation = (port: number, payload: unknown, token?: string) =>
             sendHookRequest(port, JSON.stringify(payload), token, '/hook/agy-pre-invocation')
 
-        it('forwards conversationId to onAgyPreInvocation and responds 200 immediately', async () => {
-            let received: unknown = null
-            const server = await startHookServer({
-                onSessionHook: () => {},
-                onAgyPreInvocation: (data) => { received = data }
-            })
-
+        it('responds 200 without a handler (legacy PTY hook configs must never block agy)', async () => {
+            const server = await startHookServer({ onSessionHook: () => {} })
             try {
                 const response = await sendAgyInvocation(
                     server.port,
@@ -215,42 +210,12 @@ describe('startHookServer', () => {
             } finally {
                 server.stop()
             }
-
-            expect((received as { conversationId?: string }).conversationId).toBe('brain-1')
         })
 
-        it('responds 200 even when no onAgyPreInvocation handler is wired (discovery is best-effort)', async () => {
+        it('responds 200 even without a token (route is a no-op, not a security boundary)', async () => {
             const server = await startHookServer({ onSessionHook: () => {} })
             try {
-                const response = await sendAgyInvocation(server.port, { conversationId: 'brain-2' }, server.token)
-                expect(response.statusCode).toBe(200)
-            } finally {
-                server.stop()
-            }
-        })
-
-        it('returns 401 when the token is missing', async () => {
-            let called = false
-            const server = await startHookServer({
-                onSessionHook: () => {},
-                onAgyPreInvocation: () => { called = true }
-            })
-            try {
-                const response = await sendAgyInvocation(server.port, { conversationId: 'brain-3' })
-                expect(response.statusCode).toBe(401)
-            } finally {
-                server.stop()
-            }
-            expect(called).toBe(false)
-        })
-
-        it('responds 200 even when the handler throws (a discovery failure must never surface as an error to agy)', async () => {
-            const server = await startHookServer({
-                onSessionHook: () => {},
-                onAgyPreInvocation: () => { throw new Error('boom') }
-            })
-            try {
-                const response = await sendAgyInvocation(server.port, { conversationId: 'brain-4' }, server.token)
+                const response = await sendAgyInvocation(server.port, { conversationId: 'brain-2' })
                 expect(response.statusCode).toBe(200)
             } finally {
                 server.stop()

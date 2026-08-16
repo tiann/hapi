@@ -141,10 +141,11 @@ function checkOutputForAuthError(output: string): string | null {
 }
 
 // Build the env for the one-shot `agy models` probe. Auth must be as robust as
-// the PTY launch's, or the probe fails on hosts where the OS keyring is flaky or
-// locked (headless runners):
+// the headless transport's, or the probe fails on hosts where the OS keyring is
+// flaky or locked (headless runners):
 //  - GEMINI_FORCE_FILE_STORAGE makes agy read the saved OAuth file token directly
-//    instead of the keyring — the same hardening agyPty applies. Without it the
+//    instead of the keyring — the same hardening the headless spawn applies.
+//    Without it the
 //    probe spins for ~12 s and exits with "Please sign in to view available
 //    models" even when the user IS signed in, which surfaces as a failed fetch.
 //  - SSH_* is stripped so agy doesn't fall into a degraded SSH-session auth path.

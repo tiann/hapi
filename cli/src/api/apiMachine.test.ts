@@ -761,7 +761,7 @@ describe('ApiMachineClient connect runner-state advertisement', () => {
             expect(emitWithAck).toHaveBeenCalledWith('machine-update-state', expect.objectContaining({
                 runnerState: expect.objectContaining({
                     status: 'running',
-                    capabilities: { piExistingSessionResume: true }
+                    capabilities: expect.objectContaining({ piExistingSessionResume: true })
                 })
             }))
         } finally {

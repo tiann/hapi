@@ -80,7 +80,9 @@ export function useVisibilityReporter(options: {
                     return
                 }
                 lastStateRef.current = desired
-                pendingStateRef.current = null
+                if (pendingStateRef.current === desired) {
+                    pendingStateRef.current = null
+                }
                 clearRetry()
             }).catch((error) => {
                 if (lastSubscriptionRef.current !== activeSubscription) {
@@ -95,6 +97,9 @@ export function useVisibilityReporter(options: {
                     }, 2000)
                 }
             }).finally(() => {
+                if (lastSubscriptionRef.current !== activeSubscription) {
+                    return
+                }
                 inFlightRef.current = false
                 if (hadError || retryTimerRef.current) {
                     return

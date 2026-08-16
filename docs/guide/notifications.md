@@ -49,8 +49,11 @@ Messages include a link back to the session, built from `HAPI_PUBLIC_URL`.
 Related environment variables:
 
 - `SERVERCHAN_NOTIFICATION` - Enable/disable ServerChan notifications (default: `true`)
+- `SERVERCHAN_BACKGROUND_ONLY` - Only send ServerChan notifications when the namespace has no visible HAPI connection (default: `false`)
 
-Both values can also be set in `settings.json` (`serverChanSendKey`, `serverChanNotification`).
+When `SERVERCHAN_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses ServerChan for the entire namespace. Hidden, disconnected, or closed HAPI pages do not count as visible, so ServerChan can act as a background fallback. This is namespace-wide and does not select a particular device.
+
+These values can also be set in `settings.json` (`serverChanSendKey`, `serverChanNotification`, `serverChanBackgroundOnly`).
 
 ## Voice assistant setup
 

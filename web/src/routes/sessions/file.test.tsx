@@ -79,6 +79,7 @@ describe('FilePage markdown preview', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         window.localStorage.clear()
+        window.sessionStorage.clear()
     })
 
     it('renders markdown preview by default and toggles to source', async () => {
@@ -113,5 +114,24 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
         })
+    })
+
+    it('preserves the file preview scroll position across route remounts', async () => {
+        const firstRender = renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
+        })
+        const firstScrollRegion = document.querySelector('[data-hapi-file-scroll="true"]') as HTMLElement
+        expect(firstScrollRegion).not.toBeNull()
+        firstScrollRegion.scrollTop = 123
+        firstRender.unmount()
+
+        renderWithProviders()
+        await waitFor(() => {
+            expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
+        })
+        const secondScrollRegion = document.querySelector('[data-hapi-file-scroll="true"]') as HTMLElement
+        expect(secondScrollRegion.scrollTop).toBe(123)
     })
 })

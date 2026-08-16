@@ -92,10 +92,12 @@ describe('file search route', () => {
             metadata: { path: 'C:\\project' }
         } as unknown as Session
         let ripgrepArgs: string[] = []
+        let fileSearchQuery: string | undefined
         const engine = {
             resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
-            runRipgrep: async (_sessionId: string, args: string[]) => {
+            runRipgrep: async (_sessionId: string, args: string[], _cwd: string, fileSearch?: { query: string }) => {
                 ripgrepArgs = args
+                fileSearchQuery = fileSearch?.query
                 return { success: true, stdout: 'src/nested/file.ts\n' }
             },
             statFiles: async (_sessionId: string, paths: string[]) => ({
@@ -109,6 +111,7 @@ describe('file search route', () => {
 
         expect(response.status).toBe(200)
         expect(ripgrepArgs).toEqual(['--files', '--iglob', '*src/nested/file.ts*'])
+        expect(fileSearchQuery).toBe('src/nested/file.ts')
     })
 
     it('preserves backslashes in POSIX search queries', async () => {
@@ -135,7 +138,76 @@ describe('file search route', () => {
         const response = await buildApp(engine).request(`/api/sessions/session-1/files?${query}`)
 
         expect(response.status).toBe(200)
-        expect(ripgrepArgs).toEqual(['--files', '--iglob', '*src\\file\\name.ts*'])
+        expect(ripgrepArgs).toEqual(['--files', '--iglob', '*src\\\\file\\\\name.ts*'])
+    })
+
+    it('uses shared matching semantics for plain and wildcard queries', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/project' }
+        } as unknown as Session
+        const ripgrepArgs: string[][] = []
+        const fileSearchOptions: Array<{ query: string; limit: number }> = []
+        const stdout = [
+            'src/file.ts',
+            'other.ts',
+            'test-AB',
+            '!literal.ts',
+            '[ab]literal.ts',
+            '{a,b}literal.ts',
+            'notes.txt'
+        ].join('\n')
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async (_sessionId: string, args: string[], _cwd: string, fileSearch?: { query: string; limit: number }) => {
+                ripgrepArgs.push(args)
+                if (fileSearch) fileSearchOptions.push(fileSearch)
+                return { success: true, stdout }
+            },
+            statFiles: async (_sessionId: string, paths: string[]) => ({
+                success: true,
+                entries: paths.map((path) => ({ path, size: 1, modified: 1 }))
+            })
+        } as unknown as Partial<SyncEngine>
+
+        const app = buildApp(engine)
+        const queries: Array<[string, string[]]> = [
+            ['.txt', ['notes.txt']],
+            ['*.ts', ['src/file.ts', 'other.ts', '!literal.ts', '[ab]literal.ts', '{a,b}literal.ts']],
+            ['test-%3F%3F', ['test-AB']],
+            ['%21*.ts', ['!literal.ts']],
+            ['%5Bab%5D*.ts', ['[ab]literal.ts']],
+            ['%7Ba%2Cb%7D*.ts', ['{a,b}literal.ts']],
+            ['src*.ts', ['src/file.ts']]
+        ]
+
+        for (const [query, expected] of queries) {
+            const response = await app.request(`/api/sessions/session-1/files?query=${query}`)
+            expect(response.status).toBe(200)
+            const body = await response.json() as { files: Array<{ fullPath: string }> }
+            expect(body.files.map((file) => file.fullPath)).toEqual(expected)
+        }
+
+        expect(ripgrepArgs).toEqual([
+            ['--files', '--iglob', '*.txt*'],
+            ['--files'],
+            ['--files'],
+            ['--files'],
+            ['--files'],
+            ['--files'],
+            ['--files']
+        ])
+        expect(fileSearchOptions).toEqual([
+            { query: '.txt', limit: 200 },
+            { query: '*.ts', limit: 200 },
+            { query: 'test-??', limit: 200 },
+            { query: '!*.ts', limit: 200 },
+            { query: '[ab]*.ts', limit: 200 },
+            { query: '{a,b}*.ts', limit: 200 },
+            { query: 'src*.ts', limit: 200 }
+        ])
     })
 
     it('adds size and modification metadata to search results', async () => {

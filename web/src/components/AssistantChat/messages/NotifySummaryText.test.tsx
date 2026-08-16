@@ -12,7 +12,11 @@ vi.mock('@/hooks/useSessionSummaryInChat', () => ({
 }))
 
 vi.mock('@/components/assistant-ui/markdown-text', () => ({
-    MarkdownText: () => <div data-testid="raw-markdown">raw assistant text</div>
+    MarkdownText: ({ smooth }: { smooth?: boolean }) => (
+        <div data-testid="raw-markdown" data-smooth={String(smooth)}>
+            raw assistant text
+        </div>
+    )
 }))
 
 vi.mock('@/components/MarkdownRenderer', () => ({
@@ -112,5 +116,77 @@ describe('NotifySummaryText', () => {
 
         expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Still working.')
         expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
+    it('keeps the typewriter for a newly mounted running text part', () => {
+        const view = renderText('Already generated.', 'running')
+
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'true')
+
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated with more." status={{ type: 'running' }} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'true')
+    })
+
+    it('does not enable smoothing when a completed message is briefly marked running', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        const view = renderText('Already generated.', 'complete')
+
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'false')
+
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated." status={{ type: 'running' }} />
+            </I18nProvider>
+        )
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated." status={{ type: 'running' }} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'false')
+    })
+
+    it('smooths new text when a completed message becomes running', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        const view = renderText('Already generated.', 'complete')
+
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated with new output." status={{ type: 'running' }} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'true')
+    })
+
+    it('does not reuse an earlier stream after the part completes', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        const view = renderText('Already generated.', 'running')
+
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated with new output." status={{ type: 'running' }} />
+            </I18nProvider>
+        )
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'true')
+
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated with new output." status={{ type: 'complete' }} />
+            </I18nProvider>
+        )
+        view.rerender(
+            <I18nProvider>
+                <NotifySummaryText type="text" text="Already generated with new output." status={{ type: 'running' }} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'false')
     })
 })

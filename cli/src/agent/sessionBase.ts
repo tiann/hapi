@@ -137,19 +137,21 @@ export class AgentSessionBase<Mode> {
         }
     };
 
-    private _killHandler: (() => void) | null = null;
+    private _killHandler: (() => void | Promise<void>) | null = null;
 
     // Graceful-shutdown hook shared by all flavors. The active launcher
     // registers a teardown handler (e.g. abort the PTY) via setKillHandler; the
     // runner lifecycle's onBeforeClose calls kill() before process.exit so the
     // resource is released through the normal finally path rather than relying on
     // last-resort reapers. No-op when no handler is registered (e.g. local mode).
-    setKillHandler = (handler: () => void): void => {
+    // Async: teardown that must complete before the process exits (e.g. waiting
+    // for process-tree termination) awaits it.
+    setKillHandler = (handler: () => void | Promise<void>): void => {
         this._killHandler = handler;
     };
 
-    kill = (): void => {
-        this._killHandler?.();
+    kill = async (): Promise<void> => {
+        await this._killHandler?.();
     };
 
     protected getKeepAliveRuntime():

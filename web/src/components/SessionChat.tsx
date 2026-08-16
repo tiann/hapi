@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
+import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
 import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
 import type { ApiClient } from '@/api/client'
@@ -221,6 +222,72 @@ export function isScratchlistHotkeyBlockedTarget(target: EventTarget | null): bo
 }
 
 /**
+ * True when a global select-all shortcut (Ctrl/Cmd+A) should be left to
+ * the browser default: focus is inside the rich composer
+ * (contentEditable), a textarea (the fallback composer), a single-line
+ * input/select, or a modal dialog. In every other case the app takes
+ * over the shortcut because Chromium's SelectAll collapses to an empty
+ * caret when the page contains a contenteditable (the rich composer)
+ * but focus is outside it — plain Ctrl+A would select nothing and
+ * Ctrl+C would copy nothing (see applyGlobalSelectAll).
+ *
+ * Deliberately differs from isScratchlistHotkeyBlockedTarget: textareas
+ * are blocked here (textarea select-all works natively) while the
+ * scratchlist hotkey must keep firing from the composer textarea.
+ *
+ * Pure / exported for unit tests.
+ */
+export function isSelectAllTargetBlocked(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false
+    if (target.closest('[role="dialog"]') !== null) return true
+    if (target instanceof HTMLInputElement) return true
+    if (target instanceof HTMLTextAreaElement) return true
+    if (target instanceof HTMLSelectElement) return true
+    // isContentEditable is the authoritative check in real browsers but
+    // jsdom doesn't implement it; the attribute fallback also covers
+    // `plaintext-only` composers, which is what the rich composer uses
+    // on modern Chromium.
+    if (target.isContentEditable === true) return true
+    const contenteditable = target.getAttribute('contenteditable')
+    return contenteditable !== null && contenteditable !== 'false'
+}
+
+/**
+ * Chromium quirk: when a page contains a contenteditable element (the
+ * rich composer), Ctrl/Cmd+A with focus OUTSIDE the editable collapses
+ * to an empty caret instead of selecting the page — Ctrl+C then copies
+ * nothing. Reproduced in headless and headed Chrome with both
+ * `contenteditable="true"` and `"plaintext-only"`; the bare presence of
+ * the editable root is what breaks SelectAll, while focus inside it
+ * selects the composer text correctly.
+ *
+ * This takes over Ctrl/Cmd+A whenever focus is outside the composer
+ * (see isSelectAllTargetBlocked) and selects the message thread
+ * manually, so select-all + copy restores the expected
+ * "select the conversation" behavior.
+ *
+ * Returns true when the keystroke was handled (preventDefault + range
+ * selection). Pure / exported for unit tests and the Playwright fixture.
+ */
+export function applyGlobalSelectAll(e: KeyboardEvent): boolean {
+    if (e.defaultPrevented || e.repeat) return false
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return false
+    if (e.key !== 'a' && e.key !== 'A') return false
+    if (isSelectAllTargetBlocked(e.target)) return false
+    // The thread container is rendered by HappyThread; its class is the
+    // stable handle between the page-level shortcut and the message DOM.
+    const thread = document.querySelector<HTMLElement>('.happy-thread-messages')
+    if (!thread || !thread.textContent) return false
+    e.preventDefault()
+    const range = document.createRange()
+    range.selectNodeContents(thread)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    return true
+}
+
+/**
  * Decide whether a submit should be routed to the per-session scratchlist
  * or to the regular chat send. Scratchlist entries support text and hub-
  * stored attachments; scheduled sends still fall through to chat.
@@ -377,6 +444,27 @@ export function buildGoalStateMessages(
     return messages.filter((message) => !isUninvokedScheduledMessage(message))
 }
 
+/**
+ * Keep the latest completed fork boundary available while reading history.
+ * The history window can no longer contain the tail after older pages are
+ * loaded, so recomputing a boundary from that window would either hide the
+ * current Fork action or incorrectly mark an older message as current.
+ * A live tail revision invalidates the remembered boundary until tail view
+ * observes the authoritative current boundary again.
+ */
+export function resolveLatestCompletedBoundaryIdForView(
+    viewMode: 'tail' | 'history',
+    currentTailBoundaryId: string | null,
+    rememberedTailBoundary: { id: string | null; tailRevision: number } | null,
+    currentTailRevision: number
+): string | null {
+    if (viewMode === 'tail') return currentTailBoundaryId
+    if (!rememberedTailBoundary || rememberedTailBoundary.tailRevision !== currentTailRevision) {
+        return null
+    }
+    return rememberedTailBoundary.id
+}
+
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     for (const block of blocks) {
         if (block.kind === 'tool-call') {
@@ -411,6 +499,7 @@ type SessionChatProps = {
     viewMode: 'tail' | 'history'
     messagesVersion: number
     historyVersion: number
+    tailRevision: number
     onBack: () => void
     onRefresh: () => void
     onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
@@ -476,7 +565,11 @@ function SessionChatInner(props: SessionChatProps) {
         setHistoryActionPending(true)
         try {
             const result = await props.api.forkConversation(props.session.id, messageLocalId)
-            await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId } })
+            await navigate({
+                to: '/sessions/$sessionId',
+                params: { sessionId: result.sessionId },
+                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+            })
         } finally {
             setHistoryActionPending(false)
         }
@@ -508,6 +601,10 @@ function SessionChatInner(props: SessionChatProps) {
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
+    const [rememberedTailBoundary, setRememberedTailBoundary] = useState<{
+        id: string | null
+        tailRevision: number
+    } | null>(null)
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const uploadDraftSnapshotRef = useRef<{ text: string; attachments: AttachmentDraftInput[] }>({
         text: '',
@@ -607,6 +704,16 @@ function SessionChatInner(props: SessionChatProps) {
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [isScratchlistParking])
+    /**
+     * Global select-all takeover: see applyGlobalSelectAll. Bound at
+     * window scope because the broken case is focus on the page body /
+     * message thread, which never routes keydown through the composer or
+     * the thread viewport.
+     */
+    useEffect(() => {
+        window.addEventListener('keydown', applyGlobalSelectAll)
+        return () => window.removeEventListener('keydown', applyGlobalSelectAll)
+    }, [])
     /**
      * onSend wrapper: when scratchlist mode is on AND the submission is
      * not scheduled, route to scratchlist (text and/or hub attachments).
@@ -1212,7 +1319,12 @@ function SessionChatInner(props: SessionChatProps) {
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
     // not raw hub message ids — MessageActions receive the rendered card id,
     // and adjacent assistant blocks join under the first block's id.
-    const latestCompletedBoundaryId = useMemo(() => {
+    //
+    // Calculate the boundary from the tail window, then remember it while the
+    // operator reads history. Otherwise changing viewMode to `history` hides
+    // a valid current Fork action, and loading older pages can make the last
+    // visible historical message look like the current fork boundary.
+    const currentTailBoundaryId = useMemo(() => {
         if (props.viewMode !== 'tail') return null
         return findLatestCompletedBoundaryId(
             visibleBlocks,
@@ -1220,6 +1332,22 @@ function SessionChatInner(props: SessionChatProps) {
             props.session.activeTurnStartedAt ?? null
         )
     }, [props.viewMode, props.session.activeTurnStartedAt, props.session.thinking, visibleBlocks])
+
+    useEffect(() => {
+        if (props.viewMode !== 'tail') return
+        setRememberedTailBoundary((previous) => (
+            previous?.id === currentTailBoundaryId && previous.tailRevision === props.tailRevision
+                ? previous
+                : { id: currentTailBoundaryId, tailRevision: props.tailRevision }
+        ))
+    }, [currentTailBoundaryId, props.tailRevision, props.viewMode])
+
+    const latestCompletedBoundaryId = resolveLatestCompletedBoundaryIdForView(
+        props.viewMode,
+        currentTailBoundaryId,
+        rememberedTailBoundary,
+        props.tailRevision
+    )
 
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId
@@ -1398,7 +1526,8 @@ function SessionChatInner(props: SessionChatProps) {
         setOutlineOpen(false)
         navigate({
             to: '/sessions/$sessionId/files',
-            params: { sessionId: props.session.id }
+            params: { sessionId: props.session.id },
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
     }, [navigate, props.session.id])
 
@@ -1409,7 +1538,8 @@ function SessionChatInner(props: SessionChatProps) {
     const handleViewTerminal = useCallback(() => {
         navigate({
             to: '/sessions/$sessionId/terminal',
-            params: { sessionId: props.session.id }
+            params: { sessionId: props.session.id },
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
     }, [navigate, props.session.id])
 
@@ -1569,6 +1699,9 @@ function SessionChatInner(props: SessionChatProps) {
         blocks: visibleBlocks,
         messagesVersion: props.messagesVersion,
         historyVersion: props.historyVersion,
+        viewMode: props.viewMode,
+        isSyncingTail: props.isSyncingTail,
+        isLoadingMore: props.isLoadingMoreMessages,
         isSending: props.isSending,
         isRunning: props.session.thinking || hasRunningChildAgent,
         onSendMessage: handleSend,
@@ -1604,7 +1737,8 @@ function SessionChatInner(props: SessionChatProps) {
                         () => navigate({
                             to: '/sessions/$sessionId',
                             params: { sessionId: newSessionId },
-                            replace: true
+                            replace: true,
+                            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
                         }),
                     )
                 }}
@@ -1772,12 +1906,12 @@ function SessionChatInner(props: SessionChatProps) {
                                             ? grokModelOptions
                                         : agentFlavor === 'copilot'
                                             ? copilotModelOptions
-                                        // Pi uses its own provider-qualified picker (piModels prop).
-                                        // Feeding piModelOptions here would make the generic Ctrl/Cmd+M
+                                        // Pi gets its provider-qualified model list from the piModels prop;
+                                        // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
                                         // which loses the provider and can pick the wrong cached
                                         // match or throw in runPi. undefined makes the shortcut a no-op
-                                        // so Pi model changes go through the dedicated picker only.
+                                        // so Pi model changes go through the settings sheet only.
                                         : undefined
                         }
                         piModels={piModels}

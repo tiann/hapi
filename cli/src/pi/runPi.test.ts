@@ -1332,6 +1332,11 @@ describe('Pi built-in slash commands', () => {
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt' }));
 
         const compact = harness.sent.find((item) => (item as { type?: string }).type === 'compact') as { id: string };
+        // The compact RPC holds the session in the thinking state for its
+        // whole duration (web would otherwise mark it idle after the hub's
+        // 15s queued-thinking grace).
+        const keepAliveCalls = harness.session.keepAlive.mock.calls;
+        expect(keepAliveCalls[keepAliveCalls.length - 1]?.[0]).toBe(true);
         harness.onEvent!({
             type: 'response', id: compact.id, command: 'compact', success: true,
             data: { summary: 'API design focused summary', tokensBefore: 1000, estimatedTokensAfter: 120 },
@@ -1350,6 +1355,12 @@ describe('Pi built-in slash commands', () => {
             message: expect.stringContaining('Compaction summary'),
         }));
         await vi.waitFor(() => expect(harness.session.keepAlive).toHaveBeenCalledWith(false, expect.anything(), expect.anything()));
+
+        // The thinking state is released once the RPC completes.
+        await vi.waitFor(() => {
+            const calls = harness.session.keepAlive.mock.calls;
+            expect(calls[calls.length - 1]?.[0]).toBe(false);
+        });
 
         // The queued prompt may only flow once compaction completed.
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({

@@ -8,6 +8,7 @@ import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
+import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 
 function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
@@ -341,12 +342,12 @@ export function ComposerToolbarItemPreview(props: { item: ComposerToolbarItemId;
             case 'voiceMic': return <SpeakerIcon />
             case 'scratchlist': return <ScratchlistToggleIcon />
             case 'schedule': return <ScheduleIcon className="h-[18px] w-[18px]" />
-            case 'piModel':
-            case 'piThinking':
+            case 'model':
+            case 'effort':
                 return <><span className="max-w-24 truncate text-xs font-medium">{props.label}</span><ChevronIcon /></>
         }
     })()
-    const isTextControl = props.item === 'piModel' || props.item === 'piThinking'
+    const isTextControl = props.item === 'model' || props.item === 'effort'
     return (
         <span
             className={`flex h-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 ${isTextControl ? 'gap-1 px-3' : 'w-8'}`}
@@ -602,6 +603,7 @@ export function ComposerButtons(props: {
     controlsDisabled: boolean
     showSettingsButton: boolean
     settingsButtonRef?: Ref<HTMLButtonElement>
+    settingsDisabled?: boolean
     onSettingsToggle: () => void
     expanded: boolean
     onExpandedToggle: () => void
@@ -632,15 +634,17 @@ export function ComposerButtons(props: {
     // The composer must surface that constraint at UI time so the user never
     // builds a submission the hub will reject — see hub/web/routes/messages.ts.
     hasAttachments?: boolean
-    // Pi-specific toolbar buttons
-    piModelLabel?: string
-    piModelDisabled?: boolean
-    piModelOpen?: boolean
-    onPiModelToggle?: () => void
-    piThinkingLabel?: string
-    piThinkingDisabled?: boolean
-    piThinkingOpen?: boolean
-    onPiThinkingToggle?: () => void
+    // Generic model/effort value buttons
+    modelValueLabel?: string
+    modelValueButtonRef?: Ref<HTMLButtonElement>
+    modelValueDisabled?: boolean
+    modelValueOpen?: boolean
+    onModelValueToggle?: () => void
+    effortValueLabel?: string
+    effortValueButtonRef?: Ref<HTMLButtonElement>
+    effortValueDisabled?: boolean
+    effortValueOpen?: boolean
+    onEffortValueToggle?: () => void
     // Scratchlist drawer toggle. When `onScratchlistToggle` is provided, a
     // notepad icon appears next to the schedule-send icon. Click toggles
     // composer-send-routing between chat and scratchlist; SessionChat owns
@@ -651,6 +655,18 @@ export function ComposerButtons(props: {
 }) {
     const { t } = useTranslation()
     const { layout } = useComposerToolbarLayout()
+    const isNarrowViewport = useNarrowViewport()
+    // Narrow viewports collapse the model/effort value buttons into the settings
+    // sheet, so the gear must stay reachable even when a persisted layout hides
+    // it (otherwise no session-settings trigger remains). Wide layouts keep
+    // honoring the user's hidden choice.
+    const effectiveLayout: ComposerToolbarLayout = isNarrowViewport && layout.hidden.includes('settings')
+        ? {
+            ...layout,
+            hidden: layout.hidden.filter((item) => item !== 'settings'),
+            left: [...layout.left, 'settings'],
+        }
+        : layout
     const isVoiceConnected = props.voiceStatus === 'connected'
     const [showSchedulePicker, setShowSchedulePicker] = useState(false)
     const scheduleButtonRef = useRef<HTMLButtonElement>(null)
@@ -666,7 +682,7 @@ export function ComposerButtons(props: {
                 className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 style={{ justifyContent: toolbarJustifyContent }}
             >
-                <OrderedToolbarItems layout={layout}>
+                <OrderedToolbarItems layout={effectiveLayout}>
                 <ToolbarItemSlot item="attachment">
                 <ComposerPrimitive.AddAttachment
                     aria-label={t('composer.attach')}
@@ -687,7 +703,7 @@ export function ComposerButtons(props: {
                         title={t('composer.settings')}
                         className="settings-button flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]"
                         onClick={props.onSettingsToggle}
-                        disabled={props.controlsDisabled}
+                        disabled={props.settingsDisabled ?? props.controlsDisabled}
                     >
                         <SettingsIcon />
                     </button>
@@ -701,41 +717,43 @@ export function ComposerButtons(props: {
                 />
                 </ToolbarItemSlot>
 
-                <ToolbarItemSlot item="piModel">
-                {props.piModelLabel ? (
+                <ToolbarItemSlot item="model">
+                {props.modelValueLabel ? (
                     <button
+                        ref={props.modelValueButtonRef}
                         type="button"
-                        aria-label={props.piModelLabel}
-                        title={props.piModelLabel}
+                        aria-label={props.modelValueLabel}
+                        title={props.modelValueLabel}
                         className={`flex h-8 items-center gap-1 rounded-full px-3 text-xs font-medium transition-colors ${
-                            props.piModelOpen
+                            props.modelValueOpen
                                 ? 'bg-[var(--app-secondary-bg)] text-[var(--app-link)]'
                                 : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
                         }`}
-                        onClick={props.onPiModelToggle}
-                        disabled={props.piModelDisabled}
+                        onClick={props.onModelValueToggle}
+                        disabled={props.modelValueDisabled}
                     >
-                        {props.piModelLabel}
+                        {props.modelValueLabel}
                         <ChevronIcon />
                     </button>
                 ) : null}
                 </ToolbarItemSlot>
 
-                <ToolbarItemSlot item="piThinking">
-                {props.piThinkingLabel ? (
+                <ToolbarItemSlot item="effort">
+                {props.effortValueLabel ? (
                     <button
+                        ref={props.effortValueButtonRef}
                         type="button"
-                        aria-label={props.piThinkingLabel}
-                        title={props.piThinkingLabel}
+                        aria-label={props.effortValueLabel}
+                        title={props.effortValueLabel}
                         className={`flex h-8 items-center gap-1 rounded-full px-3 text-xs font-medium transition-colors ${
-                            props.piThinkingOpen
+                            props.effortValueOpen
                                 ? 'bg-[var(--app-secondary-bg)] text-[var(--app-link)]'
                                 : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
                         }`}
-                        onClick={props.onPiThinkingToggle}
-                        disabled={props.piThinkingDisabled}
+                        onClick={props.onEffortValueToggle}
+                        disabled={props.effortValueDisabled}
                     >
-                        {props.piThinkingLabel}
+                        {props.effortValueLabel}
                         <ChevronIcon />
                     </button>
                 ) : null}

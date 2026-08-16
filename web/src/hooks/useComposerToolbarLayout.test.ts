@@ -12,8 +12,8 @@ describe('DEFAULT_COMPOSER_TOOLBAR_LAYOUT', () => {
             'attachment',
             'settings',
             'expand',
-            'piModel',
-            'piThinking',
+            'model',
+            'effort',
             'terminal',
             'switch',
             'voiceMic',
@@ -71,20 +71,22 @@ describe('normalizeComposerToolbarLayout', () => {
     it('reorders across a hidden split boundary in single-column modes', () => {
         const layout = normalizeComposerToolbarLayout({
             mode: 'right',
-            left: ['attachment', 'settings', 'piModel', 'piThinking', 'terminal'],
+            left: ['attachment', 'settings', 'model', 'effort', 'terminal'],
             right: ['abort', 'switch', 'voiceMic', 'scratchlist', 'schedule'],
         })
         const result = moveComposerToolbarItemInSingleLayout(layout, 'attachment', 7)
 
-        expect([...result.left, ...result.right].slice(0, 8)).toEqual([
+        expect([...result.left, ...result.right].slice(0, 10)).toEqual([
             'settings',
-            'piModel',
-            'piThinking',
+            'model',
+            'effort',
             'terminal',
             'expand',
             'abort',
             'switch',
             'attachment',
+            'voiceMic',
+            'scratchlist',
         ])
         expect(result.left).toHaveLength(layout.left.length)
     })

@@ -16,12 +16,14 @@ export type RemoteLauncherDisplayContext = {
     messageBuffer: MessageBuffer;
     logPath?: string;
     onExit: () => void | Promise<void>;
-    onSwitchToLocal: () => void | Promise<void>;
+    /** Optional: remote-only flavors (e.g. agy) expose no local-switch action. */
+    onSwitchToLocal?: () => void | Promise<void>;
 };
 
 export type RemoteLauncherTerminalHandlers = {
     onExit: () => void | Promise<void>;
-    onSwitchToLocal: () => void | Promise<void>;
+    /** Optional: remote-only flavors (e.g. agy) expose no local-switch action. */
+    onSwitchToLocal?: () => void | Promise<void>;
 };
 
 export type RemoteLauncherAbortHandlers = {

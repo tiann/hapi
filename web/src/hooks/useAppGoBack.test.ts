@@ -72,6 +72,7 @@ describe('useAppGoBack file preview navigation', () => {
 
         expect(routerMocks.navigate).toHaveBeenCalledWith({
             to: '/sessions/session-1',
+            resetScroll: false,
         })
     })
 
@@ -92,6 +93,7 @@ describe('useAppGoBack file preview navigation', () => {
                 tab: 'directories',
                 query: 'readme',
             },
+            resetScroll: false,
         })
     })
 })

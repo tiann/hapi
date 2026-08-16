@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { run } from './index'
+import { matchesFileSearchPath, run, runFileSearch, selectFileSearchPaths } from './index'
 
 describe('ripgrep low-level wrapper', () => {
     it('should get version', async () => {
@@ -38,5 +38,26 @@ describe('ripgrep low-level wrapper', () => {
         const result = await run(['describe', 'index.test.ts'], { cwd: 'src/modules/ripgrep' })
         expect(result.exitCode).toBe(0)
         expect(result.stdout).toContain('describe')
+    })
+
+    it('should apply shared wildcard semantics before enforcing the result limit', () => {
+        expect(selectFileSearchPaths([
+            'src/file.ts',
+            'other.ts',
+            'src/deep/file.ts'
+        ], 'src*.ts', 2)).toEqual([
+            'src/file.ts',
+            'src/deep/file.ts'
+        ])
+    })
+
+    it('should bound runner-side wildcard file-search output', async () => {
+        const query = 'src/modules/ripgrep/*.ts'
+        const result = await runFileSearch(['--files'], { query, limit: 1 })
+        const paths = result.stdout.trim().split(/\r?\n/).filter(Boolean)
+
+        expect(result.exitCode).toBe(0)
+        expect(paths).toHaveLength(1)
+        expect(matchesFileSearchPath(paths[0], query)).toBe(true)
     })
 })

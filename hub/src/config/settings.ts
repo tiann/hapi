@@ -18,6 +18,7 @@ export interface Settings {
     telegramNotification?: boolean
     serverChanSendKey?: string
     serverChanNotification?: boolean
+    serverChanBackgroundOnly?: boolean
     listenHost?: string
     listenPort?: number
     publicUrl?: string

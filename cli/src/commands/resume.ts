@@ -160,7 +160,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as AgyPermissionMode | undefined,
-            startingMode: 'pty',
+            startingMode: 'remote',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined,
         })
@@ -256,6 +256,16 @@ export const resumeCommand: CommandDefinition = {
 
             if (target.active && target.controlledByUser) {
                 throw new Error('Session is already controlled by a local terminal')
+            }
+
+            // AGY is remote-only with per-turn spawns: an in-flight turn cannot
+            // be handed off (the whole-session abort would discard the prompt
+            // without the interrupt handler's consume+restore recovery). Reject
+            // while ACTIVE, not just thinking: keepalive-delivered thinking is a
+            // volatile snapshot, and a turn can start (or its update be missed)
+            // between the fetch above and the handoff request below.
+            if (target.flavor === 'agy' && target.active) {
+                throw new Error('Antigravity is active. Stop it before resuming.')
             }
 
             if (target.active) {

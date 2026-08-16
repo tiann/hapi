@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import type { TextMessagePartComponent } from '@assistant-ui/react'
 import { splitNotifySummary, stripNotifySummaryFooter, type NotifySummary } from '@hapi/protocol/messages'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -103,18 +104,39 @@ export function NotifySummaryFooter({ summary }: { summary: NotifySummary }) {
 /** Render the machine footer as a compact row when display is on; otherwise strip it. */
 export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) => {
     const showInChat = useSessionSummaryInChat()
+    const previousTextRef = useRef(text)
+    const runStartedWithRunningRef = useRef(status.type === 'running')
+    const hasTextChangedDuringRunRef = useRef(false)
+
+    // The runtime keeps already-materialized history complete while a session
+    // is being resumed or a new turn is waiting for its first assistant block.
+    // Once this part is actually running, keep assistant-ui's typewriter
+    // enabled from its first paint. A status-only complete -> running change
+    // with unchanged text is still treated as hydration, not new output.
+    if (status.type !== 'running') {
+        runStartedWithRunningRef.current = false
+        hasTextChangedDuringRunRef.current = false
+    } else if (
+        text !== previousTextRef.current
+    ) {
+        hasTextChangedDuringRunRef.current = true
+    }
+    const smooth = status.type === 'running'
+        && (runStartedWithRunningRef.current || hasTextChangedDuringRunRef.current)
+
+    previousTextRef.current = text
 
     if (!showInChat) {
         const stripped = stripNotifySummaryFooter(text)
         if (!stripped) return null
-        if (stripped === text) return <MarkdownText />
+        if (stripped === text) return <MarkdownText smooth={smooth} />
         return <MarkdownRenderer content={stripped} />
     }
 
-    if (status.type !== 'complete') return <MarkdownText />
+    if (status.type !== 'complete') return <MarkdownText smooth={smooth} />
 
     const display = splitNotifySummary(text)
-    if (!display) return <MarkdownText />
+    if (!display) return <MarkdownText smooth={smooth} />
 
     const hasDisplayableSummary = Boolean(
         display.summary.summary?.trim()

@@ -781,6 +781,37 @@ describe('wireTransportEvents', () => {
         ]);
     });
 
+    it('settles the startup-model gate when discovery returns no models', async () => {
+        session = createMockSession('startup-model');
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        emitEvent({
+            type: 'response',
+            command: 'get_available_models',
+            success: true,
+            data: { models: [] },
+        });
+
+        await expect(session.startupModelSettled).resolves.toBeUndefined()
+        expect(transport.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'set_model' }))
+    })
+
+    it('settles the startup-model gate when model discovery fails', async () => {
+        session = createMockSession('startup-model');
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        emitEvent({
+            type: 'response',
+            command: 'get_available_models',
+            success: false,
+            error: 'models unavailable',
+        });
+
+        await expect(session.startupModelSettled).resolves.toBeUndefined()
+    })
+
     it('fails closed and poisons the mutation lease when the detached startup model times out', async () => {
         vi.useFakeTimers();
         try {
@@ -1257,6 +1288,94 @@ describe('Pi settlement compatibility fallbacks', () => {
         // cause a third settlement for the command-only generation.
         h.emit({ type: 'agent_settled' });
         expect(h.onAgentSettled).not.toHaveBeenCalled();
+    });
+
+    it('settles an autonomous agent lifecycle that starts after the previous prompt already settled', () => {
+        const h = setup();
+
+        // A normal prompt lifecycle runs to settlement.
+        h.controller.beginPromptLifecycle('prompt-1');
+        h.emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'agent_settled' });
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(1);
+        expect(h.stateSession.piIsStreaming).toBe(false);
+
+        // Pi wakes up on its own (subagent completion, scheduled work) with no
+        // HAPI prompt in flight. Its settlement must not be swallowed by the
+        // already-delivered previous cycle, or thinking stays true forever.
+        h.emit({ type: 'agent_start' });
+        expect(h.stateSession.piIsStreaming).toBe(true);
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'agent_settled' });
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(2);
+        expect(h.stateSession.piIsStreaming).toBe(false);
+    });
+
+    it('settles an autonomous agent lifecycle through the legacy agent_end grace when agent_settled never arrives', async () => {
+        vi.useFakeTimers();
+        const h = setup();
+
+        h.controller.beginPromptLifecycle('prompt-1');
+        h.emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'agent_settled' });
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(1);
+
+        h.emit({ type: 'agent_start' });
+        expect(h.stateSession.piIsStreaming).toBe(true);
+        h.emit({ type: 'agent_end', willRetry: false });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(2);
+        expect(h.stateSession.piIsStreaming).toBe(false);
+    });
+
+    it('does not let a stale in-flight settlement callback settle a newly started autonomous lifecycle', async () => {
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const stateSession = createMockSession();
+        const onAgentSettled = vi.fn();
+        let releaseSync: (() => void) | null = null;
+        const conversationHistory = {
+            syncEntries: vi.fn(() => new Promise<void>((resolve) => { releaseSync = resolve; })),
+            observeEntry: vi.fn(),
+        } as unknown as PiConversationHistory;
+        const controller = wireTransportEvents(transport, stateSession, [], { onAgentSettled, conversationHistory });
+        const emit = (event: Record<string, unknown>) => listener?.(event);
+
+        controller.beginPromptLifecycle('prompt-1');
+        emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        emit({ type: 'agent_start' });
+        emit({ type: 'agent_end', willRetry: false });
+        emit({ type: 'agent_settled' });
+        // Settlement delivered, but its history sync (and therefore the
+        // onAgentSettled notification) is still in flight.
+        expect(onAgentSettled).not.toHaveBeenCalled();
+
+        // Pi wakes up autonomously before the sync completes.
+        emit({ type: 'agent_start' });
+        expect(stateSession.piIsStreaming).toBe(true);
+
+        // The stale callback resolves now — it must not settle the new
+        // lifecycle's boundary.
+        releaseSync!();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(onAgentSettled).not.toHaveBeenCalled();
+
+        // The autonomous lifecycle settles through its own events.
+        emit({ type: 'agent_end', willRetry: false });
+        emit({ type: 'agent_settled' });
+        releaseSync!();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(onAgentSettled).toHaveBeenCalledTimes(1);
+        expect(stateSession.piIsStreaming).toBe(false);
     });
 
     it('rejects a matching prompt after turn_start already consumed its local ID', async () => {

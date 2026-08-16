@@ -1,10 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+    applyGlobalSelectAll,
     applyModelChangeWithReasoningRollback,
     buildGoalStateMessages,
     isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
+    isSelectAllTargetBlocked,
     resolvePiContextWindow,
+    resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
     shouldRouteToScratchlist,
 } from './SessionChat'
@@ -63,6 +66,35 @@ describe('resolvePiContextWindow', () => {
 
     it('falls back to the legacy model id when selected-model metadata is absent', () => {
         expect(resolvePiContextWindow(models, undefined, 'shared-model')).toBe(100_000)
+    })
+})
+
+describe('resolveLatestCompletedBoundaryIdForView', () => {
+    it('uses the live tail boundary when following the latest messages', () => {
+        expect(resolveLatestCompletedBoundaryIdForView('tail', 'agent-text:latest', {
+            id: 'agent-text:old',
+            tailRevision: 1
+        }, 2))
+            .toBe('agent-text:latest')
+    })
+
+    it('keeps the live tail boundary while reading older messages', () => {
+        expect(resolveLatestCompletedBoundaryIdForView('history', null, {
+            id: 'agent-text:latest',
+            tailRevision: 2
+        }, 2))
+            .toBe('agent-text:latest')
+    })
+
+    it('invalidates the remembered boundary after a live tail revision', () => {
+        expect(resolveLatestCompletedBoundaryIdForView('history', null, {
+            id: 'agent-text:old',
+            tailRevision: 2
+        }, 3)).toBeNull()
+    })
+
+    it('does not invent a boundary before the tail has been observed', () => {
+        expect(resolveLatestCompletedBoundaryIdForView('history', null, null, 0)).toBeNull()
     })
 })
 
@@ -300,6 +332,101 @@ describe('isScratchlistHotkeyBlockedTarget', () => {
         // Some keyboard events come with a non-Element target (e.g. window
         // before focus settles). Should fall through.
         expect(isScratchlistHotkeyBlockedTarget(window as unknown as EventTarget)).toBe(false)
+    })
+})
+
+describe('isSelectAllTargetBlocked', () => {
+    it('blocks select-all takeover when focus is in the rich composer (contentEditable)', () => {
+        const composer = document.createElement('div')
+        composer.setAttribute('contenteditable', 'plaintext-only')
+        expect(isSelectAllTargetBlocked(composer)).toBe(true)
+    })
+
+    it('blocks select-all takeover when focus is in a textarea (fallback composer)', () => {
+        const textarea = document.createElement('textarea')
+        expect(isSelectAllTargetBlocked(textarea)).toBe(true)
+    })
+
+    it('blocks select-all takeover when focus is in a single-line input', () => {
+        const input = document.createElement('input')
+        expect(isSelectAllTargetBlocked(input)).toBe(true)
+    })
+
+    it('blocks select-all takeover when focus is anywhere inside a [role=dialog]', () => {
+        const dialog = document.createElement('div')
+        dialog.setAttribute('role', 'dialog')
+        const inner = document.createElement('button')
+        dialog.appendChild(inner)
+        document.body.appendChild(dialog)
+        expect(isSelectAllTargetBlocked(inner)).toBe(true)
+        document.body.removeChild(dialog)
+    })
+
+    it('does NOT block select-all takeover when focus is on the message thread / body', () => {
+        const message = document.createElement('div')
+        expect(isSelectAllTargetBlocked(message)).toBe(false)
+        expect(isSelectAllTargetBlocked(document.body)).toBe(false)
+    })
+
+    it('does NOT block select-all takeover when target is null or non-Element', () => {
+        expect(isSelectAllTargetBlocked(null)).toBe(false)
+        expect(isSelectAllTargetBlocked(window as unknown as EventTarget)).toBe(false)
+    })
+})
+
+describe('applyGlobalSelectAll', () => {
+    function setupThread(): HTMLElement {
+        const thread = document.createElement('div')
+        thread.className = 'happy-thread-messages'
+        const message = document.createElement('div')
+        message.textContent = 'assistant reply text'
+        thread.appendChild(message)
+        document.body.appendChild(thread)
+        return thread
+    }
+
+    afterEach(() => {
+        window.getSelection()?.removeAllRanges()
+        document.body.innerHTML = ''
+    })
+
+    it('selects the message thread for Ctrl+A when focus is on the page body', () => {
+        setupThread()
+        const event = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, cancelable: true })
+        expect(applyGlobalSelectAll(event)).toBe(true)
+        expect(event.defaultPrevented).toBe(true)
+        const selection = window.getSelection()
+        expect(selection?.toString()).toBe('assistant reply text')
+    })
+
+    it('ignores non-Ctrl/Cmd+A shortcuts', () => {
+        setupThread()
+        for (const event of [
+            new KeyboardEvent('keydown', { key: 'a' }),
+            new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, altKey: true }),
+            new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, shiftKey: true }),
+            new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }),
+        ]) {
+            expect(applyGlobalSelectAll(event)).toBe(false)
+            expect(event.defaultPrevented).toBe(false)
+        }
+    })
+
+    it('leaves select-all to the browser when focus is in the composer', () => {
+        setupThread()
+        const composer = document.createElement('div')
+        composer.setAttribute('contenteditable', 'plaintext-only')
+        const event = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, cancelable: true })
+        Object.defineProperty(event, 'target', { value: composer })
+        expect(applyGlobalSelectAll(event)).toBe(false)
+        expect(event.defaultPrevented).toBe(false)
+        expect(window.getSelection()?.toString()).toBe('')
+    })
+
+    it('does nothing when the thread is absent', () => {
+        const event = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, cancelable: true })
+        expect(applyGlobalSelectAll(event)).toBe(false)
+        expect(event.defaultPrevented).toBe(false)
     })
 })
 
