@@ -125,6 +125,24 @@ export class DshClient {
         return response.result.value
     }
 
+    async subagentList(parentSessionId: string): Promise<Array<{
+        id: string
+        mode: 'one-shot' | 'continuable'
+        activity: 'running' | 'inactive'
+    }>> {
+        const response = await this.api.subagents.list({ parentSessionId: SessionId(parentSessionId) })
+        if (!response.result.ok) {
+            throw new DshRpcError(response.result.error.code, response.result.error.message, response.result.error.details)
+        }
+        return response.result.value.entries
+            .filter((entry) => entry.kind === 'child')
+            .map((entry) => ({
+                id: entry.id,
+                mode: entry.mode,
+                activity: entry.activity
+            }))
+    }
+
     async subagentHistory(options: {
         parentSessionId: string
         childSessionId: string
@@ -169,6 +187,17 @@ export class DshClient {
             throw new DshRpcError(response.result.error.code, response.result.error.message, response.result.error.details)
         }
         return response.result.value
+    }
+
+    /** Reserve the prompt's wire rpcId BEFORE dispatch so localId binding is
+     *  registered ahead of the HTTP round-trip (the host may emit the
+     *  user/message event before the prompt response returns). */
+    reservePromptRpcId(): string {
+        const wire = this.api as unknown as { __reserveRpcId?: () => string }
+        if (typeof wire.__reserveRpcId === 'function') {
+            return wire.__reserveRpcId()
+        }
+        return crypto.randomUUID()
     }
 
     async prompt(options: {

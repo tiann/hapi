@@ -64,6 +64,8 @@ export class DshEventBridge {
     private readonly childProjectors = new Map<string, DshProjector>()
     /** Highest forwarded native seq per child session (subagent reconnect gap-fill anchor). */
     private readonly childLastSeq = new Map<string, number>()
+    /** Live child events buffered while that child's history replay is in flight. */
+    private readonly childBuffers = new Map<string, Array<import('@deepseek-ai/dsh-session/types').SessionEvent>>()
     /** Highest forwarded seq per projection key — stale bootstrap responses
      *  (older than a live frame already forwarded) are dropped. */
     private readonly projectionSeqByKey = new Map<string, number>()
@@ -459,7 +461,14 @@ export class DshEventBridge {
             return
         }
         // Subagent child events: persist natively under the child's session id
-        // so subagent activity survives replay without flattening.
+        // so subagent activity survives replay without flattening. While that
+        // child's history replay is in flight, buffer instead of forwarding —
+        // advancing the cursor mid-fetch would let the replay discard the gap.
+        const childBuffer = this.childBuffers.get(sessionId)
+        if (childBuffer) {
+            childBuffer.push(event)
+            return
+        }
         const seenChildSeq = this.childLastSeq.get(sessionId) ?? -1
         if (event.seq <= seenChildSeq) return
         this.childLastSeq.set(sessionId, event.seq)
@@ -476,16 +485,32 @@ export class DshEventBridge {
         }
     }
 
-    /** Gap-fill every known subagent journal after a reconnect: child events
-     *  are NOT part of root session.history, so without this any child
-     *  activity during a mux outage would be permanently missing from the
-     *  durable dsh_native journal. */
+    /** Gap-fill every subagent journal after a reconnect: child events are
+     *  NOT part of root session.history, so without this any child activity
+     *  during a mux outage would be permanently missing from the durable
+     *  dsh_native journal. Children created entirely during the outage are
+     *  discovered via subagent.list (which also carries each child's mode). */
     private async backfillChildJournals(): Promise<void> {
+        const known = new Map<string, 'one-shot' | 'continuable'>()
         for (const childSessionId of this.childLastSeq.keys()) {
+            known.set(childSessionId, 'continuable')
+        }
+        try {
+            const discovered = await this.options.client.subagentList(this.options.dshSessionId)
+            for (const child of discovered) {
+                known.set(child.id, child.mode)
+            }
+        } catch (error) {
+            logger.debug(`[${this.logTag}] subagent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        for (const [childSessionId, mode] of known) {
             const anchor = this.childLastSeq.get(childSessionId) ?? -1
+            // Buffer live frames for this child while its replay is in flight
+            // (advancing the cursor mid-fetch would discard the gap).
+            this.childBuffers.set(childSessionId, [])
             const collected: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
             let beforeSeq: number | undefined
-            let mode: 'continuable' | 'one-shot' = 'continuable'
+            let attemptMode: 'continuable' | 'one-shot' = mode
             while (true) {
                 let events: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
                 let hasMore = false
@@ -493,17 +518,16 @@ export class DshEventBridge {
                     const pageResult = await this.options.client.subagentHistory({
                         parentSessionId: this.options.dshSessionId,
                         childSessionId,
-                        mode,
+                        mode: attemptMode,
                         ...(beforeSeq !== undefined ? { beforeSeq } : {}),
                         maxMessages: 200
                     })
                     events = pageResult.events.map((entry) => entry.event)
                     hasMore = pageResult.hasMore
                 } catch (error) {
-                    if (mode === 'continuable') {
-                        // One-shot children reject continuable history; retry
-                        // once with the one-shot vocabulary.
-                        mode = 'one-shot'
+                    if (attemptMode === 'continuable') {
+                        // Fall back to the one-shot vocabulary once.
+                        attemptMode = 'one-shot'
                         continue
                     }
                     logger.debug(`[${this.logTag}] subagent backfill failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`)
@@ -522,6 +546,13 @@ export class DshEventBridge {
                     if (event.seq <= (this.childLastSeq.get(childSessionId) ?? -1)) return
                     this.handleSessionEvent(childSessionId, event, 'backfill')
                 })
+            // Release buffered live frames, oldest first; the seq guard skips
+            // anything the replay already forwarded.
+            const buffered = this.childBuffers.get(childSessionId) ?? []
+            this.childBuffers.delete(childSessionId)
+            buffered
+                .sort((a, b) => a.seq - b.seq)
+                .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live'))
         }
     }
 

@@ -549,6 +549,14 @@ export async function runDsh(opts: {
         session.emitSessionReady();
         session.onUserMessage((message, localId) => {
             const text = message.content.text;
+            // Reserve the wire rpcId BEFORE the HTTP round-trip and register
+            // the localId binding immediately: the host may emit the
+            // user/message event (echoing the rpcId) before the prompt
+            // response returns, and the correlation must already exist.
+            const promptRpcId = client.reservePromptRpcId();
+            if (localId) {
+                pendingLocalIdByRpcId.set(promptRpcId, localId);
+            }
             promptChain = promptChain.then(async () => {
                 // Uploads are registered under the HAPI row id; fork children
                 // carry a distinct native DSH id, so validate against the
@@ -559,9 +567,6 @@ export async function runDsh(opts: {
                     mode: 'queue',
                     content
                 });
-                if (localId) {
-                    pendingLocalIdByRpcId.set(result.rpcId, localId);
-                }
                 return result;
             }).then(() => {
                 // The DSH host owns the queue from here; mark the HAPI message
@@ -572,8 +577,9 @@ export async function runDsh(opts: {
                 }
             }).catch((error) => {
                 logger.debug(`[dsh] prompt failed: ${error instanceof Error ? error.message : String(error)}`);
-                // Rejected prompts never reach the host, so no rpcId was
-                // registered; nothing to clean from the anchor map.
+                // A prompt that never reached the host will never produce a
+                // user/message event; drop its stale binding.
+                pendingLocalIdByRpcId.delete(promptRpcId);
                 session.sendAgentMessage({
                     type: 'error',
                     message: `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`

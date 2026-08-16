@@ -2,7 +2,7 @@ import { AbstractApiClient, type IApiClient } from '@deepseek-ai/dsh-host-apipro
 import { muxFrameSchema, hostFrameSchema } from '@deepseek-ai/dsh-host-apiproxy/api/events.schema'
 import { serverRequestSchema } from '@deepseek-ai/dsh-host-apiproxy/api/rpc.schema'
 import type { ApiProxy, HostFrame, MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
-import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
+import type { RpcId as DshRpcId, RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 
 /**
  * Official event-stream WebSocket pathnames (owned by
@@ -33,6 +33,29 @@ export class DshNodeTransport extends AbstractApiClient {
 
     protected override doFetch(input: URL, init?: RequestInit): Promise<Response> {
         return fetch(input, init)
+    }
+
+    /** rpcIds reserved by callers BEFORE the unary call (prompt identity):
+     *  mintRpcId drains this queue first, so the wire rpcId is known to the
+     *  caller before the request leaves — even if the host's user/message
+     *  event beats the HTTP response back. */
+    private reservedRpcIds: DshRpcId[] = []
+
+    reserveRpcId(): DshRpcId {
+        const id = crypto.randomUUID() as DshRpcId
+        this.reservedRpcIds.push(id)
+        return id
+    }
+
+    /** Structural alias for consumers that hold the client as the base type. */
+    __reserveRpcId(): string {
+        return this.reserveRpcId()
+    }
+
+    protected override mintRpcId(): DshRpcId {
+        const reserved = this.reservedRpcIds.shift()
+        if (reserved) return reserved
+        return super.mintRpcId()
     }
 
     protected override openMux(
