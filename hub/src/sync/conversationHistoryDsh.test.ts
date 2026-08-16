@@ -120,4 +120,153 @@ describe('DSH conversation-history hub integration', () => {
             engine.stop()
         }
     })
+
+    it('F1: seeds dshEventCursor on the child from the fork nativeCursor', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('dsh-f1-src', {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-f1-native',
+                capabilities: { conversationHistory: { forkCurrent: true } },
+                conversationHistoryPoints: { local1: true },
+                conversationHistoryIndexes: { local1: 3 },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+            store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
+            store.messages.markMessagesInvoked(source.id, ['local1'], Date.now())
+
+            ;(engine as any).rpcGateway.forkConversation = async () => {
+                return { nativeSessionId: 'dsh-f1-child-native', nativeCursor: 42 }
+            }
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
+                return { type: 'success', sessionId: args[12] }
+            }
+            ;(engine as any).waitForExactNativeForkBound = async () => true
+            let captured: Record<string, unknown> | undefined
+            const cache = (engine as any).sessionCache
+            const originalCreate = cache.getOrCreateSession.bind(cache)
+            cache.getOrCreateSession = (...args: unknown[]) => {
+                if (typeof args[0] === 'string' && args[0].startsWith('fork:')) {
+                    captured = args[1] as Record<string, unknown>
+                }
+                return originalCreate(...args)
+            }
+
+            const result = await engine.forkConversation(source.id, 'default')
+            expect(result.type).toBe('success')
+            expect(captured?.dshEventCursor).toBe(42)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('F2: fork without a nativeCursor leaves the child cursor unset', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('dsh-f2-src', {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-f2-native',
+                capabilities: { conversationHistory: { forkCurrent: true } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+
+            ;(engine as any).rpcGateway.forkConversation = async () => {
+                return { nativeSessionId: 'dsh-f2-child-native' }
+            }
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
+                return { type: 'success', sessionId: args[12] }
+            }
+            ;(engine as any).waitForExactNativeForkBound = async () => true
+            let captured: Record<string, unknown> | undefined
+            const cache = (engine as any).sessionCache
+            const originalCreate = cache.getOrCreateSession.bind(cache)
+            cache.getOrCreateSession = (...args: unknown[]) => {
+                if (typeof args[0] === 'string' && args[0].startsWith('fork:')) {
+                    captured = args[1] as Record<string, unknown>
+                }
+                return originalCreate(...args)
+            }
+
+            const result = await engine.forkConversation(source.id, 'default')
+            expect(result.type).toBe('success')
+            expect((captured as Record<string, unknown>).dshEventCursor).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('F3: rewind archive CAS failure cleans up the live fork child', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('dsh-f3-src', {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-f3-native',
+                capabilities: { conversationHistory: { forkAtMessage: true, rewindToMessage: true } },
+                conversationHistoryPoints: { local1: true },
+                conversationHistoryIndexes: { local1: 4 },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+            store.messages.addMessage(source.id, { role: 'user', content: 'anchor' }, 'local1')
+            store.messages.markMessagesInvoked(source.id, ['local1'], Date.now())
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                return { success: true, truncateFromLocalId: 'local1', messages: [] }
+            }
+            ;(engine as any).rpcGateway.forkConversation = async () => {
+                return { nativeSessionId: 'dsh-f3-child-native' }
+            }
+            ;(engine as any).rpcGateway.killSession = async () => {}
+            let cleanupChild: string | null = null
+            ;(engine as any).cleanupFailedForkChild = async (childId: string) => {
+                cleanupChild = childId
+                return { type: 'success' }
+            }
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
+                return { type: 'success', sessionId: args[12] }
+            }
+            ;(engine as any).waitForExactNativeForkBound = async () => true
+            // Force every archive CAS (supersededBySessionId write) to fail
+            // with version-mismatch, on every retry attempt.
+            const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+            store.sessions.updateSessionMetadata = ((id: string, metadata: unknown, expectedVersion: number, namespace: string, opts?: unknown) => {
+                const meta = metadata as { supersededBySessionId?: string }
+                if (id === source.id && meta.supersededBySessionId) {
+                    return { result: 'version-mismatch', version: 1, value: null }
+                }
+                return originalUpdate(id, metadata, expectedVersion, namespace, opts as never)
+            }) as typeof store.sessions.updateSessionMetadata
+
+            const result = await engine.rewindConversation(source.id, 'default', 'local1')
+            expect(result.type).toBe('error')
+            expect(cleanupChild).not.toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('G1: resolveAgentResumeId resolves dshSessionId for DSH sessions', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('dsh-g1-src', {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-g1-native',
+            }, null, 'default')
+            const resolved = (engine as any).resolveAgentResumeId(session, 'default')
+            expect(resolved).toBe('dsh-g1-native')
+        } finally {
+            engine.stop()
+        }
+    })
 })

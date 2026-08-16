@@ -113,7 +113,7 @@ export function buildSessionMetadata(options: {
     }
 }
 
-function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Partial<Metadata> {
+export function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Partial<Metadata> {
     if (!metadata) return {}
 
     const preserved: Partial<Metadata> = {}
