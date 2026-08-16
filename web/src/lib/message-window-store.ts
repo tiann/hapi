@@ -446,14 +446,15 @@ function trimPreservingQueued(
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
     const agentRuns = nonQueued.filter(isCodexAgentRunMessage)
     const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
-    // DSH journal/state rows are invisible (folded into panels); keep them
-    // alongside but never let them consume the visible message budget.
-    const invisible = regular.filter(isInvisibleJournalRow)
-    const visible = regular.filter((message) => !isInvisibleJournalRow(message))
+    // DSH journal/state rows are invisible (folded into panels); keep only
+    // the newest state snapshot alongside and never let them consume the
+    // visible message budget.
+    const latestState = regular.filter(isDshStateRow).slice(-1)
+    const visible = regular.filter((message) => !isDshStateRow(message))
     const visibleTrim = sliceForTrim(visible, Math.max(0, regularLimit - queued.length), mode)
     const agentRunTrim = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, mode)
     return {
-        kept: mergeMessages([...visibleTrim.kept, ...invisible, ...agentRunTrim.kept], queued),
+        kept: mergeMessages([...visibleTrim.kept, ...latestState, ...agentRunTrim.kept], queued),
         dropped: [...visibleTrim.dropped, ...agentRunTrim.dropped]
     }
 }
@@ -481,10 +482,22 @@ function shouldRetainWindowMessage(message: DecryptedMessage): boolean {
         || normalizeDecryptedMessage(message) !== null
 }
 
-/** DSH journal/state rows are retained for the panels but are invisible; they
- *  must not consume the visible 400-message window budget. */
+/** DSH state rows are retained for the panels but are invisible; only the
+ *  latest snapshot is needed (higher-seq wins on the client fold), so they
+ *  neither consume the visible window budget nor grow unboundedly. */
 function isInvisibleJournalRow(message: DecryptedMessage): boolean {
     return isDshNativePayloadMessage(message)
+}
+
+/** Only the newest dsh_state snapshot matters to the client fold. */
+function isDshStateRow(message: DecryptedMessage): boolean {
+    const record = message.content && typeof message.content === 'object'
+        ? (message.content as { content?: unknown }).content
+        : null
+    const data = record && typeof record === 'object'
+        ? (record as { data?: unknown }).data
+        : null
+    return typeof data === 'object' && data !== null && (data as { type?: unknown }).type === 'dsh_state'
 }
 
 function countNewRenderableMessages(

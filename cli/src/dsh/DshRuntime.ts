@@ -156,7 +156,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     const runtimeOutdated = !runtimeMissing && (() => {
         try {
             const manifest = JSON.parse(readFileSync(
-                join(binPath, '..', '..', '..', '..', '..', 'package.json'),
+                join(binPath, '..', '..', '..', 'package.json'),
                 'utf8'
             )) as { version?: string }
             return manifest.version !== DSH_RUNTIME_VERSION

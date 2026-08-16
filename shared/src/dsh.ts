@@ -253,7 +253,7 @@ export const DshStateSnapshotSchema = z.object({
     queue: DshQueueSnapshotSchema.optional(),
     jobs: DshJobsSnapshotSchema.optional(),
     goal: DshGoalStateSchema.optional(),
-    questions: DshPendingQuestionsSchema.optional(),
+    questions: DshPendingQuestionsSchema.nullable().optional(),
     approvals: z.array(DshPendingApprovalSchema).optional(),
     /** Current model selection (session.models().current). */
     model: z.object({

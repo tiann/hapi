@@ -370,19 +370,34 @@ export async function runDsh(opts: {
                     if (config.model === null) {
                         return;
                     }
-                    const provider = await resolveModelProvider(config.model);
-                    if (!provider) {
-                        throw new Error(`Unknown DSH model: ${config.model}`);
+                    // Provider-qualified selection ({provider, modelId} from
+                    // the web) keeps its provider identity; a bare id is
+                    // resolved against the live catalog.
+                    let provider: string | null
+                    let modelId: string
+                    if (typeof config.model === 'object' && config.model !== null) {
+                        provider = typeof (config.model as { provider?: unknown }).provider === 'string'
+                            ? (config.model as { provider: string }).provider
+                            : null
+                        modelId = typeof (config.model as { modelId?: unknown }).modelId === 'string'
+                            ? (config.model as { modelId: string }).modelId
+                            : ''
+                    } else {
+                        modelId = config.model
+                        provider = await resolveModelProvider(modelId)
                     }
-                    currentModelId = config.model;
+                    if (!provider || modelId.length === 0) {
+                        throw new Error(`Unknown DSH model: ${JSON.stringify(config.model)}`);
+                    }
+                    currentModelId = modelId;
                     const catalog = await client.sessionModels(created.sessionId);
                     const match = catalog.groups
                         .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
-                        .find((m) => m.id === config.model);
+                        .find((m) => m.id === modelId);
                     await client.selectModel({
                         sessionId: created.sessionId,
                         provider,
-                        model: config.model,
+                        model: modelId,
                         ...(match?.reasoning?.defaultEffort !== undefined
                             ? { reasoningEffort: match.reasoning.defaultEffort }
                             : {})

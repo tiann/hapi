@@ -252,9 +252,9 @@ export class DshEventBridge {
                 break
             }
             case 'question/resolved': {
-                // Undefined would be dropped by JSON serialization; an empty
-                // items list is the durable "no pending question" value.
-                this.emitState({ seq: this.seqOf(), questions: { questionRpcId: '', items: [] } })
+                // Null is the durable "no pending question" value and does
+                // not render an empty blocking dialog.
+                this.emitState({ seq: this.seqOf(), questions: null })
                 break
             }
             case 'session/queue': {

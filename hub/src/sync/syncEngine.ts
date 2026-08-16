@@ -1716,7 +1716,7 @@ export class SyncEngine {
             return false
         }
         try {
-            this.store.sessions.updateSessionMetadata(
+            const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
                 {
                     ...session.metadata,
@@ -1730,6 +1730,11 @@ export class SyncEngine {
                 namespace,
                 { touchUpdatedAt: false }
             )
+            if (result.result !== 'success') {
+                // CAS/version mismatch or storage rejection — do not report
+                // success for an un-archived source.
+                return false
+            }
         } catch {
             return false
         }

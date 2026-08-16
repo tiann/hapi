@@ -41,7 +41,9 @@ export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsP
         return run
     }, [dshAction])
 
-    const questions = snapshot.questions ?? null
+    const questions = snapshot.questions && snapshot.questions.items.length > 0
+        ? snapshot.questions
+        : null
     const summary = statusSummary(snapshot) ?? []
     if (summary.length === 0 && !questions) {
         return null
