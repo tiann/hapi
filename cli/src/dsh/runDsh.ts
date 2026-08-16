@@ -114,6 +114,10 @@ export async function runDsh(opts: {
     // reference it.
     let pendingCursorFlush: ReturnType<typeof setTimeout> | null = null;
     let latestCursorSeq = 0;
+    // Live-forwarded root seq (updated by the bridge on every event) —
+    // fork-current cursor fallback must not depend on the throttle
+    // window's persisted metadata.
+    let latestForwardedSeq = 0;
     const flushCursor = () => {
         if (pendingCursorFlush) {
             clearTimeout(pendingCursorFlush);
@@ -370,6 +374,7 @@ export async function runDsh(opts: {
                 // Keep the LATEST seq: the throttle timer must read the
                 // current value at flush time, not the event that armed it.
                 latestCursorSeq = seq;
+                latestForwardedSeq = seq;
                 if (pendingCursorFlush) return;
                 pendingCursorFlush = setTimeout(() => {
                     pendingCursorFlush = null;
@@ -442,6 +447,7 @@ export async function runDsh(opts: {
             // never re-persists rows the hub already hydrated.
             if (nativeCursor < 0) {
                 const fallback = atSeq
+                    ?? latestForwardedSeq
                     ?? session.getMetadata()?.dshEventCursor
                     ?? -1;
                 nativeCursor = fallback;

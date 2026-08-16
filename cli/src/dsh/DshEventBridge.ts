@@ -545,10 +545,7 @@ export class DshEventBridge {
                         continue
                     }
                     logger.debug(`[${this.logTag}] subagent backfill failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`)
-                    // Keep the live buffer sealed and leave the cursor
-                    // untouched: the next reconnect retries the gap instead
-                    // of permanently skipping it.
-                    return
+                    break
                 }
                 collected.push(...events)
                 const reachedAnchor = events.some((event) => event.seq <= anchor)
@@ -564,7 +561,10 @@ export class DshEventBridge {
                     this.handleSessionEvent(childSessionId, event, 'backfill')
                 })
             // Release buffered live frames, oldest first; the seq guard skips
-            // anything the replay already forwarded.
+            // anything the replay already forwarded. On a FAILED replay the
+            // buffered frames still forward (they advance the durable cursor),
+            // and the next reconnect's history fetch closes whatever gap the
+            // outage left — the child can never stay permanently buffered.
             const buffered = this.childBuffers.get(childSessionId) ?? []
             this.childBuffers.delete(childSessionId)
             buffered

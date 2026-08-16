@@ -151,6 +151,8 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.dshRuntimeVersion !== undefined) preserved.dshRuntimeVersion = metadata.dshRuntimeVersion
     if (metadata.dshEventCursor !== undefined) preserved.dshEventCursor = metadata.dshEventCursor
+    // Per-child subagent journal cursors (durable across restarts).
+    if (metadata.dshChildCursors !== undefined) preserved.dshChildCursors = metadata.dshChildCursors
     if (metadata.conversationHistoryPoints !== undefined) {
         preserved.conversationHistoryPoints = metadata.conversationHistoryPoints
     }

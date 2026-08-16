@@ -172,7 +172,9 @@ export const MetadataSchema = z.object({
     // share a modelId.
     piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
     // Same provider-qualified selection for DeepSeek Harness sessions.
-    dshSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    dshSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    // Per-child subagent journal cursors (durable across CLI restarts).
+    dshChildCursors: z.record(z.string(), z.number()).optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

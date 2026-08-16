@@ -1721,33 +1721,38 @@ export class SyncEngine {
                 return false
             }
         }
-        const session = this.sessionCache.refreshSession(sessionId)
-        if (!session?.metadata) {
-            return false
-        }
-        try {
-            const result = this.store.sessions.updateSessionMetadata(
-                sessionId,
-                {
-                    ...session.metadata,
-                    supersededBySessionId: replacementSessionId,
-                    lifecycleState: 'archived',
-                    lifecycleStateSince: Date.now(),
-                    archivedBy: 'hub',
-                    archiveReason: 'Rewound (DSH fork)'
-                },
-                session.metadataVersion,
-                namespace,
-                { touchUpdatedAt: false }
-            )
-            if (result.result !== 'success') {
-                // CAS/version mismatch or storage rejection — do not report
-                // success for an un-archived source.
+        // The source CLI's final metadata flush (cursor etc.) may land DURING
+        // the kill, bumping metadataVersion — so re-read the row after the
+        // kill and retry the CAS once before giving up.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const session = this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) {
                 return false
             }
-        } catch {
-            return false
+            try {
+                const result = this.store.sessions.updateSessionMetadata(
+                    sessionId,
+                    {
+                        ...session.metadata,
+                        supersededBySessionId: replacementSessionId,
+                        lifecycleState: 'archived',
+                        lifecycleStateSince: Date.now(),
+                        archivedBy: 'hub',
+                        archiveReason: 'Rewound (DSH fork)'
+                    },
+                    session.metadataVersion,
+                    namespace,
+                    { touchUpdatedAt: false }
+                )
+                if (result.result === 'success') {
+                    return true
+                }
+                // CAS/version mismatch: retry once with the fresh row.
+            } catch {
+                return false
+            }
         }
+        return false
         this.sessionCache.refreshSession(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
         return true
