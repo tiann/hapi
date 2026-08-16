@@ -49,9 +49,12 @@ function setup(options?: {
     h.subscribedOnOpen = { sessionId: SESSION, lastSeq: 0 }
     if (options?.history) {
         const original = h.onRequest
-        h.onRequest = (endpoint, payload) => {
+        h.onRequest = async (endpoint, payload) => {
             if (endpoint === 'session.history') {
-                const custom = options.history!(payload as { beforeSeq?: number; maxMessages?: number })
+                // Await: async handlers return Promise<undefined> which would
+                // otherwise pass the !== undefined check and reach the server
+                // as an undefined result.
+                const custom = await options.history!(payload as { beforeSeq?: number; maxMessages?: number })
                 if (custom !== undefined) return custom
             }
             return original(endpoint, payload)
