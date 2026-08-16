@@ -1167,6 +1167,7 @@ export default {
   'dsh.send': 'Send',
   'dsh.sending': 'Sending…',
   'dsh.composerPlaceholder': 'Message the agent… (Enter to send)',
+'dsh.goal': 'Goal',
   'dsh.queue': 'Queue',
   'dsh.queueEmptyItem': '(empty message)',
   'dsh.steer': 'Steer',

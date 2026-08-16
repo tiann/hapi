@@ -174,7 +174,7 @@ export const MetadataSchema = z.object({
     // Same provider-qualified selection for DeepSeek Harness sessions.
     dshSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
     // Per-child subagent journal cursors (durable across CLI restarts).
-    dshChildCursors: z.record(z.string(), z.number()).optional()
+    dshChildCursors: z.record(z.string(), z.number().int().nonnegative()).optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

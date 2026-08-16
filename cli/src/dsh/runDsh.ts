@@ -138,7 +138,7 @@ export async function runDsh(opts: {
             ...(latestCursorSeq > 0 ? { dshEventCursor: latestCursorSeq } : {}),
             ...(childCursors ? {
                 dshChildCursors: {
-                    ...((metadata as { dshChildCursors?: Record<string, number> }).dshChildCursors ?? {}),
+                    ...((metadata as { dshChildCursors?: Record<string, number> } | null | undefined)?.dshChildCursors ?? {}),
                     ...childCursors
                 }
             } : {})
@@ -329,9 +329,9 @@ export async function runDsh(opts: {
                 : null
             return stored && typeof stored === 'object' ? stored : undefined
         })()
-        // Latest child seq per child id, merged into metadata on cursor flush
-        // so subagent journals survive CLI restarts without replay.
-        const childCursorByChild = new Map<string, number>()
+        // (childCursorByChild lives at the outer scope beside flushCursor —
+        // a nested redeclaration here would shadow it and child cursors
+        // would never persist.)
         const scheduleCursorFlush = () => {
             if (pendingCursorFlush) return;
             pendingCursorFlush = setTimeout(() => {

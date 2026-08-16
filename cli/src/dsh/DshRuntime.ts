@@ -72,10 +72,6 @@ export function probeFreePort(): Promise<number> {
 }
 
 /** Whether the pinned DSH runtime binary is already installed. */
-export function isDshRuntimeInstalled(): boolean {
-    return existsSync(defaultDshRuntimeBin())
-}
-
 /**
  * Install the pinned DSH runtime under HAPI_HOME/dsh-runtime. Prefers bun
  * (fast), falls back to npm (universally present where node exists).
@@ -283,16 +279,19 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
             // A host that binds the port but never completes describe() must
             // not hang startup forever: enforce the deadline per request.
             const remainingMs = Math.max(1, deadline - Date.now())
+            let timer: ReturnType<typeof setTimeout> | undefined
             const response = await Promise.race([
                 transport.host.describe({}),
                 new Promise<never>((_, reject) => {
-                    const timer = setTimeout(
+                    timer = setTimeout(
                         () => reject(new Error('DSH readiness request timed out')),
                         remainingMs
                     )
                     timer.unref?.()
                 })
-            ])
+            ]).finally(() => {
+                if (timer) clearTimeout(timer)
+            })
             if (!response.result.ok) {
                 throw new Error(`host.describe failed: ${response.result.error.message}`)
             }
@@ -301,6 +300,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         } catch (error) {
             if (Date.now() >= deadline) {
                 killChild('SIGTERM')
+                rmSync(overlayDir, { recursive: true, force: true })
                 throw new DshRuntimeStartErrorImpl(
                     'timeout',
                     `DSH host did not become ready within ${readyTimeoutMs}ms: ${error instanceof Error ? error.message : String(error)}`,
@@ -314,6 +314,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
 
     if (info === null) {
         killChild('SIGTERM')
+        rmSync(overlayDir, { recursive: true, force: true })
         throw new DshRuntimeStartErrorImpl(
             'timeout',
             `DSH host did not become ready within ${readyTimeoutMs}ms`,
@@ -322,8 +323,8 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     }
 
     logger.debug(`[${logTag}] DSH host ready: ${baseUrl} hostVersion=${info.version} pinned=${DSH_RUNTIME_VERSION} cwd=${info.cwd}`)
-    rmSync(overlayDir, { recursive: true, force: true })
 
+    rmSync(overlayDir, { recursive: true, force: true })
     return {
         process: child,
         baseUrl,
@@ -333,10 +334,15 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         stop: async (stopOptions?: { timeoutMs?: number }) => {
             const timeoutMs = stopOptions?.timeoutMs ?? STOP_TIMEOUT_MS
             await new Promise<void>((resolve) => {
-                const settled = () => resolve()
+                let killer: ReturnType<typeof setTimeout> | undefined
+                const settled = () => {
+                    if (killer) clearTimeout(killer)
+                    child.removeListener('exit', settled)
+                    resolve()
+                }
                 child.once('exit', settled)
                 child.kill('SIGTERM')
-                const killer = setTimeout(() => {
+                killer = setTimeout(() => {
                     if (child.exitCode === null && child.signalCode === null) {
                         child.kill('SIGKILL')
                     }
@@ -344,7 +350,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
                 killer.unref()
                 // Also settle if the child was already gone.
                 if (child.exitCode !== null || child.signalCode !== null) {
-                    resolve()
+                    settled()
                 }
             })
         }

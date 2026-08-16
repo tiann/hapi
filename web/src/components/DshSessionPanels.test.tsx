@@ -62,7 +62,8 @@ describe('DshSessionPanels (standard HAPI view integration)', () => {
         ])
         // Collapsed strip shows the summary badge; the objective renders only
         // after expanding (higher-seq snapshot wins).
-        expect(screen.getByText('goal: active')).toBeTruthy()
+        expect(screen.getByText(/Goal:/)).toBeTruthy()
+        expect(screen.getByText(/active/)).toBeTruthy()
         expect(screen.queryByText('ship it now')).toBeNull()
         fireEvent.click(screen.getByText('DeepSeek Harness'))
         expect(screen.getByText('ship it now')).toBeTruthy()

@@ -20,7 +20,6 @@ export class DshProjector {
     private readonly steps = new Map<string, StepState>()
     private readonly pendingApprovals = new Map<string, string>()
     private latestContextWindow: number | null = null
-    private currentTurn = 0
     private latestProjections: Partial<DshStateSnapshot> = {}
 
     constructor(private readonly dshSessionId: string) {}
@@ -34,7 +33,7 @@ export class DshProjector {
         const key = `${turn}:${step}`
         let state = this.steps.get(key)
         if (!state) {
-            state = { turn, step, blocks: new Map(), finalizedTexts: [], finalizedReasonings: [] }
+            state = { turn, step, blocks: new Map() }
             this.steps.set(key, state)
         }
         return state
@@ -55,7 +54,6 @@ export class DshProjector {
 
         switch (event.type) {
             case 'turn/start': {
-                this.currentTurn = event.data.turn
                 out.push({ type: 'dsh_native', event: native, dshSeq: event.seq })
                 break
             }
@@ -82,7 +80,6 @@ export class DshProjector {
             case 'assistant/message': {
                 const { turn, step, message, usage } = event.data
                 const state = this.stepState(turn, step)
-                state.finished = true
                 // Emit each block with the SAME stream id the chunk stream used
                 // (blockId per block index), so the reducer merges instead of
                 // duplicating. block-end already emitted live finals with these
@@ -131,7 +128,7 @@ export class DshProjector {
                 const resultBlock = message.content[0]
                 const callId = resultBlock?.type === 'tool-result' ? resultBlock.toolCallId : 'unknown'
                 const outputText = resultBlock?.content
-                    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+                    ?.filter((block): block is { type: 'text'; text: string } => block.type === 'text')
                     .map((block) => block.text)
                     .join('\n') ?? ''
                 out.push({
@@ -166,9 +163,6 @@ export class DshProjector {
                 out.push({ type: 'dsh_native', event: native, dshSeq: event.seq })
                 break
             }
-            case 'session/end-seed': {
-                break
-            }
             default: {
                 // todo/write, plan, goal, subagent, workflow, job and any
                 // plugin-extended event types: persist natively, never flatten.
@@ -183,7 +177,6 @@ export class DshProjector {
         const state = this.stepState(turn, step)
         switch (chunk.type) {
             case 'block-start': {
-                state.streamed = true
                 const kind: BlockState['kind'] = chunk.blockType === 'text' || chunk.blockType === 'reasoning' || chunk.blockType === 'tool-call'
                     ? chunk.blockType
                     : 'text'
@@ -243,7 +236,6 @@ export class DshProjector {
                 const block = state.blocks.get(chunk.index)
                 if (!block) return
                 if (block.kind === 'text' && block.text.length > 0) {
-                    state.finalizedTexts.push(block.text)
                     out.push({
                         type: 'text',
                         text: block.text,
@@ -251,7 +243,6 @@ export class DshProjector {
                         streamSnapshot: true
                     })
                 } else if (block.kind === 'reasoning' && block.text.length > 0) {
-                    state.finalizedReasonings.push(block.text)
                     out.push({
                         type: 'reasoning',
                         text: block.text,
@@ -317,8 +308,8 @@ export class DshProjector {
     /** Current whole-session state snapshot. */
     stateSnapshot(): DshStateSnapshot {
         return {
-            seq: this.latestSeq,
-            ...this.latestProjections
+            ...this.latestProjections,
+            seq: this.latestSeq
         }
     }
 
@@ -342,12 +333,6 @@ type StepState = {
     turn: number
     step: number
     blocks: Map<number, BlockState>
-    /** Any block-start chunk observed (distinct from final assistant/message). */
-    streamed?: boolean
-    /** Text/reasoning finals already emitted at block-end (in block order). */
-    finalizedTexts: string[]
-    finalizedReasonings: string[]
-    finished?: boolean
 }
 
 function safeJsonParse(raw: string): unknown {

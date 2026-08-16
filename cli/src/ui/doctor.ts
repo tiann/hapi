@@ -11,11 +11,10 @@ import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
 import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/runner/doctor'
-import { defaultDshRuntimeBin } from '@/dsh/DshRuntime'
+import { defaultDshRuntimeBin, readDshRuntimeVersion } from '@/dsh/DshRuntime'
 import { DSH_RUNTIME_VERSION } from '@/dsh/types'
-import { readDshRuntimeVersion } from '@/dsh/DshRuntime'
 import { readRunnerState } from '@/persistence'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
@@ -160,22 +159,23 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         const dshBin = defaultDshRuntimeBin();
         if (existsSync(dshBin)) {
             console.log(`Runtime: ${chalk.green('✓ Installed')} ${chalk.gray(dshBin)}`);
-            try {
-                const installedVersion = readDshRuntimeVersion(dshBin);
-                const pinned = DSH_RUNTIME_VERSION;
-                if (installedVersion === pinned) {
-                    console.log(`Version: ${chalk.green(installedVersion)} (matches pinned ${pinned})`);
-                } else {
-                    console.log(`Version: ${chalk.yellow(installedVersion ?? 'unknown')} (pinned ${pinned} — reinstall with: hapi dsh install)`);
-                }
-            } catch {
-                console.log(`Version: ${chalk.yellow('unknown (package.json unreadable)')}`);
+            const installedVersion = readDshRuntimeVersion(dshBin);
+            const pinned = DSH_RUNTIME_VERSION;
+            if (installedVersion === pinned) {
+                console.log(`Version: ${chalk.green(installedVersion)} (matches pinned ${pinned})`);
+            } else {
+                console.log(`Version: ${chalk.yellow(installedVersion ?? 'unknown')} (pinned ${pinned} — reinstall with: hapi dsh install)`);
             }
         } else {
             console.log(`Runtime: ${chalk.red('❌ Not installed')} ${chalk.gray(dshBin)}`);
             console.log(chalk.gray('  First `dsh` session auto-installs it; requires Node.js on the runner.'));
         }
-        console.log(`Node available: ${chalk.green(existsSync(join(configuration.happyHomeDir, 'dsh-runtime')) ? 'n/a (install pending)' : checkNodeAvailable() ? '✓ yes' : '❌ no (DSH host needs Node.js)')}`);
+        const nodeStatus = existsSync(join(configuration.happyHomeDir, 'dsh-runtime'))
+            ? 'n/a (install pending)'
+            : checkNodeAvailable()
+                ? '✓ yes'
+                : '❌ no (DSH host needs Node.js)'
+        console.log(`Node available: ${chalk.green(nodeStatus)}`);
         console.log('');
 
         // Authentication status (direct-connect)

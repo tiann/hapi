@@ -1166,6 +1166,7 @@ export default {
   'dsh.send': '发送',
   'dsh.sending': '发送中…',
   'dsh.composerPlaceholder': '给 agent 发消息…（回车发送）',
+'dsh.goal': '目标',
   'dsh.queue': '队列',
   'dsh.queueEmptyItem': '（空消息）',
   'dsh.steer': 'Steer',

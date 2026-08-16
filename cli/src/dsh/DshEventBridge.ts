@@ -46,7 +46,6 @@ export type DshEventBridgeOptions = {
     logTag?: string
 }
 
-const CURSOR_FLUSH_MS = 1_000
 
 /**
  * Pumps the official mux + host streams and dispatches frames:
@@ -78,7 +77,6 @@ export class DshEventBridge {
     /** Highest forwarded seq per projection key — stale bootstrap responses
      *  (older than a live frame already forwarded) are dropped. */
     private readonly projectionSeqByKey = new Map<string, number>()
-    private lastCursorFlush = 0
 
 
     async start(signal: AbortSignal): Promise<void> {
@@ -122,10 +120,11 @@ export class DshEventBridge {
             // A failed backfill aborts the generation and retries: releasing
             // buffered live events first would advance lastForwardedSeq past
             // the missing range, which a later reconnect could never recover.
+            // While journal recovery runs, seal EVERY child journal — known
+            // or not — so no child cursor can advance past the outage gap.
+            // Set BEFORE the pumps dispatch frames: queued frames flushed on
+            // reconnect can arrive before the root subscription resolves.
             if (!initialBackfillDone) {
-                // While journal recovery runs, seal EVERY child journal —
-                // known or not — so no child cursor can advance past the
-                // outage gap (covers root history fetch AND child replays).
                 this.journalRecoveryInFlight = true
                 const backfilled = await this.backfillAfterCursor()
                 if (!backfilled) {
@@ -173,6 +172,7 @@ export class DshEventBridge {
             signal.removeEventListener('abort', onOuterAbort)
             if (signal.aborted) break
             logger.debug(`[${this.logTag}] streams closed; reconnecting after seq ${this.lastForwardedSeq}`)
+            retryMs = 500
             // Reconnect goes through the SAME generation-safe path as the
             // first generation: streams attach first, live root events are
             // buffered, and only a successful backfill releases them. Fetching
@@ -461,6 +461,8 @@ export class DshEventBridge {
             }
             case 'host/session-removed': {
                 this.childProjectors.delete(frame.sessionId)
+                this.childLastSeq.delete(frame.sessionId)
+                this.childBuffers.delete(frame.sessionId)
                 if (this.subagentIds.delete(frame.sessionId)) {
                     this.emitSubagentCount(this.seqOf())
                 }
@@ -619,11 +621,14 @@ export class DshEventBridge {
             const options = Array.isArray(value.options)
                 ? value.options
                     .filter((o): o is Record<string, unknown> => isObject(o))
-                    .map((o) => ({
-                        value: asString(o.value) ?? '',
-                        name: asString(o.name) ?? asString(o.value) ?? '',
-                        ...(asString(o.description) !== undefined ? { description: asString(o.description)! } : {})
-                    }))
+                    .map((o) => {
+                        const description = asString(o.description)
+                        return {
+                            value: asString(o.value) ?? '',
+                            name: asString(o.name) ?? asString(o.value) ?? '',
+                            ...(description !== undefined ? { description } : {})
+                        }
+                    })
                     .filter((o) => o.value.length > 0)
                 : []
             const currentValue = asString(value.currentValue)
@@ -680,11 +685,15 @@ export class DshEventBridge {
 
 function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
-        const timer = setTimeout(resolve, ms)
-        signal.addEventListener('abort', () => {
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve()
+        }, ms)
+        const onAbort = (): void => {
             clearTimeout(timer)
             resolve()
-        }, { once: true })
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
     })
 }
 

@@ -135,9 +135,11 @@ export function getModelOptionsForFlavor(
     // (session.models). While the catalog is loading or the session is
     // inactive, never fall back to the Claude template list.
     if (flavor === 'dsh') {
-        return customOptions && customOptions.length > 0
-            ? withCurrentModelOption(customOptions, currentModel)
-            : []
+        // Runtime-discovered catalog only; never fall back to the Claude
+        // template list while the catalog is loading or the session is
+        // inactive. The populated case already returned above through the
+        // generic customOptions branch, so only the empty case lands here.
+        return []
     }
     if (flavor === 'cursor') {
         return withCurrentModelOption([{ value: null, label: CURSOR_AUTO_MODEL_LABEL }], currentModel)

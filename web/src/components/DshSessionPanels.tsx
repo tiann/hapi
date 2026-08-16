@@ -31,11 +31,14 @@ export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsP
     const dshAction = useDshAction(api, sessionId)
     const [open, setOpen] = useState(false)
 
+    // Dispatch swallows failures (callers fire-and-forget with void); the
+    // questions dialog observes errors through its own submit catch, so a
+    // failed action must never surface as an unhandled rejection.
     const dispatch = useMemo(() => {
         const run = (action: DshAction): Promise<unknown> => {
             return dshAction.mutateAsync(action).catch((error: unknown) => {
                 console.error('[dsh] action failed', action.type, error)
-                throw error
+                return undefined
             })
         }
         return run
@@ -44,7 +47,7 @@ export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsP
     const questions = snapshot.questions && snapshot.questions.items.length > 0
         ? snapshot.questions
         : null
-    const summary = statusSummary(snapshot) ?? []
+    const summary = statusSummary(snapshot, t) ?? []
     if (summary.length === 0 && !questions) {
         return null
     }
@@ -73,6 +76,8 @@ export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsP
                     </div>
                 </div>
             ) : null}
+            {/* DSH questions are blocking by design (official semantics): no
+                   dismiss affordance until the agent's question is answered. */}
             {questions ? (
                 <DshQuestionsDialog questions={questions} dispatch={dispatch} onClose={() => {}} />
             ) : null}
@@ -80,18 +85,18 @@ export function DshSessionPanels({ api, sessionId, messages }: DshSessionPanelsP
     )
 }
 
-function statusSummary(snapshot: DshStateSnapshot): string[] | null {
+function statusSummary(snapshot: DshStateSnapshot, t: (key: string) => string): string[] | null {
     const parts: string[] = []
     if (snapshot.goal?.objective) {
-        parts.push(`goal: ${snapshot.goal.status ?? 'active'}`)
+        parts.push(`${t('dsh.goal')}: ${snapshot.goal.status ?? t('dsh.goalStatus.active')}`)
     }
-    const queued = snapshot.queue?.items.filter((item) => item.placement === 'queued').length ?? 0
+    const queued = snapshot.queue?.items?.filter((item) => item.placement === 'queued').length ?? 0
     if (queued > 0) {
-        parts.push(`queue: ${queued}`)
+        parts.push(`${t('dsh.queue')}: ${queued}`)
     }
-    const runningJobs = snapshot.jobs?.jobs.filter((job) => job.status === 'running' || job.status === 'stopping').length ?? 0
+    const runningJobs = snapshot.jobs?.jobs?.filter((job) => job.status === 'running' || job.status === 'stopping').length ?? 0
     if (runningJobs > 0) {
-        parts.push(`jobs: ${runningJobs}`)
+        parts.push(`${t('dsh.jobs')}: ${runningJobs}`)
     }
     return parts.length > 0 ? parts : null
 }

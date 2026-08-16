@@ -11,6 +11,7 @@ import type { RpcId as DshRpcId, RpcRequest } from '@deepseek-ai/dsh-host-apipro
  */
 const MUX_EVENTS_PATH = '/api/events.mux'
 const HOST_EVENTS_PATH = '/api/events.host'
+const SESSION_PROMPT_PATH = '/api/session.prompt'
 
 /**
  * Node/Bun transport for the official DSH apiproxy contract.
@@ -46,12 +47,15 @@ export class DshNodeTransport extends AbstractApiClient {
     ): Promise<{ rpcId: string; result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: unknown } } }> {
         const message = { type: 'client-request', rpcId, method: 'session.prompt', payload }
         // Same POST leg as the official callUnary, with the caller-owned id.
-        const response = await this.doFetch(new URL('/api/session.prompt', this.resolveBase()), {
+        const response = await this.doFetch(new URL(SESSION_PROMPT_PATH, this.resolveBase()), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(message),
             signal: AbortSignal.timeout(30_000)
         })
+        if (!response.ok) {
+            throw new Error(`session.prompt HTTP ${response.status}`)
+        }
         const parsed = (await response.json()) as {
             type: string
             rpcId: string
@@ -102,6 +106,14 @@ export class DshNodeTransport extends AbstractApiClient {
         const handleOpen = (): void => {
             onOpen?.()
         }
+        // Without an error handler an abrupt socket failure can leave the
+        // generator parked forever (no close event); surface it as stream end
+        // so the bridge's reconnect path takes over.
+        socket.addEventListener('error', () => {
+            enqueue({ kind: 'end' })
+            wake?.()
+            wake = undefined
+        })
         const handleMessage = (event: MessageEvent): void => {
             let full: ReturnType<typeof serverRequestSchema.parse>
             try {

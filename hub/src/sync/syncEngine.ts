@@ -1679,6 +1679,16 @@ export class SyncEngine {
                 await this.cleanupFailedForkChild(forked.sessionId, session.metadata?.machineId ?? '', true).catch(() => {})
                 return { type: 'error', message: 'DSH rewind: old session could not be archived' }
             }
+            // Finalize OUTSIDE the archive CAS try/catch: once the archive is
+            // committed, a refresh/broadcast failure must not read as archive
+            // failure (that would kill the replacement child and strand the
+            // user on a broken session graph).
+            try {
+                this.sessionCache.refreshSession(sessionId)
+                this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+            } catch (finalizeError) {
+                console.error(`[rewind] DSH finalize failed after archive: ${finalizeError instanceof Error ? finalizeError.message : String(finalizeError)}`)
+            }
             return { type: 'success' }
         }
 
@@ -1745,11 +1755,6 @@ export class SyncEngine {
                     { touchUpdatedAt: false }
                 )
                 if (result.result === 'success') {
-                    // Finalize the archived row in cache + broadcast before
-                    // reporting success (SSE consumers follow the
-                    // supersededBySessionId navigation).
-                    this.sessionCache.refreshSession(sessionId)
-                    this.handleSessionEnd({ sid: sessionId, time: Date.now() })
                     return true
                 }
                 // CAS/version mismatch: retry once with the fresh row.
