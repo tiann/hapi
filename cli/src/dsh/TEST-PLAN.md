@@ -89,6 +89,23 @@ identity binding are untested — exactly what the review bots keep flagging.
 | J2 | Reasoning-effort mutation guard allows dsh | picker works |
 | K1 | Usage events forward contextWindow; contextTokens not forced to 0 | web context bar |
 
+## Status (2026-08-16)
+
+- **P0 A-series (11)**: ✅ all green — `DshEventBridge.recovery.test.ts`
+  (also surfaced + fixed a real bug: sealed-buffer release re-buffered
+  frames while journalRecoveryInFlight was active → forceForward)
+- **P0 C-series (3)**: ✅ `DshClient.test.ts` (promptDirect rpcId,
+  mismatch throw, reservation isolation)
+- **P0 E-series (5)**: ✅ `DshPromptIdentity.test.ts` (rpcId binds localId,
+  event-beats-HTTP race, rejected-prompt cleanup, no-rpcId events inert)
+- **P1 F/G-series (4)**: ✅ `conversationHistoryDsh.test.ts` (child cursor
+  seed, absent cursor, rewind CAS failure cleanup, resume-id resolution)
+- **P1 H-series (2)**: ✅ `sessionFactory.dsh.test.ts` (DSH resume identity
+  round-trips pickExistingSessionMetadata)
+- **P2 D-series (3)**: ✅ `DshRuntime.test.ts` (manifest path, unreadable
+  manifest, override-missing spawn error)
+- Full suites: cli dsh 51 passed / hub 1106 / shared 269 / web 31
+
 ## Execution
 
 - Level 1 (P0 unit): `cd cli && bunx vitest run src/dsh/`
@@ -96,10 +113,11 @@ identity binding are untested — exactly what the review bots keep flagging.
 - Level 3 (web): `cd web && bunx vitest run src/lib/message-window-store.test.ts src/components/SessionChat.test.tsx`
 - Level 4 (manual, test env 43006): real-host resume/restart/fork/subagent/upload sweeps
 
-## Fixture capabilities needed
+## Fixture capabilities
 
 - [x] Configurable `session.history` responses (success/empty/events/failure)
 - [x] Root `session/subscribed` frame on mux open
-- [ ] Disconnect mux/host sockets mid-test (reconnect trigger)
-- [ ] `subagent.list` + `subagent.history` default handlers
-- [ ] Multi-page history (hasMore pagination)
+- [x] Disconnect mux/host sockets mid-test (reconnect trigger)
+- [x] `subagent.list` + `subagent.history` default handlers
+- [ ] Multi-page history (hasMore pagination) — low value; pagination is
+  exercised via the anchor-reached stop condition in backfill tests
