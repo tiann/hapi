@@ -16,6 +16,8 @@ export type DshEventBridgeOptions = {
     client: DshClient
     dshSessionId: string
     projector: DshProjector
+    /** Last forwarded native seq from a previous process (metadata cursor). */
+    initialCursor?: number
     /** Forward one projected agent message (text/tool/usage/native/state…). */
     onMessage: (message: DshProjectedMessage) => void
     /** Forward a state snapshot message (dsh_state). */
@@ -58,10 +60,6 @@ export class DshEventBridge {
     private readonly childProjectors = new Map<string, DshProjector>()
     private lastCursorFlush = 0
 
-    constructor(private readonly options: DshEventBridgeOptions) {
-        this.projector = options.projector
-        this.logTag = options.logTag ?? 'dsh'
-    }
 
     async start(signal: AbortSignal): Promise<void> {
         // Reconnect loop: EITHER stream closing ends the generation (a dead
@@ -83,11 +81,20 @@ export class DshEventBridge {
             if (signal.aborted) break
             logger.debug(`[${this.logTag}] streams closed; backfilling after seq ${this.lastForwardedSeq}`)
             await this.backfillAfterCursor()
+            // Reconnect: the host re-seeds subscribed + projection baseline,
+            // so allow re-seeding on the new generation too.
+            this.projectionsSeeded = false
         }
     }
 
     /** Highest native seq already forwarded (dedupe + gap-fill anchor). */
-    private lastForwardedSeq = -1
+    private lastForwardedSeq: number
+
+    constructor(private readonly options: DshEventBridgeOptions) {
+        this.projector = options.projector
+        this.logTag = options.logTag ?? 'dsh'
+        this.lastForwardedSeq = options.initialCursor ?? -1
+    }
 
     /**
      * Replay native events after the last forwarded seq from session.history.
@@ -181,6 +188,19 @@ export class DshEventBridge {
     }
 
     private handleMuxFrame(frame: MuxFrame, rpcId: string): void {
+        // Subagent sessions carry their own approval/question/queue/jobs
+        // frames; those must never mutate the root session's state.
+        if ('sessionId' in frame && frame.sessionId !== undefined && frame.sessionId !== this.options.dshSessionId) {
+            if (frame.type === 'approval/requested'
+                || frame.type === 'approval/resolved'
+                || frame.type === 'question/requested'
+                || frame.type === 'question/resolved'
+                || frame.type === 'session/queue'
+                || frame.type === 'session/jobs'
+                || frame.type === 'session/projection') {
+                return
+            }
+        }
         switch (frame.type) {
             case 'session/event': {
                 this.handleSessionEvent(frame.sessionId, frame.event)
@@ -232,7 +252,9 @@ export class DshEventBridge {
                 break
             }
             case 'question/resolved': {
-                this.emitState({ seq: this.seqOf(), questions: undefined })
+                // Undefined would be dropped by JSON serialization; an empty
+                // items list is the durable "no pending question" value.
+                this.emitState({ seq: this.seqOf(), questions: { questionRpcId: '', items: [] } })
                 break
             }
             case 'session/queue': {

@@ -895,7 +895,9 @@ function SessionChatInner(props: SessionChatProps) {
         const options: Array<{ value: string | null; label: string }> = []
         for (const group of dshModelsState.models?.groups ?? []) {
             for (const model of group.models) {
-                options.push({ value: model.id, label: model.name })
+                // Encode the provider so two providers sharing a model id stay
+                // distinguishable; the model-change handler decodes it.
+                options.push({ value: `${group.id}::${model.id}`, label: model.name })
             }
         }
         return options.length > 0 ? options : undefined
@@ -1353,6 +1355,18 @@ function SessionChatInner(props: SessionChatProps) {
 
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
+        // DSH model options encode provider::modelId so identical ids from
+        // different providers never collide; decode back to the provider-
+        // qualified selection the CLI resolves.
+        if (agentFlavor === 'dsh' && typeof model === 'string' && model.includes('::')) {
+            const separator = model.indexOf('::')
+            const provider = model.slice(0, separator)
+            const modelId = model.slice(separator + 2)
+            await setModel({ provider, modelId })
+            haptic.notification('success')
+            props.onRefresh()
+            return
+        }
         const previousModelReasoningEffort = props.session.modelReasoningEffort
         const shouldClearReasoningEffort = agentFlavor === 'codex'
             && Boolean(previousModelReasoningEffort)

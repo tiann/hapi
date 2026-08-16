@@ -113,7 +113,7 @@ export async function runDsh(opts: {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     const hostRef: { current: DshHostHandle | null } = { current: null };
-    let stoppingHost = false;
+    const stoppingHost = { value: false };
     const bridgeAbort = new AbortController();
     // Fork-at-message anchors: HAPI user-message localIds are matched to
     // their native user/message event seqs (FIFO — the DSH host claims queued
@@ -178,7 +178,7 @@ export async function runDsh(opts: {
         // session instead of leaving an active zombie behind the reconnect
         // loop. Our own graceful stop sets stoppingHost first.
         host.process.once('exit', (code) => {
-            if (stoppingHost) return;
+            if (stoppingHost.value) return;
             logger.debug(`[dsh] host exited unexpectedly (code=${code}); ending session`);
             bridgeAbort.abort();
             lifecycle.markCrash(new Error(`DSH host exited unexpectedly (code=${code})`));
@@ -235,6 +235,9 @@ export async function runDsh(opts: {
             client,
             dshSessionId: created.sessionId,
             projector,
+            ...(typeof session.getMetadata()?.dshEventCursor === 'number'
+                ? { initialCursor: session.getMetadata()!.dshEventCursor }
+                : {}),
             onMessage: (message: DshProjectedMessage) => {
                 if (message.type === 'dsh_native' && message.event.type === 'user/message') {
                     noteUserMessageSeq(message.event.seq);
@@ -416,19 +419,23 @@ export async function runDsh(opts: {
 
         // User messages → DSH queue mode (the DSH host owns the queue;
         // session/queue snapshots surface it through dsh_state).
+        // Prompt dispatch is serialized: async attachment preparation plus
+        // the FIFO localId→native-seq mapping must not interleave across
+        // concurrent user messages (that would corrupt fork/rewind anchors).
+        let promptChain: Promise<void> = Promise.resolve();
         session.onUserMessage((message, localId) => {
             const text = message.content.text;
             if (localId) {
                 pendingUserLocalIds.push(localId);
             }
-            void (async () => {
+            promptChain = promptChain.then(async () => {
                 const content = await prepareDshPromptContent(text, message.content.attachments);
                 return await client.prompt({
                     sessionId: created.sessionId,
                     mode: 'queue',
                     content
                 });
-            })().then(() => {
+            }).then(() => {
                 // The DSH host owns the queue from here; mark the HAPI message
                 // invoked so the standard queued-messages bar stays empty (the
                 // dsh_state queue panel is the authoritative DSH queue view).

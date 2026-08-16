@@ -446,11 +446,15 @@ function trimPreservingQueued(
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
     const agentRuns = nonQueued.filter(isCodexAgentRunMessage)
     const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
-    const regularTrim = sliceForTrim(regular, Math.max(0, regularLimit - queued.length), mode)
+    // DSH journal/state rows are invisible (folded into panels); keep them
+    // alongside but never let them consume the visible message budget.
+    const invisible = regular.filter(isInvisibleJournalRow)
+    const visible = regular.filter((message) => !isInvisibleJournalRow(message))
+    const visibleTrim = sliceForTrim(visible, Math.max(0, regularLimit - queued.length), mode)
     const agentRunTrim = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, mode)
     return {
-        kept: mergeMessages([...regularTrim.kept, ...agentRunTrim.kept], queued),
-        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped]
+        kept: mergeMessages([...visibleTrim.kept, ...invisible, ...agentRunTrim.kept], queued),
+        dropped: [...visibleTrim.dropped, ...agentRunTrim.dropped]
     }
 }
 
@@ -475,6 +479,12 @@ function shouldRetainWindowMessage(message: DecryptedMessage): boolean {
     return isQueuedForInvocation(message)
         || isDshNativePayloadMessage(message)
         || normalizeDecryptedMessage(message) !== null
+}
+
+/** DSH journal/state rows are retained for the panels but are invisible; they
+ *  must not consume the visible 400-message window budget. */
+function isInvisibleJournalRow(message: DecryptedMessage): boolean {
+    return isDshNativePayloadMessage(message)
 }
 
 function countNewRenderableMessages(

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
@@ -152,15 +152,27 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         return defaultDshRuntimeBin()
     })()
 
-    if (!existsSync(binPath)) {
+    const runtimeMissing = !existsSync(binPath)
+    const runtimeOutdated = !runtimeMissing && (() => {
+        try {
+            const manifest = JSON.parse(readFileSync(
+                join(binPath, '..', '..', '..', '..', '..', 'package.json'),
+                'utf8'
+            )) as { version?: string }
+            return manifest.version !== DSH_RUNTIME_VERSION
+        } catch {
+            return false
+        }
+    })()
+    if (runtimeMissing || runtimeOutdated) {
         const noInstall = process.env[DSH_RUNTIME_NO_INSTALL_ENV] === '1'
         if (noInstall) {
             throw new DshRuntimeStartErrorImpl(
                 'install',
-                `DSH runtime not found at ${binPath} (${DSH_RUNTIME_NO_INSTALL_ENV}=1)`
+                `DSH runtime ${runtimeMissing ? 'not found' : 'version mismatch'} at ${binPath} (${DSH_RUNTIME_NO_INSTALL_ENV}=1)`
             )
         }
-        logger.debug(`[${logTag}] DSH runtime missing at ${binPath}; installing ${DSH_RUNTIME_PACKAGE}...`)
+        logger.debug(`[${logTag}] DSH runtime ${runtimeMissing ? 'missing' : `outdated (wanted ${DSH_RUNTIME_VERSION})`}; installing ${DSH_RUNTIME_PACKAGE}...`)
         await installDshRuntime({ onProgress: (line) => logger.debug(`[${logTag}] ${line}`) })
     }
 
@@ -200,6 +212,13 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     const capture = (chunk: Buffer | string) => {
         outputTail = (outputTail + chunk.toString()).slice(-OUTPUT_TAIL_CHARS)
     }
+    child.once('error', (error) => {
+        // ENOENT and friends must fail the start, not hang the readiness poll:
+        // surface it through the same exit-state channel the loop watches.
+        logger.debug(`[${logTag}] DSH host spawn error: ${error.message}`)
+        exitState.exit = { code: null, signal: null }
+        spawnFailure = error.message
+    })
     child.stderr?.on('data', (chunk) => {
         capture(chunk)
         logger.debug(`[${logTag}] host stderr: ${chunk.toString().trimEnd()}`)
@@ -221,6 +240,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     // Object property instead of a bare let: TS does not narrow object
     // properties across async callbacks, so exitState.exit stays nullable.
     const exitState: { exit: { code: number | null; signal: string | null } | null } = { exit: null }
+    let spawnFailure: string | null = null
     exitPromise.then((result) => {
         exitState.exit = result
     }).catch(() => {})
@@ -234,8 +254,10 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     while (Date.now() < deadline) {
         if (exitState.exit !== null) {
             throw new DshRuntimeStartErrorImpl(
-                'exit',
-                `DSH host exited before readiness (code=${exitState.exit.code}, signal=${exitState.exit.signal})`,
+                spawnFailure !== null ? 'spawn' : 'exit',
+                spawnFailure !== null
+                    ? `Failed to spawn DSH host: ${spawnFailure}`
+                    : `DSH host exited before readiness (code=${exitState.exit.code}, signal=${exitState.exit.signal})`,
                 outputTail
             )
         }

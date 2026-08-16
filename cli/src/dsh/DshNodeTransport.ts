@@ -90,13 +90,17 @@ export class DshNodeTransport extends AbstractApiClient {
                 console.error(`[dsh] dropping malformed WebSocket frame on ${path}:`, error)
                 return
             }
-            const frame = path === MUX_EVENTS_PATH
-                ? muxFrameSchema.parse(full.payload) as F
-                : hostFrameSchema.parse(full.payload) as F
-            enqueue({
-                kind: 'frame',
-                envelope: { rpcId: full.rpcId, payload: frame }
-            })
+            try {
+                const frame = path === MUX_EVENTS_PATH
+                    ? muxFrameSchema.parse(full.payload) as F
+                    : hostFrameSchema.parse(full.payload) as F
+                enqueue({
+                    kind: 'frame',
+                    envelope: { rpcId: full.rpcId, payload: frame }
+                })
+            } catch (error) {
+                console.error(`[dsh] dropping frame with invalid payload on ${path}:`, error)
+            }
         }
         const handleClose = (): void => {
             enqueue({ kind: 'end' })
