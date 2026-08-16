@@ -119,6 +119,12 @@ export class DshEventBridge {
             // buffered live events first would advance lastForwardedSeq past
             // the missing range, which a later reconnect could never recover.
             if (!initialBackfillDone) {
+                // Seal every KNOWN child journal before the root backfill:
+                // child events forwarded while root history is being fetched
+                // would advance their cursors past the outage gap.
+                for (const childSessionId of this.childLastSeq.keys()) {
+                    this.childBuffers.set(childSessionId, this.childBuffers.get(childSessionId) ?? [])
+                }
                 const backfilled = await this.backfillAfterCursor()
                 if (!backfilled) {
                     generation.abort()
@@ -545,7 +551,19 @@ export class DshEventBridge {
                         continue
                     }
                     logger.debug(`[${this.logTag}] subagent backfill failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`)
-                    break
+                    // Failure: keep this child's buffer sealed and its cursor
+                    // untouched — the next reconnect retries the whole gap.
+                    // Bounded fallback: never let the sealed buffer grow
+                    // without bound while the host is unreachable.
+                    const pending = this.childBuffers.get(childSessionId) ?? []
+                    if (pending.length > 5_000) {
+                        logger.warn(`[${this.logTag}] subagent buffer overflow for ${childSessionId}; forcing release of ${pending.length} frames`)
+                        this.childBuffers.delete(childSessionId)
+                        pending
+                            .sort((a, b) => a.seq - b.seq)
+                            .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live'))
+                    }
+                    return
                 }
                 collected.push(...events)
                 const reachedAnchor = events.some((event) => event.seq <= anchor)

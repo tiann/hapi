@@ -116,8 +116,11 @@ export async function runDsh(opts: {
     let latestCursorSeq = 0;
     // Live-forwarded root seq (updated by the bridge on every event) —
     // fork-current cursor fallback must not depend on the throttle
-    // window's persisted metadata.
-    let latestForwardedSeq = 0;
+    // window's persisted metadata. Seeded from the persisted cursor so a
+    // resumed idle session never falls back to 0.
+    let latestForwardedSeq = typeof session.getMetadata()?.dshEventCursor === 'number'
+        ? session.getMetadata()!.dshEventCursor
+        : 0;
     const flushCursor = () => {
         if (pendingCursorFlush) {
             clearTimeout(pendingCursorFlush);
@@ -378,10 +381,9 @@ export async function runDsh(opts: {
                 if (pendingCursorFlush) return;
                 pendingCursorFlush = setTimeout(() => {
                     pendingCursorFlush = null;
-                    session.updateMetadata((metadata) => ({
-                        ...metadata,
-                        dshEventCursor: latestCursorSeq
-                    }));
+                    // flushCursor persists BOTH the root cursor and the
+                    // per-child journal cursors in one metadata write.
+                    flushCursor();
                 }, CURSOR_FLUSH_MS);
                 pendingCursorFlush.unref?.();
             },
