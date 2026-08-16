@@ -103,6 +103,9 @@ export async function runDsh(opts: {
                 clearTimeout(pendingHistoryMetadataFlush);
                 flushHistoryMetadata();
             }
+            // Mark BEFORE stopping so the host-exit listener never mistakes
+            // our graceful shutdown for an unexpected crash.
+            stoppingHost.value = true;
             hostRef.current?.stop({ timeoutMs: 5_000 }).catch((error) => {
                 logger.debug('[dsh] host stop error during cleanup:', error);
             });
