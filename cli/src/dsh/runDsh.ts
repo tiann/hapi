@@ -108,11 +108,32 @@ export async function runDsh(opts: {
 
     setControlledByUser(session, startingMode);
 
+    // Throttled cursor persistence; flushCursor() is exposed for teardown
+    // so a shutdown inside the throttle window still persists the latest
+    // forwarded seq. Declared before the lifecycle so onBeforeClose can
+    // reference it.
+    let pendingCursorFlush: ReturnType<typeof setTimeout> | null = null;
+    let latestCursorSeq = 0;
+    const flushCursor = () => {
+        if (pendingCursorFlush) {
+            clearTimeout(pendingCursorFlush);
+            pendingCursorFlush = null;
+        }
+        if (latestCursorSeq <= 0) return;
+        session.updateMetadata((metadata) => ({
+            ...metadata,
+            dshEventCursor: latestCursorSeq
+        }));
+    };
+
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'dsh',
         onBeforeClose: async () => {
             stopKeepAlive();
+            // Persist the latest forwarded cursor even when shutdown lands
+            // inside the throttle window (unref'd timer would never run).
+            flushCursor();
             if (pendingHistoryMetadataFlush) {
                 clearTimeout(pendingHistoryMetadataFlush);
                 flushHistoryMetadata();
@@ -234,8 +255,6 @@ export async function runDsh(opts: {
         session.emitSessionReady();
 
         const projector = new DshProjector(created.sessionId);
-        let pendingCursorFlush: ReturnType<typeof setTimeout> | null = null;
-        let latestCursorSeq = 0;
         const pendingUserLocalIds: string[] = [];
         const noteUserMessageSeq = (seq: number) => {
             const localId = pendingUserLocalIds.shift();
@@ -256,12 +275,14 @@ export async function runDsh(opts: {
             ...(typeof session.getMetadata()?.dshEventCursor === 'number'
                 ? { initialCursor: session.getMetadata()!.dshEventCursor }
                 : {}),
-            onMessage: (message: DshProjectedMessage) => {
-                // Only the ROOT session's user messages anchor fork/rewind
-                // boundaries; child projectors forward their own user/message
-                // events through this same callback and must not consume the
-                // root pending-localId FIFO.
-                if (message.type === 'dsh_native'
+            onMessage: (message: DshProjectedMessage, source: 'live' | 'backfill') => {
+                // Only LIVE root-session user messages anchor fork/rewind
+                // boundaries. Backfill replays historical events (their HAPI
+                // messages already exist) and must not consume the pending
+                // localId FIFO; child projectors' user/message forwarding must
+                // not either.
+                if (source === 'live'
+                    && message.type === 'dsh_native'
                     && message.event.type === 'user/message'
                     && message.event.dshSessionId === created.sessionId) {
                     noteUserMessageSeq(message.event.seq);

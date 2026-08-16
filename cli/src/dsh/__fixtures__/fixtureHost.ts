@@ -46,7 +46,14 @@ export function createFixtureHost(): Promise<FixtureHost> {
     const host: FixtureHost = {
         baseUrl: 'http://127.0.0.1:0',
         port: 0,
-        onRequest: () => ({ ok: true, value: {} }),
+        onRequest: (endpoint) => {
+            // Backfill (initial + reconnect) probes session history; an empty
+            // page keeps the bridge moving without inventing events.
+            if (endpoint === 'session.history') {
+                return { ok: true, value: { events: [], hasMore: false } }
+            }
+            return { ok: true, value: {} }
+        },
         pushMux: () => {},
         pushHost: () => {},
         requests: [],

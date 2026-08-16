@@ -19,7 +19,7 @@ export type DshEventBridgeOptions = {
     /** Last forwarded native seq from a previous process (metadata cursor). */
     initialCursor?: number
     /** Forward one projected agent message (text/tool/usage/native/state…). */
-    onMessage: (message: DshProjectedMessage) => void
+    onMessage: (message: DshProjectedMessage, source: 'live' | 'backfill') => void
     /** Forward a state snapshot message (dsh_state). */
     onStateSnapshot: (snapshot: DshStateSnapshot) => void
     /** Register a pending approval in HAPI agentState.requests. */
@@ -84,9 +84,20 @@ export class DshEventBridge {
             // baseline, not historical events — backfill the gap since the
             // last persisted cursor so events committed before the previous
             // process died are projected without waiting for a disconnect.
+            // A failed backfill aborts the generation and retries: releasing
+            // buffered live events first would advance lastForwardedSeq past
+            // the missing range, which a later reconnect could never recover.
             if (!initialBackfillDone) {
+                const backfilled = await this.backfillAfterCursor()
+                if (!backfilled) {
+                    generation.abort()
+                    await Promise.allSettled([muxDone, hostDone])
+                    signal.removeEventListener('abort', onOuterAbort)
+                    await waitForAbortableDelay(retryMs, signal)
+                    retryMs = Math.min(retryMs * 2, 5_000)
+                    continue
+                }
                 initialBackfillDone = true
-                await this.backfillAfterCursor()
                 // Replay live events that arrived while the backfill ran,
                 // oldest first; handleSessionEvent's seq guard skips any
                 // already forwarded by the backfill itself.
@@ -136,7 +147,7 @@ export class DshEventBridge {
      * would skip them. Collect every page first (walking back until a page
      * contains the cursor), then replay the collected events in order.
      */
-    private async backfillAfterCursor(): Promise<void> {
+    private async backfillAfterCursor(): Promise<boolean> {
         const anchor = this.lastForwardedSeq
         const collected: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
         let beforeSeq: number | undefined
@@ -153,7 +164,7 @@ export class DshEventBridge {
                 hasMore = pageResult.hasMore
             } catch (error) {
                 logger.debug(`[${this.logTag}] backfill page failed: ${error instanceof Error ? error.message : String(error)}`)
-                return
+                return false
             }
             collected.push(...events)
             const reachedAnchor = events.some((event) => event.seq <= anchor)
@@ -166,8 +177,9 @@ export class DshEventBridge {
             .sort((a, b) => a.seq - b.seq)
             .forEach((event) => {
                 if (event.seq <= this.lastForwardedSeq) return
-                this.handleSessionEvent(this.options.dshSessionId, event)
+                this.handleSessionEvent(this.options.dshSessionId, event, 'backfill')
             })
+        return true
     }
 
     /** Seed foldable projections from the history tail's projections block. */
@@ -392,13 +404,13 @@ export class DshEventBridge {
         }
     }
 
-    private handleSessionEvent(sessionId: string, event: SessionEvent): void {
+    private handleSessionEvent(sessionId: string, event: SessionEvent, source: 'live' | 'backfill' = 'live'): void {
         if (sessionId === this.options.dshSessionId) {
             if (event.seq <= this.lastForwardedSeq) return
             this.lastForwardedSeq = event.seq
             this.projector.markSeq(event.seq)
             for (const message of this.projector.onEvent(event)) {
-                this.options.onMessage(message)
+                this.options.onMessage(message, source)
             }
             this.options.onCursor?.(event.seq)
             return
@@ -413,7 +425,7 @@ export class DshEventBridge {
         child.markSeq(event.seq)
         for (const message of child.onEvent(event)) {
             if (message.type === 'dsh_native' || message.type === 'turn_complete' || message.type === 'error') {
-                this.options.onMessage(message)
+                this.options.onMessage(message, source)
             }
         }
     }
@@ -470,7 +482,7 @@ export class DshEventBridge {
             data: { key, value },
             dshSessionId: this.options.dshSessionId
         }
-        this.options.onMessage({ type: 'dsh_native', event: native, dshSeq: seq })
+        this.options.onMessage({ type: 'dsh_native', event: native, dshSeq: seq }, 'live')
     }
 
     private emitState(patch: Partial<DshStateSnapshot>): void {
