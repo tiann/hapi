@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy/client'
 import type {
     HistoryEntry,
@@ -197,7 +198,7 @@ export class DshClient {
      *  registered ahead of the HTTP round-trip (the host may emit the
      *  user/message event before the prompt response returns). */
     reservePromptRpcId(): string {
-        return crypto.randomUUID()
+        return randomUUID()
     }
 
     async prompt(options: {
@@ -210,7 +211,7 @@ export class DshClient {
         /** Abort signal (session teardown) — cancels the in-flight POST. */
         signal?: AbortSignal
     }): Promise<DshPromptResult> {
-        const rpcId = (options.rpcId ?? crypto.randomUUID()) as import('@deepseek-ai/dsh-host-apiproxy/api/rpc').RpcId
+        const rpcId = (options.rpcId ?? randomUUID()) as import('@deepseek-ai/dsh-host-apiproxy/api/rpc').RpcId
         const payload = {
             sessionId: SessionId(options.sessionId),
             mode: options.mode,
@@ -366,6 +367,9 @@ export class DshClient {
      * QuestionResponsePayload).
      */
     async respond(rpcId: string, value: unknown): Promise<void> {
+        // client-response receipts carry no business result on the success
+        // path; transport errors (non-2xx, malformed envelope) reject via the
+        // official client's fetch leg.
         await this.api.respond({
             type: 'client-response',
             rpcId: rpcId as never,
@@ -387,7 +391,7 @@ export class DshClient {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
                 type: 'client-request',
-                rpcId: crypto.randomUUID(),
+                rpcId: randomUUID(),
                 method: endpoint,
                 payload
             })
@@ -395,11 +399,18 @@ export class DshClient {
         if (!response.ok) {
             throw new DshRpcError('transport', `gateway ${endpoint}: HTTP ${response.status}`)
         }
-        const parsed = await response.json() as { type: string; result?: { ok: boolean; value?: unknown; error?: { code: string; message: string; details?: unknown } } }
-        if (!parsed.result?.ok) {
-            const error = parsed.result?.error
-            throw new DshRpcError(error?.code ?? 'internal', error?.message ?? `gateway ${endpoint} failed`, error?.details)
+        let parsed: { result: { ok: true; value: T } | { ok: false; error: { code: string; message: string; details: unknown } } }
+        try {
+            parsed = await response.json() as typeof parsed
+        } catch {
+            throw new DshRpcError('transport', `gateway ${endpoint}: non-JSON response`)
         }
-        return parsed.result.value as T
+        if (!parsed?.result) {
+            throw new DshRpcError('transport', `gateway ${endpoint}: unexpected envelope`)
+        }
+        if (!parsed.result.ok) {
+            throw new DshRpcError(parsed.result.error.code, parsed.result.error.message, parsed.result.error.details)
+        }
+        return parsed.result.value
     }
 }

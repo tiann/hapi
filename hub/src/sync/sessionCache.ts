@@ -691,8 +691,7 @@ export class SessionCache {
             if (session.metadata?.flavor === 'pi') {
                 this.persistPiSelectedModel(session, piModelObject)
             } else if (session.metadata?.flavor === 'dsh') {
-                const dshSelected = piModelObject as { provider: string; modelId: string } | null
-                this.persistDshSelectedModel(session, dshSelected)
+                this.persistDshSelectedModel(session, piModelObject)
             }
             this.markRuntimeConfigUpdated(sessionId, 'model', appliedAt)
         }

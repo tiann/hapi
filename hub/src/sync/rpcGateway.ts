@@ -438,7 +438,9 @@ export class RpcGateway {
     }
 
     async dshModels(sessionId: string): Promise<unknown> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.DshModels, {})
+        // Model catalogs enumerate slowly on the CLI side (same posture as
+        // the other model-list RPCs).
+        return await this.sessionRpc(sessionId, RPC_METHODS.DshModels, {}, MODEL_LIST_RPC_TIMEOUT_MS)
     }
 
     async dshSkills(sessionId: string): Promise<unknown> {

@@ -54,7 +54,7 @@ export function createDshRoutes(getSyncEngine: () => import('../../sync/syncEngi
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -80,7 +80,7 @@ export function createDshRoutes(getSyncEngine: () => import('../../sync/syncEngi
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
         if (sessionResult instanceof Response) {
             return sessionResult
         }

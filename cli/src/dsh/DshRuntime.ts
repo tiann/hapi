@@ -184,7 +184,14 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
             )
         }
         logger.debug(`[${logTag}] DSH runtime ${runtimeMissing ? 'missing' : `outdated (wanted ${DSH_RUNTIME_VERSION})`}; installing ${DSH_RUNTIME_PACKAGE}...`)
-        await installDshRuntime({ onProgress: (line) => logger.debug(`[${logTag}] ${line}`) })
+        try {
+            await installDshRuntime({ onProgress: (line) => logger.debug(`[${logTag}] ${line}`) })
+        } catch (installError) {
+            throw new DshRuntimeStartErrorImpl(
+                'install',
+                `DSH runtime install failed: ${installError instanceof Error ? installError.message : String(installError)}`
+            )
+        }
     } else if (!managedRuntime && runtimeMissing) {
         // Explicit override (HAPI_DSH_RUNTIME_PATH / options.runtimeBin):
         // never install behind it; fail loud with the exact path.
@@ -248,6 +255,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         logger.debug(`[${logTag}] host stderr: ${chunk.toString().trimEnd()}`)
     })
     child.stdout?.on('data', (chunk) => {
+        capture(chunk)
         logger.debug(`[${logTag}] host stdout: ${chunk.toString().trimEnd()}`)
     })
 
@@ -311,6 +319,9 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         } catch (error) {
             if (Date.now() >= deadline) {
                 killChild('SIGTERM')
+                // A host ignoring SIGTERM must not keep the port forever.
+                const killer = setTimeout(() => killChild('SIGKILL'), 5_000)
+                killer.unref?.()
                 rmSync(overlayDir, { recursive: true, force: true })
                 throw new DshRuntimeStartErrorImpl(
                     'timeout',

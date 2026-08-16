@@ -244,6 +244,9 @@ export class DshEventBridge {
             collected.push(...events)
             const reachedAnchor = events.some((event) => event.seq <= anchor)
             if (!hasMore || reachedAnchor) break
+            // An empty page with hasMore=true would never advance beforeSeq —
+            // bail out instead of spinning forever.
+            if (events.length === 0) break
             const oldest = events.reduce((min, event) => Math.min(min, event.seq), Number.MAX_SAFE_INTEGER)
             beforeSeq = oldest
         }
@@ -461,7 +464,12 @@ export class DshEventBridge {
             }
             case 'host/session-added': {
                 if (frame.origin === 'subagent') {
-                    this.childProjectors.set(frame.sessionId, new DshProjector(frame.sessionId))
+                    // A reconnect re-seed may re-emit session-added for an
+                    // already-tracked child; keep the existing projector (and
+                    // its fold) instead of resetting it.
+                    if (!this.childProjectors.has(frame.sessionId)) {
+                        this.childProjectors.set(frame.sessionId, new DshProjector(frame.sessionId))
+                    }
                     this.subagentIds.add(frame.sessionId)
                     this.emitSubagentCount(this.seqOf())
                 }
@@ -540,7 +548,11 @@ export class DshEventBridge {
         child.markSeq(event.seq)
         for (const message of child.onEvent(event)) {
             if (message.type === 'dsh_native' || message.type === 'turn_complete' || message.type === 'error') {
-                this.options.onMessage(message, source)
+                try {
+                    this.options.onMessage(message, source)
+                } catch (error) {
+                    logger.warn(`[${this.logTag}] child onMessage consumer error: ${error instanceof Error ? error.message : String(error)}`)
+                }
             }
         }
     }
@@ -553,6 +565,11 @@ export class DshEventBridge {
     private async backfillChildJournals(): Promise<boolean> {
         const known = new Map<string, 'one-shot' | 'continuable'>()
         for (const childSessionId of this.childLastSeq.keys()) {
+            known.set(childSessionId, 'continuable')
+        }
+        // Children sealed during recovery but not yet in childLastSeq must
+        // still be replayed — otherwise their buffers never release.
+        for (const childSessionId of this.childBuffers.keys()) {
             known.set(childSessionId, 'continuable')
         }
         try {

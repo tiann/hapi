@@ -3,6 +3,7 @@ import { muxFrameSchema, hostFrameSchema } from '@deepseek-ai/dsh-host-apiproxy/
 import { serverRequestSchema } from '@deepseek-ai/dsh-host-apiproxy/api/rpc.schema'
 import type { ApiProxy, HostFrame, MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { RpcId as DshRpcId, RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
+import { logger } from '@/ui/logger'
 
 /**
  * Official event-stream WebSocket pathnames (owned by
@@ -23,6 +24,7 @@ const SESSION_PROMPT_PATH = '/api/session.prompt'
  * uses, without any browser bundle or frontend.
  */
 export class DshNodeTransport extends AbstractApiClient {
+    private readonly logTag = 'dsh'
     constructor(private readonly baseUrl: string) {
         super()
     }
@@ -136,7 +138,7 @@ export class DshNodeTransport extends AbstractApiClient {
             } catch (error) {
                 // Same posture as the official client: one corrupt frame must
                 // not kill the stream; the consumer's gap detection covers it.
-                console.error(`[dsh] dropping malformed WebSocket frame on ${path}:`, error)
+                logger.warn(`[${this.logTag}] dropping malformed WebSocket frame on ${path}: ${error instanceof Error ? error.message : String(error)}`)
                 return
             }
             try {
@@ -148,7 +150,7 @@ export class DshNodeTransport extends AbstractApiClient {
                     envelope: { rpcId: full.rpcId, payload: frame }
                 })
             } catch (error) {
-                console.error(`[dsh] dropping frame with invalid payload on ${path}:`, error)
+                logger.warn(`[${this.logTag}] dropping frame with invalid payload on ${path}: ${error instanceof Error ? error.message : String(error)}`)
             }
         }
         const handleClose = (): void => {
@@ -160,7 +162,9 @@ export class DshNodeTransport extends AbstractApiClient {
                     socket.close()
                 } catch {
                     // CONNECTING close() throws in some runtimes; the socket
-                    // dies anyway once the connection attempt fails.
+                    // dies anyway once the connection attempt fails. Either
+                    // way, end the stream so the generator never parks.
+                    enqueue({ kind: 'end' })
                 }
             }
         }

@@ -18,7 +18,8 @@ import { DshProjector } from './DshProjector'
 export type DshRpcBridgeOptions = {
     client: DshClient
     dshSessionId: string
-    workingDirectory: string
+    /** Reserved: session cwd is owned by runDsh/bootstrap, not the RPC layer. */
+    workingDirectory?: string
     rpcHandlerManager: RpcHandlerManager
     projector: DshProjector
     logTag?: string

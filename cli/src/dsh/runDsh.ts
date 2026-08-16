@@ -542,18 +542,20 @@ export async function runDsh(opts: {
                     }
                 } else if (typeof config.model === 'string') {
                     modelId = config.model
-                    provider = await resolveModelProvider(modelId)
                 }
-                if (!provider || modelId.length === 0) {
+                if (modelId.length === 0) {
                     throw new Error(`Unknown DSH model: ${JSON.stringify(config.model)}`)
                 }
+                // One catalog fetch serves both the provider resolution (for
+                // bare ids) and the default-effort lookup.
                 const catalog = await client.sessionModels(created.sessionId)
                 const match = catalog.groups
                     .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
-                    .find((m) => m.provider === provider && m.id === modelId)
+                    .find((m) => m.id === modelId && (provider === null || m.provider === provider))
                 if (!match) {
-                    throw new Error(`Unknown DSH model: ${provider}::${modelId}`)
+                    throw new Error(`Unknown DSH model: ${provider ? `${provider}::${modelId}` : modelId}`)
                 }
+                provider = match.provider
                 const defaultEffort = match.reasoning?.defaultEffort ?? null
                 await applyModelSelection(provider, modelId, defaultEffort)
                 applied.model = { provider, modelId }
