@@ -64,16 +64,22 @@ export class DshEventBridge {
     }
 
     async start(signal: AbortSignal): Promise<void> {
-        // Reconnect loop: either stream closing ends the generation; before
-        // the next one, backfill the gap since the last forwarded seq so no
-        // native event is lost, then re-open both streams.
+        // Reconnect loop: EITHER stream closing ends the generation (a dead
+        // socket must not wait on the other), then backfill the gap since the
+        // last forwarded seq and re-open both streams. Each generation gets
+        // its own AbortController so the loser of the race is torn down.
         while (!signal.aborted) {
-            const mux = this.options.client.muxStream(signal)
-            const host = this.options.client.hostStream(signal)
-            await Promise.all([
-                this.pumpMux(mux, signal),
-                this.pumpHost(host, signal)
-            ])
+            const generation = new AbortController()
+            const onOuterAbort = () => generation.abort()
+            signal.addEventListener('abort', onOuterAbort, { once: true })
+            const mux = this.options.client.muxStream(generation.signal)
+            const host = this.options.client.hostStream(generation.signal)
+            const muxDone = this.pumpMux(mux, generation.signal)
+            const hostDone = this.pumpHost(host, generation.signal)
+            await Promise.race([muxDone, hostDone])
+            generation.abort()
+            await Promise.allSettled([muxDone, hostDone])
+            signal.removeEventListener('abort', onOuterAbort)
             if (signal.aborted) break
             logger.debug(`[${this.logTag}] streams closed; backfilling after seq ${this.lastForwardedSeq}`)
             await this.backfillAfterCursor()
@@ -83,31 +89,46 @@ export class DshEventBridge {
     /** Highest native seq already forwarded (dedupe + gap-fill anchor). */
     private lastForwardedSeq = -1
 
-    /** Replay native events after the last forwarded seq from session.history. */
+    /**
+     * Replay native events after the last forwarded seq from session.history.
+     *
+     * History pages go backwards (beforeSeq = older); the cursor must not
+     * advance while older pages are still being read, otherwise the filter
+     * would skip them. Collect every page first (walking back until a page
+     * contains the cursor), then replay the collected events in order.
+     */
     private async backfillAfterCursor(): Promise<void> {
+        const anchor = this.lastForwardedSeq
+        const collected: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
         let beforeSeq: number | undefined
         for (let page = 0; page < 10; page += 1) {
+            let events: Array<import('@deepseek-ai/dsh-session/types').SessionEvent>
+            let hasMore = false
             try {
                 const pageResult = await this.options.client.sessionHistory({
                     sessionId: this.options.dshSessionId,
                     ...(beforeSeq !== undefined ? { beforeSeq } : {}),
                     maxMessages: 200
                 })
-                const pending = pageResult.events
-                    .map((entry) => entry.event)
-                    .filter((event) => event.seq > this.lastForwardedSeq)
-                    .sort((a, b) => a.seq - b.seq)
-                for (const event of pending) {
-                    if (event.seq <= this.lastForwardedSeq) continue
-                    this.handleSessionEvent(this.options.dshSessionId, event)
-                }
-                if (!pageResult.hasMore || pending.length === 0) return
-                beforeSeq = pending[0].seq
+                events = pageResult.events.map((entry) => entry.event)
+                hasMore = pageResult.hasMore
             } catch (error) {
                 logger.debug(`[${this.logTag}] backfill page failed: ${error instanceof Error ? error.message : String(error)}`)
                 return
             }
+            collected.push(...events)
+            const reachedAnchor = events.some((event) => event.seq <= anchor)
+            if (!hasMore || reachedAnchor) break
+            const oldest = events.reduce((min, event) => Math.min(min, event.seq), Number.MAX_SAFE_INTEGER)
+            beforeSeq = oldest
         }
+        collected
+            .filter((event) => event.seq > anchor)
+            .sort((a, b) => a.seq - b.seq)
+            .forEach((event) => {
+                if (event.seq <= this.lastForwardedSeq) return
+                this.handleSessionEvent(this.options.dshSessionId, event)
+            })
     }
 
     /** Seed foldable projections from the history tail's projections block. */
