@@ -62,6 +62,8 @@ export class DshEventBridge {
     private readonly projector: DshProjector
     private readonly logTag: string
     private readonly childProjectors = new Map<string, DshProjector>()
+    /** Highest forwarded native seq per child session (subagent reconnect gap-fill anchor). */
+    private readonly childLastSeq = new Map<string, number>()
     /** Highest forwarded seq per projection key — stale bootstrap responses
      *  (older than a live frame already forwarded) are dropped. */
     private readonly projectionSeqByKey = new Map<string, number>()
@@ -121,6 +123,9 @@ export class DshEventBridge {
                 }
                 initialBackfillDone = true
                 this.options.onReady?.()
+                // Subagent journals are separate from root history; close any
+                // gap left by the outage before resuming live forwarding.
+                await this.backfillChildJournals()
                 // Replay live events that arrived while the backfill ran,
                 // oldest first; handleSessionEvent's seq guard skips any
                 // already forwarded by the backfill itself.
@@ -455,6 +460,9 @@ export class DshEventBridge {
         }
         // Subagent child events: persist natively under the child's session id
         // so subagent activity survives replay without flattening.
+        const seenChildSeq = this.childLastSeq.get(sessionId) ?? -1
+        if (event.seq <= seenChildSeq) return
+        this.childLastSeq.set(sessionId, event.seq)
         let child = this.childProjectors.get(sessionId)
         if (!child) {
             child = new DshProjector(sessionId)
@@ -465,6 +473,55 @@ export class DshEventBridge {
             if (message.type === 'dsh_native' || message.type === 'turn_complete' || message.type === 'error') {
                 this.options.onMessage(message, source)
             }
+        }
+    }
+
+    /** Gap-fill every known subagent journal after a reconnect: child events
+     *  are NOT part of root session.history, so without this any child
+     *  activity during a mux outage would be permanently missing from the
+     *  durable dsh_native journal. */
+    private async backfillChildJournals(): Promise<void> {
+        for (const childSessionId of this.childLastSeq.keys()) {
+            const anchor = this.childLastSeq.get(childSessionId) ?? -1
+            const collected: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
+            let beforeSeq: number | undefined
+            let mode: 'continuable' | 'one-shot' = 'continuable'
+            while (true) {
+                let events: Array<import('@deepseek-ai/dsh-session/types').SessionEvent> = []
+                let hasMore = false
+                try {
+                    const pageResult = await this.options.client.subagentHistory({
+                        parentSessionId: this.options.dshSessionId,
+                        childSessionId,
+                        mode,
+                        ...(beforeSeq !== undefined ? { beforeSeq } : {}),
+                        maxMessages: 200
+                    })
+                    events = pageResult.events.map((entry) => entry.event)
+                    hasMore = pageResult.hasMore
+                } catch (error) {
+                    if (mode === 'continuable') {
+                        // One-shot children reject continuable history; retry
+                        // once with the one-shot vocabulary.
+                        mode = 'one-shot'
+                        continue
+                    }
+                    logger.debug(`[${this.logTag}] subagent backfill failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`)
+                    break
+                }
+                collected.push(...events)
+                const reachedAnchor = events.some((event) => event.seq <= anchor)
+                if (!hasMore || reachedAnchor) break
+                const oldest = events.reduce((min, event) => Math.min(min, event.seq), Number.MAX_SAFE_INTEGER)
+                beforeSeq = oldest
+            }
+            collected
+                .filter((event) => event.seq > anchor)
+                .sort((a, b) => a.seq - b.seq)
+                .forEach((event) => {
+                    if (event.seq <= (this.childLastSeq.get(childSessionId) ?? -1)) return
+                    this.handleSessionEvent(childSessionId, event, 'backfill')
+                })
         }
     }
 

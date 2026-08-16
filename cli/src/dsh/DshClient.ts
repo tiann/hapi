@@ -40,6 +40,10 @@ export type DshHistoryPage = {
 export type DshPromptResult = {
     accepted: true
     command?: { kind: 'success'; text?: string }
+    /** The rpcId this prompt was dispatched under; the host echoes it in the
+     *  user/message event's MessageSource so the client can reconcile the
+     *  HAPI row with the native event (fork/rewind anchors). */
+    rpcId: string
 }
 
 export type DshModelSelectionResult = {
@@ -121,6 +125,26 @@ export class DshClient {
         return response.result.value
     }
 
+    async subagentHistory(options: {
+        parentSessionId: string
+        childSessionId: string
+        mode: 'one-shot' | 'continuable'
+        beforeSeq?: number
+        maxMessages?: number
+    }): Promise<DshHistoryPage> {
+        const response = await this.api.subagents.history({
+            parentSessionId: SessionId(options.parentSessionId),
+            childSessionId: SessionId(options.childSessionId),
+            mode: options.mode,
+            ...(options.beforeSeq !== undefined ? { beforeSeq: options.beforeSeq } : {}),
+            ...(options.maxMessages !== undefined ? { maxMessages: options.maxMessages } : {})
+        })
+        if (!response.result.ok) {
+            throw new DshRpcError(response.result.error.code, response.result.error.message, response.result.error.details)
+        }
+        return response.result.value
+    }
+
     async sessionModels(sessionId: string): Promise<SessionModels> {
         const response = await this.api.sessions.models({ sessionId: SessionId(sessionId) })
         if (!response.result.ok) {
@@ -162,7 +186,7 @@ export class DshClient {
         if (!response.result.ok) {
             throw new DshRpcError(response.result.error.code, response.result.error.message, response.result.error.details)
         }
-        return response.result.value
+        return { ...response.result.value, rpcId: response.rpcId }
     }
 
     async cancel(sessionId: string): Promise<void> {

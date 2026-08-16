@@ -275,10 +275,17 @@ export async function runDsh(opts: {
             }));
         }
         const projector = new DshProjector(created.sessionId);
-        const pendingUserLocalIds: string[] = [];
-        const noteUserMessageSeq = (seq: number) => {
-            const localId = pendingUserLocalIds.shift();
+        // Prompt identity: the host echoes each prompt's rpcId through the
+        // user/message event's MessageSource, so localId → native seq binding
+        // is exact. (Acceptance-order FIFO cannot represent commands that
+        // emit no user/message, removed queue items, steered ordering, or
+        // edited prompt text — those would misbind fork/rewind anchors.)
+        const pendingLocalIdByRpcId = new Map<string, string>();
+        const noteUserMessageSeq = (rpcId: string | undefined, seq: number) => {
+            if (!rpcId) return;
+            const localId = pendingLocalIdByRpcId.get(rpcId);
             if (!localId) return;
+            pendingLocalIdByRpcId.delete(rpcId);
             userLocalIdToSeq.set(localId, seq);
             historyMetadataDirty.points = true;
             historyMetadataDirty.indexes = true;
@@ -314,7 +321,11 @@ export async function runDsh(opts: {
                     && message.type === 'dsh_native'
                     && message.event.type === 'user/message'
                     && message.event.dshSessionId === created.sessionId) {
-                    noteUserMessageSeq(message.event.seq);
+                    const source = message.event.data && typeof message.event.data === 'object'
+                        ? (message.event.data as { source?: { rpcId?: unknown } }).source
+                        : null
+                    const rpcId = source && typeof source.rpcId === 'string' ? source.rpcId : undefined
+                    noteUserMessageSeq(rpcId, message.event.seq);
                 }
                 session.sendAgentMessage(message);
             },
@@ -538,19 +549,20 @@ export async function runDsh(opts: {
         session.emitSessionReady();
         session.onUserMessage((message, localId) => {
             const text = message.content.text;
-            if (localId) {
-                pendingUserLocalIds.push(localId);
-            }
             promptChain = promptChain.then(async () => {
                 // Uploads are registered under the HAPI row id; fork children
                 // carry a distinct native DSH id, so validate against the
                 // HAPI id or every fork-child image would be rejected.
                 const content = await prepareDshPromptContent(text, hapiSessionId, message.content.attachments);
-                return await client.prompt({
+                const result = await client.prompt({
                     sessionId: created.sessionId,
                     mode: 'queue',
                     content
                 });
+                if (localId) {
+                    pendingLocalIdByRpcId.set(result.rpcId, localId);
+                }
+                return result;
             }).then(() => {
                 // The DSH host owns the queue from here; mark the HAPI message
                 // invoked so the standard queued-messages bar stays empty (the
@@ -560,14 +572,8 @@ export async function runDsh(opts: {
                 }
             }).catch((error) => {
                 logger.debug(`[dsh] prompt failed: ${error instanceof Error ? error.message : String(error)}`);
-                // Do not let a rejected prompt corrupt the localId→seq FIFO
-                // mapping used by fork/rewind anchors.
-                if (localId) {
-                    const index = pendingUserLocalIds.indexOf(localId);
-                    if (index >= 0) {
-                        pendingUserLocalIds.splice(index, 1);
-                    }
-                }
+                // Rejected prompts never reach the host, so no rpcId was
+                // registered; nothing to clean from the anchor map.
                 session.sendAgentMessage({
                     type: 'error',
                     message: `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`

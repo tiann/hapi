@@ -86,17 +86,13 @@ describe('DSH session routes', () => {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-                type: 'prompt',
-                mode: 'queue',
-                text: 'hello dsh'
+                type: 'interrupt'
             })
         })
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({ ok: true, result: { accepted: true } })
         expect(dshAction).toHaveBeenCalledWith('session-1', {
-            type: 'prompt',
-            mode: 'queue',
-            text: 'hello dsh'
+            type: 'interrupt'
         })
     })
 
