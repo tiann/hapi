@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, writeFileSync as write } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DshRuntimeStartErrorImpl, startDshHost } from './DshRuntime'
+import { DshRuntimeStartErrorImpl, readDshRuntimeVersion, startDshHost } from './DshRuntime'
 
 const FAKE_READY = `
 const { createServer } = require('node:http')
@@ -91,6 +91,38 @@ describe('DshRuntime (fake runtime binaries)', () => {
 
         expect(error).toBeInstanceOf(DshRuntimeStartErrorImpl)
         expect((error as DshRuntimeStartErrorImpl).kind).toBe('timeout')
+    })
+
+    it('D1: readDshRuntimeVersion reads the dsh package manifest (two parents up)', () => {
+        // bin.js lives at node_modules/@deepseek-ai/dsh/lib/bin.js; the
+        // package manifest is two parent traversals up.
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-dsh-ver-'))
+        cleanupDirs.push(dir)
+        const pkgDir = join(dir, 'node_modules', '@deepseek-ai', 'dsh')
+        const libDir = join(pkgDir, 'lib')
+        mkdirSync(libDir, { recursive: true })
+        write(join(pkgDir, 'package.json'), JSON.stringify({ version: '0.1.0-rc.6' }))
+        const binPath = join(libDir, 'bin.js')
+        write(binPath, '// fake')
+        expect(readDshRuntimeVersion(binPath)).toBe('0.1.0-rc.6')
+    })
+
+    it('D1b: readDshRuntimeVersion returns null for an unreadable manifest', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-dsh-ver2-'))
+        cleanupDirs.push(dir)
+        const binPath = join(dir, 'bin.js')
+        write(binPath, '// fake')
+        expect(readDshRuntimeVersion(binPath)).toBeNull()
+    })
+
+    it('D2: an explicit override with a missing runtime fails loud (spawn), no auto-install', async () => {
+        const error = await startDshHost({
+            cwd: tmpdir(),
+            runtimeBin: join(tmpdir(), 'does-not-exist-override.js'),
+            readyTimeoutMs: 1_000
+        }).catch((e: unknown) => e)
+        expect(error).toBeInstanceOf(DshRuntimeStartErrorImpl)
+        expect((error as DshRuntimeStartErrorImpl).kind).toBe('spawn')
     })
 
     it('fails with kind install when the runtime is missing and auto-install is disabled', async () => {
