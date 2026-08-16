@@ -257,7 +257,13 @@ export async function runDsh(opts: {
                 ? { initialCursor: session.getMetadata()!.dshEventCursor }
                 : {}),
             onMessage: (message: DshProjectedMessage) => {
-                if (message.type === 'dsh_native' && message.event.type === 'user/message') {
+                // Only the ROOT session's user messages anchor fork/rewind
+                // boundaries; child projectors forward their own user/message
+                // events through this same callback and must not consume the
+                // root pending-localId FIFO.
+                if (message.type === 'dsh_native'
+                    && message.event.type === 'user/message'
+                    && message.event.dshSessionId === created.sessionId) {
                     noteUserMessageSeq(message.event.seq);
                 }
                 session.sendAgentMessage(message);
@@ -436,12 +442,10 @@ export async function runDsh(opts: {
                 if (!match) {
                     throw new Error(`Unknown DSH model: ${provider}::${modelId}`)
                 }
-                await applyModelSelection(
-                    provider,
-                    modelId,
-                    match.reasoning?.defaultEffort ?? undefined
-                )
+                const defaultEffort = match.reasoning?.defaultEffort ?? null
+                await applyModelSelection(provider, modelId, defaultEffort)
                 applied.model = { provider, modelId }
+                applied.modelReasoningEffort = defaultEffort
             }
             if (config.modelReasoningEffort !== undefined) {
                 // Effort-only change re-selects the CURRENT model, keeping

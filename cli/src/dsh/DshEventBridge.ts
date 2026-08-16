@@ -87,6 +87,14 @@ export class DshEventBridge {
             if (!initialBackfillDone) {
                 initialBackfillDone = true
                 await this.backfillAfterCursor()
+                // Replay live events that arrived while the backfill ran,
+                // oldest first; handleSessionEvent's seq guard skips any
+                // already forwarded by the backfill itself.
+                const buffered = this.initialRootEvents ?? []
+                this.initialRootEvents = null
+                buffered
+                    .sort((a, b) => a.seq - b.seq)
+                    .forEach((event) => this.handleSessionEvent(this.options.dshSessionId, event))
             }
             await Promise.race([muxDone, hostDone])
             generation.abort()
@@ -111,7 +119,14 @@ export class DshEventBridge {
         this.projector = options.projector
         this.logTag = options.logTag ?? 'dsh'
         this.lastForwardedSeq = options.initialCursor ?? -1
+        this.initialRootEvents = []
     }
+
+    /** Root session/event frames arriving while the initial history backfill
+     *  is in flight are buffered here and replayed (seq-sorted) afterwards;
+     *  without this, a live event advancing lastForwardedSeq would make the
+     *  replay discard older missing events as already forwarded. */
+    private initialRootEvents: SessionEvent[] | null = []
 
     /**
      * Replay native events after the last forwarded seq from session.history.
@@ -220,6 +235,10 @@ export class DshEventBridge {
         }
         switch (frame.type) {
             case 'session/event': {
+                if (frame.sessionId === this.options.dshSessionId && this.initialRootEvents) {
+                    this.initialRootEvents.push(frame.event)
+                    break
+                }
                 this.handleSessionEvent(frame.sessionId, frame.event)
                 break
             }
