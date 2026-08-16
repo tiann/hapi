@@ -145,6 +145,12 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.piSelectedModel !== undefined) preserved.piSelectedModel = metadata.piSelectedModel
     // Same for DeepSeek Harness provider-qualified selections.
     if (metadata.dshSelectedModel !== undefined) preserved.dshSelectedModel = metadata.dshSelectedModel
+    // Preserve the full DSH resume identity: the native session id, event
+    // replay anchor, and installed runtime release survive reopens (and the
+    // fork-child cursor seed survives child bootstrap).
+    if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
+    if (metadata.dshRuntimeVersion !== undefined) preserved.dshRuntimeVersion = metadata.dshRuntimeVersion
+    if (metadata.dshEventCursor !== undefined) preserved.dshEventCursor = metadata.dshEventCursor
     if (metadata.conversationHistoryPoints !== undefined) {
         preserved.conversationHistoryPoints = metadata.conversationHistoryPoints
     }

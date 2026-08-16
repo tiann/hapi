@@ -71,6 +71,7 @@ export class DshEventBridge {
         // its own AbortController so the loser of the race is torn down.
         // Persistent failures back off so a dead host cannot spin the CPU.
         let retryMs = 500
+        let initialBackfillDone = false
         while (!signal.aborted) {
             const generation = new AbortController()
             const onOuterAbort = () => generation.abort()
@@ -79,6 +80,14 @@ export class DshEventBridge {
             const host = this.options.client.hostStream(generation.signal)
             const muxDone = this.pumpMux(mux, generation.signal)
             const hostDone = this.pumpHost(host, generation.signal)
+            // First generation: a freshly spawned host sends a subscribed
+            // baseline, not historical events — backfill the gap since the
+            // last persisted cursor so events committed before the previous
+            // process died are projected without waiting for a disconnect.
+            if (!initialBackfillDone) {
+                initialBackfillDone = true
+                await this.backfillAfterCursor()
+            }
             await Promise.race([muxDone, hostDone])
             generation.abort()
             await Promise.allSettled([muxDone, hostDone])

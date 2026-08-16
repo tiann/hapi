@@ -47,6 +47,8 @@ export type DshHostHandle = {
     baseUrl: string
     /** Host facts from the readiness handshake. */
     info: DshHostInfo
+    /** Installed npm release version (from the dsh package manifest). */
+    runtimeVersion: string
     /** Listen port. */
     port: number
     /** Stop the host gracefully (SIGTERM) and await exit. */

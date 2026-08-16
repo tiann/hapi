@@ -219,7 +219,7 @@ export async function runDsh(opts: {
             ...metadata,
             flavor: 'dsh',
             dshSessionId: created.sessionId,
-            dshRuntimeVersion: host.info.version || DSH_RUNTIME_VERSION,
+            dshRuntimeVersion: host.runtimeVersion || DSH_RUNTIME_VERSION,
             capabilities: {
                 ...metadata.capabilities,
                 conversationHistory: {

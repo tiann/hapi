@@ -329,6 +329,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
         baseUrl,
         port,
         info,
+        runtimeVersion: readDshRuntimeVersion(binPath) ?? DSH_RUNTIME_VERSION,
         stop: async (stopOptions?: { timeoutMs?: number }) => {
             const timeoutMs = stopOptions?.timeoutMs ?? STOP_TIMEOUT_MS
             await new Promise<void>((resolve) => {

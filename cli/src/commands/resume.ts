@@ -182,6 +182,18 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
+    if (target.flavor === 'dsh') {
+        const { runDsh } = await import('@/dsh/runDsh')
+        await runDsh({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            startingMode: 'remote',
+        })
+        return
+    }
+
     if (target.flavor === 'pi') {
         const { runPi } = await import('@/pi/runPi')
         await runPi({
