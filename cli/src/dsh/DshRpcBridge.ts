@@ -340,7 +340,8 @@ async function dispatchFeedback(
                 ...(action.note !== undefined ? { note: action.note } : {}),
                 ifVersion: action.ifVersion ?? null
             })
-            return { items: [] }
+            // Mutations have no list-shaped payload; ack with the recorded row.
+            return { items: [{ messageId: action.messageId, version: action.ifVersion ?? '' }] }
         }
         case 'delete': {
             if (!action.messageId) throw new Error('feedback.delete requires messageId')
@@ -349,7 +350,7 @@ async function dispatchFeedback(
                 messageId: action.messageId as never,
                 ifVersion: action.ifVersion ?? null
             })
-            return { items: [] }
+            return { items: [{ messageId: action.messageId, version: action.ifVersion ?? '' }] }
         }
     }
 }

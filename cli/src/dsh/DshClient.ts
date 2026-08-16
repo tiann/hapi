@@ -139,7 +139,8 @@ export class DshClient {
         if (!response.result.ok) {
             throw new DshRpcError(response.result.error.code, response.result.error.message, response.result.error.details)
         }
-        return response.result.value.entries
+        const entries = response.result.value.entries ?? []
+        return entries
             .filter((entry) => entry.kind === 'child')
             .map((entry) => ({
                 id: entry.id,

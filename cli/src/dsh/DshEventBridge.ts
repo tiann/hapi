@@ -97,6 +97,12 @@ export class DshEventBridge {
             signal.addEventListener('abort', onOuterAbort, { once: true })
             const mux = this.options.client.muxStream(generation.signal)
             const host = this.options.client.hostStream(generation.signal)
+            // Seal EVERY child journal BEFORE the pumps dispatch frames:
+            // queued frames flushed on reconnect can arrive before the root
+            // subscription resolves the attached race.
+            if (!initialBackfillDone) {
+                this.journalRecoveryInFlight = true
+            }
             // Backfill must not start before the root mux subscription is
             // active: events committed between the history response and the
             // subscription would be returned by neither path.
@@ -124,12 +130,7 @@ export class DshEventBridge {
             // A failed backfill aborts the generation and retries: releasing
             // buffered live events first would advance lastForwardedSeq past
             // the missing range, which a later reconnect could never recover.
-            // While journal recovery runs, seal EVERY child journal — known
-            // or not — so no child cursor can advance past the outage gap.
-            // Set BEFORE the pumps dispatch frames: queued frames flushed on
-            // reconnect can arrive before the root subscription resolves.
             if (!initialBackfillDone) {
-                this.journalRecoveryInFlight = true
                 const backfilled = await this.backfillAfterCursor()
                 if (!backfilled) {
                     this.journalRecoveryInFlight = false
@@ -170,7 +171,13 @@ export class DshEventBridge {
                     .sort((a, b) => a.seq - b.seq)
                     .forEach((event) => this.handleSessionEvent(this.options.dshSessionId, event))
             }
-            await Promise.race([muxDone, hostDone])
+            try {
+                await Promise.race([muxDone, hostDone])
+            } catch (raceError) {
+                // A transport-level rejection must not escape the reconnect
+                // loop — treat it as a stream end and reconnect.
+                logger.warn(`[${this.logTag}] stream pump error: ${raceError instanceof Error ? raceError.message : String(raceError)}`)
+            }
             generation.abort()
             await Promise.allSettled([muxDone, hostDone])
             signal.removeEventListener('abort', onOuterAbort)
@@ -578,7 +585,11 @@ export class DshEventBridge {
                 known.set(child.id, child.mode)
             }
         } catch (error) {
-            logger.debug(`[${this.logTag}] subagent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+            // Children created during the outage may be unknown to us AND
+            // absent from the buffers — a failed discovery would permanently
+            // skip their journals. Retry the whole recovery instead.
+            logger.warn(`[${this.logTag}] subagent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+            return false
         }
         for (const [childSessionId, mode] of known) {
             const anchor = this.childLastSeq.get(childSessionId) ?? -1

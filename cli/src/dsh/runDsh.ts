@@ -499,13 +499,6 @@ export async function runDsh(opts: {
         // live catalog for its provider; a reasoning-effort change re-selects
         // the current model with the new effort.
         let currentModel: { provider: string; modelId: string } | null = null;
-        const resolveModelProvider = async (modelId: string): Promise<string | null> => {
-            const catalog = await client.sessionModels(created.sessionId);
-            const match = catalog.groups
-                .flatMap((group) => group.models.map((m) => ({ ...m, provider: group.id })))
-                .find((m) => m.id === modelId);
-            return match?.provider ?? null;
-        };
         // Raw SetSessionConfig handler: resolves the ORIGINAL payload so
         // provider-qualified {provider, modelId} selections keep their
         // provider identity (the shared registerSessionConfigRpc helper

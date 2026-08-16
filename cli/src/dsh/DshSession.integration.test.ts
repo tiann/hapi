@@ -41,6 +41,10 @@ const server = createServer((req, res) => {
     } else if (method === 'session.history') {
       const s = sessions.get(payload.sessionId)
       send({ ok: true, value: { events: s ? s.events : [], hasMore: false } })
+    } else if (method === 'subagent.list') {
+      send({ ok: true, value: { entries: [], parentAvailable: true } })
+    } else if (method === 'subagent.history') {
+      send({ ok: true, value: { events: [], hasMore: false } })
     } else if (method === 'session.prompt') {
       const s = sessions.get(payload.sessionId)
       if (!s) { send({ ok: false, error: { code: 'session-not-found', message: 'missing', details: { sessionId: payload.sessionId } } }); return }

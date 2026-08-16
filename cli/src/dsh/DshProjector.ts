@@ -58,16 +58,20 @@ export class DshProjector {
                 break
             }
             case 'turn/end': {
-                const reason = event.data && typeof event.data === 'object'
-                    && (event.data as { reason?: { kind?: unknown } }).reason
+                const data = event.data && typeof event.data === 'object'
+                    ? event.data as { reason?: { kind?: unknown }; turn?: unknown }
+                    : null
+                const reason = data?.reason
                 out.push({
                     type: 'turn_complete',
                     ...(reason && typeof reason.kind === 'string' ? { stopReason: reason.kind } : {}),
                     dshSeq: event.seq
                 })
-                for (const [key, state] of this.steps) {
-                    if (state.turn === event.data.turn) {
-                        this.steps.delete(key)
+                if (typeof data?.turn === 'number') {
+                    for (const [key, state] of this.steps) {
+                        if (state.turn === data.turn) {
+                            this.steps.delete(key)
+                        }
                     }
                 }
                 out.push({ type: 'dsh_native', event: native, dshSeq: event.seq })

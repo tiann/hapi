@@ -118,8 +118,11 @@ export async function installDshRuntime(options?: { onProgress?: (line: string) 
         })
 
     const binPath = defaultDshRuntimeBin()
+    // Resolve node the same way startDshHost does (HAPI_DSH_NODE_PATH), so a
+    // custom node override is honored by the install probe too.
+    const nodeBin = process.env.HAPI_DSH_NODE_PATH?.trim() || 'node'
     const nodeAvailable = await new Promise<boolean>((resolve) => {
-        const child = crossSpawn('node', ['--version'], { stdio: 'ignore' })
+        const child = crossSpawn(nodeBin, ['--version'], { stdio: 'ignore' })
         child.once('error', () => resolve(false))
         child.once('exit', (code) => resolve(code === 0))
     })
@@ -363,10 +366,18 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
                     resolve()
                 }
                 child.once('exit', settled)
-                child.kill('SIGTERM')
+                try {
+                    child.kill('SIGTERM')
+                } catch {
+                    // Process already gone — the exit listener settles us.
+                }
                 killer = setTimeout(() => {
                     if (child.exitCode === null && child.signalCode === null) {
-                        child.kill('SIGKILL')
+                        try {
+                            child.kill('SIGKILL')
+                        } catch {
+                            // Already exited; nothing to kill.
+                        }
                     }
                 }, timeoutMs)
                 killer.unref()
