@@ -23,7 +23,7 @@ describe('appServerConfig', () => {
         });
 
         expect(params).not.toHaveProperty('baseInstructions');
-        expect(params.developerInstructions).toBe(codexSystemPrompt);
+        expect(params.developerInstructions).toBe(getCodexSystemPrompt());
     });
 
     it('keeps an explicit base instruction override separate from HAPI developer instructions', () => {
@@ -35,7 +35,7 @@ describe('appServerConfig', () => {
         });
 
         expect(params.baseInstructions).toBe('Custom base instructions.');
-        expect(params.developerInstructions).toBe(codexSystemPrompt);
+        expect(params.developerInstructions).toBe(getCodexSystemPrompt());
     });
 
     it('applies CLI overrides when permission mode is default', () => {
@@ -50,7 +50,7 @@ describe('appServerConfig', () => {
         expect(params.sandbox).toBe('danger-full-access');
         expect(params.approvalPolicy).toBe('never');
         expect(params.baseInstructions).toBeUndefined();
-        expect(params.developerInstructions).toBe(codexSystemPrompt);
+        expect(params.developerInstructions).toBe(getCodexSystemPrompt());
         expect(params.config).toEqual({
             'mcp_servers.hapi': {
                 command: 'node',
@@ -161,7 +161,7 @@ describe('appServerConfig', () => {
         });
 
         expect(params.baseInstructions).toBeUndefined();
-        expect(params.developerInstructions).toBe(`${codexSystemPrompt}\n\nOnly respond in Chinese.`);
+        expect(params.developerInstructions).toBe(`${getCodexSystemPrompt()}\n\nOnly respond in Chinese.`);
         expect(params.config).toEqual({
             'mcp_servers.hapi': {
                 command: 'node',
