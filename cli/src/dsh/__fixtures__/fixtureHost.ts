@@ -24,6 +24,12 @@ export type FixtureHost = {
     subscribedOnOpen: { sessionId: string; lastSeq: number } | null
     /** Push one host frame to all connected host sockets. */
     pushHost(frame: HostFrame): void
+    /** Close every mux socket (triggers the bridge reconnect path). */
+    disconnectMux(): void
+    /** Close every host socket (triggers the bridge reconnect path). */
+    disconnectHost(): void
+    /** Number of currently open mux sockets (reconnect assertions). */
+    muxSocketCount(): number
     /** Last N client requests received, for assertions. */
     requests: Array<{ endpoint: string; payload: unknown }>
     /** Pending rpcIds of unanswered approval/question server-requests. */
@@ -55,10 +61,19 @@ export function createFixtureHost(): Promise<FixtureHost> {
             if (endpoint === 'session.history') {
                 return { ok: true, value: { events: [], hasMore: false } }
             }
+            if (endpoint === 'subagent.list') {
+                return { ok: true, value: { entries: [], parentAvailable: true } }
+            }
+            if (endpoint === 'subagent.history') {
+                return { ok: true, value: { events: [], hasMore: false } }
+            }
             return { ok: true, value: {} }
         },
         pushMux: () => {},
         pushHost: () => {},
+        disconnectMux: () => {},
+        disconnectHost: () => {},
+        muxSocketCount: () => 0,
         subscribedOnOpen: null,
         requests: [],
         pendingServerRequests: new Map(),
@@ -162,6 +177,17 @@ export function createFixtureHost(): Promise<FixtureHost> {
         }
         host.pushMux = (frame) => pushTo(muxSockets, frame, 'session/event')
         host.pushHost = (frame) => pushTo(hostSockets, frame, 'host/event')
+        host.disconnectMux = () => {
+            for (const ws of [...muxSockets]) {
+                ws.close()
+            }
+        }
+        host.disconnectHost = () => {
+            for (const ws of [...hostSockets]) {
+                ws.close()
+            }
+        }
+        host.muxSocketCount = () => muxSockets.size
 
         server.listen(0, '127.0.0.1', () => {
             const { port } = server.address() as AddressInfo
@@ -174,6 +200,9 @@ export function createFixtureHost(): Promise<FixtureHost> {
                 for (const ws of hostSockets) {
                     ws.close()
                 }
+                // In-flight unary fetches (slow backfills) hold keep-alive
+                // connections; without this server.close() never settles.
+                server.closeAllConnections?.()
                 await new Promise<void>((resolveClose) => {
                     server.close(() => resolveClose())
                     wss.close()

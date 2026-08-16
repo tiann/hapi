@@ -487,7 +487,7 @@ export class DshEventBridge {
         }
     }
 
-    private handleSessionEvent(sessionId: string, event: SessionEvent, source: 'live' | 'backfill' = 'live'): void {
+    private handleSessionEvent(sessionId: string, event: SessionEvent, source: 'live' | 'backfill' = 'live', forceForward = false): void {
         if (sessionId === this.options.dshSessionId) {
             if (event.seq <= this.lastForwardedSeq) return
             this.lastForwardedSeq = event.seq
@@ -503,7 +503,7 @@ export class DshEventBridge {
         // child's history replay is in flight, buffer instead of forwarding —
         // advancing the cursor mid-fetch would let the replay discard the gap.
         const childBuffer = this.childBuffers.get(sessionId)
-        if (childBuffer || this.journalRecoveryInFlight) {
+        if (!forceForward && (childBuffer || this.journalRecoveryInFlight)) {
             // Dynamic seal for children first seen during journal recovery.
             const buffer = childBuffer ?? []
             buffer.push(event)
@@ -593,15 +593,14 @@ export class DshEventBridge {
                     this.handleSessionEvent(childSessionId, event, 'backfill')
                 })
             // Release buffered live frames, oldest first; the seq guard skips
-            // anything the replay already forwarded. On a FAILED replay the
-            // buffered frames still forward (they advance the durable cursor),
-            // and the next reconnect's history fetch closes whatever gap the
-            // outage left — the child can never stay permanently buffered.
+            // anything the replay already forwarded. forceForward bypasses the
+            // still-active recovery seal — the buffer is already deleted, so
+            // re-buffering would trap these frames forever.
             const buffered = this.childBuffers.get(childSessionId) ?? []
             this.childBuffers.delete(childSessionId)
             buffered
                 .sort((a, b) => a.seq - b.seq)
-                .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live'))
+                .forEach((event) => this.handleSessionEvent(childSessionId, event, 'live', true))
         }
         return true
     }
