@@ -367,7 +367,7 @@ export async function runDsh(opts: {
         // reasoning-effort endpoint). A bare model id is resolved against the
         // live catalog for its provider; a reasoning-effort change re-selects
         // the current model with the new effort.
-        let currentModelId: string | null = null;
+        let currentModel: { provider: string; modelId: string } | null = null;
         const resolveModelProvider = async (modelId: string): Promise<string | null> => {
             const catalog = await client.sessionModels(created.sessionId);
             const match = catalog.groups
@@ -380,13 +380,20 @@ export async function runDsh(opts: {
         // provider identity (the shared registerSessionConfigRpc helper
         // collapses objects to a bare modelId).
         const applyModelSelection = async (provider: string, modelId: string, reasoningEffort?: string | null) => {
-            currentModelId = modelId;
             await client.selectModel({
                 sessionId: created.sessionId,
                 provider,
                 model: modelId,
                 ...(reasoningEffort !== undefined && reasoningEffort !== null ? { reasoningEffort } : {})
             });
+            currentModel = { provider, modelId };
+            // Persist the provider-qualified selection (analogous to
+            // piSelectedModel) so the hub/web can disambiguate duplicate
+            // model ids across providers across reloads.
+            session.updateMetadata((metadata) => ({
+                ...metadata,
+                dshSelectedModel: { provider, modelId }
+            }));
         };
         session.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
             const config = payload && typeof payload === 'object'
@@ -421,15 +428,19 @@ export async function runDsh(opts: {
                 applied.model = { provider, modelId }
             }
             if (config.modelReasoningEffort !== undefined) {
-                const target = currentModelId
-                    ?? (await client.sessionModels(created.sessionId)).current.model
-                const provider = await resolveModelProvider(target)
-                if (!provider) {
-                    throw new Error(`Unknown DSH model: ${target}`)
+                // Effort-only change re-selects the CURRENT model, keeping
+                // its provider identity (never re-resolve a bare id).
+                let target = currentModel
+                if (!target) {
+                    const catalogCurrent = (await client.sessionModels(created.sessionId)).current
+                    target = { provider: catalogCurrent.provider, modelId: catalogCurrent.model }
+                }
+                if (!target.provider || target.modelId.length === 0) {
+                    throw new Error(`Unknown DSH model: ${JSON.stringify(target)}`)
                 }
                 await applyModelSelection(
-                    provider,
-                    target,
+                    target.provider,
+                    target.modelId,
                     typeof config.modelReasoningEffort === 'string' ? config.modelReasoningEffort : null
                 )
                 applied.modelReasoningEffort = config.modelReasoningEffort

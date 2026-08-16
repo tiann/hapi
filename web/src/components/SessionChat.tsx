@@ -902,6 +902,19 @@ function SessionChatInner(props: SessionChatProps) {
         }
         return options.length > 0 ? options : undefined
     }, [agentFlavor, dshModelsState.models])
+    const dshSelectedModelValue = useMemo(() => {
+        // Provider-qualified selection from metadata wins; bare session.model
+        // (legacy / pre-metadata sessions) falls back to catalog current.
+        const metadata = props.session.metadata
+        const qualified = metadata && typeof metadata === 'object'
+            ? (metadata as { dshSelectedModel?: { provider: string; modelId: string } | null }).dshSelectedModel
+            : null
+        if (qualified?.provider && qualified.modelId) {
+            return `${qualified.provider}::${qualified.modelId}`
+        }
+        const current = props.session.model ?? dshModelsState.models?.current?.model
+        return current ? `::${current}` : null
+    }, [props.session.metadata, props.session.model, dshModelsState.models?.current?.model])
     const dshReasoningEffortOptions = useMemo(() => {
         if (agentFlavor !== 'dsh') {
             return undefined
@@ -909,18 +922,35 @@ function SessionChatInner(props: SessionChatProps) {
         // Effort belongs to the model selection; before the user picks a
         // model, fall back to the host's current/default model so the effort
         // picker is usable immediately (same posture as the catalog current).
-        const current = props.session.model ?? dshModelsState.models?.current?.model
+        const qualified = (() => {
+            const metadata = props.session.metadata
+            const selected = metadata && typeof metadata === 'object'
+                ? (metadata as { dshSelectedModel?: { provider: string; modelId: string } | null }).dshSelectedModel
+                : null
+            if (selected?.provider && selected.modelId) {
+                return { provider: selected.provider, modelId: selected.modelId }
+            }
+            return null
+        })()
+        // Prefer the provider-qualified selection; bare session.model falls
+        // back to the catalog current.
+        const current = qualified
+            ?? (props.session.model ? { provider: null, modelId: props.session.model } : null)
+            ?? (dshModelsState.models?.current ? { provider: dshModelsState.models.current.provider, modelId: dshModelsState.models.current.model } : null)
         if (!current) {
             return undefined
         }
         for (const group of dshModelsState.models?.groups ?? []) {
-            const model = group.models.find((m) => m.id === current)
+            if (qualified?.provider && group.id !== qualified.provider) {
+                continue
+            }
+            const model = group.models.find((m) => m.id === current.modelId)
             if (model?.efforts && model.efforts.length > 0) {
                 return model.efforts.map((effort) => ({ value: effort.id, name: effort.name }))
             }
         }
         return undefined
-    }, [agentFlavor, dshModelsState.models, props.session.model, dshModelsState.models?.current?.model])
+    }, [agentFlavor, dshModelsState.models, props.session.model, props.session.metadata, dshModelsState.models?.current?.model])
     const cursorModelsState = useCursorModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1860,7 +1890,7 @@ function SessionChatInner(props: SessionChatProps) {
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
-                        model={props.session.model}
+                        model={agentFlavor === 'dsh' ? (dshSelectedModelValue ?? props.session.model) : props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}

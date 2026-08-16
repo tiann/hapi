@@ -170,7 +170,9 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    // Same provider-qualified selection for DeepSeek Harness sessions.
+    dshSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

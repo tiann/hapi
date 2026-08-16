@@ -13,6 +13,7 @@ import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient
 import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/runner/doctor'
 import { defaultDshRuntimeBin } from '@/dsh/DshRuntime'
 import { DSH_RUNTIME_VERSION } from '@/dsh/types'
+import { readDshRuntimeVersion } from '@/dsh/DshRuntime'
 import { readRunnerState } from '@/persistence'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -160,12 +161,12 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         if (existsSync(dshBin)) {
             console.log(`Runtime: ${chalk.green('✓ Installed')} ${chalk.gray(dshBin)}`);
             try {
-                const installed = JSON.parse(readFileSync(join(join(dshBin, '..', '..', '..', '..', '..'), 'package.json'), 'utf8')) as { version?: string };
+                const installedVersion = readDshRuntimeVersion(dshBin);
                 const pinned = DSH_RUNTIME_VERSION;
-                if (installed.version === pinned) {
-                    console.log(`Version: ${chalk.green(installed.version)} (matches pinned ${pinned})`);
+                if (installedVersion === pinned) {
+                    console.log(`Version: ${chalk.green(installedVersion)} (matches pinned ${pinned})`);
                 } else {
-                    console.log(`Version: ${chalk.yellow(installed.version)} (pinned ${pinned} — reinstall with: hapi dsh install)`);
+                    console.log(`Version: ${chalk.yellow(installedVersion ?? 'unknown')} (pinned ${pinned} — reinstall with: hapi dsh install)`);
                 }
             } catch {
                 console.log(`Version: ${chalk.yellow('unknown (package.json unreadable)')}`);

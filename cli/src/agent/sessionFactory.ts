@@ -143,6 +143,8 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.piAvailableModels !== undefined) preserved.piAvailableModels = metadata.piAvailableModels
     // Preserve provider-qualified Pi model selection (disambiguates duplicate modelIds).
     if (metadata.piSelectedModel !== undefined) preserved.piSelectedModel = metadata.piSelectedModel
+    // Same for DeepSeek Harness provider-qualified selections.
+    if (metadata.dshSelectedModel !== undefined) preserved.dshSelectedModel = metadata.dshSelectedModel
     if (metadata.conversationHistoryPoints !== undefined) {
         preserved.conversationHistoryPoints = metadata.conversationHistoryPoints
     }

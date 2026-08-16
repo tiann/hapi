@@ -690,6 +690,9 @@ export class SessionCache {
             // resolve the exact model even when two providers share a modelId.
             if (session.metadata?.flavor === 'pi') {
                 this.persistPiSelectedModel(session, piModelObject)
+            } else if (session.metadata?.flavor === 'dsh') {
+                const dshSelected = piModelObject as { provider: string; modelId: string } | null
+                this.persistDshSelectedModel(session, dshSelected)
             }
             this.markRuntimeConfigUpdated(sessionId, 'model', appliedAt)
         }
@@ -1436,6 +1439,25 @@ export class SessionCache {
 
         session.metadata = parsed.data
         session.metadataVersion = result.version
+    }
+
+    private persistDshSelectedModel(session: Session, dshSelected: { provider: string; modelId: string } | null): void {
+        const currentMetadata = session.metadata
+        if (!currentMetadata || currentMetadata.dshSelectedModel === dshSelected) {
+            return
+        }
+        const nextMetadata = { ...currentMetadata, dshSelectedModel: dshSelected }
+        const result = this.store.sessions.updateSessionMetadata(
+            session.id,
+            nextMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+        if (result.result === 'success') {
+            session.metadata = nextMetadata
+            session.metadataVersion = result.version
+        }
     }
 
     private persistPiSelectedModel(session: Session, piSelected: { provider: string; modelId: string } | null): void {

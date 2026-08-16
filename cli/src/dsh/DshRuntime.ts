@@ -40,6 +40,20 @@ export class DshRuntimeStartErrorImpl extends Error implements DshRuntimeStartEr
  * install directory. Resolved relative to HAPI_HOME so single-executable
  * builds never bundle DSH packages.
  */
+/** Read the dsh package manifest version. binPath points at
+ *  node_modules/@deepseek-ai/dsh/lib/bin.js, so the package manifest is two
+ *  parent traversals up — NOT the wrapper's manifest. */
+export function readDshRuntimeVersion(binPath: string): string | null {
+    try {
+        const manifest = JSON.parse(
+            readFileSync(join(binPath, '..', '..', 'package.json'), 'utf8')
+        ) as { version?: string }
+        return manifest.version ?? null
+    } catch {
+        return null
+    }
+}
+
 export function defaultDshRuntimeBin(): string {
     return join(configuration.happyHomeDir, DSH_RUNTIME_DIR_NAME, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 }
@@ -153,17 +167,7 @@ export async function startDshHost(options: DshRuntimeOptions): Promise<DshHostH
     })()
 
     const runtimeMissing = !existsSync(binPath)
-    const runtimeOutdated = !runtimeMissing && (() => {
-        try {
-            const manifest = JSON.parse(readFileSync(
-                join(binPath, '..', '..', '..', 'package.json'),
-                'utf8'
-            )) as { version?: string }
-            return manifest.version !== DSH_RUNTIME_VERSION
-        } catch {
-            return false
-        }
-    })()
+    const runtimeOutdated = !runtimeMissing && readDshRuntimeVersion(binPath) !== DSH_RUNTIME_VERSION
     const managedRuntime = options.runtimeBin === undefined && !process.env[DSH_RUNTIME_PATH_ENV]
     if (managedRuntime && (runtimeMissing || runtimeOutdated)) {
         const noInstall = process.env[DSH_RUNTIME_NO_INSTALL_ENV] === '1'

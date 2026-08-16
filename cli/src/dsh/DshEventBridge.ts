@@ -58,6 +58,9 @@ export class DshEventBridge {
     private readonly projector: DshProjector
     private readonly logTag: string
     private readonly childProjectors = new Map<string, DshProjector>()
+    /** Highest forwarded seq per projection key — stale bootstrap responses
+     *  (older than a live frame already forwarded) are dropped. */
+    private readonly projectionSeqByKey = new Map<string, number>()
     private lastCursorFlush = 0
 
 
@@ -388,6 +391,15 @@ export class DshEventBridge {
     }
 
     private handleProjection(key: string, value: unknown, seq: number): void {
+        // Drop projections older than the newest already forwarded for this
+        // key: a stale bootstrap history response must never overwrite a
+        // newer live frame (and later unrelated patches must not republish
+        // it at a newer sequence).
+        const previousSeq = this.projectionSeqByKey.get(key) ?? -1
+        if (seq < previousSeq) {
+            return
+        }
+        this.projectionSeqByKey.set(key, seq)
         if (key === 'permissions' && isObject(value)) {
             const options = Array.isArray(value.options)
                 ? value.options
