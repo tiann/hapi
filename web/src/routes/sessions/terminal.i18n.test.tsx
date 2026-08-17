@@ -101,7 +101,7 @@ describe('TerminalPage localization', () => {
         })
 
         expect(screen.getByRole('tablist', { name: '终端会话' })).toBeInTheDocument()
-        expect(screen.getByRole('tab', { name: '终端 1' })).toHaveAttribute(
+        expect(screen.getByRole('tab', { name: /终端 1/ })).toHaveAttribute(
             'title',
             '终端 1 也已在另一个窗口中连接。'
         )
