@@ -360,13 +360,14 @@ export default function TerminalPage() {
         }
 
         if ((maxTerminals ?? 0) > 0 && isInitialInventoryPass) {
-            // Use a deterministic ID for the automatic first terminal. If two
-            // views simultaneously observe an empty session, both create calls
-            // converge on the same server-side PTY instead of racing two random
-            // terminal resources into existence.
-            const terminalId = `term-${sessionId}-auto`
+            // Resource identity and bootstrap deduplication are deliberately
+            // separate concerns. Every PTY gets a unique ID across lifecycles;
+            // the server registry recognizes the `-auto-` marker and atomically
+            // accepts only the first auto-create while the session is empty.
+            const terminalId = `term-${sessionId}-auto-${randomId()}`
             createTerminal(terminalId, 80, 24)
-            setActiveTerminalId(terminalId)
+            // Do not assume this request won the create-if-empty race. The
+            // server inventory selects the actual terminal for this view.
             return
         }
 
@@ -1031,8 +1032,7 @@ export default function TerminalPage() {
                         <DialogTitle>{t('terminal.paste.fallbackTitle')}</DialogTitle>
                         <DialogDescription>
                             {t('terminal.paste.fallbackDescription')}
-                        </DialogDescription>
-                    </DialogHeader>
+                        </DialogHeader>
                     <textarea
                         value={manualPasteText}
                         onChange={(event) => setManualPasteText(event.target.value)}
