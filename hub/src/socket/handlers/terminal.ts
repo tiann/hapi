@@ -7,6 +7,22 @@ import { getUserTerminalBuffer } from '../userTerminalBuffer'
 
 const terminalCreateSchema = TerminalOpenPayloadSchema
 
+const terminalListSchema = z.object({
+    sessionId: z.string().min(1)
+})
+
+const terminalAttachSchema = z.object({
+    sessionId: z.string().min(1),
+    terminalId: z.string().min(1),
+    cols: z.number().int().positive(),
+    rows: z.number().int().positive()
+})
+
+const terminalDetachSchema = z.object({
+    sessionId: z.string().min(1),
+    terminalId: z.string().min(1)
+})
+
 const terminalWriteSchema = z.object({
     terminalId: z.string().min(1),
     data: z.string()
@@ -18,7 +34,10 @@ const terminalResizeSchema = z.object({
     rows: z.number().int().positive()
 })
 
+// sessionId is optional for compatibility with older web clients. New clients
+// include it so they can explicitly close a detached terminal from the selector.
 const terminalCloseSchema = z.object({
+    sessionId: z.string().min(1).optional(),
     terminalId: z.string().min(1)
 })
 
@@ -37,6 +56,26 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
 
     const emitTerminalError = (terminalId: string, message: string) => {
         socket.emit('terminal:error', { terminalId, message })
+    }
+
+    const isAuthorizedSession = (sessionId: string): boolean => {
+        const session = getSession(sessionId)
+        return Boolean(namespace && session && session.namespace === namespace && session.active)
+    }
+
+    const emitTerminalSessions = (sessionId: string): void => {
+        if (!isAuthorizedSession(sessionId)) {
+            return
+        }
+        socket.emit('terminal:sessions', {
+            sessionId,
+            maxTerminals: maxTerminalsPerSession,
+            terminals: terminalRegistry.listForSession(sessionId).map((entry) => ({
+                terminalId: entry.terminalId,
+                createdAt: entry.createdAt,
+                attached: entry.socketId !== null
+            }))
+        })
     }
 
     const resolveEntryForSocket = (terminalId: string): TerminalRegistryEntry | null => {
@@ -84,6 +123,58 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         return null
     }
 
+    const replayTerminalBuffer = (sessionId: string, terminalId: string): void => {
+        const buffered = getUserTerminalBuffer(sessionId, terminalId)
+        if (buffered) {
+            socket.emit('terminal:output', { terminalId, data: buffered })
+        }
+    }
+
+    const attachExistingTerminal = (
+        entry: TerminalRegistryEntry,
+        cols: number,
+        rows: number,
+        replay: boolean
+    ): boolean => {
+        const cliSocket = resolveCliSocket(entry, true)
+        if (!cliSocket) {
+            return false
+        }
+        const attached = terminalRegistry.attach(entry.terminalId, entry.sessionId, socket.id)
+        if (!attached) {
+            emitTerminalError(entry.terminalId, 'Terminal is unavailable.')
+            return false
+        }
+
+        socket.join(`session:${entry.sessionId}`)
+        cliSocket.emit('terminal:resize', {
+            sessionId: entry.sessionId,
+            terminalId: entry.terminalId,
+            cols,
+            rows
+        })
+        terminalRegistry.markActivity(entry.terminalId)
+        if (replay) {
+            replayTerminalBuffer(entry.sessionId, entry.terminalId)
+        }
+        // Existing PTYs do not emit terminal:ready again from the CLI on attach,
+        // so acknowledge the rebind directly from the hub.
+        socket.emit('terminal:ready', {
+            sessionId: entry.sessionId,
+            terminalId: entry.terminalId
+        })
+        emitTerminalSessions(entry.sessionId)
+        return true
+    }
+
+    socket.on('terminal:list', (data: unknown) => {
+        const parsed = terminalListSchema.safeParse(data)
+        if (!parsed.success || !isAuthorizedSession(parsed.data.sessionId)) {
+            return
+        }
+        emitTerminalSessions(parsed.data.sessionId)
+    })
+
     socket.on('terminal:create', (data: unknown) => {
         const parsed = terminalCreateSchema.safeParse(data)
         if (!parsed.success) {
@@ -91,23 +182,32 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         }
 
         const { sessionId, terminalId, cols, rows } = parsed.data
-        const session = getSession(sessionId)
-        if (!namespace || !session || session.namespace !== namespace || !session.active) {
+        if (!isAuthorizedSession(sessionId)) {
             emitTerminalError(terminalId, 'Session is inactive or unavailable.')
             return
         }
 
         const existingEntry = terminalRegistry.get(terminalId)
-        const isReconnect = existingEntry?.sessionId === sessionId
-        const shouldReplayBuffer = existingEntry?.socketId !== socket.id
+        if (existingEntry) {
+            if (existingEntry.sessionId !== sessionId) {
+                emitTerminalError(terminalId, 'Terminal ID is already in use.')
+                return
+            }
+            // Compatibility path for pre-list/attach web clients: terminal:create
+            // used to double as reconnect. Preserve that behavior, but do not send
+            // terminal:open again; the PTY already exists.
+            attachExistingTerminal(existingEntry, cols, rows, existingEntry.socketId !== socket.id)
+            return
+        }
 
-        if (!isReconnect && terminalRegistry.countForSocket(socket.id) >= maxTerminalsPerSocket) {
+        if (terminalRegistry.countForSocket(socket.id) >= maxTerminalsPerSocket) {
             emitTerminalError(terminalId, `Too many terminals open (max ${maxTerminalsPerSocket}).`)
             return
         }
 
-        if (!isReconnect && terminalRegistry.countForSession(sessionId) >= maxTerminalsPerSession) {
+        if (terminalRegistry.countForSession(sessionId) >= maxTerminalsPerSession) {
             emitTerminalError(terminalId, `Too many terminals open for this session (max ${maxTerminalsPerSession}).`)
+            emitTerminalSessions(sessionId)
             return
         }
 
@@ -131,7 +231,6 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         }
 
         socket.join(`session:${sessionId}`)
-
         cliSocket.emit('terminal:open', {
             sessionId,
             terminalId,
@@ -139,16 +238,41 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             rows
         })
         terminalRegistry.markActivity(terminalId)
+        emitTerminalSessions(sessionId)
+    })
 
-        // Replay buffered output so the terminal shows scrollback immediately
-        // instead of staying black until the next output from CLI.
-        // The buffer is never explicitly cleared here: it persists so a client
-        // whose socket reconnects with the same terminalId still sees the
-        // accumulated output. It is bounded to 256KB per terminal.
-        const buffered = getUserTerminalBuffer(sessionId, terminalId)
-        if (buffered && shouldReplayBuffer) {
-            socket.emit('terminal:output', { terminalId, data: buffered })
+    socket.on('terminal:attach', (data: unknown) => {
+        const parsed = terminalAttachSchema.safeParse(data)
+        if (!parsed.success) {
+            return
         }
+        const { sessionId, terminalId, cols, rows } = parsed.data
+        if (!isAuthorizedSession(sessionId)) {
+            emitTerminalError(terminalId, 'Session is inactive or unavailable.')
+            return
+        }
+        const entry = terminalRegistry.get(terminalId)
+        if (!entry || entry.sessionId !== sessionId) {
+            emitTerminalError(terminalId, 'Terminal not found.')
+            emitTerminalSessions(sessionId)
+            return
+        }
+
+        attachExistingTerminal(entry, cols, rows, entry.socketId !== socket.id)
+    })
+
+    socket.on('terminal:detach', (data: unknown) => {
+        const parsed = terminalDetachSchema.safeParse(data)
+        if (!parsed.success || !isAuthorizedSession(parsed.data.sessionId)) {
+            return
+        }
+        const { sessionId, terminalId } = parsed.data
+        const entry = terminalRegistry.get(terminalId)
+        if (!entry || entry.sessionId !== sessionId) {
+            return
+        }
+        terminalRegistry.detach(terminalId, socket.id)
+        emitTerminalSessions(sessionId)
     })
 
     socket.on('terminal:write', (data: unknown) => {
@@ -206,14 +330,28 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        const { terminalId } = parsed.data
-        const entry = resolveEntryForSocket(terminalId)
+        const { terminalId, sessionId: requestedSessionId } = parsed.data
+        const entry = terminalRegistry.get(terminalId)
         if (!entry) {
+            if (requestedSessionId && isAuthorizedSession(requestedSessionId)) {
+                emitTerminalSessions(requestedSessionId)
+            }
+            return
+        }
+
+        if (requestedSessionId) {
+            if (entry.sessionId !== requestedSessionId || !isAuthorizedSession(requestedSessionId)) {
+                return
+            }
+        } else if (entry.socketId !== socket.id) {
+            // Legacy clients omit sessionId and may close only the terminal they
+            // currently control.
             return
         }
 
         terminalRegistry.remove(terminalId)
         emitCloseToCli(entry)
+        emitTerminalSessions(entry.sessionId)
     })
 
     /** Returns false when no CLI socket owns this session in the caller's namespace. */
@@ -243,10 +381,6 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
     // unauthorized caller would leak existence, and the only honest-client
     // rejection path (a session that just went inactive) unmounts the terminal
     // view anyway via canViewAgentTerminal, so there is no live viewer to inform.
-    const isAuthorizedSession = (sessionId: string): boolean => {
-        const session = getSession(sessionId)
-        return Boolean(namespace && session && session.namespace === namespace && session.active)
-    }
     const tellCliIfNoViewers = (sessionId: string): void => {
         const size = socket.nsp.adapter.rooms.get(agentTerminalRoom(sessionId))?.size ?? 0
         if (size === 0) {

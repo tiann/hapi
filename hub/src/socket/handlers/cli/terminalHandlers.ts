@@ -47,7 +47,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
     const resolveOwnedTerminal = (payload: { sessionId: string; terminalId: string }) => {
         const entry = resolveOwnedEntry(payload)
         if (!entry) return null
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
+        const terminalSocket = entry.socketId ? terminalNamespace.sockets.get(entry.socketId) : null
         return terminalSocket ? { entry, terminalSocket } : null
     }
 
@@ -82,7 +82,9 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         // Keep buffering while the web socket is detached so its replacement
         // can replay everything the still-running PTY emitted in the gap.
         appendUserTerminalOutput(parsed.data.sessionId, parsed.data.terminalId, parsed.data.data)
-        terminalNamespace.sockets.get(entry.socketId)?.emit('terminal:output', parsed.data)
+        if (entry.socketId) {
+            terminalNamespace.sockets.get(entry.socketId)?.emit('terminal:output', parsed.data)
+        }
     })
 
     socket.on('agent-terminal:output', (data: unknown) => {
@@ -134,7 +136,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         // remove() fires the registry's onRemove → clears this terminal's
         // scrollback buffer (without touching the session's other terminals).
         terminalRegistry.remove(parsed.data.terminalId)
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
+        const terminalSocket = entry.socketId ? terminalNamespace.sockets.get(entry.socketId) : null
         if (!terminalSocket) {
             return
         }
@@ -159,7 +161,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
             return
         }
 
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
+        const terminalSocket = entry.socketId ? terminalNamespace.sockets.get(entry.socketId) : null
         terminalRegistry.remove(parsed.data.terminalId)
         terminalSocket?.emit('terminal:error', parsed.data)
     })
@@ -168,7 +170,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
 export function cleanupTerminalHandlers(socket: CliSocketWithData, deps: { terminalRegistry: TerminalRegistry; terminalNamespace: SocketNamespace }): void {
     const removed = deps.terminalRegistry.removeByCliSocket(socket.id)
     for (const entry of removed) {
-        const terminalSocket = deps.terminalNamespace.sockets.get(entry.socketId)
+        const terminalSocket = entry.socketId ? deps.terminalNamespace.sockets.get(entry.socketId) : null
         terminalSocket?.emit('terminal:error', {
             terminalId: entry.terminalId,
             message: 'CLI disconnected.'

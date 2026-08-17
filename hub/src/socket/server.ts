@@ -97,7 +97,7 @@ export function createSocketServer(deps: SocketServerDeps): {
         // re-registers skip this (remove(id, false)) to keep their buffer.
         onRemove: (entry) => clearUserTerminalBuffer(entry.sessionId, entry.terminalId),
         onIdle: (entry) => {
-            const terminalSocket = terminalNs.sockets.get(entry.socketId)
+            const terminalSocket = entry.socketId ? terminalNs.sockets.get(entry.socketId) : null
             terminalSocket?.emit('terminal:error', {
                 terminalId: entry.terminalId,
                 message: 'Terminal closed due to inactivity.'

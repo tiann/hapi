@@ -1,17 +1,18 @@
 export type TerminalRegistryEntry = {
     terminalId: string
     sessionId: string
-    socketId: string
+    socketId: string | null
     cliSocketId: string
+    createdAt: number
     idleTimer: ReturnType<typeof setTimeout> | null
 }
 
 type TerminalRegistryOptions = {
     idleTimeoutMs: number
     onIdle?: (entry: TerminalRegistryEntry) => void
-    // Fired whenever an entry is genuinely removed (close / idle / CLI gone), but NOT on a same-id reconnect re-register, so per-terminal
-    // resources (e.g. the scrollback buffer) are released without wiping a
-    // reconnecting client's state.
+    // Fired whenever an entry is genuinely removed (close / idle / CLI gone),
+    // but NOT when a browser detaches or re-attaches, so per-terminal resources
+    // (e.g. the scrollback buffer) survive navigation and transport reconnects.
     onRemove?: (entry: TerminalRegistryEntry) => void
 }
 
@@ -33,18 +34,13 @@ export class TerminalRegistry {
     register(terminalId: string, sessionId: string, socketId: string, cliSocketId: string): TerminalRegistryEntry | null {
         const existing = this.terminals.get(terminalId)
         if (existing) {
-            if (existing.socketId === socketId) {
-                return existing
-            }
             if (existing.sessionId !== sessionId) {
                 return null
             }
-            // Same session, different socket — stale entry from a previous
-            // connection (e.g. socket reconnect in a PWA). Terminal IDs are
-            // client-generated UUIDs so cross-client collisions are not a
-            // realistic concern; clean up and re-register. Skip onRemove so the
-            // reconnecting client keeps its scrollback buffer.
-            this.remove(terminalId, false)
+            // Backwards compatibility for older web clients that use
+            // terminal:create for transport reconnects. Re-bind the existing
+            // resource instead of replacing it or firing onRemove.
+            return this.attach(terminalId, sessionId, socketId)
         }
 
         const entry: TerminalRegistryEntry = {
@@ -52,6 +48,7 @@ export class TerminalRegistry {
             sessionId,
             socketId,
             cliSocketId,
+            createdAt: Date.now(),
             idleTimer: null
         }
 
@@ -61,6 +58,35 @@ export class TerminalRegistry {
         this.addToIndex(this.terminalsByCliSocket, cliSocketId, terminalId)
         this.scheduleIdle(entry)
 
+        return entry
+    }
+
+    attach(terminalId: string, sessionId: string, socketId: string): TerminalRegistryEntry | null {
+        const entry = this.terminals.get(terminalId)
+        if (!entry || entry.sessionId !== sessionId) {
+            return null
+        }
+
+        if (entry.socketId === socketId) {
+            return entry
+        }
+
+        if (entry.socketId) {
+            this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
+        }
+        entry.socketId = socketId
+        this.addToIndex(this.terminalsBySocket, socketId, terminalId)
+        return entry
+    }
+
+    detach(terminalId: string, socketId: string): TerminalRegistryEntry | null {
+        const entry = this.terminals.get(terminalId)
+        if (!entry || entry.socketId !== socketId) {
+            return null
+        }
+
+        this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
+        entry.socketId = null
         return entry
     }
 
@@ -76,6 +102,17 @@ export class TerminalRegistry {
         return this.terminals.get(terminalId) ?? null
     }
 
+    listForSession(sessionId: string): TerminalRegistryEntry[] {
+        const ids = this.terminalsBySession.get(sessionId)
+        if (!ids || ids.size === 0) {
+            return []
+        }
+        return Array.from(ids)
+            .map((terminalId) => this.terminals.get(terminalId))
+            .filter((entry): entry is TerminalRegistryEntry => Boolean(entry))
+            .sort((a, b) => a.createdAt - b.createdAt)
+    }
+
     remove(terminalId: string, fireOnRemove = true): TerminalRegistryEntry | null {
         const entry = this.terminals.get(terminalId)
         if (!entry) {
@@ -83,7 +120,9 @@ export class TerminalRegistry {
         }
 
         this.terminals.delete(terminalId)
-        this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
+        if (entry.socketId) {
+            this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
+        }
         this.removeFromIndex(this.terminalsBySession, entry.sessionId, terminalId)
         this.removeFromIndex(this.terminalsByCliSocket, entry.cliSocketId, terminalId)
         if (entry.idleTimer) {
@@ -104,6 +143,9 @@ export class TerminalRegistry {
         const entries = Array.from(ids)
             .map((terminalId) => this.terminals.get(terminalId))
             .filter(Boolean) as TerminalRegistryEntry[]
+        for (const entry of entries) {
+            entry.socketId = null
+        }
         this.terminalsBySocket.delete(socketId)
         return entries
     }

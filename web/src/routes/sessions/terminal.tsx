@@ -122,8 +122,6 @@ export function buildTerminalCommandSequence(command: string): string {
     return normalized.endsWith('\r') ? normalized : `${normalized}\r`
 }
 
-const EXIT_NAVIGATION_DELAY_MS = 700
-
 const DIRECT_KEY_PAGE_IDS: DirectKeyPage[] = ['control', 'navigation', 'shell', 'symbols']
 
 const COMPACT_DIRECT_INPUTS: Record<DirectKeyPage, QuickInput[]> = {
@@ -261,26 +259,14 @@ export default function TerminalPage() {
     const goBack = useAppGoBack()
     const { session } = useSession(api, sessionId)
     const terminalSupported = isRemoteTerminalSupported(session?.metadata)
-    // A per-viewer-unique terminal id. Two browsers/tabs/devices viewing the
-    // same session must each drive their own shell: the hub registry evicts a
-    // reused id arriving from a different socket as a stale reconnect
-    // (terminalRegistry.ts), which would otherwise let a second viewer hijack
-    // the first viewer's PTY. The id is intentionally NOT derived from sessionId
-    // alone — scrollback survives navigation via the sessionId-keyed buffer
-    // (userTerminalBuffer.ts), not via a stable id. Held in a ref so it stays
-    // constant across re-renders and transient socket reconnects, and
-    // regenerates only when the route switches to a different session.
-    const terminalIdRef = useRef<{ sessionId: string; id: string } | null>(null)
-    if (terminalIdRef.current?.sessionId !== sessionId) {
-        terminalIdRef.current = { sessionId, id: `term-${sessionId}-${randomId()}` }
-    }
-    const terminalId = terminalIdRef.current.id
+    const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
     const terminalRef = useRef<Terminal | null>(null)
     const commandInputRef = useRef<HTMLTextAreaElement | null>(null)
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const connectOnceRef = useRef(false)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
-    const exitNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const autoCreateSessionRef = useRef<string | null>(null)
+    const previousSessionIdRef = useRef(sessionId)
     const [exitInfo, setExitInfo] = useState<{
         code: number | null
         signal: string | null
@@ -293,7 +279,14 @@ export default function TerminalPage() {
 
     const {
         state: terminalState,
+        terminals,
+        maxTerminals,
+        hasLoadedTerminals,
         connect,
+        refreshTerminals,
+        createTerminal,
+        detachTerminal,
+        closeTerminal,
         write,
         resize,
         disconnect,
@@ -302,7 +295,7 @@ export default function TerminalPage() {
     } = useTerminalSocket({
         token,
         sessionId,
-        terminalId,
+        terminalId: activeTerminalId,
         baseUrl,
     })
 
@@ -316,15 +309,72 @@ export default function TerminalPage() {
         onExit((code, signal) => {
             setExitInfo({ code, signal })
             terminalRef.current?.write(`\r\n[process exited${code !== null ? ` with code ${code}` : ''}]`)
-            if (exitNavTimerRef.current) {
-                clearTimeout(exitNavTimerRef.current)
-            }
-            exitNavTimerRef.current = setTimeout(() => {
-                exitNavTimerRef.current = null
-                goBack()
-            }, EXIT_NAVIGATION_DELAY_MS)
+            refreshTerminals()
         })
-    }, [onExit, goBack])
+    }, [onExit, refreshTerminals])
+
+    useEffect(() => {
+        if (session?.active && terminalSupported) {
+            refreshTerminals()
+        }
+    }, [session?.active, terminalSupported, refreshTerminals])
+
+    useEffect(() => {
+        if (!session?.active || !terminalSupported || !hasLoadedTerminals) {
+            return
+        }
+        if (activeTerminalId && terminals.some((terminal) => terminal.terminalId === activeTerminalId)) {
+            return
+        }
+        // A newly-created terminal is selected before the server list round-trip.
+        // Do not fall back to an older tab while that create/attach is in flight.
+        if (activeTerminalId && terminalState.status === 'connecting') {
+            return
+        }
+
+        let preferredTerminalId: string | null = null
+        try {
+            preferredTerminalId = window.localStorage.getItem(`hapi-terminal:${sessionId}:active`)
+        } catch {
+            // Storage may be unavailable in privacy-restricted contexts.
+        }
+        const preferred = preferredTerminalId
+            ? terminals.find((terminal) => terminal.terminalId === preferredTerminalId)
+            : null
+        const nextTerminal = preferred ?? terminals.at(-1) ?? null
+        if (nextTerminal) {
+            setActiveTerminalId(nextTerminal.terminalId)
+            return
+        }
+
+        if ((maxTerminals ?? 0) > 0 && autoCreateSessionRef.current !== sessionId) {
+            autoCreateSessionRef.current = sessionId
+            const terminalId = `term-${sessionId}-${randomId()}`
+            createTerminal(terminalId, 80, 24)
+            setActiveTerminalId(terminalId)
+        }
+    }, [
+        session?.active,
+        terminalSupported,
+        hasLoadedTerminals,
+        terminals,
+        maxTerminals,
+        activeTerminalId,
+        terminalState.status,
+        sessionId,
+        createTerminal,
+    ])
+
+    useEffect(() => {
+        if (!activeTerminalId) {
+            return
+        }
+        try {
+            window.localStorage.setItem(`hapi-terminal:${sessionId}:active`, activeTerminalId)
+        } catch {
+            // Best-effort preference only; the server remains the source of truth.
+        }
+    }, [sessionId, activeTerminalId])
 
     // Raw terminal input AND the quick-key buttons share one sticky-modifier
     // state via the dispatcher, so toggling Ctrl then typing sends the control
@@ -378,14 +428,24 @@ export default function TerminalPage() {
 
     useEffect(() => {
         connectOnceRef.current = false
+        terminalRef.current = null
+        inputDisposableRef.current?.dispose()
+        inputDisposableRef.current = null
+        setExitInfo(null)
+    }, [activeTerminalId])
+
+    useEffect(() => {
+        if (previousSessionIdRef.current === sessionId) {
+            return
+        }
+        previousSessionIdRef.current = sessionId
+        autoCreateSessionRef.current = null
+        connectOnceRef.current = false
+        setActiveTerminalId(null)
         setExitInfo(null)
         setCommandDraft('')
         setInputMode('command')
         setDirectKeyPage('control')
-        if (exitNavTimerRef.current) {
-            clearTimeout(exitNavTimerRef.current)
-            exitNavTimerRef.current = null
-        }
         disconnect()
     }, [sessionId, disconnect])
 
@@ -393,10 +453,6 @@ export default function TerminalPage() {
         return () => {
             inputDisposableRef.current?.dispose()
             connectOnceRef.current = false
-            if (exitNavTimerRef.current) {
-                clearTimeout(exitNavTimerRef.current)
-                exitNavTimerRef.current = null
-            }
             disconnect()
         }
     }, [disconnect])
@@ -411,14 +467,10 @@ export default function TerminalPage() {
     useEffect(() => {
         if (terminalState.status === 'connecting' || terminalState.status === 'connected') {
             setExitInfo(null)
-            if (exitNavTimerRef.current) {
-                clearTimeout(exitNavTimerRef.current)
-                exitNavTimerRef.current = null
-            }
         }
     }, [terminalState.status])
 
-    const quickInputDisabled = !session?.active || terminalState.status !== 'connected'
+    const quickInputDisabled = !session?.active || !activeTerminalId || terminalState.status !== 'connected'
     const commandSubmitDisabled = quickInputDisabled || commandDraft.trim().length === 0
     const writePlainInput = useCallback(
         (text: string) => {
@@ -538,14 +590,61 @@ export default function TerminalPage() {
         [resetModifiers]
     )
 
+    const handleSelectTerminal = useCallback((terminalId: string) => {
+        if (terminalId === activeTerminalId) {
+            return
+        }
+        if (activeTerminalId) {
+            detachTerminal(activeTerminalId)
+        }
+        setExitInfo(null)
+        setActiveTerminalId(terminalId)
+    }, [activeTerminalId, detachTerminal])
+
+    const handleCreateTerminal = useCallback(() => {
+        if (!session?.active || !terminalSupported || maxTerminals === null || terminals.length >= maxTerminals) {
+            return
+        }
+        if (activeTerminalId) {
+            detachTerminal(activeTerminalId)
+        }
+        const terminalId = `term-${sessionId}-${randomId()}`
+        const size = lastSizeRef.current ?? { cols: 80, rows: 24 }
+        createTerminal(terminalId, size.cols, size.rows)
+        setExitInfo(null)
+        setActiveTerminalId(terminalId)
+    }, [
+        session?.active,
+        terminalSupported,
+        maxTerminals,
+        terminals.length,
+        activeTerminalId,
+        detachTerminal,
+        sessionId,
+        createTerminal,
+    ])
+
+    const handleCloseTerminal = useCallback((terminalId: string) => {
+        closeTerminal(terminalId)
+        if (terminalId !== activeTerminalId) {
+            return
+        }
+        const remaining = terminals.filter((terminal) => terminal.terminalId !== terminalId)
+        setActiveTerminalId(remaining.at(-1)?.terminalId ?? null)
+    }, [activeTerminalId, terminals, closeTerminal])
+
     const handleRetry = useCallback(() => {
-        const size = lastSizeRef.current
-        if (!size || !session?.active || !terminalSupported) {
+        if (!session?.active || !terminalSupported) {
             return
         }
         setExitInfo(null)
+        if (!activeTerminalId) {
+            refreshTerminals()
+            return
+        }
+        const size = lastSizeRef.current ?? { cols: 80, rows: 24 }
         connect(size.cols, size.rows)
-    }, [session?.active, terminalSupported, connect])
+    }, [session?.active, terminalSupported, activeTerminalId, refreshTerminals, connect])
 
     if (!session) {
         return (
@@ -580,6 +679,63 @@ export default function TerminalPage() {
                     </div>
                     <ConnectionIndicator status={status} />
                 </div>
+                {session.active && terminalSupported ? (
+                    <div className="mx-auto flex w-full max-w-content items-center gap-2 border-b border-[var(--app-border)] px-3 py-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Terminal sessions">
+                            {terminals.map((terminal, index) => {
+                                const active = terminal.terminalId === activeTerminalId
+                                const label = `Terminal ${index + 1}`
+                                return (
+                                    <div
+                                        key={terminal.terminalId}
+                                        className={`flex shrink-0 items-center rounded-md border text-xs transition-colors ${
+                                            active
+                                                ? 'border-[var(--app-link)] bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                                : 'border-[var(--app-border)] text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                                        }`}
+                                    >
+                                        <button
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={active}
+                                            onClick={() => handleSelectTerminal(terminal.terminalId)}
+                                            className="flex h-8 items-center gap-1.5 px-2.5 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
+                                            title={terminal.attached && !active ? `${label} is attached in another view; selecting it will attach here.` : label}
+                                        >
+                                            <span>{label}</span>
+                                            {terminal.attached && !active ? (
+                                                <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-hint)]" aria-label="Attached" />
+                                            ) : null}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleCloseTerminal(terminal.terminalId)}
+                                            aria-label={`Close ${label}`}
+                                            title={`Close ${label}`}
+                                            className="mr-1 flex h-6 w-6 items-center justify-center rounded text-base leading-none text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                        >
+                                            ×
+                                        </button>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                        <span className="shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">
+                            {terminals.length}/{maxTerminals ?? '…'}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={handleCreateTerminal}
+                            disabled={!hasLoadedTerminals || maxTerminals === null || terminals.length >= maxTerminals}
+                            aria-label="New terminal"
+                            title={maxTerminals !== null && terminals.length >= maxTerminals ? `Maximum ${maxTerminals} terminals` : 'New terminal'}
+                            className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-[var(--app-border)] px-2.5 text-xs font-medium text-[var(--app-fg)] transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            <span className="text-base leading-none">+</span>
+                            <span className="hidden sm:inline">New</span>
+                        </button>
+                    </div>
+                ) : null}
             </div>
 
             {session.active ? null : (
@@ -618,16 +774,34 @@ export default function TerminalPage() {
 
             <div className="flex-1 min-h-0 overflow-hidden bg-[var(--app-bg)]">
                 <div className="mx-auto h-full w-full max-w-content px-2 py-2 sm:p-3">
-                    {terminalSupported ? (
+                    {!terminalSupported ? (
+                        <div className="flex h-full items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-4 text-sm text-[var(--app-hint)]">
+                            {t('terminal.unsupportedWindows')}
+                        </div>
+                    ) : activeTerminalId ? (
                         <TerminalView
+                            key={activeTerminalId}
                             onMount={handleTerminalMount}
                             onResize={handleResize}
                             disableStdin={compactControls && inputMode === 'command'}
                             className="h-full w-full"
                         />
                     ) : (
-                        <div className="flex h-full items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-4 text-sm text-[var(--app-hint)]">
-                            {t('terminal.unsupportedWindows')}
+                        <div className="flex h-full flex-col items-center justify-center gap-3 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-4 text-sm text-[var(--app-hint)]">
+                            {hasLoadedTerminals ? (
+                                <>
+                                    <span>No terminal selected.</span>
+                                    <Button
+                                        type="button"
+                                        onClick={handleCreateTerminal}
+                                        disabled={maxTerminals === null || terminals.length >= maxTerminals}
+                                    >
+                                        New terminal
+                                    </Button>
+                                </>
+                            ) : (
+                                <LoadingState label="Loading terminals…" className="text-sm" />
+                            )}
                         </div>
                     )}
                 </div>

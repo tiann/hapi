@@ -296,6 +296,109 @@ describe('terminal socket handlers', () => {
         expect(terminalSocket.rooms.has('session:session-1')).toBe(true)
     })
 
+    it('lists persistent terminals and reports the configured session limit', () => {
+        const { terminalSocket, cliNamespace } = createHarness({ maxTerminalsPerSession: 3 })
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:list', { sessionId: 'session-1' })
+
+        const sessionsEvent = lastEmit(terminalSocket, 'terminal:sessions')
+        expect(sessionsEvent?.data).toEqual({
+            sessionId: 'session-1',
+            maxTerminals: 3,
+            terminals: [{
+                terminalId: 'terminal-1',
+                createdAt: expect.any(Number),
+                attached: true
+            }]
+        })
+    })
+
+    it('detaches and later attaches an existing terminal without opening a second PTY', () => {
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:detach', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(terminalRegistry.get('terminal-1')?.socketId).toBeNull()
+
+        appendUserTerminalOutput('session-1', 'terminal-1', 'kept scrollback')
+        cliSocket.emitted.length = 0
+        terminalSocket.emitted.length = 0
+        terminalSocket.trigger('terminal:attach', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 100, rows: 30
+        })
+
+        expect(lastEmit(cliSocket, 'terminal:open')).toBeUndefined()
+        expect(lastEmit(cliSocket, 'terminal:resize')?.data).toEqual({
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 100, rows: 30
+        })
+        expect(lastEmit(terminalSocket, 'terminal:output')?.data).toEqual({
+            terminalId: 'terminal-1', data: 'kept scrollback'
+        })
+        expect(lastEmit(terminalSocket, 'terminal:ready')?.data).toEqual({
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(terminalRegistry.get('terminal-1')?.socketId).toBe(terminalSocket.id)
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+    })
+
+    it('can explicitly close a detached terminal from the session selector', () => {
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:detach', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        terminalSocket.trigger('terminal:close', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+
+        expect(lastEmit(cliSocket, 'terminal:close')?.data).toEqual({
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(terminalRegistry.get('terminal-1')).toBeNull()
+    })
+
+    it('enforces the per-session max even when existing terminals are detached', () => {
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness({
+            maxTerminalsPerSocket: 4,
+            maxTerminalsPerSession: 1
+        })
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:detach', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-2', cols: 80, rows: 24
+        })
+
+        expect(lastEmit(terminalSocket, 'terminal:error')?.data).toEqual({
+            terminalId: 'terminal-2',
+            message: 'Too many terminals open for this session (max 1).'
+        })
+        expect(terminalRegistry.get('terminal-2')).toBeNull()
+    })
+
     describe('agent-terminal:subscribe', () => {
         beforeEach(() => {
             clearAgentTerminalBuffer('session-1')

@@ -7,11 +7,17 @@ type TerminalConnectionState =
     | { status: 'connected' }
     | { status: 'error'; error: string }
 
+export type RemoteTerminalSession = {
+    terminalId: string
+    createdAt: number
+    attached: boolean
+}
+
 type UseTerminalSocketOptions = {
     baseUrl: string
     token: string
     sessionId: string
-    terminalId: string
+    terminalId: string | null
 }
 
 type TerminalReadyPayload = {
@@ -34,9 +40,22 @@ type TerminalErrorPayload = {
     message: string
 }
 
+type TerminalSessionsPayload = {
+    sessionId: string
+    maxTerminals: number
+    terminals: RemoteTerminalSession[]
+}
+
 export function useTerminalSocket(options: UseTerminalSocketOptions): {
     state: TerminalConnectionState
-    connect: (cols: number, rows: number) => void
+    terminals: RemoteTerminalSession[]
+    maxTerminals: number | null
+    hasLoadedTerminals: boolean
+    connect: (cols?: number, rows?: number) => void
+    refreshTerminals: () => void
+    createTerminal: (terminalId: string, cols: number, rows: number) => void
+    detachTerminal: (terminalId: string) => void
+    closeTerminal: (terminalId: string) => void
     write: (data: string) => void
     resize: (cols: number, rows: number) => void
     disconnect: () => void
@@ -44,19 +63,31 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     onExit: (handler: (code: number | null, signal: string | null) => void) => void
 } {
     const [state, setState] = useState<TerminalConnectionState>({ status: 'idle' })
+    const [terminals, setTerminals] = useState<RemoteTerminalSession[]>([])
+    const [maxTerminals, setMaxTerminals] = useState<number | null>(null)
+    const [hasLoadedTerminals, setHasLoadedTerminals] = useState(false)
     const socketRef = useRef<Socket | null>(null)
     const outputHandlerRef = useRef<(data: string) => void>(() => {})
     const exitHandlerRef = useRef<(code: number | null, signal: string | null) => void>(() => {})
     const sessionIdRef = useRef(options.sessionId)
-    const terminalIdRef = useRef(options.terminalId)
+    const terminalIdRef = useRef<string | null>(options.terminalId)
     const tokenRef = useRef(options.token)
     const baseUrlRef = useRef(options.baseUrl)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
+    const pendingTerminalIdsRef = useRef(new Set<string>())
 
     useEffect(() => {
+        const sessionChanged = sessionIdRef.current !== options.sessionId
         sessionIdRef.current = options.sessionId
         terminalIdRef.current = options.terminalId
         baseUrlRef.current = options.baseUrl
+        if (sessionChanged) {
+            setTerminals([])
+            setMaxTerminals(null)
+            setHasLoadedTerminals(false)
+            lastSizeRef.current = null
+            pendingTerminalIdsRef.current.clear()
+        }
     }, [options.sessionId, options.terminalId, options.baseUrl])
 
     useEffect(() => {
@@ -80,40 +111,39 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
     const isCurrentTerminal = useCallback((terminalId: string) => terminalId === terminalIdRef.current, [])
 
-    const emitCreate = useCallback((socket: Socket, size: { cols: number; rows: number }) => {
-        socket.emit('terminal:create', {
+    const setErrorState = useCallback((message: string) => {
+        setState({ status: 'error', error: message })
+    }, [])
+
+    const requestTerminalList = useCallback((socket: Socket) => {
+        socket.emit('terminal:list', { sessionId: sessionIdRef.current })
+    }, [])
+
+    const emitAttach = useCallback((socket: Socket, terminalId: string, size: { cols: number; rows: number }) => {
+        socket.emit('terminal:attach', {
             sessionId: sessionIdRef.current,
-            terminalId: terminalIdRef.current,
+            terminalId,
             cols: size.cols,
             rows: size.rows
         })
     }, [])
 
-    const setErrorState = useCallback((message: string) => {
-        setState({ status: 'error', error: message })
-    }, [])
-
-    const connect = useCallback((cols: number, rows: number) => {
-        lastSizeRef.current = { cols, rows }
+    const ensureSocket = useCallback((): Socket | null => {
         const token = tokenRef.current
         const sessionId = sessionIdRef.current
-        const terminalId = terminalIdRef.current
-
-        if (!token || !sessionId || !terminalId) {
+        if (!token || !sessionId) {
             setErrorState('Missing terminal credentials.')
-            return
+            return null
         }
 
-        if (socketRef.current) {
-            const socket = socketRef.current
-            socket.auth = { token }
-            if (socket.connected) {
-                emitCreate(socket, { cols, rows })
-            } else {
-                socket.connect()
+        const existing = socketRef.current
+        if (existing) {
+            existing.auth = { token }
+            if (!existing.connected) {
+                setState({ status: 'connecting' })
+                existing.connect()
             }
-            setState({ status: 'connecting' })
-            return
+            return existing
         }
 
         const manager = new Manager(baseUrlRef.current, {
@@ -123,8 +153,6 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             transports: ['polling', 'websocket'],
-            // Skip the HTTP long-polling phase on reconnects once a websocket
-            // upgrade has succeeded — see useAgentTerminalSocket.
             rememberUpgrade: true,
             autoConnect: false
         })
@@ -136,12 +164,28 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         setState({ status: 'connecting' })
 
         socket.on('connect', () => {
-            const size = lastSizeRef.current ?? { cols, rows }
-            setState({ status: 'connecting' })
-            emitCreate(socket, size)
+            requestTerminalList(socket)
+            const terminalId = terminalIdRef.current
+            const size = lastSizeRef.current
+            if (terminalId && size) {
+                setState({ status: 'connecting' })
+                emitAttach(socket, terminalId, size)
+            } else {
+                setState({ status: 'idle' })
+            }
+        })
+
+        socket.on('terminal:sessions', (payload: TerminalSessionsPayload) => {
+            if (payload.sessionId !== sessionIdRef.current) {
+                return
+            }
+            setTerminals(payload.terminals)
+            setMaxTerminals(payload.maxTerminals)
+            setHasLoadedTerminals(true)
         })
 
         socket.on('terminal:ready', (payload: TerminalReadyPayload) => {
+            pendingTerminalIdsRef.current.delete(payload.terminalId)
             if (!isCurrentTerminal(payload.terminalId)) {
                 return
             }
@@ -156,6 +200,8 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         })
 
         socket.on('terminal:exit', (payload: TerminalExitPayload) => {
+            pendingTerminalIdsRef.current.delete(payload.terminalId)
+            requestTerminalList(socket)
             if (!isCurrentTerminal(payload.terminalId)) {
                 return
             }
@@ -164,7 +210,9 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         })
 
         socket.on('terminal:error', (payload: TerminalErrorPayload) => {
-            if (!isCurrentTerminal(payload.terminalId)) {
+            const pending = pendingTerminalIdsRef.current.delete(payload.terminalId)
+            requestTerminalList(socket)
+            if (!isCurrentTerminal(payload.terminalId) && !pending) {
                 return
             }
             setErrorState(payload.message)
@@ -184,23 +232,108 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         })
 
         socket.connect()
-    }, [emitCreate, setErrorState, isCurrentTerminal])
+        return socket
+    }, [emitAttach, isCurrentTerminal, requestTerminalList, setErrorState])
 
-    const write = useCallback((data: string) => {
+    const refreshTerminals = useCallback(() => {
+        const socket = ensureSocket()
+        if (!socket) {
+            return
+        }
+        if (socket.connected) {
+            requestTerminalList(socket)
+        }
+    }, [ensureSocket, requestTerminalList])
+
+    const connect = useCallback((cols?: number, rows?: number) => {
+        if (typeof cols === 'number' && typeof rows === 'number') {
+            lastSizeRef.current = { cols, rows }
+        }
+        const socket = ensureSocket()
+        if (!socket || !socket.connected) {
+            return
+        }
+
+        const terminalId = terminalIdRef.current
+        const size = lastSizeRef.current
+        if (!terminalId || !size) {
+            requestTerminalList(socket)
+            setState({ status: 'idle' })
+            return
+        }
+
+        setState({ status: 'connecting' })
+        emitAttach(socket, terminalId, size)
+    }, [emitAttach, ensureSocket, requestTerminalList])
+
+    const createTerminal = useCallback((terminalId: string, cols: number, rows: number) => {
+        const socket = ensureSocket()
+        if (!socket) {
+            return
+        }
+        pendingTerminalIdsRef.current.add(terminalId)
+        setState({ status: 'connecting' })
+        const emit = () => {
+            socket.emit('terminal:create', {
+                sessionId: sessionIdRef.current,
+                terminalId,
+                cols,
+                rows
+            })
+        }
+        if (socket.connected) {
+            emit()
+        } else {
+            socket.once('connect', emit)
+        }
+    }, [ensureSocket])
+
+    const detachTerminal = useCallback((terminalId: string) => {
         const socket = socketRef.current
         if (!socket || !socket.connected) {
             return
         }
-        socket.emit('terminal:write', { terminalId: terminalIdRef.current, data })
+        socket.emit('terminal:detach', {
+            sessionId: sessionIdRef.current,
+            terminalId
+        })
+    }, [])
+
+    const closeTerminal = useCallback((terminalId: string) => {
+        const socket = ensureSocket()
+        if (!socket) {
+            return
+        }
+        const emit = () => {
+            socket.emit('terminal:close', {
+                sessionId: sessionIdRef.current,
+                terminalId
+            })
+        }
+        if (socket.connected) {
+            emit()
+        } else {
+            socket.once('connect', emit)
+        }
+    }, [ensureSocket])
+
+    const write = useCallback((data: string) => {
+        const socket = socketRef.current
+        const terminalId = terminalIdRef.current
+        if (!socket || !socket.connected || !terminalId) {
+            return
+        }
+        socket.emit('terminal:write', { terminalId, data })
     }, [])
 
     const resize = useCallback((cols: number, rows: number) => {
         lastSizeRef.current = { cols, rows }
         const socket = socketRef.current
-        if (!socket || !socket.connected) {
+        const terminalId = terminalIdRef.current
+        if (!socket || !socket.connected || !terminalId) {
             return
         }
-        socket.emit('terminal:resize', { terminalId: terminalIdRef.current, cols, rows })
+        socket.emit('terminal:resize', { terminalId, cols, rows })
     }, [])
 
     const disconnect = useCallback(() => {
@@ -211,6 +344,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         socket.removeAllListeners()
         socket.disconnect()
         socketRef.current = null
+        pendingTerminalIdsRef.current.clear()
         setState({ status: 'idle' })
     }, [])
 
@@ -224,7 +358,14 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
     return {
         state,
+        terminals,
+        maxTerminals,
+        hasLoadedTerminals,
         connect,
+        refreshTerminals,
+        createTerminal,
+        detachTerminal,
+        closeTerminal,
         write,
         resize,
         disconnect,
