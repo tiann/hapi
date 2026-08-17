@@ -1032,7 +1032,8 @@ export default function TerminalPage() {
                         <DialogTitle>{t('terminal.paste.fallbackTitle')}</DialogTitle>
                         <DialogDescription>
                             {t('terminal.paste.fallbackDescription')}
-                        </DialogHeader>
+                        </DialogDescription>
+                    </DialogHeader>
                     <textarea
                         value={manualPasteText}
                         onChange={(event) => setManualPasteText(event.target.value)}
