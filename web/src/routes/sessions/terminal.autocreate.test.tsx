@@ -112,6 +112,7 @@ describe('TerminalPage initial auto-create semantics', () => {
 
         await waitFor(() => expect(screen.getByText('No terminal selected.')).toBeInTheDocument())
         expect(createTerminalMock).not.toHaveBeenCalled()
+        expect(screen.queryByTestId('terminal-view')).not.toBeInTheDocument()
     })
 
     it('does not create a replacement after the active pre-existing terminal exits', async () => {
@@ -128,6 +129,6 @@ describe('TerminalPage initial auto-create semantics', () => {
 
         await waitFor(() => expect(screen.getByText('No terminal selected.')).toBeInTheDocument())
         expect(createTerminalMock).not.toHaveBeenCalled()
-        expect(screen.getByText(/Terminal exited with code 0/)).toBeInTheDocument()
+        expect(screen.queryByTestId('terminal-view')).not.toBeInTheDocument()
     })
 })
