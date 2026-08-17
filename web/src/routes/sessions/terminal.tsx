@@ -80,9 +80,14 @@ function RetryIcon() {
 }
 
 function ConnectionIndicator(props: { status: 'idle' | 'connecting' | 'connected' | 'error' }) {
+    const { t } = useTranslation()
     const isConnected = props.status === 'connected'
     const isConnecting = props.status === 'connecting'
-    const label = isConnected ? 'Connected' : isConnecting ? 'Connecting' : 'Offline'
+    const label = isConnected
+        ? t('terminal.status.connected')
+        : isConnecting
+          ? t('terminal.status.connecting')
+          : t('terminal.status.offline')
     const colorClass = isConnected
         ? 'bg-emerald-500'
         : isConnecting
@@ -677,7 +682,7 @@ export default function TerminalPage() {
     if (!session) {
         return (
             <div className="flex h-full items-center justify-center">
-                <LoadingState label="Loading session…" className="text-sm" />
+                <LoadingState label={t('loading.session')} className="text-sm" />
             </div>
         )
     }
@@ -702,17 +707,18 @@ export default function TerminalPage() {
                         <BackIcon />
                     </button>
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">Terminal</div>
+                        <div className="truncate font-semibold">{t('terminal.title')}</div>
                         <div className="truncate text-xs text-[var(--app-hint)]">{subtitle}</div>
                     </div>
                     <ConnectionIndicator status={status} />
                 </div>
                 {session.active && terminalSupported ? (
                     <div className="mx-auto flex w-full max-w-content items-center gap-2 border-b border-[var(--app-border)] px-3 py-2">
-                        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Terminal sessions">
+                        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label={t('terminal.sessions')}>
                             {terminals.map((terminal, index) => {
                                 const active = terminal.terminalId === activeTerminalId
-                                const label = `Terminal ${index + 1}`
+                                const label = t('terminal.sessionLabel', { index: index + 1 })
+                                const closeLabel = t('terminal.close', { label })
                                 return (
                                     <div
                                         key={terminal.terminalId}
@@ -728,18 +734,18 @@ export default function TerminalPage() {
                                             aria-selected={active}
                                             onClick={() => handleSelectTerminal(terminal.terminalId)}
                                             className="flex h-8 items-center gap-1.5 px-2.5 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
-                                            title={terminal.attached && !active ? `${label} is also attached in another view.` : label}
+                                            title={terminal.attached && !active ? t('terminal.attachedElsewhere', { label }) : label}
                                         >
                                             <span>{label}</span>
                                             {terminal.attached && !active ? (
-                                                <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-hint)]" aria-label="Attached" />
+                                                <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-hint)]" aria-label={t('terminal.attached')} />
                                             ) : null}
                                         </button>
                                         <button
                                             type="button"
                                             onClick={() => handleCloseTerminal(terminal.terminalId)}
-                                            aria-label={`Close ${label}`}
-                                            title={`Close ${label}`}
+                                            aria-label={closeLabel}
+                                            title={closeLabel}
                                             className="mr-1 flex h-6 w-6 items-center justify-center rounded text-base leading-none text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                         >
                                             ×
@@ -755,12 +761,14 @@ export default function TerminalPage() {
                             type="button"
                             onClick={handleCreateTerminal}
                             disabled={!hasLoadedTerminals || maxTerminals === null || terminals.length >= maxTerminals}
-                            aria-label="New terminal"
-                            title={maxTerminals !== null && terminals.length >= maxTerminals ? `Maximum ${maxTerminals} terminals` : 'New terminal'}
+                            aria-label={t('terminal.new')}
+                            title={maxTerminals !== null && terminals.length >= maxTerminals
+                                ? t('terminal.maxTerminals', { max: maxTerminals })
+                                : t('terminal.new')}
                             className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-[var(--app-border)] px-2.5 text-xs font-medium text-[var(--app-fg)] transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-40"
                         >
                             <span className="text-base leading-none">+</span>
-                            <span className="hidden sm:inline">New</span>
+                            <span className="hidden sm:inline">{t('terminal.newShort')}</span>
                         </button>
                     </div>
                 ) : null}
@@ -768,7 +776,7 @@ export default function TerminalPage() {
 
             {session.active ? null : (
                 <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                    Session is inactive. Terminal is unavailable.
+                    {t('terminal.inactive')}
                 </div>
             )}
 
@@ -793,8 +801,9 @@ export default function TerminalPage() {
             {exitInfo ? (
                 <div className="mx-auto w-full max-w-content px-3 pt-3">
                     <div className="rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-3 text-xs text-[var(--app-hint)]">
-                        Terminal exited
-                        {exitInfo.code !== null ? ` with code ${exitInfo.code}` : ''}
+                        {exitInfo.code !== null
+                            ? t('terminal.exitedWithCode', { code: exitInfo.code })
+                            : t('terminal.exited')}
                         {exitInfo.signal ? ` (${exitInfo.signal})` : ''}.
                     </div>
                 </div>
@@ -818,17 +827,17 @@ export default function TerminalPage() {
                         <div className="flex h-full flex-col items-center justify-center gap-3 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-4 text-sm text-[var(--app-hint)]">
                             {hasLoadedTerminals ? (
                                 <>
-                                    <span>No terminal selected.</span>
+                                    <span>{t('terminal.noSelection')}</span>
                                     <Button
                                         type="button"
                                         onClick={handleCreateTerminal}
                                         disabled={maxTerminals === null || terminals.length >= maxTerminals}
                                     >
-                                        New terminal
+                                        {t('terminal.new')}
                                     </Button>
                                 </>
                             ) : (
-                                <LoadingState label="Loading terminals…" className="text-sm" />
+                                <LoadingState label={t('terminal.loading')} className="text-sm" />
                             )}
                         </div>
                     )}
