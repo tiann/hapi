@@ -21,6 +21,29 @@ describe('TerminalRegistry', () => {
         expect(reg.countForSocket('sockB')).toBe(1)
     })
 
+    it('deduplicates concurrent auto bootstraps without reusing PTY resource IDs', () => {
+        const reg = new TerminalRegistry({ idleTimeoutMs: 0 })
+
+        const first = reg.register('term-s1-auto-nonce-a', 's1', 'sockA', 'cli1')
+        const second = reg.register('term-s1-auto-nonce-b', 's1', 'sockB', 'cli1')
+
+        expect(first?.terminalId).toBe('term-s1-auto-nonce-a')
+        expect(second).toBeNull()
+        expect(reg.listForSession('s1').map((entry) => entry.terminalId)).toEqual(['term-s1-auto-nonce-a'])
+
+        // Auto bootstrap is only the initial create-if-empty gate. Manual New
+        // terminals remain multi-terminal and are not blocked by it.
+        expect(reg.register('term-s1-manual', 's1', 'sockB', 'cli1')).not.toBeNull()
+        expect(reg.countForSession('s1')).toBe(2)
+
+        // A later lifecycle gets a new nonce and is allowed once the session is
+        // genuinely empty, so stale callbacks for an old ID cannot target it.
+        reg.remove('term-s1-auto-nonce-a')
+        reg.remove('term-s1-manual')
+        expect(reg.register('term-s1-auto-nonce-c', 's1', 'sockC', 'cli1')?.terminalId)
+            .toBe('term-s1-auto-nonce-c')
+    })
+
     it('detaches one web viewer without releasing the terminal resource or other viewers', () => {
         const removed: string[] = []
         const reg = new TerminalRegistry({ idleTimeoutMs: 0, onRemove: (e) => removed.push(e.terminalId) })
