@@ -307,11 +307,14 @@ export default function TerminalPage() {
 
     useEffect(() => {
         onExit((code, signal) => {
+            // An actual PTY exit is a terminal lifecycle decision, not a cue to
+            // silently create a replacement in this already-open page.
+            autoCreateSessionRef.current = sessionId
             setExitInfo({ code, signal })
             terminalRef.current?.write(`\r\n[process exited${code !== null ? ` with code ${code}` : ''}]`)
             refreshTerminals()
         })
-    }, [onExit, refreshTerminals])
+    }, [onExit, refreshTerminals, sessionId])
 
     useEffect(() => {
         if (session?.active && terminalSupported) {
@@ -332,6 +335,15 @@ export default function TerminalPage() {
             return
         }
 
+        // Auto-create is convenience for the first empty inventory only. Once a
+        // page has observed either an existing terminal or an empty inventory,
+        // later Close/exit/removal must stay empty until the user explicitly
+        // presses New. Mark the pass before branching so all initial states latch.
+        const isInitialInventoryPass = autoCreateSessionRef.current !== sessionId
+        if (isInitialInventoryPass) {
+            autoCreateSessionRef.current = sessionId
+        }
+
         let preferredTerminalId: string | null = null
         try {
             preferredTerminalId = window.localStorage.getItem(`hapi-terminal:${sessionId}:active`)
@@ -347,12 +359,21 @@ export default function TerminalPage() {
             return
         }
 
-        if ((maxTerminals ?? 0) > 0 && autoCreateSessionRef.current !== sessionId) {
-            autoCreateSessionRef.current = sessionId
-            const terminalId = `term-${sessionId}-${randomId()}`
+        if ((maxTerminals ?? 0) > 0 && isInitialInventoryPass) {
+            // Use a deterministic ID for the automatic first terminal. If two
+            // views simultaneously observe an empty session, both create calls
+            // converge on the same server-side PTY instead of racing two random
+            // terminal resources into existence.
+            const terminalId = `term-${sessionId}-auto`
             createTerminal(terminalId, 80, 24)
             setActiveTerminalId(terminalId)
+            return
         }
+
+        // The active terminal was removed after initial inventory handling and
+        // there is nothing else to select. Keep the page empty instead of
+        // rendering a stale TerminalView or silently creating a replacement.
+        setActiveTerminalId(null)
     }, [
         session?.active,
         terminalSupported,
@@ -628,13 +649,16 @@ export default function TerminalPage() {
     ])
 
     const handleCloseTerminal = useCallback((terminalId: string) => {
+        // Explicit Close must never be interpreted as an invitation to create a
+        // replacement terminal after the server inventory becomes empty.
+        autoCreateSessionRef.current = sessionId
         closeTerminal(terminalId)
         if (terminalId !== activeTerminalId) {
             return
         }
         const remaining = terminals.filter((terminal) => terminal.terminalId !== terminalId)
         setActiveTerminalId(remaining.at(-1)?.terminalId ?? null)
-    }, [activeTerminalId, terminals, closeTerminal])
+    }, [activeTerminalId, terminals, closeTerminal, sessionId])
 
     const handleRetry = useCallback(() => {
         if (!session?.active || !terminalSupported) {

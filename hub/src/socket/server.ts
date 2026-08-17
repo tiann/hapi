@@ -96,12 +96,13 @@ export function createSocketServer(deps: SocketServerDeps): {
         // in the hub for the process's life. Browser detach never removes it.
         onRemove: (entry) => clearUserTerminalBuffer(entry.sessionId, entry.terminalId),
         onIdle: (entry) => {
-            for (const socketId of entry.viewerSocketIds) {
-                terminalNs.sockets.get(socketId)?.emit('terminal:error', {
-                    terminalId: entry.terminalId,
-                    message: 'Terminal closed due to inactivity.'
-                })
-            }
+            // A detached terminal can still be visible in every subscriber's
+            // selector. Notify the whole session room so each UI refreshes the
+            // server-side inventory after the registry removes this PTY.
+            terminalNs.to(`session:${entry.sessionId}`).emit('terminal:error', {
+                terminalId: entry.terminalId,
+                message: 'Terminal closed due to inactivity.'
+            })
             const cliSocket = cliNs.sockets.get(entry.cliSocketId)
             cliSocket?.emit('terminal:close', {
                 sessionId: entry.sessionId,

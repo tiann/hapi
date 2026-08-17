@@ -48,6 +48,18 @@ function emitToTerminalViewers(
     return emitted
 }
 
+function emitToTerminalSession(
+    terminalNamespace: SocketNamespace,
+    sessionId: string,
+    event: 'terminal:exit' | 'terminal:error',
+    payload: unknown
+): void {
+    // Inventory subscribers stay in the session room even when they are not
+    // attached to this PTY. Removal must therefore be session-scoped rather
+    // than viewer-scoped so every selector can refresh its server projection.
+    terminalNamespace.to(`session:${sessionId}`).emit(event, payload)
+}
+
 export function registerTerminalHandlers(socket: CliSocketWithData, deps: TerminalHandlersDeps): void {
     const { terminalRegistry, terminalNamespace, resolveSessionAccess, emitAccessError } = deps
 
@@ -137,10 +149,11 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
             return
         }
-        // remove() clears the server-side resource and its scrollback, but the
-        // returned entry still carries the viewer set so every UI can be told.
+        // remove() clears the server-side resource and its scrollback. Broadcast
+        // the removal to every session subscriber, including selectors that were
+        // not attached to this terminal, so they refresh immediately.
         terminalRegistry.remove(parsed.data.terminalId)
-        emitToTerminalViewers(terminalNamespace, entry, 'terminal:exit', parsed.data)
+        emitToTerminalSession(terminalNamespace, entry.sessionId, 'terminal:exit', parsed.data)
     })
 
     socket.on('terminal:error', (data: unknown) => {
@@ -157,19 +170,26 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
         if (!sessionAccess.ok) {
             terminalRegistry.remove(parsed.data.terminalId)
+            // The browser room was authorized when its sockets subscribed, but
+            // access may have changed since then. Use a generic removal message
+            // rather than forwarding potentially sensitive CLI error details.
+            emitToTerminalSession(terminalNamespace, entry.sessionId, 'terminal:error', {
+                terminalId: entry.terminalId,
+                message: 'Terminal is no longer available.'
+            })
             emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
             return
         }
 
         terminalRegistry.remove(parsed.data.terminalId)
-        emitToTerminalViewers(terminalNamespace, entry, 'terminal:error', parsed.data)
+        emitToTerminalSession(terminalNamespace, entry.sessionId, 'terminal:error', parsed.data)
     })
 }
 
 export function cleanupTerminalHandlers(socket: CliSocketWithData, deps: { terminalRegistry: TerminalRegistry; terminalNamespace: SocketNamespace }): void {
     const removed = deps.terminalRegistry.removeByCliSocket(socket.id)
     for (const entry of removed) {
-        emitToTerminalViewers(deps.terminalNamespace, entry, 'terminal:error', {
+        emitToTerminalSession(deps.terminalNamespace, entry.sessionId, 'terminal:error', {
             terminalId: entry.terminalId,
             message: 'CLI disconnected.'
         })
