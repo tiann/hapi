@@ -476,8 +476,16 @@ export default function TerminalPage() {
         setCommandDraft('')
         setInputMode('command')
         setDirectKeyPage('control')
+
+        // A route-param transition may preserve this page instance while both
+        // sessions are already cached and active. Tear down the old socket first,
+        // then explicitly bootstrap the new session inventory instead of relying
+        // on the active/support effect to happen to rerun.
         disconnect()
-    }, [sessionId, disconnect])
+        if (session?.active && terminalSupported) {
+            refreshTerminals()
+        }
+    }, [sessionId, disconnect, session?.active, terminalSupported, refreshTerminals])
 
     useEffect(() => {
         return () => {
