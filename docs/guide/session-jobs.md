@@ -33,6 +33,20 @@ Attach a job **before** (or immediately when) you start process-shaped work that
 
 If the operator would reopen the chat only to ask "how's it doing?", it belongs here.
 
+## Which session id (contract)
+
+Attached jobs bind to the **hub session row the operator sees** — the UUID in the web URL `/sessions/<id>`, the session list tile, and the chat transcript. That row is the only target for `PUT/PATCH/DELETE /api/sessions/:id/jobs/...` and the only place `attachedJob` appears in the UI.
+
+| Surface | Session id source | Must match operator chat row |
+|---------|-------------------|------------------------------|
+| Shell `hapi job …` | First positional arg; docs use `"$HAPI_SESSION_ID"` | Yes |
+| MCP `session_job` | Owning hapi CLI `client.sessionId` (stdio bridge is not a second id) | Yes |
+| `HAPI_SESSION_ID` env | Exported by `exportHapiSessionEnv` when the session CLI bootstraps | Yes — **this chat**, not an internal worker row |
+
+**Intended:** one hub row per operator chat. Runner resume/spawn passes `existingSessionId` so bootstrap, MCP bridge, and `HAPI_SESSION_ID` all equal the row the web UI opened.
+
+**Known bug (remote Cursor runner):** shell `HAPI_SESSION_ID` can point at a runner worker row while the operator watches a different hub chat row. Jobs on the worker id update a session the operator is not viewing; MCP `session_job` on the chat row still works because the bridge is wired to the chat `client.sessionId`. Until fixed, pass the **chat URL uuid** explicitly to `hapi job` instead of trusting `$HAPI_SESSION_ID`. Hub merge/clear redirects (`jobsTransferredToSessionId`, `supersededBySessionId`) apply only when metadata links rows — not for unrelated live duplicates.
+
 ## Agent contract (specification)
 
 Treat this like `ping_peer` / `inspect_peer`: it is first-class HAPI tooling, not a docs footnote.
@@ -95,16 +109,19 @@ Same auth as `hapi ping-peer` (`HAPI_API_URL` / `CLI_API_TOKEN` or `hapi auth lo
 
 | What you know | What to send | What the list shows |
 |---------------|--------------|---------------------|
-| Countable leftover | `--remaining N` (+ optional `--unit`) | `150 units left · 2d 4h` |
-| Countable fraction | `--done N --total M` | `91% · 1637/1787 units · 2d 4h` |
+| Countable leftover | `--remaining N` + `--total M` (+ optional `--unit`) | `150 units left · 2d 4h` + bar fill when `total` is set |
+| Countable fraction | `--done N --total M` | `91% · 1637/1787 units · 2d 4h` + bar fill |
 | Stage only / unknown size | `--label` + `--detail` + heartbeats | `running · 2d 4h` + indeterminate bar |
+
+**Bar fill:** the byte/progress bar moves only when `total` is set and you send `--done`/`--total` or `--remaining`/`--total`. `--remaining` alone (without `total`) updates the text label only — it is not a percent and does not tick the bar. Prefer `--done`/`--total` when you want visible byte-style progress.
 
 **Elapsed** is always derived from hub `startedAt` (wall clock). It is **not** an ETA and there is no time-remaining field - operators get "how long has this been going" plus whatever honest count/detail you report, without a fake completion estimate.
 
 Rules:
 
-- Prefer **remaining** when the operator cares about "how much left".
-- Prefer **done+total** when both ends of a fraction exist (UI may derive %).
+- Prefer **remaining+total** when the operator cares about "how much left" and you know the denominator.
+- Prefer **done+total** when you want the simplest bar fill (byte-style progress).
+- Do not send **remaining alone** expecting the bar to move — include `total` or use `done`/`total`.
 - If you only know a stage name, put it in `--detail` and keep heartbeating — do **not** fake `total=100`.
 - There is **no** `--percent` flag and **no** ETA / time-remaining field. Inventing either would train agents to lie.
 
