@@ -102,6 +102,25 @@ describe('detached terminal removal synchronization', () => {
         }])
     })
 
+    it('ignores a stale exit for an old auto ID after a unique replacement exists', () => {
+        const cliSocket = new FakeSocket('cli-1')
+        const terminalNamespace = new FakeNamespace()
+        const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+        const replacementId = 'term-session-1-auto-new-nonce'
+        terminalRegistry.register(replacementId, 'session-1', 'new-viewer', cliSocket.id)
+        registerCliHandler(cliSocket, terminalNamespace, terminalRegistry)
+
+        cliSocket.trigger('terminal:exit', {
+            sessionId: 'session-1',
+            terminalId: 'term-session-1-auto-old-nonce',
+            code: 0,
+            signal: null
+        })
+
+        expect(terminalRegistry.get(replacementId)?.terminalId).toBe(replacementId)
+        expect(terminalNamespace.roomEmits).toHaveLength(0)
+    })
+
     it('broadcasts a detached terminal error to session inventory subscribers', () => {
         const cliSocket = new FakeSocket('cli-1')
         const terminalNamespace = new FakeNamespace()
