@@ -153,7 +153,7 @@ export async function preparePiUserMessage(
     options: {
         authorizeImagePath: (path: string) => boolean;
         authorizeOpenedImage: (path: string, identity: UploadFileIdentity) => boolean;
-        /** Peer provenance meta (#1203); prefix so peer cannot trigger first-line slash/skills. */
+        /** Soft peer nametag meta (#1203); prefix so peer cannot trigger first-line slash/skills. */
         meta?: MessageMeta | null;
     },
 ): Promise<PiPromptPreparation> {

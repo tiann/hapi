@@ -17,9 +17,9 @@ function isPeerDeliveryRequest(c: { req: { header: (name: string) => string | un
 }
 
 /**
- * Build stored peer meta from a hub-known source session id (CLI path param).
- * Never use a web JWT request-body claim here (#1203 kill criterion).
- * `sourceName` is a delivery-time snapshot from session metadata.
+ * Soft nametag fields from a hub session row (CLI path param).
+ * Web JWT bodies must not supply sourceSessionId (#1203); that path stays
+ * unattributed. `sourceName` is a delivery-time title snapshot only.
  */
 export function resolvePeerMetaFromSourceSession(
     engine: SyncEngine,
@@ -178,9 +178,9 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
-        // Peer header marks outside-session / unattributed peer delivery.
-        // Body `peer` / sourceSessionId is never authoritative on this JWT path
-        // (#1203 kill criterion) — attributed sends use /cli/.../peer-messages.
+        // Peer header = outside-session / unattributed peer delivery.
+        // Ignore body `peer` / sourceSessionId on this JWT path (#1203) —
+        // named-source soft nametags use /cli/.../peer-messages instead.
         const peerDelivery = isPeerDeliveryRequest(c)
         await engine.sendMessage(sessionId, {
             text: parsed.data.text,

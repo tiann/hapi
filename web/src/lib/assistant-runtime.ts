@@ -45,7 +45,7 @@ export type HappyChatMessageMetadata = {
     usage?: UsageData
     model?: string | null
     review?: CodexReview
-    /** Peer delivery provenance from hub message meta (#1203). */
+    /** Soft peer nametag from hub message meta (#1203). */
     sentFrom?: string
     peer?: {
         sourceSessionId?: string

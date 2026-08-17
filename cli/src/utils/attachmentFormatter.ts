@@ -50,13 +50,13 @@ function peerProvenanceLine(meta: MessageMeta): string {
 }
 
 /**
- * Add a machine-parseable peer provenance line for the receiving agent
- * (#1203). Kept separate from {@link formatMessageWithAttachments}
+ * Soft peer nametag line for the receiving agent (#1203) — reply routing hint,
+ * not a trust proof. Kept separate from {@link formatMessageWithAttachments}
  * so agy's attachment-prefix matcher stays exact.
  *
- * Default placement is prefix. Pi uses suffix so slash/skill commands remain
- * the first line (`formatPiUserMessage` contract) for operator messages;
- * peer deliveries skip slash parse entirely and still get a reply address.
+ * Default placement is prefix so peer control syntax is not first-line.
+ * Non-peer Pi operator messages may still use suffix so slash/skills stay
+ * first-line (`formatPiUserMessage` contract).
  */
 export function annotatePeerDeliveryForAgent(
     text: string,

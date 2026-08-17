@@ -288,8 +288,9 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
     })
 
     /**
-     * Attributed peer delivery (#1203). Source id is this path param — the
-     * calling session's CLI identity — not a web JWT body field.
+     * Soft peer nametag delivery (#1203). Path `:id` is the claimed source for
+     * chip / From: UX under shared CLI_API_TOKEN trust (same as other
+     * `/cli/sessions/:id/*` routes). Not a crypto identity proof.
      */
     app.post('/sessions/:id/peer-messages', async (c) => {
         const engine = getSyncEngine()

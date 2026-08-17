@@ -62,10 +62,10 @@ export type PingPeerOptions = {
     apiUrl?: string
     accessToken?: string
     /**
-     * Calling session id from ApiSessionClient (MCP inside a wrapped session).
-     * When set, delivery uses `POST /cli/sessions/:source/peer-messages` so the
-     * hub binds provenance to the CLI path — never a web JWT body field (#1203).
-     * Bare `hapi ping-peer` omits this and sends unattributed peer rows.
+     * Calling session id (MCP / HAPI_SESSION_ID). When set, uses
+     * `POST /cli/sessions/:source/peer-messages` for a soft nametag chip/From
+     * line (#1203). Same namespace-token trust as other CLI session routes —
+     * not a proof. Bare `hapi ping-peer` omits this → unattributed peer rows.
      */
     authenticatedSourceSessionId?: string
     http?: AxiosInstance

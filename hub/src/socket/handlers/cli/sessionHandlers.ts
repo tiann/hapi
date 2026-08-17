@@ -133,8 +133,9 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        // Trusted peer provenance is minted only via POST /cli/.../peer-messages.
-        // Generic CLI `message` must not forge meta.sentFrom === 'peer' (#1203).
+        // Soft peer nametag rows (#1203) are stamped only via
+        // POST /cli/sessions/:id/peer-messages. Generic CLI `message` must not
+        // set meta.sentFrom === 'peer' (UX wire shape, not a crypto boundary).
         if (
             content
             && typeof content === 'object'
@@ -146,7 +147,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             && (content as { meta: { sentFrom?: unknown } }).meta.sentFrom === 'peer'
         ) {
             socket.emit('error', {
-                message: 'Peer provenance requires POST /cli/sessions/:id/peer-messages',
+                message: 'Peer nametag delivery requires POST /cli/sessions/:id/peer-messages',
                 code: 'access-denied',
                 scope: 'session',
                 id: sid,
