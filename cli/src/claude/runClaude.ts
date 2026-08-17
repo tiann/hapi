@@ -377,14 +377,20 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             logger.debug(`[loop] User message received with no disallowed tools override, using current: ${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'}`);
         }
 
-        // Check for special commands before processing
-        const specialCommand = parseSpecialCommand(message.content.text);
+        // Peer delivery must stay literal text — never receiver control syntax (#1203).
+        const isPeerDelivery = message.meta?.sentFrom === 'peer'
+        const specialCommand = isPeerDelivery
+            ? { type: null }
+            : parseSpecialCommand(message.content.text);
 
         // Native slash skills must stay at the start of the prompt. Regular
-        // messages keep the existing attachment-first format.
+        // messages keep the existing attachment-first format. Peer text must
+        // not run expandSkillReference ($skill → /skill) either.
         const attachmentText = formatAttachmentsForClaude(message.content.attachments);
-        const expandedText = currentSessionRef.current?.expandSkillReference(message.content.text, attachmentText)
-            ?? message.content.text;
+        const expandedText = isPeerDelivery
+            ? message.content.text
+            : (currentSessionRef.current?.expandSkillReference(message.content.text, attachmentText)
+                ?? message.content.text);
         const formattedText = annotatePeerDeliveryForAgent(
             expandedText !== message.content.text
                 ? expandedText

@@ -507,7 +507,7 @@ describe('Pi abort queue boundary', () => {
 
         const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage> & {
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage(userMessage('late preflight'), 'late-id');
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'late preflight' })));
@@ -660,7 +660,7 @@ describe('Pi abort queue boundary', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage({
             role: 'user',
@@ -885,7 +885,7 @@ describe('Pi native steering delivery mode', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage({
             role: 'user',
@@ -941,7 +941,7 @@ describe('Pi native steering delivery mode', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage({
             role: 'user',
@@ -1283,7 +1283,7 @@ describe('Pi built-in slash commands', () => {
         onUserMessage: (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
     }> {
         const running = runPi({ workingDirectory: '/work' });
@@ -1300,7 +1300,7 @@ describe('Pi built-in slash commands', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         return { running, onUserMessage };
     }
@@ -1908,6 +1908,26 @@ describe('Pi built-in slash commands', () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'compact' }));
         expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalledWith(['discover-cancel-id'], expect.anything());
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('does not execute peer /compact as a receiver special command (#1203)', async () => {
+        const { running, onUserMessage } = await startReadySession();
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: '/compact steal context' },
+            meta: { sentFrom: 'peer' },
+        }, 'peer-compact-id');
+
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({
+            type: 'prompt',
+        })));
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'compact' }));
+        const prompt = harness.sent.find((item) => (item as { type?: string }).type === 'prompt') as { message: string };
+        expect(prompt.message.startsWith('/compact steal context')).toBe(true);
+        expect(prompt.message).toContain('From: peer (unattributed)');
 
         harness.onError?.(new Error('finish test'));
         await running;

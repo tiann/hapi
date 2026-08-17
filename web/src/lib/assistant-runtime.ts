@@ -15,7 +15,6 @@ import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import { visibleBlockRole } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
-import { buildShareHiddenByMessageId } from '@/lib/shareTurnAvailability'
 import { getPeerDeliveryInfo, isPeerDeliveryMeta } from '@/chat/peerDelivery'
 
 /**

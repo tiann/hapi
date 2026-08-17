@@ -133,6 +133,27 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        // Trusted peer provenance is minted only via POST /cli/.../peer-messages.
+        // Generic CLI `message` must not forge meta.sentFrom === 'peer' (#1203).
+        if (
+            content
+            && typeof content === 'object'
+            && !Array.isArray(content)
+            && (content as { role?: unknown }).role === 'user'
+            && (content as { meta?: unknown }).meta
+            && typeof (content as { meta?: unknown }).meta === 'object'
+            && !Array.isArray((content as { meta: unknown }).meta)
+            && (content as { meta: { sentFrom?: unknown } }).meta.sentFrom === 'peer'
+        ) {
+            socket.emit('error', {
+                message: 'Peer provenance requires POST /cli/sessions/:id/peer-messages',
+                code: 'access-denied',
+                scope: 'session',
+                id: sid,
+            })
+            return
+        }
+
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)

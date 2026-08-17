@@ -22,13 +22,22 @@ describe('annotatePeerDeliveryForAgent', () => {
                 sourceName: 'Orchestrator'
             }
         })).toBe(
-            'From: /sessions/6212dae5-8a60-4284-b7a5-c09aa3571ce4 (Orchestrator)\n\nhandoff body'
+            'From: /sessions/6212dae5-8a60-4284-b7a5-c09aa3571ce4\nName: Orchestrator\n\nhandoff body'
         )
     })
 
     it('marks unattributed peer delivery without inventing a source id', () => {
         expect(annotatePeerDeliveryForAgent('cli ping', { sentFrom: 'peer' }))
             .toBe('From: peer (unattributed)\n\ncli ping')
+    })
+
+    it('can suffix the From line for Pi first-line slash contracts', () => {
+        expect(annotatePeerDeliveryForAgent('/compact notes', {
+            sentFrom: 'peer',
+            peer: { sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4' }
+        }, 'suffix')).toBe(
+            '/compact notes\n\nFrom: /sessions/6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+        )
     })
 
     it('leaves non-peer messages unchanged', () => {
