@@ -10,30 +10,29 @@ describe('TerminalRegistry', () => {
         expect(removed).toEqual(['t1'])
     })
 
-    it('rebinds a same-id reconnect without firing onRemove', () => {
+    it('keeps same-id reconnects as additional viewers without firing onRemove', () => {
         const removed: string[] = []
         const reg = new TerminalRegistry({ idleTimeoutMs: 0, onRemove: (e) => removed.push(e.terminalId) })
         reg.register('t1', 's1', 'sockA', 'cli1')
         reg.register('t1', 's1', 'sockB', 'cli1')
         expect(removed).toEqual([])
-        expect(reg.get('t1')?.socketId).toBe('sockB')
-        expect(reg.countForSocket('sockA')).toBe(0)
+        expect(reg.get('t1')?.viewerSocketIds).toEqual(new Set(['sockA', 'sockB']))
+        expect(reg.countForSocket('sockA')).toBe(1)
         expect(reg.countForSocket('sockB')).toBe(1)
     })
 
-    it('detaches terminals on web disconnect without releasing their resources', () => {
+    it('detaches one web viewer without releasing the terminal resource or other viewers', () => {
         const removed: string[] = []
         const reg = new TerminalRegistry({ idleTimeoutMs: 0, onRemove: (e) => removed.push(e.terminalId) })
         reg.register('t1', 's1', 'sock1', 'cli1')
-        reg.register('t2', 's1', 'sock1', 'cli1')
+        reg.attach('t1', 's1', 'sock2')
         reg.detachBySocket('sock1')
         expect(removed).toEqual([])
         expect(reg.countForSocket('sock1')).toBe(0)
-        expect(reg.get('t1')?.socketId).toBeNull()
-        expect(reg.get('t2')?.socketId).toBeNull()
+        expect(reg.get('t1')?.viewerSocketIds).toEqual(new Set(['sock2']))
     })
 
-    it('lists detached and attached terminals for a session in creation order', async () => {
+    it('lists terminals for a session in creation order and exposes viewer state', async () => {
         const reg = new TerminalRegistry({ idleTimeoutMs: 0 })
         reg.register('t1', 's1', 'sock1', 'cli1')
         await new Promise((resolve) => setTimeout(resolve, 2))
@@ -41,21 +40,32 @@ describe('TerminalRegistry', () => {
         reg.register('other', 's2', 'sock3', 'cli2')
         reg.detach('t1', 'sock1')
 
-        expect(reg.listForSession('s1').map((entry) => ({ id: entry.terminalId, socketId: entry.socketId }))).toEqual([
-            { id: 't1', socketId: null },
-            { id: 't2', socketId: 'sock2' }
+        expect(reg.listForSession('s1').map((entry) => ({ id: entry.terminalId, viewers: [...entry.viewerSocketIds] }))).toEqual([
+            { id: 't1', viewers: [] },
+            { id: 't2', viewers: ['sock2'] }
         ])
     })
 
-    it('attaches a detached terminal without changing its creation metadata', () => {
+    it('attaches another viewer without changing terminal creation metadata', () => {
         const reg = new TerminalRegistry({ idleTimeoutMs: 0 })
         const created = reg.register('t1', 's1', 'sock1', 'cli1')
-        reg.detach('t1', 'sock1')
         const attached = reg.attach('t1', 's1', 'sock2')
 
-        expect(attached?.socketId).toBe('sock2')
+        expect(attached?.viewerSocketIds).toEqual(new Set(['sock1', 'sock2']))
         expect(attached?.createdAt).toBe(created?.createdAt)
         expect(reg.countForSession('s1')).toBe(1)
+    })
+
+    it('tracks session subscribers independently of terminal attachment', () => {
+        const reg = new TerminalRegistry({ idleTimeoutMs: 0 })
+        reg.subscribeSession('s1', 'sock1')
+        reg.subscribeSession('s1', 'sock2')
+        reg.register('t1', 's1', 'sock1', 'cli1')
+        reg.detach('t1', 'sock1')
+
+        expect(new Set(reg.subscribersForSession('s1'))).toEqual(new Set(['sock1', 'sock2']))
+        reg.detachBySocket('sock1')
+        expect(reg.subscribersForSession('s1')).toEqual(['sock2'])
     })
 
     it('fires onRemove for every terminal dropped on CLI disconnect', () => {

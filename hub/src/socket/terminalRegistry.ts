@@ -1,7 +1,7 @@
 export type TerminalRegistryEntry = {
     terminalId: string
     sessionId: string
-    socketId: string | null
+    viewerSocketIds: Set<string>
     cliSocketId: string
     createdAt: number
     idleTimer: ReturnType<typeof setTimeout> | null
@@ -21,6 +21,8 @@ export class TerminalRegistry {
     private readonly terminalsBySocket = new Map<string, Set<string>>()
     private readonly terminalsBySession = new Map<string, Set<string>>()
     private readonly terminalsByCliSocket = new Map<string, Set<string>>()
+    private readonly sessionSubscribers = new Map<string, Set<string>>()
+    private readonly sessionsBySocket = new Map<string, Set<string>>()
     private readonly idleTimeoutMs: number
     private readonly onIdle?: (entry: TerminalRegistryEntry) => void
     private readonly onRemove?: (entry: TerminalRegistryEntry) => void
@@ -38,15 +40,15 @@ export class TerminalRegistry {
                 return null
             }
             // Backwards compatibility for older web clients that use
-            // terminal:create for transport reconnects. Re-bind the existing
-            // resource instead of replacing it or firing onRemove.
+            // terminal:create for transport reconnects. Treat the replacement
+            // browser as another viewer of the same server-side PTY.
             return this.attach(terminalId, sessionId, socketId)
         }
 
         const entry: TerminalRegistryEntry = {
             terminalId,
             sessionId,
-            socketId,
+            viewerSocketIds: new Set([socketId]),
             cliSocketId,
             createdAt: Date.now(),
             idleTimer: null
@@ -67,27 +69,37 @@ export class TerminalRegistry {
             return null
         }
 
-        if (entry.socketId === socketId) {
+        if (entry.viewerSocketIds.has(socketId)) {
             return entry
         }
 
-        if (entry.socketId) {
-            this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
-        }
-        entry.socketId = socketId
+        entry.viewerSocketIds.add(socketId)
         this.addToIndex(this.terminalsBySocket, socketId, terminalId)
         return entry
     }
 
     detach(terminalId: string, socketId: string): TerminalRegistryEntry | null {
         const entry = this.terminals.get(terminalId)
-        if (!entry || entry.socketId !== socketId) {
+        if (!entry || !entry.viewerSocketIds.has(socketId)) {
             return null
         }
 
+        entry.viewerSocketIds.delete(socketId)
         this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
-        entry.socketId = null
         return entry
+    }
+
+    isViewer(terminalId: string, socketId: string): boolean {
+        return this.terminals.get(terminalId)?.viewerSocketIds.has(socketId) ?? false
+    }
+
+    subscribeSession(sessionId: string, socketId: string): void {
+        this.addToIndex(this.sessionSubscribers, sessionId, socketId)
+        this.addToIndex(this.sessionsBySocket, socketId, sessionId)
+    }
+
+    subscribersForSession(sessionId: string): string[] {
+        return Array.from(this.sessionSubscribers.get(sessionId) ?? [])
     }
 
     markActivity(terminalId: string): void {
@@ -120,8 +132,8 @@ export class TerminalRegistry {
         }
 
         this.terminals.delete(terminalId)
-        if (entry.socketId) {
-            this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
+        for (const socketId of entry.viewerSocketIds) {
+            this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
         }
         this.removeFromIndex(this.terminalsBySession, entry.sessionId, terminalId)
         this.removeFromIndex(this.terminalsByCliSocket, entry.cliSocketId, terminalId)
@@ -137,16 +149,25 @@ export class TerminalRegistry {
 
     detachBySocket(socketId: string): TerminalRegistryEntry[] {
         const ids = this.terminalsBySocket.get(socketId)
-        if (!ids || ids.size === 0) {
-            return []
-        }
-        const entries = Array.from(ids)
-            .map((terminalId) => this.terminals.get(terminalId))
-            .filter(Boolean) as TerminalRegistryEntry[]
+        const entries = ids
+            ? Array.from(ids)
+                .map((terminalId) => this.terminals.get(terminalId))
+                .filter((entry): entry is TerminalRegistryEntry => Boolean(entry))
+            : []
+
         for (const entry of entries) {
-            entry.socketId = null
+            entry.viewerSocketIds.delete(socketId)
         }
         this.terminalsBySocket.delete(socketId)
+
+        const sessionIds = this.sessionsBySocket.get(socketId)
+        if (sessionIds) {
+            for (const sessionId of sessionIds) {
+                this.removeFromIndex(this.sessionSubscribers, sessionId, socketId)
+            }
+        }
+        this.sessionsBySocket.delete(socketId)
+
         return entries
     }
 
@@ -185,21 +206,21 @@ export class TerminalRegistry {
         }, this.idleTimeoutMs)
     }
 
-    private addToIndex(index: Map<string, Set<string>>, key: string, terminalId: string): void {
+    private addToIndex(index: Map<string, Set<string>>, key: string, value: string): void {
         const set = index.get(key)
         if (set) {
-            set.add(terminalId)
+            set.add(value)
         } else {
-            index.set(key, new Set([terminalId]))
+            index.set(key, new Set([value]))
         }
     }
 
-    private removeFromIndex(index: Map<string, Set<string>>, key: string, terminalId: string): void {
+    private removeFromIndex(index: Map<string, Set<string>>, key: string, value: string): void {
         const set = index.get(key)
         if (!set) {
             return
         }
-        set.delete(terminalId)
+        set.delete(value)
         if (set.size === 0) {
             index.delete(key)
         }

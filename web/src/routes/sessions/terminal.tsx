@@ -428,10 +428,13 @@ export default function TerminalPage() {
 
     useEffect(() => {
         connectOnceRef.current = false
-        terminalRef.current = null
-        inputDisposableRef.current?.dispose()
-        inputDisposableRef.current = null
         setExitInfo(null)
+
+        return () => {
+            terminalRef.current = null
+            inputDisposableRef.current?.dispose()
+            inputDisposableRef.current = null
+        }
     }, [activeTerminalId])
 
     useEffect(() => {
@@ -700,7 +703,7 @@ export default function TerminalPage() {
                                             aria-selected={active}
                                             onClick={() => handleSelectTerminal(terminal.terminalId)}
                                             className="flex h-8 items-center gap-1.5 px-2.5 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
-                                            title={terminal.attached && !active ? `${label} is attached in another view; selecting it will attach here.` : label}
+                                            title={terminal.attached && !active ? `${label} is also attached in another view.` : label}
                                         >
                                             <span>{label}</span>
                                             {terminal.attached && !active ? (
