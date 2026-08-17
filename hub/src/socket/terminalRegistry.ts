@@ -45,6 +45,16 @@ export class TerminalRegistry {
             return this.attach(terminalId, sessionId, socketId)
         }
 
+        // Initial empty-page bootstraps use a unique `-auto-<nonce>` resource ID.
+        // The nonce keeps PTY identities unique across lifecycles, while this
+        // synchronous registry gate makes simultaneous empty-page requests
+        // create-if-empty: after the first request registers a PTY, later auto
+        // requests for the same session are rejected and their clients refresh
+        // the server inventory instead of opening duplicate shells.
+        if (terminalId.startsWith(`term-${sessionId}-auto-`) && this.countForSession(sessionId) > 0) {
+            return null
+        }
+
         const entry: TerminalRegistryEntry = {
             terminalId,
             sessionId,
