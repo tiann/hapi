@@ -31,12 +31,21 @@ describe('annotatePeerDeliveryForAgent', () => {
             .toBe('From: peer (unattributed)\n\ncli ping')
     })
 
-    it('can suffix the From line for Pi first-line slash contracts', () => {
+    it('can suffix the From line for non-peer-first-line Pi contracts', () => {
         expect(annotatePeerDeliveryForAgent('/compact notes', {
             sentFrom: 'peer',
             peer: { sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4' }
         }, 'suffix')).toBe(
             '/compact notes\n\nFrom: /sessions/6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+        )
+    })
+
+    it('defaults to prefix so peer control syntax is not first-line', () => {
+        expect(annotatePeerDeliveryForAgent('/compact notes', {
+            sentFrom: 'peer',
+            peer: { sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4' }
+        })).toBe(
+            'From: /sessions/6212dae5-8a60-4284-b7a5-c09aa3571ce4\n\n/compact notes'
         )
     })
 

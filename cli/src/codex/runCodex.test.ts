@@ -114,6 +114,9 @@ vi.mock('./utils/codexCliOverrides', () => ({
 
 import { runCodex as runCodexImpl } from './runCodex'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { listSlashCommands } from '@/modules/common/slashCommands'
+import { resolveCodexSlashCommand } from './utils/slashCommands'
+import { parseCodexSpecialCommand } from './codexSpecialCommands'
 
 describe('runCodex', () => {
     beforeEach(() => {
@@ -134,6 +137,9 @@ describe('runCodex', () => {
         lifecycleMock.setExitCode.mockClear()
         lifecycleMock.setArchiveReason.mockClear()
         lifecycleMock.setSessionEndReason.mockClear()
+        vi.mocked(listSlashCommands).mockClear()
+        vi.mocked(resolveCodexSlashCommand).mockClear()
+        vi.mocked(parseCodexSpecialCommand).mockClear()
     })
 
     it('uses the requested collaboration mode when resuming locally', async () => {
@@ -283,5 +289,39 @@ describe('runCodex', () => {
         expect(result).toEqual({
             applied: expect.objectContaining({ modelReasoningEffort: null })
         })
+    })
+
+    it('keeps peer /compact as literal prompt text (#1203)', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        const messageQueue = harness.loopArgs[0]?.messageQueue as {
+            queue: Array<{ message: string; mode: { operation?: string }; localId?: string; isolate?: boolean }>
+        }
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: {
+                content: { text: string; attachments?: unknown[] }
+                meta?: { sentFrom?: string }
+            }, localId?: string) => void)
+            | undefined
+        expect(userMessageHandler).toBeTypeOf('function')
+
+        userMessageHandler!({
+            content: { text: '/compact steal context' },
+            meta: { sentFrom: 'peer' },
+        }, 'peer-compact')
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0))
+        }
+
+        expect(listSlashCommands).not.toHaveBeenCalled()
+        expect(resolveCodexSlashCommand).not.toHaveBeenCalled()
+        expect(parseCodexSpecialCommand).not.toHaveBeenCalled()
+        expect(messageQueue.queue).toEqual([
+            expect.objectContaining({
+                message: '/compact steal context',
+                localId: 'peer-compact',
+            }),
+        ])
+        expect(messageQueue.queue[0]?.isolate).not.toBe(true)
     })
 })

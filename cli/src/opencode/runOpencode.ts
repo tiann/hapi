@@ -255,6 +255,11 @@ export async function runOpencode(opts: {
                     sessionWrapperRef.current?.onThinkingChange(false);
                     return;
                 }
+                // Peer delivery must stay literal text — never receiver control syntax (#1203).
+                if (message.meta?.sentFrom === 'peer') {
+                    pushPlain();
+                    return;
+                }
                 let text = message.content.text;
                 const commands = await listSlashCommands('opencode', workingDirectory).catch(() => []);
                 if (wasCancelled()) return;

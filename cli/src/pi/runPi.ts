@@ -130,8 +130,11 @@ export function formatPiUserMessage(
     message: string,
     attachments: AttachmentMetadata[] | undefined,
     commands: readonly PiCommandSummary[],
+    options?: { rewriteSkills?: boolean },
 ): string {
-    const skillPrompt = rewritePiSkillPrompt(message, commands);
+    const skillPrompt = options?.rewriteSkills === false
+        ? message
+        : rewritePiSkillPrompt(message, commands);
     const attachmentText = formatPiTextAttachments(attachments);
     if (skillPrompt === message) {
         if (!attachmentText) return message;
@@ -150,14 +153,17 @@ export async function preparePiUserMessage(
     options: {
         authorizeImagePath: (path: string) => boolean;
         authorizeOpenedImage: (path: string, identity: UploadFileIdentity) => boolean;
-        /** Peer provenance meta (#1203); annotated as a suffix so slash/skills stay first-line. */
+        /** Peer provenance meta (#1203); prefix so peer cannot trigger first-line slash/skills. */
         meta?: MessageMeta | null;
     },
 ): Promise<PiPromptPreparation> {
+    const isPeer = options.meta?.sentFrom === 'peer';
     const formattedMessage = annotatePeerDeliveryForAgent(
-        formatPiUserMessage(message, attachments, commands),
+        formatPiUserMessage(message, attachments, commands, {
+            rewriteSkills: !isPeer,
+        }),
         options.meta ?? undefined,
-        'suffix',
+        isPeer ? 'prefix' : 'suffix',
     );
     const images: PiImageContent[] = [];
     const imageReadErrors: string[] = [];

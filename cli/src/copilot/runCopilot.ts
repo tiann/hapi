@@ -150,6 +150,11 @@ export async function runCopilot(opts: {
             let recognizedSlash = false;
             try {
                 if (wasCancelled()) return;
+                // Peer delivery must stay literal text — never receiver control syntax (#1203).
+                if (message.meta?.sentFrom === 'peer') {
+                    pushPlain();
+                    return;
+                }
                 let text = message.content.text;
                 const commands = await listSlashCommands('copilot', workingDirectory).catch(() => []);
                 if (wasCancelled()) return;

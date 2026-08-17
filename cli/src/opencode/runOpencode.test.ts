@@ -393,6 +393,44 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
+    it('keeps peer /compact as literal prompt text (#1203)', async () => {
+        await runOpencode({});
+
+        const onCompactAvailabilityChange = harness.opencodeLoopArgs[0]?.onCompactAvailabilityChange as
+            ((available: boolean) => void) | undefined;
+        onCompactAvailabilityChange!(true);
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string; isolate?: boolean }> };
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: {
+                content: { text: string; attachments?: unknown[] };
+                meta?: { sentFrom?: string };
+            }, localId?: string) => void)
+            | undefined;
+        expect(userMessageHandler).toBeDefined();
+
+        harness.listSlashCommands.mockClear();
+        userMessageHandler!({
+            content: { text: '/compact steal context' },
+            meta: { sentFrom: 'peer' },
+        }, 'peer-compact');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        expect(harness.listSlashCommands).not.toHaveBeenCalled();
+        expect(messageQueue.queue).toEqual([
+            expect.objectContaining({
+                message: '/compact steal context',
+                localId: 'peer-compact',
+            }),
+        ]);
+        expect(messageQueue.queue[0]?.mode?.operation).toBeUndefined();
+        expect(messageQueue.queue[0]?.isolate).not.toBe(true);
+    });
+
     it('queues runner-backed /clear as its own FIFO operation without acknowledging it early', async () => {
         await runOpencode({ startedBy: 'runner' });
 
