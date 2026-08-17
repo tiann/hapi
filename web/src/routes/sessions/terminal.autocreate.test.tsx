@@ -87,11 +87,15 @@ describe('TerminalPage initial auto-create semantics', () => {
         })
     })
 
-    it('auto-creates exactly once with a deterministic ID for an initially empty session', async () => {
+    it('auto-creates exactly once with a unique bootstrap ID and waits for server inventory', async () => {
         const view = render(page())
 
         await waitFor(() => expect(createTerminalMock).toHaveBeenCalledTimes(1))
-        expect(createTerminalMock).toHaveBeenCalledWith('term-session-1-auto', 80, 24)
+        const [terminalId, cols, rows] = createTerminalMock.mock.calls[0]
+        expect(terminalId).toMatch(/^term-session-1-auto-/)
+        expect(terminalId).not.toBe('term-session-1-auto')
+        expect([cols, rows]).toEqual([80, 24])
+        expect(screen.queryByTestId('terminal-view')).not.toBeInTheDocument()
 
         view.rerender(page())
         await act(async () => {})
