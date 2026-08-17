@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import TerminalPage from './terminal'
 
+type FakeTerminalHandle = {
+    write: ReturnType<typeof vi.fn>
+    dispose: ReturnType<typeof vi.fn>
+    emitData: (data: string) => void
+}
+
 const mocks = vi.hoisted(() => ({
     write: vi.fn(),
     connect: vi.fn(),
@@ -14,44 +20,46 @@ const mocks = vi.hoisted(() => ({
     closeTerminal: vi.fn(),
     outputHandler: null as ((data: string) => void) | null,
     exitHandler: null as ((code: number | null, signal: string | null) => void) | null,
-    terminals: [] as FakeTerminal[]
+    terminals: [] as FakeTerminalHandle[]
 }))
 
-class FakeTerminal {
-    cols = 80
-    rows = 24
-    options: Record<string, unknown>
-    write = vi.fn()
-    focus = vi.fn()
-    blur = vi.fn()
-    refresh = vi.fn()
-    dispose = vi.fn()
-    loadAddon = vi.fn()
-    open = vi.fn()
-    private dataHandler: ((data: string) => void) | null = null
+vi.mock('@xterm/xterm', () => {
+    class FakeTerminal {
+        cols = 80
+        rows = 24
+        options: Record<string, unknown>
+        write = vi.fn()
+        focus = vi.fn()
+        blur = vi.fn()
+        refresh = vi.fn()
+        dispose = vi.fn()
+        loadAddon = vi.fn()
+        open = vi.fn()
+        private dataHandler: ((data: string) => void) | null = null
 
-    constructor(options: Record<string, unknown>) {
-        this.options = { ...options }
-        mocks.terminals.push(this)
-    }
+        constructor(options: Record<string, unknown>) {
+            this.options = { ...options }
+            mocks.terminals.push(this)
+        }
 
-    onData(handler: (data: string) => void) {
-        this.dataHandler = handler
-        return {
-            dispose: vi.fn(() => {
-                if (this.dataHandler === handler) {
-                    this.dataHandler = null
-                }
-            })
+        onData(handler: (data: string) => void) {
+            this.dataHandler = handler
+            return {
+                dispose: vi.fn(() => {
+                    if (this.dataHandler === handler) {
+                        this.dataHandler = null
+                    }
+                })
+            }
+        }
+
+        emitData(data: string): void {
+            this.dataHandler?.(data)
         }
     }
 
-    emitData(data: string): void {
-        this.dataHandler?.(data)
-    }
-}
-
-vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }))
+    return { Terminal: FakeTerminal }
+})
 
 vi.mock('@xterm/addon-fit', () => ({
     FitAddon: class {
