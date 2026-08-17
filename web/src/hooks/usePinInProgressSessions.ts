@@ -6,7 +6,8 @@ import { useCallback, useEffect, useState } from 'react'
  * Degree of float, not a yes/no:
  * - off  — everything stays in project directories
  * - jobs — only sessions with a running attachedJob (outliving work)
- * - all  — jobs + agent working/pending (legacy maximalist pin)
+ * - all  — jobs + agent working/pending (UI: "Working & pending"; storage key
+ *          stays `all` for migration). Quiet connected (socket up, idle) never floats.
  *
  * Unset / never configured defaults to `jobs` — the product stand for this capability.
  */

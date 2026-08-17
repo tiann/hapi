@@ -651,7 +651,7 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Needs approval/ })).toBeInTheDocument()
     })
 
-    it('does not label quiet active sessions as Idle', () => {
+    it('does not label quiet connected sessions as Idle', () => {
         const sessions = [
             makeSession({
                 id: 'session-quiet',
@@ -667,7 +667,7 @@ describe('SessionList collapse behavior', () => {
         expect(screen.queryByTitle('Idle')).toBeNull()
     })
 
-    it('keeps quiet active sessions in directory groups when pin-in-progress is on', () => {
+    it('keeps quiet connected sessions in directory groups when pin-in-progress is on', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
@@ -797,7 +797,9 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Idle task/ })).toBeInTheDocument()
     })
 
-    it('does not pin quiet active sessions into an Active section (#1404 jobs stand)', () => {
+    it('does not pin quiet connected sessions as in-progress (#1404 jobs stand)', () => {
+        // Connected (session.active) ≠ working. Mode key `all` floats jobs +
+        // working + pending only — never quiet connected sockets.
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
@@ -820,6 +822,8 @@ describe('SessionList collapse behavior', () => {
         expect(screen.queryByTitle('Active sessions')).toBeNull()
         expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
         expect(getProjectPanel().getAttribute('data-open')).toBe('true')
+        // Quiet connected stays under the project; working floats.
+        expect(screen.getByRole('button', { name: /Running task/ })).toBeInTheDocument()
     })
 
     it('keeps the running section open while searching even when collapsed', () => {
