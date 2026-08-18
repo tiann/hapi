@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -53,6 +54,17 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (Build.VERSION.SDK_INT >= 30) {
+            // Compose's imePadding is the single keyboard-inset owner. With the
+            // default adjust mode, the AppCompat subdecor ALSO resizes the
+            // window for the IME (device-observed: a keyboard-sized gap above
+            // the keyboard). ADJUST_NOTHING kills the legacy resize; IME
+            // insets are always delivered on 30+ regardless of soft-input
+            // mode. On 26–29 the ime() backport requires adjustResize, so
+            // those keep the default (and tolerate the legacy behavior).
+            @Suppress("DEPRECATION")
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+        }
         if (savedInstanceState == null) {
             // Only a fresh launch consumes the launching intent — after a
             // config change / process restore the same (already-consumed)
