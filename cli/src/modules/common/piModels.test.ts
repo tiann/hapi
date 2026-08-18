@@ -1,43 +1,76 @@
 import { describe, expect, it } from 'vitest'
-import { parsePiModelsTable } from './piModels'
+import { parsePiModelsProbeLine } from './piModels'
 
-const SAMPLE_TABLE = `provider      model                     context  max-out  thinking  images
-openai-codex  gpt-5.3-codex-spark       128K     128K     yes       no
-openai-codex  gpt-5.6-sol               272K     128K     yes       yes
-opencode-go   deepseek-v4-pro           1M       384K     yes       no
-opencode-go   gpt-5.6-luna              1.1M     128K     yes       yes
-opencode-go   qwen3.6-plus              1M       65.5K    yes       yes
-`
+function probeResponseLine(data: unknown): string {
+    return JSON.stringify({
+        id: 'hapi-machine-models-probe',
+        type: 'response',
+        command: 'get_available_models',
+        success: true,
+        data,
+    })
+}
 
-describe('parsePiModelsTable', () => {
-    it('parses provider/model columns and reasoning flag', () => {
-        const models = parsePiModelsTable(SAMPLE_TABLE)
+describe('parsePiModelsProbeLine', () => {
+    it('parses the get_available_models response with full model records', () => {
+        const models = parsePiModelsProbeLine(probeResponseLine({
+            models: [
+                {
+                    id: 'claude-opus-5',
+                    provider: 'anthropic',
+                    name: 'Claude Opus 5',
+                    contextWindow: 200000,
+                    reasoning: true,
+                    thinkingLevelMap: { off: 'off', minimal: null, xhigh: 'xhigh', max: 'max' },
+                },
+                { id: 'gpt-4o', provider: 'openai', reasoning: false },
+            ],
+        }))
         expect(models).toEqual([
-            { provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark', reasoning: true },
-            { provider: 'openai-codex', modelId: 'gpt-5.6-sol', reasoning: true },
-            { provider: 'opencode-go', modelId: 'deepseek-v4-pro', reasoning: true },
-            { provider: 'opencode-go', modelId: 'gpt-5.6-luna', reasoning: true },
-            { provider: 'opencode-go', modelId: 'qwen3.6-plus', reasoning: true },
+            {
+                provider: 'anthropic',
+                modelId: 'claude-opus-5',
+                name: 'Claude Opus 5',
+                contextWindow: 200000,
+                reasoning: true,
+                thinkingLevelMap: { off: 'off', minimal: null, xhigh: 'xhigh', max: 'max' },
+            },
+            { provider: 'openai', modelId: 'gpt-4o', reasoning: false },
         ])
     })
 
-    it('skips the header, separators, and short lines', () => {
-        const models = parsePiModelsTable(`provider model context max-out thinking images
-=== === === === === ===
-junk
-`)
-        expect(models).toEqual([])
+    it('ignores non-JSON lines and unrelated RPC traffic', () => {
+        expect(parsePiModelsProbeLine('starting up...')).toBeNull()
+        expect(parsePiModelsProbeLine('')).toBeNull()
+        expect(parsePiModelsProbeLine('{not json')).toBeNull()
+        expect(parsePiModelsProbeLine(JSON.stringify({ type: 'event', event: 'agent_start' }))).toBeNull()
+        expect(parsePiModelsProbeLine(JSON.stringify({
+            id: 'x', type: 'response', command: 'get_state', success: true, data: {},
+        }))).toBeNull()
     })
 
-    it('treats non-reasoning models as reasoning false', () => {
-        const models = parsePiModelsTable(`provider      model                     context  max-out  thinking  images
-anthropic     claude-haiku             200K     64K      no        no
-`)
-        expect(models).toEqual([{ provider: 'anthropic', modelId: 'claude-haiku', reasoning: false }])
+    it('treats a failed get_available_models response as no result', () => {
+        expect(parsePiModelsProbeLine(JSON.stringify({
+            id: 'x',
+            type: 'response',
+            command: 'get_available_models',
+            success: false,
+            error: 'boom',
+        }))).toBeNull()
     })
 
-    it('dedupes identical provider/model pairs', () => {
-        const models = parsePiModelsTable(SAMPLE_TABLE + 'openai-codex  gpt-5.6-sol               272K     128K     yes       yes\n')
-        expect(models.filter((m) => m.modelId === 'gpt-5.6-sol')).toHaveLength(1)
+    it('returns an empty catalog for a malformed data payload', () => {
+        expect(parsePiModelsProbeLine(probeResponseLine('not-an-object'))).toEqual([])
+        expect(parsePiModelsProbeLine(probeResponseLine({}))).toEqual([])
+    })
+
+    it('drops entries without an id but keeps the rest', () => {
+        const models = parsePiModelsProbeLine(probeResponseLine({
+            models: [
+                { provider: 'openai' },
+                { id: 'kept', provider: 'openai' },
+            ],
+        }))
+        expect(models).toEqual([{ provider: 'openai', modelId: 'kept' }])
     })
 })

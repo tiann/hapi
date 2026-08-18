@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { PiModelSummary, PiModelsResponse } from '@hapi/protocol/apiTypes'
+import { parsePiModels } from '../../pi/schemas'
 import { getErrorMessage } from './rpcResponses'
 
 export type ListPiModelsForMachineRequest = Record<string, never>
@@ -17,90 +18,107 @@ const cache = new Map<string, CacheEntry>()
 const inflight = new Map<string, Promise<ListPiModelsForMachineResponse>>()
 
 /**
- * Parse the `pi --list-models` table:
+ * Machine-level Pi model discovery via a short-lived `pi --mode rpc` probe.
  *
- * ```
- * provider      model                     context  max-out  thinking  images
- * openai-codex  gpt-5.6-sol              272K     128K     yes       yes
- * ```
+ * The previous `pi --list-models` text-table probe lost every field the
+ * table does not print — most importantly `thinkingLevelMap`, so the
+ * create-session form could never offer model-accurate thinking levels
+ * (xhigh/max are map-opt-in and were permanently hidden). The RPC probe
+ * returns the same full model records as the session-scoped
+ * `get_available_models` RPC and goes through the same `parsePiModels`
+ * schema, so machine-level and session-level catalogs cannot drift.
  *
- * Column values never contain whitespace, so splitting on runs of whitespace
- * is stable. `context`/`max-out` are human sizes (`128K`, `1M`, `202.8K`);
- * they are retained as strings — the session-scoped `get_available_models`
- * RPC remains the authoritative source for the numeric context window.
+ * The probe is spawned with discovery disabled (`--no-session,
+ * --no-extensions, --no-skills, --no-prompt-templates, --no-tools`): no
+ * session file is written, no user extensions run, and startup stays fast
+ * (measured ~0.6s vs ~1.6-2.4s for the old table probe).
  */
-export function parsePiModelsTable(output: string): PiModelSummary[] {
-    const models: PiModelSummary[] = []
-    const seen = new Set<string>()
+const PI_PROBE_ARGS = [
+    '--mode', 'rpc',
+    '--no-session',
+    '--no-extensions',
+    '--no-skills',
+    '--no-prompt-templates',
+    '--no-tools',
+] as const
 
-    for (const rawLine of output.split(/\r?\n/)) {
-        const line = rawLine.trim()
-        if (!line || line.startsWith('provider') || line.startsWith('===')) {
-            continue
-        }
-        const columns = line.split(/\s{2,}/)
-        if (columns.length < 5) {
-            continue
-        }
-        const [provider, modelId, , , thinking] = columns
-        if (!provider || !modelId || seen.has(`${provider}/${modelId}`)) {
-            continue
-        }
-        seen.add(`${provider}/${modelId}`)
-        models.push({
-            provider,
-            modelId,
-            reasoning: thinking === 'yes',
-        })
+const PROBE_RPC_ID = 'hapi-machine-models-probe'
+
+/** Extract the get_available_models response from one stdout line, if present. */
+export function parsePiModelsProbeLine(line: string): PiModelSummary[] | null {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) return null
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(trimmed)
+    } catch {
+        return null
     }
-
-    return models
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const record = parsed as Record<string, unknown>
+    if (record.type !== 'response' || record.command !== 'get_available_models') return null
+    if (record.success !== true) return null
+    return parsePiModels(record.data)
 }
 
 function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
     return new Promise((resolve, reject) => {
-        const child = spawn('pi', ['--list-models'], {
+        const child = spawn('pi', [...PI_PROBE_ARGS], {
             env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
             shell: process.platform === 'win32',
             windowsHide: process.platform === 'win32',
         })
-        let stdout = ''
+        let stdoutBuffer = ''
         let stderr = ''
         let settled = false
 
-        const timeout = setTimeout(() => {
+        const finish = (settle: () => void) => {
             if (settled) return
             settled = true
+            clearTimeout(timeout)
+            // The probe child has no further use once the response (or a
+            // failure) landed; never leave an interactive pi process behind.
             child.kill('SIGTERM')
-            reject(new Error('Pi model discovery timed out'))
+            settle()
+        }
+
+        const timeout = setTimeout(() => {
+            finish(() => reject(new Error('Pi model discovery timed out')))
         }, PROBE_TIMEOUT_MS)
 
         child.stdout?.on('data', (chunk) => {
-            stdout += chunk.toString()
+            stdoutBuffer += chunk.toString()
+            // The RPC stream is line-delimited JSON; scan every complete line
+            // for the get_available_models response and ignore the rest
+            // (lifecycle events, unrelated responses).
+            let newlineIndex = stdoutBuffer.indexOf('\n')
+            while (newlineIndex !== -1 && !settled) {
+                const line = stdoutBuffer.slice(0, newlineIndex)
+                stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
+                newlineIndex = stdoutBuffer.indexOf('\n')
+                const availableModels = parsePiModelsProbeLine(line)
+                if (availableModels !== null) {
+                    finish(() => resolve({ success: true, availableModels, currentModelId: null }))
+                    return
+                }
+            }
         })
         child.stderr?.on('data', (chunk) => {
             stderr += chunk.toString()
         })
         child.on('error', (error) => {
-            if (settled) return
-            settled = true
-            clearTimeout(timeout)
-            reject(error)
+            finish(() => reject(error))
         })
         child.on('close', (code) => {
-            if (settled) return
-            settled = true
-            clearTimeout(timeout)
-            if (code !== 0) {
-                reject(new Error(
-                    stderr.trim() || `pi --list-models exited with code ${code ?? 'unknown'}`
-                ))
-                return
-            }
-            const availableModels = parsePiModelsTable(stdout)
-            resolve({ success: true, availableModels, currentModelId: null })
+            finish(() => reject(new Error(
+                stderr.trim() || `pi exited with code ${code ?? 'unknown'} before answering the model probe`
+            )))
         })
+        // pi exiting before the request lands must surface as the close-path
+        // error, not an unhandled EPIPE crash.
+        child.stdin?.on('error', () => { /* handled via close */ })
+        child.stdin?.write(`${JSON.stringify({ id: PROBE_RPC_ID, type: 'get_available_models' })}\n`)
     })
 }
 
