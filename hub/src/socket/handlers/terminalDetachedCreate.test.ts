@@ -75,23 +75,35 @@ class FakeServer {
     }
 }
 
+function registerWebSocket(
+    io: FakeServer,
+    terminalNamespace: FakeNamespace,
+    terminalRegistry: TerminalRegistry,
+    socket: FakeSocket,
+    maxTerminalsPerSocket: number,
+    userId = 7
+): void {
+    socket.data.namespace = 'default'
+    socket.data.userId = userId
+    socket.nsp = terminalNamespace
+    terminalNamespace.sockets.set(socket.id, socket)
+    registerTerminalHandlers(socket as unknown as SocketWithData, {
+        io: io as unknown as SocketServer,
+        getSession: () => ({ active: true, namespace: 'default' }),
+        terminalRegistry,
+        maxTerminalsPerSocket,
+        maxTerminalsPerSession: 4,
+    })
+}
+
 function setup(options?: { maxTerminalsPerSocket?: number }) {
     const io = new FakeServer()
     const terminalNamespace = io.of('/terminal')
     const cliNamespace = io.of('/cli')
     const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+    const maxTerminalsPerSocket = options?.maxTerminalsPerSocket ?? 4
     const terminalSocket = new FakeSocket('web-1')
-    terminalSocket.data.namespace = 'default'
-    terminalSocket.nsp = terminalNamespace
-    terminalNamespace.sockets.set(terminalSocket.id, terminalSocket)
-
-    registerTerminalHandlers(terminalSocket as unknown as SocketWithData, {
-        io: io as unknown as SocketServer,
-        getSession: () => ({ active: true, namespace: 'default' }),
-        terminalRegistry,
-        maxTerminalsPerSocket: options?.maxTerminalsPerSocket ?? 4,
-        maxTerminalsPerSession: 4,
-    })
+    registerWebSocket(io, terminalNamespace, terminalRegistry, terminalSocket, maxTerminalsPerSocket)
 
     const cliSocket = new FakeSocket('cli-1')
     cliSocket.data.namespace = 'default'
@@ -99,7 +111,7 @@ function setup(options?: { maxTerminalsPerSocket?: number }) {
     cliNamespace.adapter.rooms.set('session:session-1', new Set([cliSocket.id]))
     cliNamespace.adapter.rooms.set('session:session-2', new Set([cliSocket.id]))
 
-    return { terminalSocket, cliSocket, terminalRegistry }
+    return { io, terminalNamespace, terminalSocket, cliSocket, terminalRegistry, maxTerminalsPerSocket }
 }
 
 function outputEvents(socket: FakeSocket): EmittedEvent[] {
@@ -122,9 +134,6 @@ describe('detached terminal creation', () => {
         expect(terminalRegistry.get('terminal-1')?.viewerSocketIds.size).toBe(0)
         expect(cliSocket.emitted.some((event) => event.event === 'terminal:open')).toBe(true)
 
-        // Models CLI startup bytes arriving after PTY creation but before the
-        // browser has selected/mounted the terminal. The CLI handler owns the
-        // same server-side buffer in production.
         appendUserTerminalOutput('session-1', 'terminal-1', 'startup prompt$ ')
         expect(outputEvents(terminalSocket)).toHaveLength(0)
 
@@ -167,7 +176,7 @@ describe('detached terminal creation', () => {
         expect(terminalRegistry.isViewer('legacy-terminal', terminalSocket.id)).toBe(true)
     })
 
-    it('enforces the per-socket resource cap even when creates are detached', () => {
+    it('enforces the durable owner resource cap even when creates are detached', () => {
         const { terminalSocket, terminalRegistry } = setup({ maxTerminalsPerSocket: 1 })
 
         terminalSocket.trigger('terminal:create', {
@@ -179,6 +188,7 @@ describe('detached terminal creation', () => {
         })
         expect(terminalRegistry.get('terminal-1')).not.toBeNull()
         expect(terminalRegistry.countForSocket(terminalSocket.id)).toBe(0)
+        expect(terminalRegistry.countForOwner('default:7')).toBe(1)
 
         terminalSocket.trigger('terminal:create', {
             sessionId: 'session-2',
@@ -195,5 +205,55 @@ describe('detached terminal creation', () => {
             terminalId: 'terminal-2',
             message: 'Too many terminals open (max 1).',
         })
+    })
+
+    it('keeps the owner cap across viewer disconnect and a new Socket.IO connection', () => {
+        const {
+            io,
+            terminalNamespace,
+            terminalSocket,
+            terminalRegistry,
+            maxTerminalsPerSocket,
+        } = setup({ maxTerminalsPerSocket: 1 })
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 80,
+            rows: 24,
+            attach: false,
+        })
+        terminalSocket.trigger('disconnect')
+
+        expect(terminalRegistry.get('terminal-1')).not.toBeNull()
+        expect(terminalRegistry.countForOwner('default:7')).toBe(1)
+
+        const replacement = new FakeSocket('web-2')
+        registerWebSocket(
+            io,
+            terminalNamespace,
+            terminalRegistry,
+            replacement,
+            maxTerminalsPerSocket,
+            7
+        )
+        replacement.trigger('terminal:create', {
+            sessionId: 'session-2',
+            terminalId: 'terminal-2',
+            cols: 80,
+            rows: 24,
+            attach: false,
+        })
+
+        expect(terminalRegistry.get('terminal-2')).toBeNull()
+        expect(
+            [...replacement.emitted].reverse().find((event) => event.event === 'terminal:error')?.data
+        ).toEqual({
+            terminalId: 'terminal-2',
+            message: 'Too many terminals open (max 1).',
+        })
+
+        terminalRegistry.remove('terminal-1')
+        expect(terminalRegistry.countForOwner('default:7')).toBe(0)
     })
 })
