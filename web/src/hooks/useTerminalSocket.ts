@@ -278,7 +278,11 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
                 sessionId: sessionIdRef.current,
                 terminalId,
                 cols,
-                rows
+                rows,
+                // Resource creation and viewer attachment are separate lifecycles.
+                // Waiting for authoritative inventory before the first attach lets
+                // the hub replay any startup bytes that arrived in the meantime.
+                attach: false
             })
         }
         if (socket.connected) {
