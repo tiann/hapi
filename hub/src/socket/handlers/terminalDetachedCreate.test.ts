@@ -75,7 +75,7 @@ class FakeServer {
     }
 }
 
-function setup() {
+function setup(options?: { maxTerminalsPerSocket?: number }) {
     const io = new FakeServer()
     const terminalNamespace = io.of('/terminal')
     const cliNamespace = io.of('/cli')
@@ -89,7 +89,7 @@ function setup() {
         io: io as unknown as SocketServer,
         getSession: () => ({ active: true, namespace: 'default' }),
         terminalRegistry,
-        maxTerminalsPerSocket: 4,
+        maxTerminalsPerSocket: options?.maxTerminalsPerSocket ?? 4,
         maxTerminalsPerSession: 4,
     })
 
@@ -97,6 +97,7 @@ function setup() {
     cliSocket.data.namespace = 'default'
     cliNamespace.sockets.set(cliSocket.id, cliSocket)
     cliNamespace.adapter.rooms.set('session:session-1', new Set([cliSocket.id]))
+    cliNamespace.adapter.rooms.set('session:session-2', new Set([cliSocket.id]))
 
     return { terminalSocket, cliSocket, terminalRegistry }
 }
@@ -164,5 +165,35 @@ describe('detached terminal creation', () => {
         })
 
         expect(terminalRegistry.isViewer('legacy-terminal', terminalSocket.id)).toBe(true)
+    })
+
+    it('enforces the per-socket resource cap even when creates are detached', () => {
+        const { terminalSocket, terminalRegistry } = setup({ maxTerminalsPerSocket: 1 })
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 80,
+            rows: 24,
+            attach: false,
+        })
+        expect(terminalRegistry.get('terminal-1')).not.toBeNull()
+        expect(terminalRegistry.countForSocket(terminalSocket.id)).toBe(0)
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-2',
+            terminalId: 'terminal-2',
+            cols: 80,
+            rows: 24,
+            attach: false,
+        })
+
+        expect(terminalRegistry.get('terminal-2')).toBeNull()
+        expect(
+            [...terminalSocket.emitted].reverse().find((event) => event.event === 'terminal:error')?.data
+        ).toEqual({
+            terminalId: 'terminal-2',
+            message: 'Too many terminals open (max 1).',
+        })
     })
 })
