@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { homedir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { spawnMock, killMock } = vi.hoisted(() => ({
@@ -49,6 +50,40 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.useRealTimers()
+})
+
+describe('runPiModelsProbe spawn', () => {
+    it('probes from the home directory, not the runner cwd', async () => {
+        // Under launchd/systemd the runner cwd is `/`, where a Pi startup that
+        // loads extensions took 16.8s locally and blew the 15s timeout on every
+        // call. The catalog is machine-scoped, so probing from $HOME is both
+        // safe and fast (1.4s for the same 29 models).
+        killMock.mockResolvedValue(true)
+
+        const pending = listPiModelsForMachine()
+        child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
+        await pending
+
+        expect(spawnMock).toHaveBeenCalledWith(
+            'pi',
+            expect.any(Array),
+            expect.objectContaining({ cwd: homedir() }),
+        )
+    })
+
+    it('keeps extensions enabled so registered providers still surface', async () => {
+        // pi.registerProvider lets an extension contribute whole providers, and
+        // the replaced `--list-models` probe listed those models.
+        killMock.mockResolvedValue(true)
+
+        const pending = listPiModelsForMachine()
+        child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
+        await pending
+
+        const args = spawnMock.mock.calls[0]?.[1] as string[]
+        expect(args).not.toContain('--no-extensions')
+        expect(args).toEqual(expect.arrayContaining(['--mode', 'rpc', '--no-session']))
+    })
 })
 
 describe('runPiModelsProbe teardown', () => {

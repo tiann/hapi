@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { homedir } from 'node:os'
 import type { PiModelSummary, PiModelsResponse } from '@hapi/protocol/apiTypes'
 import { parsePiModels } from '../../pi/schemas'
 import { killProcessByChildProcess } from '../../utils/process'
@@ -93,6 +94,16 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
     return new Promise((resolve, reject) => {
         const child = spawn('pi', [...PI_PROBE_ARGS], {
             env: process.env,
+            // Probe from the user's home directory, never the runner's cwd.
+            // Under launchd/systemd the runner's cwd is `/`, and a Pi startup
+            // there is pathological: project discovery and extensions that
+            // scan from the working directory walk the entire filesystem root.
+            // Measured on macOS with 9 global extensions: 16.8s at cwd=/ (past
+            // the 15s timeout, so discovery failed 100% of the time) versus
+            // 1.4s at $HOME, same 29 models. The catalog is machine-scoped and
+            // does not depend on cwd, so home is both safe and representative
+            // (global extensions still load; see PI_PROBE_ARGS).
+            cwd: homedir(),
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: process.platform === 'win32',
             windowsHide: process.platform === 'win32',
