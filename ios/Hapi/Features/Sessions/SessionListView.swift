@@ -83,6 +83,7 @@ struct SessionListView: View {
                         rowCell(row, now: now)
                     }
                 }
+                .listSectionSeparator(.hidden, edges: .top)
             }
             if rows.count > pinnedCount {
                 // Headerless when nothing is pinned: an empty-string Section
@@ -94,12 +95,16 @@ struct SessionListView: View {
                             rowCell(row, now: now)
                         }
                     }
+                    .listSectionSeparator(.hidden, edges: .top)
                 } else {
+                    // Top edge hidden: a plain list otherwise draws a stray
+                    // separator above the very first row (device feedback).
                     Section {
                         ForEach(rows) { row in
                             rowCell(row, now: now)
                         }
                     }
+                    .listSectionSeparator(.hidden, edges: .top)
                 }
             }
         }
