@@ -5,7 +5,12 @@ import type { SocketServer, SocketWithData } from '../socketTypes'
 import { getAgentTerminalReplay } from '../agentTerminalBuffer'
 import { getUserTerminalBuffer } from '../userTerminalBuffer'
 
-const terminalCreateSchema = TerminalOpenPayloadSchema
+// Legacy clients treated terminal:create as create-and-attach. Keep that as the
+// default while allowing the persistent Web Terminal to create a durable PTY
+// resource first and attach only after authoritative inventory selects it.
+const terminalCreateSchema = TerminalOpenPayloadSchema.extend({
+    attach: z.boolean().optional().default(true)
+})
 
 const terminalListSchema = z.object({
     sessionId: z.string().min(1)
@@ -208,7 +213,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        const { sessionId, terminalId, cols, rows } = parsed.data
+        const { sessionId, terminalId, cols, rows, attach } = parsed.data
         if (!isAuthorizedSession(sessionId)) {
             emitTerminalError(terminalId, 'Session is inactive or unavailable.')
             return
@@ -221,10 +226,14 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
                 emitTerminalError(terminalId, 'Terminal ID is already in use.')
                 return
             }
-            // Compatibility path for older web clients: terminal:create used to
-            // double as reconnect. The PTY is a server resource now, so this only
-            // attaches another viewer and never sends terminal:open again.
-            attachExistingTerminal(existingEntry, cols, rows)
+            // terminal:create historically doubled as reconnect, so omitted
+            // attach still attaches. New clients can explicitly keep an already
+            // existing resource detached while waiting for inventory selection.
+            if (attach) {
+                attachExistingTerminal(existingEntry, cols, rows)
+            } else {
+                emitTerminalSessions(sessionId)
+            }
             return
         }
 
@@ -245,7 +254,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        const entry = terminalRegistry.register(terminalId, sessionId, socket.id, cliSocketId)
+        const entry = terminalRegistry.register(terminalId, sessionId, attach ? socket.id : null, cliSocketId)
         if (!entry) {
             emitTerminalError(terminalId, 'Terminal ID is already in use.')
             return
