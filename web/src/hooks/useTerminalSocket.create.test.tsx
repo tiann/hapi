@@ -140,7 +140,6 @@ describe('useTerminalSocket terminal creation', () => {
             { initialProps: { terminalId: 'terminal-a' } }
         )
 
-        // Establish A first so the hook has an existing socket and xterm size.
         act(() => {
             hook.result.current.connect(80, 24)
         })
@@ -165,9 +164,9 @@ describe('useTerminalSocket terminal creation', () => {
         })
         testState.emissions.length = 0
 
-        // Manual New calls create(B) before React commits activeTerminalId=B.
-        // Reconnect therefore sees stale terminalId=A unless pending-create
-        // gating suppresses the generic reattach path.
+        // Manual New creates B before React commits activeTerminalId=B. The
+        // hook records B as the intended pending resource synchronously so a
+        // fast reconnect cannot accidentally reattach stale A.
         act(() => {
             hook.result.current.createTerminal('terminal-b', 80, 24)
         })
@@ -190,7 +189,6 @@ describe('useTerminalSocket terminal creation', () => {
 
         hook.rerender({ terminalId: 'terminal-b' })
         act(() => {
-            // Model B's newly-mounted xterm reporting its own dimensions.
             hook.result.current.connect(100, 30)
         })
         expect(testState.emissions.some(({ event }) => event === 'terminal:attach')).toBe(false)
@@ -226,5 +224,92 @@ describe('useTerminalSocket terminal creation', () => {
         )
         expect(createIndex).toBeGreaterThanOrEqual(0)
         expect(attachIndex).toBeGreaterThan(createIndex)
+    })
+
+    it('does not let an unselected pending create block an existing terminal', async () => {
+        const hook = renderHook(
+            ({ terminalId }: { terminalId: string }) => useTerminalSocket({
+                token: 'test-token',
+                sessionId: 'session-1',
+                terminalId,
+                baseUrl: 'http://localhost:3000',
+            }),
+            { initialProps: { terminalId: 'terminal-a' } }
+        )
+
+        act(() => {
+            hook.result.current.connect(80, 24)
+        })
+        await waitFor(() => {
+            expect(testState.emissions).toContainEqual({
+                event: 'terminal:attach',
+                payload: {
+                    sessionId: 'session-1',
+                    terminalId: 'terminal-a',
+                    cols: 80,
+                    rows: 24,
+                },
+            })
+        })
+
+        testState.emissions.length = 0
+        act(() => {
+            hook.result.current.createTerminal('terminal-b', 80, 24)
+        })
+        await waitFor(() => {
+            expect(testState.emissions.some(({ event }) => event === 'terminal:create')).toBe(true)
+        })
+
+        // The UI may immediately choose an existing tab while B is still waiting
+        // for its first attach/ready. B must remain pending for later selection,
+        // but that pending state must not interfere with A.
+        hook.rerender({ terminalId: 'terminal-a' })
+        act(() => {
+            hook.result.current.connect(90, 25)
+        })
+
+        await waitFor(() => {
+            expect(testState.emissions).toContainEqual({
+                event: 'terminal:attach',
+                payload: {
+                    sessionId: 'session-1',
+                    terminalId: 'terminal-a',
+                    cols: 90,
+                    rows: 25,
+                },
+            })
+        })
+
+        act(() => {
+            hook.result.current.resize(100, 30)
+        })
+        expect(testState.emissions).toContainEqual({
+            event: 'terminal:resize',
+            payload: {
+                terminalId: 'terminal-a',
+                cols: 100,
+                rows: 30,
+            },
+        })
+
+        const socket = testState.sockets[0]
+        act(() => {
+            socket.serverEmit('terminal:sessions', {
+                sessionId: 'session-1',
+                maxTerminals: 4,
+                terminals: [
+                    { terminalId: 'terminal-a', createdAt: 1, attached: true },
+                    { terminalId: 'terminal-b', createdAt: 2, attached: false },
+                ],
+            })
+        })
+
+        // Inventory for pending B must not steal the current view back from A.
+        expect(
+            testState.emissions.some(
+                ({ event, payload }) => event === 'terminal:attach'
+                    && (payload as { terminalId?: string })?.terminalId === 'terminal-b'
+            )
+        ).toBe(false)
     })
 })
