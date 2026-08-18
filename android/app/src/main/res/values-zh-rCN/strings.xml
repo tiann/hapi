@@ -234,6 +234,8 @@
     <!-- Chat screen chrome (B-M2c/B-M3, extracted in B-M5a) -->
     <string name="chat_back">返回</string>
     <string name="chat_open_files">会话文件</string>
+    <string name="chat_open_scratchlist">草稿夹</string>
+    <string name="chat_open_scratchlist_count">草稿夹（%1$d）</string>
     <string name="chat_open_settings">会话设置</string>
     <string name="chat_session_actions">会话操作</string>
     <string name="chat_scratchlist_badge">草稿夹</string>

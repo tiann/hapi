@@ -3031,6 +3031,16 @@
         }
       }
     },
+    "Scratchlist (%lld)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿夹（%lld）"
+          }
+        }
+      }
+    },
     "Scratchlist is full (200 entries)": {
       "localizations": {
         "zh-Hans": {

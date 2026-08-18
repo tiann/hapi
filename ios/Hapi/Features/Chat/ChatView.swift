@@ -94,25 +94,9 @@ struct ChatView: View {
             ToolbarItem(placement: .principal) {
                 headerTitle
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    scratchlistOpen = true
-                } label: {
-                    Image(systemName: "note.text")
-                        .overlay(alignment: .topTrailing) {
-                            scratchlistBadge
-                        }
-                }
-                .accessibilityLabel("Scratchlist")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    filesOpen = true
-                } label: {
-                    Image(systemName: "folder")
-                }
-                .accessibilityLabel("Session files")
-            }
+            // Two icons max (device feedback: a crowded trailing edge
+            // squeezed the title out): gear for the frequent config
+            // switches, everything else behind one menu.
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     configSheetOpen = true
@@ -120,6 +104,31 @@ struct ChatView: View {
                     Image(systemName: "gearshape")
                 }
                 .accessibilityLabel("Session settings")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        filesOpen = true
+                    } label: {
+                        Label("Session files", systemImage: "folder")
+                    }
+                    Button {
+                        scratchlistOpen = true
+                    } label: {
+                        let count = model.interactor.scratchlistCount
+                        if count > 0 {
+                            Label(
+                                String(format: String(localized: "Scratchlist (%lld)"), Int64(count)),
+                                systemImage: "note.text"
+                            )
+                        } else {
+                            Label("Scratchlist", systemImage: "note.text")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("More actions")
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -300,21 +309,6 @@ struct ChatView: View {
     }
 
     // MARK: - Chrome
-
-    /// Entry-count badge on the toolbar note icon (hidden at 0).
-    @ViewBuilder
-    private var scratchlistBadge: some View {
-        let count = model.interactor.scratchlistCount
-        if count > 0 {
-            Text(count > 99 ? "99+" : "\(count)")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 3)
-                .padding(.vertical, 1)
-                .background(.tint, in: Capsule())
-                .offset(x: 8, y: -6)
-        }
-    }
 
     private var headerTitle: some View {
         HStack(spacing: 8) {

@@ -29,12 +29,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -65,11 +64,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.composer.DictationErrorKind
@@ -313,21 +309,18 @@ fun ChatScreen(
                 },
                 title = { ChatTitle(state.header) },
                 actions = {
-                    if (onOpenScratchlist != null && viewModel.scratchlistEnabled) {
-                        val scratchlistCount by viewModel.scratchlistCount.collectAsState()
-                        ScratchlistTopBarButton(
-                            count = scratchlistCount,
-                            onClick = onOpenScratchlist,
-                        )
-                    }
-                    IconButton(onClick = onOpenFiles) {
-                        Icon(FolderGlyph, contentDescription = stringResource(R.string.chat_open_files))
-                    }
+                    // Two icons max (device feedback: four icons squeezed the
+                    // title out) — gear for the frequent config switches,
+                    // everything else in the overflow menu.
                     IconButton(onClick = { configSheetOpen = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
+                    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
+                        onOpenFiles = onOpenFiles,
+                        scratchlistCount = scratchlistCount,
+                        onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
                         onRename = { renameDialogOpen = true },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
@@ -451,32 +444,21 @@ fun ChatScreen(
 }
 
 /**
- * Top-bar scratchlist entry (B-M4d): notepad glyph with an entry-count badge
- * (hidden at zero) — opens `chat/{id}/scratchlist`.
+ * Top-bar ⋮ menu: navigation entries first (Files always, Scratchlist with
+ * entry count when enabled), then Rename always; Reopen only for inactive
+ * sessions; Delete last.
  */
-@Composable
-private fun ScratchlistTopBarButton(count: Int, onClick: () -> Unit) {
-    IconButton(onClick = onClick) {
-        BadgedBox(
-            badge = {
-                if (count > 0) {
-                    Badge { Text(text = if (count > 99) "99+" else count.toString()) }
-                }
-            },
-        ) {
-            val scratchlistLabel = stringResource(R.string.chat_scratchlist_badge)
-            Text(text = "🗒", fontSize = 18.sp, modifier = Modifier.semantics { contentDescription = scratchlistLabel })
-        }
-    }
-}
-
-/** Top-bar ⋮ menu: Rename always; Reopen only for inactive sessions; Delete last. */
 @Composable
 private fun SessionOverflowMenu(
     active: Boolean,
     onRename: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
+    onOpenFiles: () -> Unit = {},
+    /** Entry-count suffix on the scratchlist row. */
+    scratchlistCount: Int = 0,
+    /** null ⇒ scratchlist row hidden (feature off / tests). */
+    onOpenScratchlist: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
 ) {
@@ -485,6 +467,32 @@ private fun SessionOverflowMenu(
         Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_session_actions))
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.chat_open_files)) },
+            leadingIcon = { Icon(FolderGlyph, contentDescription = null) },
+            onClick = {
+                open = false
+                onOpenFiles()
+            },
+        )
+        if (onOpenScratchlist != null) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        if (scratchlistCount > 0) {
+                            stringResource(R.string.chat_open_scratchlist_count, scratchlistCount)
+                        } else {
+                            stringResource(R.string.chat_open_scratchlist)
+                        },
+                    )
+                },
+                onClick = {
+                    open = false
+                    onOpenScratchlist()
+                },
+            )
+        }
+        HorizontalDivider()
         DropdownMenuItem(
             text = { Text(stringResource(R.string.sessions_action_rename)) },
             onClick = {
