@@ -29,15 +29,22 @@ const inflight = new Map<string, Promise<ListPiModelsForMachineResponse>>()
  * `get_available_models` RPC and goes through the same `parsePiModels`
  * schema, so machine-level and session-level catalogs cannot drift.
  *
- * The probe is spawned with discovery disabled (`--no-session,
- * --no-extensions, --no-skills, --no-prompt-templates, --no-tools`): no
- * session file is written, no user extensions run, and startup stays fast
- * (measured ~0.6s vs ~1.6-2.4s for the old table probe).
+ * Extensions must stay enabled: `pi.registerProvider` lets an extension
+ * contribute whole model providers, and the old `--list-models` probe listed
+ * those models. Verified with a project-local `.pi/extensions` provider:
+ * `--no-extensions` returned 29 models while the default run and the old table
+ * probe both returned 30 (the extension's model present). Disabling them would
+ * silently hide those models from the create-session form only.
+ *
+ * Discovery that cannot contribute models is still disabled (`--no-session`,
+ * `--no-skills`, `--no-prompt-templates`, `--no-tools`): no session file is
+ * written and no skill/prompt/tool loading is paid for. The probe still starts
+ * faster than the old table probe (~2.1s vs ~1.6-2.4s measured, with a 60s
+ * cache in front of it).
  */
 const PI_PROBE_ARGS = [
     '--mode', 'rpc',
     '--no-session',
-    '--no-extensions',
     '--no-skills',
     '--no-prompt-templates',
     '--no-tools',
