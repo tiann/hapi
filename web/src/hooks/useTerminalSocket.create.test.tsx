@@ -128,26 +128,50 @@ describe('useTerminalSocket terminal creation', () => {
         })
     })
 
-    it('waits for authoritative inventory before attaching a detached create after reconnect', async () => {
+    it('does not reattach a stale tab before a detached create is confirmed after reconnect', async () => {
         testState.deferConnect = true
-        const { result } = renderHook(() => useTerminalSocket({
-            token: 'test-token',
-            sessionId: 'session-1',
-            terminalId: 'terminal-1',
-            baseUrl: 'http://localhost:3000',
-        }))
+        const hook = renderHook(
+            ({ terminalId }: { terminalId: string }) => useTerminalSocket({
+                token: 'test-token',
+                sessionId: 'session-1',
+                terminalId,
+                baseUrl: 'http://localhost:3000',
+            }),
+            { initialProps: { terminalId: 'terminal-a' } }
+        )
 
+        // Establish A first so the hook has an existing socket and xterm size.
         act(() => {
-            result.current.createTerminal('terminal-1', 80, 24)
-            // Model the newly-mounted xterm reporting its real size while the
-            // transport is still reconnecting.
-            result.current.connect(100, 30)
+            hook.result.current.connect(80, 24)
+        })
+        const socket = testState.sockets[0]
+        act(() => {
+            socket.finishConnect()
+        })
+        await waitFor(() => {
+            expect(testState.emissions).toContainEqual({
+                event: 'terminal:attach',
+                payload: {
+                    sessionId: 'session-1',
+                    terminalId: 'terminal-a',
+                    cols: 80,
+                    rows: 24,
+                },
+            })
         })
 
-        const socket = testState.sockets[0]
-        expect(socket).toBeDefined()
+        act(() => {
+            socket.disconnect()
+        })
+        testState.emissions.length = 0
+
+        // Manual New calls create(B) before React commits activeTerminalId=B.
+        // Reconnect therefore sees stale terminalId=A unless pending-create
+        // gating suppresses the generic reattach path.
+        act(() => {
+            hook.result.current.createTerminal('terminal-b', 80, 24)
+        })
         expect(socket.connectRequested).toBe(true)
-        expect(testState.emissions.some(({ event }) => event === 'terminal:attach')).toBe(false)
 
         act(() => {
             socket.finishConnect()
@@ -156,6 +180,19 @@ describe('useTerminalSocket terminal creation', () => {
         await waitFor(() => {
             expect(testState.emissions.some(({ event }) => event === 'terminal:create')).toBe(true)
         })
+        expect(
+            testState.emissions.some(
+                ({ event, payload }) => event === 'terminal:attach'
+                    && (payload as { terminalId?: string })?.terminalId === 'terminal-a'
+            )
+        ).toBe(false)
+        expect(testState.emissions.some(({ event }) => event === 'terminal:attach')).toBe(false)
+
+        hook.rerender({ terminalId: 'terminal-b' })
+        act(() => {
+            // Model B's newly-mounted xterm reporting its own dimensions.
+            hook.result.current.connect(100, 30)
+        })
         expect(testState.emissions.some(({ event }) => event === 'terminal:attach')).toBe(false)
 
         act(() => {
@@ -163,7 +200,7 @@ describe('useTerminalSocket terminal creation', () => {
                 sessionId: 'session-1',
                 maxTerminals: 4,
                 terminals: [{
-                    terminalId: 'terminal-1',
+                    terminalId: 'terminal-b',
                     createdAt: 1,
                     attached: false,
                 }],
@@ -175,7 +212,7 @@ describe('useTerminalSocket terminal creation', () => {
                 event: 'terminal:attach',
                 payload: {
                     sessionId: 'session-1',
-                    terminalId: 'terminal-1',
+                    terminalId: 'terminal-b',
                     cols: 100,
                     rows: 30,
                 },
@@ -183,7 +220,10 @@ describe('useTerminalSocket terminal creation', () => {
         })
 
         const createIndex = testState.emissions.findIndex(({ event }) => event === 'terminal:create')
-        const attachIndex = testState.emissions.findIndex(({ event }) => event === 'terminal:attach')
+        const attachIndex = testState.emissions.findIndex(
+            ({ event, payload }) => event === 'terminal:attach'
+                && (payload as { terminalId?: string })?.terminalId === 'terminal-b'
+        )
         expect(createIndex).toBeGreaterThanOrEqual(0)
         expect(attachIndex).toBeGreaterThan(createIndex)
     })
