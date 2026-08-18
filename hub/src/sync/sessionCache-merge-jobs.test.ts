@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { MetadataSchema } from '@hapi/protocol/schemas'
 import { Store } from '../store'
@@ -473,5 +473,37 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
         ).toBe('beets.aaaaaaaa.bbbbbbbb')
         expect(store.sessionJobs.get(cId, 'beets.aaaaaaaa')?.label).toBe('c-live-on-intermediate')
         expect(store.sessionJobs.get(cId, 'beets.aaaaaaaa.bbbbbbbb')?.label).toBe('a-live')
+    })
+
+    it('rolls back the job-row move when redirect metadata write fails', () => {
+        const { store, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+        store.sessionJobs.upsert(oldSession.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 12
+        })
+
+        const original = store.sessions.updateSessionMetadata.bind(store.sessions)
+        spyOn(store.sessions, 'updateSessionMetadata').mockImplementation(
+            (id, metadata, expectedVersion, namespace, options) => {
+                const meta = metadata as Record<string, unknown> | null
+                if (meta && typeof meta.jobsTransferredToSessionId === 'string') {
+                    throw new Error('injected sqlite fail')
+                }
+                return original(id, metadata, expectedVersion, namespace, options)
+            }
+        )
+
+        expect(() => {
+            cache.transferAttachedJobs(oldSession.id, newSession.id, 'default')
+        }).toThrow('injected sqlite fail')
+
+        expect(store.sessionJobs.getPrimaryRunning(oldSession.id)?.key).toBe('beets')
+        expect(store.sessionJobs.getPrimaryRunning(newSession.id)).toBeNull()
+        expect(
+            (store.sessions.getSession(oldSession.id)?.metadata as Record<string, unknown> | null)
+                ?.jobsTransferredToSessionId
+        ).toBeUndefined()
     })
 })

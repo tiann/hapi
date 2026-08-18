@@ -1,6 +1,7 @@
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { Store } from '../store'
+import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -1138,13 +1139,14 @@ export class SessionCache {
         // the emptied/deleted donor.
         const targetWasRedirectedToSource =
             this.resolveAttachedJobSessionId(toSessionId, namespace) === fromSessionId
-        const movedJobs = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
-        if (targetWasRedirectedToSource) {
-            this.clearJobsTransferredToSession(toSessionId, namespace)
-        }
-        this.recordJobsTransferredToSession(fromSessionId, toSessionId, namespace)
-        this.recordJobKeyRedirects(toSessionId, fromSessionId, movedJobs.keyRedirects, namespace)
-        this.recordJobsAcceptedFromSession(toSessionId, fromSessionId, namespace)
+        const movedJobs = this.persistAttachedJobRedirects(
+            fromSessionId,
+            toSessionId,
+            namespace,
+            targetWasRedirectedToSource
+        )
+        this.refreshSession(fromSessionId)
+        this.refreshSession(toSessionId)
         if (movedJobs.moved > 0 || movedJobs.collided > 0) {
             this.emitAttachedJobChanged(
                 toSessionId,
@@ -1216,21 +1218,15 @@ export class SessionCache {
         // stale outgoing pointer so the reclaimed owner resolves to itself.
         const targetWasRedirectedToSource =
             this.resolveAttachedJobSessionId(newSessionId, namespace) === oldSessionId
-        const movedJobs = this.store.sessionJobs.transfer(oldSessionId, newSessionId)
-        if (targetWasRedirectedToSource) {
-            this.clearJobsTransferredToSession(newSessionId, namespace)
-        }
-        // Install the source→target redirect BEFORE any await below. Merge can
-        // spend time on scratchlist attachment I/O while the old session row
-        // still exists; without this pointer, retained $HAPI_SESSION_ID hits
-        // the emptied source and terminal PATCHes 404.
-        this.recordJobsTransferredToSession(oldSessionId, newSessionId, namespace)
-        this.recordJobKeyRedirects(
-            newSessionId,
+        const movedJobs = this.persistAttachedJobRedirects(
             oldSessionId,
-            movedJobs.keyRedirects,
-            namespace
+            newSessionId,
+            namespace,
+            targetWasRedirectedToSource
         )
+        // Source transfer pointer + acceptor list landed in the same SQLite
+        // commit as the row move. Merge can still spend time on scratchlist
+        // attachment I/O; retained $HAPI_SESSION_ID follows the pointer.
         if (movedJobs.moved > 0 || movedJobs.collided > 0) {
             this.emitAttachedJobChanged(
                 newSessionId,
@@ -1444,6 +1440,42 @@ export class SessionCache {
     }
 
     /**
+     * Move job rows and write owner/key redirects in one SQLite commit.
+     * A crash or failed metadata write after `sessionJobs.transfer()` used to
+     * leave the supervisor on the old `$HAPI_SESSION_ID` hitting an emptied
+     * source (404 / frozen meter). In-memory refresh happens after commit.
+     */
+    private persistAttachedJobRedirects(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string,
+        targetWasRedirectedToSource: boolean
+    ): TransferSessionJobsResult {
+        return this.store.runInTransaction(() => {
+            const moved = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
+            if (
+                targetWasRedirectedToSource
+                && !this.clearJobsTransferredToSession(toSessionId, namespace)
+            ) {
+                throw new Error('Failed to persist attached-job redirects')
+            }
+            if (
+                !this.recordJobsTransferredToSession(fromSessionId, toSessionId, namespace)
+                || !this.recordJobKeyRedirects(
+                    toSessionId,
+                    fromSessionId,
+                    moved.keyRedirects,
+                    namespace
+                )
+                || !this.recordJobsAcceptedFromSession(toSessionId, fromSessionId, namespace)
+            ) {
+                throw new Error('Failed to persist attached-job redirects')
+            }
+            return moved
+        })
+    }
+
+    /**
      * Target session remembers it absorbed jobs from `fromSessionId` so job
      * REST routes can follow `$HAPI_SESSION_ID` after the source row is deleted.
      */
@@ -1451,10 +1483,10 @@ export class SessionCache {
         toSessionId: string,
         fromSessionId: string,
         namespace: string
-    ): void {
+    ): boolean {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
-            if (!latest) return
+            if (!latest) return false
             const meta = (latest.metadata && typeof latest.metadata === 'object'
                 ? { ...(latest.metadata as Record<string, unknown>) }
                 : {}) as Record<string, unknown>
@@ -1476,7 +1508,7 @@ export class SessionCache {
                 next.length === prev.length
                 && next.every((id) => prev.includes(id))
             ) {
-                return
+                return true
             }
             meta.jobsAcceptedFromSessionIds = next
             const result = this.store.sessions.updateSessionMetadata(
@@ -1486,12 +1518,10 @@ export class SessionCache {
                 namespace,
                 { touchUpdatedAt: false }
             )
-            if (result.result === 'success') {
-                this.refreshSession(toSessionId)
-                return
-            }
-            if (result.result !== 'version-mismatch') return
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
         }
+        return false
     }
 
     /** Source session (kept alive) points job APIs at the post-merge owner. */
@@ -1499,14 +1529,14 @@ export class SessionCache {
         fromSessionId: string,
         toSessionId: string,
         namespace: string
-    ): void {
+    ): boolean {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(fromSessionId, namespace)
-            if (!latest) return
+            if (!latest) return false
             const meta = (latest.metadata && typeof latest.metadata === 'object'
                 ? { ...(latest.metadata as Record<string, unknown>) }
                 : {}) as Record<string, unknown>
-            if (meta.jobsTransferredToSessionId === toSessionId) return
+            if (meta.jobsTransferredToSessionId === toSessionId) return true
             meta.jobsTransferredToSessionId = toSessionId
             const result = this.store.sessions.updateSessionMetadata(
                 fromSessionId,
@@ -1515,23 +1545,21 @@ export class SessionCache {
                 namespace,
                 { touchUpdatedAt: false }
             )
-            if (result.result === 'success') {
-                this.refreshSession(fromSessionId)
-                return
-            }
-            if (result.result !== 'version-mismatch') return
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
         }
+        return false
     }
 
     /** Drop a stale outgoing job-owner redirect when this session becomes canonical again. */
-    private clearJobsTransferredToSession(sessionId: string, namespace: string): void {
+    private clearJobsTransferredToSession(sessionId: string, namespace: string): boolean {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(sessionId, namespace)
-            if (!latest) return
+            if (!latest) return false
             const meta = (latest.metadata && typeof latest.metadata === 'object'
                 ? { ...(latest.metadata as Record<string, unknown>) }
                 : {}) as Record<string, unknown>
-            if (typeof meta.jobsTransferredToSessionId !== 'string') return
+            if (typeof meta.jobsTransferredToSessionId !== 'string') return true
             delete meta.jobsTransferredToSessionId
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
@@ -1540,12 +1568,10 @@ export class SessionCache {
                 namespace,
                 { touchUpdatedAt: false }
             )
-            if (result.result === 'success') {
-                this.refreshSession(sessionId)
-                return
-            }
-            if (result.result !== 'version-mismatch') return
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
         }
+        return false
     }
 
     /**
@@ -1557,10 +1583,10 @@ export class SessionCache {
         fromSessionId: string,
         redirects: Array<{ fromKey: string; toKey: string }>,
         namespace: string
-    ): void {
+    ): boolean {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
-            if (!latest) return
+            if (!latest) return false
             const meta = (latest.metadata && typeof latest.metadata === 'object'
                 ? { ...(latest.metadata as Record<string, unknown>) }
                 : {}) as Record<string, unknown>
@@ -1600,7 +1626,7 @@ export class SessionCache {
             const unchanged =
                 prevKeys.length === nextKeys.length
                 && nextKeys.every((k) => (prevRaw as Record<string, unknown> | undefined)?.[k] === next[k])
-            if (unchanged) return
+            if (unchanged) return true
             if (nextKeys.length === 0) {
                 delete meta.jobKeyRedirects
             } else {
@@ -1613,12 +1639,10 @@ export class SessionCache {
                 namespace,
                 { touchUpdatedAt: false }
             )
-            if (result.result === 'success') {
-                this.refreshSession(toSessionId)
-                return
-            }
-            if (result.result !== 'version-mismatch') return
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
         }
+        return false
     }
 
     /**

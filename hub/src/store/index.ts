@@ -308,6 +308,14 @@ export class Store {
         })()
     }
 
+    /**
+     * Run `fn` in one SQLite transaction. Nested `runInTransaction` calls
+     * become savepoints (bun:sqlite). Throw to roll back.
+     */
+    runInTransaction<T>(fn: () => T): T {
+        return this.db.transaction(fn)()
+    }
+
     close(): void {
         if (this.closed) return
         this.db.close()
