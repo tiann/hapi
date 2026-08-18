@@ -18,7 +18,11 @@ type TerminalRegistryOptions = {
 
 export class TerminalRegistry {
     private readonly terminals = new Map<string, TerminalRegistryEntry>()
+    // Viewer attachment is deliberately separate from resource creation. A new
+    // persistent Web Terminal is created detached, but must still count against
+    // the creating connection's resource cap until that connection goes away.
     private readonly terminalsBySocket = new Map<string, Set<string>>()
+    private readonly terminalsCreatedBySocket = new Map<string, Set<string>>()
     private readonly terminalsBySession = new Map<string, Set<string>>()
     private readonly terminalsByCliSocket = new Map<string, Set<string>>()
     private readonly sessionSubscribers = new Map<string, Set<string>>()
@@ -33,7 +37,13 @@ export class TerminalRegistry {
         this.onRemove = options.onRemove
     }
 
-    register(terminalId: string, sessionId: string, socketId: string | null, cliSocketId: string): TerminalRegistryEntry | null {
+    register(
+        terminalId: string,
+        sessionId: string,
+        socketId: string,
+        cliSocketId: string,
+        attachViewer = true
+    ): TerminalRegistryEntry | null {
         const existing = this.terminals.get(terminalId)
         if (existing) {
             if (existing.sessionId !== sessionId) {
@@ -42,7 +52,7 @@ export class TerminalRegistry {
             // Backwards compatibility for older web clients that use
             // terminal:create for transport reconnects. A detached create does
             // not implicitly become a viewer; legacy attached creates still do.
-            return socketId ? this.attach(terminalId, sessionId, socketId) : existing
+            return attachViewer ? this.attach(terminalId, sessionId, socketId) : existing
         }
 
         // Initial empty-page bootstraps use a unique `-auto-<nonce>` resource ID.
@@ -58,14 +68,15 @@ export class TerminalRegistry {
         const entry: TerminalRegistryEntry = {
             terminalId,
             sessionId,
-            viewerSocketIds: socketId ? new Set([socketId]) : new Set<string>(),
+            viewerSocketIds: attachViewer ? new Set([socketId]) : new Set<string>(),
             cliSocketId,
             createdAt: Date.now(),
             idleTimer: null
         }
 
         this.terminals.set(terminalId, entry)
-        if (socketId) {
+        this.addToIndex(this.terminalsCreatedBySocket, socketId, terminalId)
+        if (attachViewer) {
             this.addToIndex(this.terminalsBySocket, socketId, terminalId)
         }
         this.addToIndex(this.terminalsBySession, sessionId, terminalId)
@@ -147,6 +158,14 @@ export class TerminalRegistry {
         for (const socketId of entry.viewerSocketIds) {
             this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
         }
+        // A terminal can outlive its creator socket. Remove the resource from any
+        // still-live creator index without coupling that ownership to viewers.
+        for (const [socketId, ids] of this.terminalsCreatedBySocket) {
+            if (ids.has(terminalId)) {
+                this.removeFromIndex(this.terminalsCreatedBySocket, socketId, terminalId)
+                break
+            }
+        }
         this.removeFromIndex(this.terminalsBySession, entry.sessionId, terminalId)
         this.removeFromIndex(this.terminalsByCliSocket, entry.cliSocketId, terminalId)
         if (entry.idleTimer) {
@@ -171,6 +190,10 @@ export class TerminalRegistry {
             entry.viewerSocketIds.delete(socketId)
         }
         this.terminalsBySocket.delete(socketId)
+        // Preserve the PTYs, but release the dead connection's creation quota.
+        // This matches the pre-persistence per-socket limit semantics: a new
+        // Socket.IO connection gets its own cap while session-level limits remain.
+        this.terminalsCreatedBySocket.delete(socketId)
 
         const sessionIds = this.sessionsBySocket.get(socketId)
         if (sessionIds) {
@@ -193,6 +216,10 @@ export class TerminalRegistry {
 
     countForSocket(socketId: string): number {
         return this.terminalsBySocket.get(socketId)?.size ?? 0
+    }
+
+    countCreatedForSocket(socketId: string): number {
+        return this.terminalsCreatedBySocket.get(socketId)?.size ?? 0
     }
 
     countForSession(sessionId: string): number {
