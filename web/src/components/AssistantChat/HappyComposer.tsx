@@ -525,6 +525,9 @@ export function HappyComposer(props: {
     const lastSendAcceptanceRef = useRef(props.sendAcceptance)
     const pendingSendAttemptIdRef = useRef<string | null>(null)
     const [showSettings, setShowSettings] = useState(false)
+    // Anchored settings sheet: the model/effort value buttons open only their
+    // own section; the gear (null) opens the full sheet.
+    const [settingsSection, setSettingsSection] = useState<'model' | 'effort' | null>(null)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -1394,16 +1397,27 @@ export function HappyComposer(props: {
         }
     }, [api, pendingSchedule])
 
-    const handleSettingsToggle = useCallback(() => {
+    // Opens (or closes) the settings sheet. `section` anchors the sheet to a
+    // single section ('model' / 'effort'); the gear passes nothing = full sheet.
+    // Re-clicking with a different anchor while open switches the anchor
+    // instead of closing, so model->effort moves between sections directly.
+    const handleSettingsToggle = useCallback((section: 'model' | 'effort' | null = null) => {
         haptic('light')
-        setShowSettings((prev) => {
-            if (prev) {
-                setCursorDrillDownBase(null)
-                setCursorDrillDownDefaultVariant(null)
-            }
-            return !prev
-        })
-    }, [haptic])
+        if (showSettings && section !== settingsSection) {
+            // Open with a different anchor: switch sections, keep the sheet up.
+            setSettingsSection(section)
+            return
+        }
+        if (showSettings) {
+            setCursorDrillDownBase(null)
+            setCursorDrillDownDefaultVariant(null)
+            setShowSettings(false)
+            setSettingsSection(null)
+            return
+        }
+        setSettingsSection(section)
+        setShowSettings(true)
+    }, [haptic, showSettings, settingsSection])
 
     const clearCursorDrillDown = useCallback(() => {
         setCursorDrillDownBase(null)
@@ -1413,6 +1427,7 @@ export function HappyComposer(props: {
     const dismissSettings = useCallback(() => {
         clearCursorDrillDown()
         setShowSettings(false)
+        setSettingsSection(null)
     }, [clearCursorDrillDown])
 
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
@@ -1623,14 +1638,20 @@ export function HappyComposer(props: {
         return option?.label ?? (effort ? effort : undefined)
     }, [isNarrowViewport, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions])
 
+    // Wrapper for DOM onClick consumers: never leak the MouseEvent into the
+    // `section` parameter (the gear must always open the full sheet).
+    const handleGearToggle = useCallback(() => {
+        handleSettingsToggle(null)
+    }, [handleSettingsToggle])
+
     const handleModelValueToggle = useCallback(() => {
         if (modelEffortControlsDisabled) return
-        handleSettingsToggle()
+        handleSettingsToggle('model')
     }, [modelEffortControlsDisabled, handleSettingsToggle])
 
     const handleEffortValueToggle = useCallback(() => {
         if (modelEffortControlsDisabled) return
-        handleSettingsToggle()
+        handleSettingsToggle('effort')
     }, [modelEffortControlsDisabled, handleSettingsToggle])
 
     const overlayPositionClass = isExpanded
@@ -1639,11 +1660,26 @@ export function HappyComposer(props: {
 
     const overlays = useMemo(() => {
         // Unified settings sheet for every flavor (Pi included).
-        if (showSettings && (showCollaborationSettings || showCopilotAgentModeSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
+        // Anchored open (settingsSection): a model/effort value button expands
+        // only its own area; the gear (null) expands the full sheet.
+        const sheetModelAreaOn = settingsSection !== 'effort'
+        const sheetEffortAreaOn = settingsSection !== 'model'
+        const sheetOthersOn = settingsSection === null
+        const sheetModelSettings = showModelSettings && sheetModelAreaOn
+        const sheetModelEffortSettings = showModelEffortSettings && sheetModelAreaOn
+        const sheetModelReasoningEffortSettings = showModelReasoningEffortSettings && sheetEffortAreaOn
+        const sheetEffortSettings = showEffortSettings && sheetEffortAreaOn
+        const sheetPermissionSettings = showPermissionSettings && sheetOthersOn
+        const sheetFastModeSettings = showFastModeSettings && sheetOthersOn
+        const sheetCollaborationSettings = showCollaborationSettings && sheetOthersOn
+        const sheetCopilotAgentModeSettings = showCopilotAgentModeSettings && sheetOthersOn
+        const sheetModelAreaSettings = sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings
+        const sheetOtherSettings = sheetFastModeSettings || sheetCollaborationSettings || sheetCopilotAgentModeSettings
+        if (showSettings && (sheetCollaborationSettings || sheetCopilotAgentModeSettings || sheetPermissionSettings || sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings || sheetFastModeSettings)) {
             return (
                 <div ref={settingsOverlayRef} className={`${overlayPositionClass} w-full`}>
                     <FloatingOverlay maxHeight={320}>
-                        {showModelSettings ? (
+                        {sheetModelSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
@@ -1734,11 +1770,11 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showModelSettings && showModelEffortSettings ? (
+                        {sheetModelSettings && sheetModelEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showModelEffortSettings ? (
+                        {sheetModelEffortSettings ? (
                             <ModelEffortSettingsSection
                                 agentFlavor={agentFlavor}
                                 options={[...(visibleModelEffortOptions ?? [])]}
@@ -1757,11 +1793,11 @@ export function HappyComposer(props: {
                             />
                         ) : null}
 
-                        {(showModelSettings || showModelEffortSettings) && showModelReasoningEffortSettings ? (
+                        {(sheetModelSettings || sheetModelEffortSettings) && sheetModelReasoningEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showModelReasoningEffortSettings ? (
+                        {sheetModelReasoningEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.reasoningEffort')}
@@ -1798,11 +1834,11 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showModelReasoningEffortSettings && showEffortSettings ? (
+                        {sheetModelReasoningEffortSettings && sheetEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showEffortSettings ? (
+                        {sheetEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.effort')}
@@ -1841,11 +1877,11 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showModelAreaSettings && showPermissionSettings ? (
+                        {sheetModelAreaSettings && sheetPermissionSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showPermissionSettings ? (
+                        {sheetPermissionSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.permissionMode')}
@@ -1882,11 +1918,11 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showPermissionSettings || showModelAreaSettings) && showOtherSettings ? (
+                        {(sheetPermissionSettings || sheetModelAreaSettings) && sheetOtherSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showFastModeSettings ? (
+                        {sheetFastModeSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.fastMode')}
@@ -1923,11 +1959,11 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showFastModeSettings && (showCollaborationSettings || showCopilotAgentModeSettings) ? (
+                        {sheetFastModeSettings && (sheetCollaborationSettings || sheetCopilotAgentModeSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showCollaborationSettings ? (
+                        {sheetCollaborationSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.collaborationMode')}
@@ -1964,7 +2000,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showCopilotAgentModeSettings ? (
+                        {sheetCopilotAgentModeSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.copilotAgentMode')}
@@ -2024,6 +2060,7 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        settingsSection,
         agentFlavor,
         piModels,
         piSelectedModel,
@@ -2266,7 +2303,7 @@ export function HappyComposer(props: {
                             settingsDisabled={modelEffortControlsDisabled}
                             modelValueButtonRef={modelValueButtonRef}
                             effortValueButtonRef={effortValueButtonRef}
-                            onSettingsToggle={handleSettingsToggle}
+                            onSettingsToggle={handleGearToggle}
                             expanded={isExpanded}
                             onExpandedToggle={handleExpandedToggle}
                             showTerminalButton={showTerminalButton}
@@ -2294,11 +2331,11 @@ export function HappyComposer(props: {
                             hasAttachments={blocksScheduling}
                             modelValueLabel={modelValueLabel}
                             modelValueDisabled={modelEffortControlsDisabled}
-                            modelValueOpen={showSettings}
+                            modelValueOpen={showSettings && settingsSection !== 'effort'}
                             onModelValueToggle={handleModelValueToggle}
                             effortValueLabel={effortValueLabel}
                             effortValueDisabled={modelEffortControlsDisabled}
-                            effortValueOpen={showSettings}
+                            effortValueOpen={showSettings && settingsSection !== 'model'}
                             onEffortValueToggle={handleEffortValueToggle}
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
