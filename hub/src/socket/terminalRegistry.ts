@@ -33,16 +33,16 @@ export class TerminalRegistry {
         this.onRemove = options.onRemove
     }
 
-    register(terminalId: string, sessionId: string, socketId: string, cliSocketId: string): TerminalRegistryEntry | null {
+    register(terminalId: string, sessionId: string, socketId: string | null, cliSocketId: string): TerminalRegistryEntry | null {
         const existing = this.terminals.get(terminalId)
         if (existing) {
             if (existing.sessionId !== sessionId) {
                 return null
             }
             // Backwards compatibility for older web clients that use
-            // terminal:create for transport reconnects. Treat the replacement
-            // browser as another viewer of the same server-side PTY.
-            return this.attach(terminalId, sessionId, socketId)
+            // terminal:create for transport reconnects. A detached create does
+            // not implicitly become a viewer; legacy attached creates still do.
+            return socketId ? this.attach(terminalId, sessionId, socketId) : existing
         }
 
         // Initial empty-page bootstraps use a unique `-auto-<nonce>` resource ID.
@@ -58,14 +58,16 @@ export class TerminalRegistry {
         const entry: TerminalRegistryEntry = {
             terminalId,
             sessionId,
-            viewerSocketIds: new Set([socketId]),
+            viewerSocketIds: socketId ? new Set([socketId]) : new Set<string>(),
             cliSocketId,
             createdAt: Date.now(),
             idleTimer: null
         }
 
         this.terminals.set(terminalId, entry)
-        this.addToIndex(this.terminalsBySocket, socketId, terminalId)
+        if (socketId) {
+            this.addToIndex(this.terminalsBySocket, socketId, terminalId)
+        }
         this.addToIndex(this.terminalsBySession, sessionId, terminalId)
         this.addToIndex(this.terminalsByCliSocket, cliSocketId, terminalId)
         this.scheduleIdle(entry)
