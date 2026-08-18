@@ -21,13 +21,23 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+<<<<<<< HEAD
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import { applySessionDetailPatch } from '@/lib/sessionPatch'
+=======
+import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
+import {
+    applySessionDetailPatch,
+    isNewerVersionedPatch,
+    isRenderIrrelevantSessionPatch
+} from '@/lib/sessionPatch'
+>>>>>>> 43e19eb9c (fix(web): bind isNewerVersionedPatch after sessionPatch extract)
 
 // Pure patch-application rules live in @/lib/sessionPatch (React-free, shared
 // with the fixture generator); re-exported here so hook consumers and existing
-// tests keep their import site.
-export { applySessionDetailPatch, isNewerVersionedPatch, isRenderIrrelevantSessionPatch } from '@/lib/sessionPatch'
+// tests keep their import site. Named imports (not `export … from`) so this
+// module can call `isNewerVersionedPatch` on attachedJob list patches.
+export { applySessionDetailPatch, isNewerVersionedPatch, isRenderIrrelevantSessionPatch }
 
 type SSESubscription = {
     all?: boolean
