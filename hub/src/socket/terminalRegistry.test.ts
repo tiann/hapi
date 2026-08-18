@@ -21,6 +21,29 @@ describe('TerminalRegistry', () => {
         expect(reg.countForSocket('sockB')).toBe(1)
     })
 
+    it('keeps durable owner accounting across viewer detach and releases it on removal', () => {
+        const reg = new TerminalRegistry({ idleTimeoutMs: 0 })
+        reg.register('t1', 's1', 'sock1', 'cli1', 'owner-1')
+
+        expect(reg.countForOwner('owner-1')).toBe(1)
+        expect(reg.countForSocket('sock1')).toBe(1)
+
+        reg.detachBySocket('sock1')
+
+        expect(reg.countForSocket('sock1')).toBe(0)
+        expect(reg.countForOwner('owner-1')).toBe(1)
+        expect(reg.get('t1')).not.toBeNull()
+
+        // A reconnect attaches a new viewer without transferring ownership.
+        reg.register('t1', 's1', 'sock2', 'cli1', 'other-owner')
+        expect(reg.countForSocket('sock2')).toBe(1)
+        expect(reg.countForOwner('owner-1')).toBe(1)
+        expect(reg.countForOwner('other-owner')).toBe(0)
+
+        reg.remove('t1')
+        expect(reg.countForOwner('owner-1')).toBe(0)
+    })
+
     it('deduplicates concurrent auto bootstraps without reusing PTY resource IDs', () => {
         const reg = new TerminalRegistry({ idleTimeoutMs: 0 })
 
