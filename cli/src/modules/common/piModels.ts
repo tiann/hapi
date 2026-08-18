@@ -100,14 +100,43 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
             clearTimeout(timeout)
             // The probe child has no further use once the response (or a
             // failure) landed; never leave an interactive pi process behind.
-            // killProcessByChildProcess tears down the full process tree
-            // (taskkill /T on Windows where shell:true makes `child` the
-            // shell, tree kill on Unix) and polls until the processes are
-            // gone (SIGKILL escalation included) — only then settle, so the
-            // caller never observes completion with a live probe child.
-            void killProcessByChildProcess(child, false)
-                .catch(() => { /* best effort; SIGKILL escalation already attempted */ })
-                .finally(settle)
+            // killProcessByChildProcess tears down the whole tree (taskkill /T
+            // on Windows, where shell:true makes `child` the shell; tree kill
+            // on Unix) and returns false when something survived.
+            //
+            // A surviving process must not be ignored: the Windows graceful
+            // path is `taskkill /T` without /F and escalates nothing on its
+            // own, so a repeatedly-refused probe child would accumulate
+            // interactive Pi processes. Escalate to the forced path, and only
+            // settle once the tree is confirmed gone — the caller never
+            // observes completion while a probe child is still alive.
+            void (async () => {
+                // No pid means the child never started (e.g. spawn ENOENT):
+                // there is nothing to leak, and the real spawn error is
+                // already on its way through the 'error' handler.
+                if (!child.pid) {
+                    settle()
+                    return
+                }
+                let stopped = false
+                try {
+                    stopped = await killProcessByChildProcess(child, false)
+                    if (!stopped) {
+                        stopped = await killProcessByChildProcess(child, true)
+                    }
+                } catch {
+                    stopped = false
+                }
+                if (!stopped) {
+                    // Report the leak instead of caching a result that came
+                    // with an orphaned child; the next call re-probes.
+                    reject(new Error(
+                        `Pi model probe could not be stopped (pid ${child.pid ?? 'unknown'}); refusing to report a result with a surviving probe process`
+                    ))
+                    return
+                }
+                settle()
+            })()
         }
 
         const timeout = setTimeout(() => {
@@ -156,6 +185,12 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
         child.stdin?.on('error', () => { /* handled via close */ })
         child.stdin?.write(`${JSON.stringify({ id: PROBE_RPC_ID, type: 'get_available_models' })}\n`)
     })
+}
+
+/** Clear the module-level probe cache and in-flight map between tests. */
+export function _resetPiModelsCacheForTests(): void {
+    cache.clear()
+    inflight.clear()
 }
 
 export async function listPiModelsForMachine(): Promise<ListPiModelsForMachineResponse> {
