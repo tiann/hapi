@@ -173,14 +173,15 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             requestTerminalList(socket)
             const terminalId = terminalIdRef.current
             const size = lastSizeRef.current
-            // A pending terminal may not exist on the server yet. Its create
-            // listener is also waiting on this same connect event, so attaching
-            // here could race ahead of terminal:create. Let authoritative
-            // terminal:sessions trigger its first attach instead.
-            if (terminalId && size && !pendingTerminalIdsRef.current.has(terminalId)) {
+            // A pending create means the currently-rendered ID may still be the
+            // previous tab (createTerminal runs before React commits the new ID),
+            // or the new resource may not exist yet. Do not attach anything from
+            // this generic reconnect path; authoritative inventory will attach
+            // the pending resource once the new xterm has reported its size.
+            if (terminalId && size && pendingTerminalIdsRef.current.size === 0) {
                 setState({ status: 'connecting' })
                 emitAttach(socket, terminalId, size)
-            } else if (!terminalId) {
+            } else if (!terminalId && pendingTerminalIdsRef.current.size === 0) {
                 setState({ status: 'idle' })
             }
         })
@@ -284,10 +285,10 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             return
         }
 
-        // Pending creates attach only after terminal:sessions confirms the
-        // resource exists. Request a fresh projection if the xterm size arrived
-        // after an earlier inventory update.
-        if (pendingTerminalIdsRef.current.has(terminalId)) {
+        // While any create is pending, React may not yet have committed the new
+        // terminal ID. Never reattach a stale tab from this path. Request a fresh
+        // projection; terminal:sessions will attach only the pending current ID.
+        if (pendingTerminalIdsRef.current.size > 0) {
             requestTerminalList(socket)
             setState({ status: 'connecting' })
             return
@@ -372,9 +373,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         if (!socket || !socket.connected || !terminalId) {
             return
         }
-        // Keep the first pending-create interaction on the attach path. Resize
-        // requires viewer ownership and would otherwise be silently ignored.
-        if (pendingTerminalIdsRef.current.has(terminalId)) {
+        if (pendingTerminalIdsRef.current.size > 0) {
             requestTerminalList(socket)
             return
         }
