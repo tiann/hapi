@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
-import type { Machine } from '@/types/api'
+import type { Machine, PiModelSummary } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
 import {
     loadPreferredLaunchSettings,
@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
     opencodeModels: [] as Array<{ modelId: string; name?: string }>,
     opencodeModelsLoading: false,
     piDialogSelection: ['pi-native-1'] as string[],
-    piModels: [] as Array<{ provider: string; modelId: string; name?: string; reasoning?: boolean }>,
+    piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
