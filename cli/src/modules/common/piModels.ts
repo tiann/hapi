@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
+import { parse } from 'node:path'
 import type { PiModelSummary, PiModelsResponse } from '@hapi/protocol/apiTypes'
 import { parsePiModels } from '../../pi/schemas'
 import { killProcessByChildProcess } from '../../utils/process'
@@ -90,20 +91,40 @@ export function parsePiModelsProbeLine(line: string): PiModelsProbeLineResult | 
     return { kind: 'models', models: parsePiModels(record.data) }
 }
 
+/**
+ * Working directory for the probe child.
+ *
+ * Normally the runner's own cwd: a runner started inside a project must keep
+ * seeing that project's `.pi/extensions` providers, which the replaced
+ * `--list-models` probe also surfaced (verified: a project-local provider is
+ * present from the project dir and absent from home).
+ *
+ * A filesystem root is the exception. Under launchd/systemd the runner cwd is
+ * `/`, and starting Pi there is pathological — project discovery plus
+ * extensions that scan from the working directory walk the entire tree.
+ * Measured on macOS with 9 global extensions: 16.8s at `/` (past
+ * PROBE_TIMEOUT_MS, so discovery failed on every call) versus 1.3s at home
+ * and 2.8s in a real project. There is no project to discover at a root
+ * anyway, so home loses nothing there.
+ */
+export function resolveProbeCwd(): string {
+    let cwd: string
+    try {
+        cwd = process.cwd()
+    } catch {
+        // cwd can be gone (deleted directory); home is always resolvable.
+        return homedir()
+    }
+    return cwd === parse(cwd).root ? homedir() : cwd
+}
+
 function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
     return new Promise((resolve, reject) => {
         const child = spawn('pi', [...PI_PROBE_ARGS], {
             env: process.env,
-            // Probe from the user's home directory, never the runner's cwd.
-            // Under launchd/systemd the runner's cwd is `/`, and a Pi startup
-            // there is pathological: project discovery and extensions that
-            // scan from the working directory walk the entire filesystem root.
-            // Measured on macOS with 9 global extensions: 16.8s at cwd=/ (past
-            // the 15s timeout, so discovery failed 100% of the time) versus
-            // 1.4s at $HOME, same 29 models. The catalog is machine-scoped and
-            // does not depend on cwd, so home is both safe and representative
-            // (global extensions still load; see PI_PROBE_ARGS).
-            cwd: homedir(),
+            // Probe from the runner's cwd, falling back to home at a
+            // filesystem root (see resolveProbeCwd).
+            cwd: resolveProbeCwd(),
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: process.platform === 'win32',
             windowsHide: process.platform === 'win32',

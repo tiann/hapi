@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { homedir } from 'node:os'
+import { parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { spawnMock, killMock } = vi.hoisted(() => ({
@@ -53,12 +54,31 @@ afterEach(() => {
 })
 
 describe('runPiModelsProbe spawn', () => {
-    it('probes from the home directory, not the runner cwd', async () => {
+    it('probes from the runner cwd so project-local providers stay visible', async () => {
+        // A runner started inside a project must keep seeing that project's
+        // .pi/extensions providers, which the replaced --list-models probe
+        // also surfaced.
+        killMock.mockResolvedValue(true)
+        const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/work/project')
+
+        const pending = listPiModelsForMachine()
+        child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
+        await pending
+
+        expect(spawnMock).toHaveBeenCalledWith(
+            'pi',
+            expect.any(Array),
+            expect.objectContaining({ cwd: '/work/project' }),
+        )
+        cwdSpy.mockRestore()
+    })
+
+    it('falls back to home when the runner cwd is a filesystem root', async () => {
         // Under launchd/systemd the runner cwd is `/`, where a Pi startup that
         // loads extensions took 16.8s locally and blew the 15s timeout on every
-        // call. The catalog is machine-scoped, so probing from $HOME is both
-        // safe and fast (1.4s for the same 29 models).
+        // call (1.3s from home). No project exists at a root to lose.
         killMock.mockResolvedValue(true)
+        const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(parse(process.cwd()).root)
 
         const pending = listPiModelsForMachine()
         child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
@@ -69,6 +89,27 @@ describe('runPiModelsProbe spawn', () => {
             expect.any(Array),
             expect.objectContaining({ cwd: homedir() }),
         )
+        cwdSpy.mockRestore()
+    })
+
+    it('falls back to home when the runner cwd cannot be resolved', async () => {
+        // A deleted working directory makes process.cwd() throw; home always
+        // resolves, so discovery must not die with it.
+        killMock.mockResolvedValue(true)
+        const cwdSpy = vi.spyOn(process, 'cwd').mockImplementation(() => {
+            throw new Error('ENOENT: uv_cwd')
+        })
+
+        const pending = listPiModelsForMachine()
+        child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
+        await pending
+
+        expect(spawnMock).toHaveBeenCalledWith(
+            'pi',
+            expect.any(Array),
+            expect.objectContaining({ cwd: homedir() }),
+        )
+        cwdSpy.mockRestore()
     })
 
     it('keeps extensions enabled so registered providers still surface', async () => {
