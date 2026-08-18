@@ -865,6 +865,75 @@ describe('NewSession launch preferences', () => {
         })
     })
 
+    it('resets a restored effort the Default Pi selection cannot offer', async () => {
+        savePreferredAgent('pi')
+        mocks.piModels = [
+            {
+                provider: 'openai-codex',
+                modelId: 'gpt-5.6-sol',
+                reasoning: true,
+                thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+            },
+        ]
+        // Default model (auto) renders the effort field without a map, which
+        // hides xhigh — the restored hidden level must not survive into create.
+        savePreferredLaunchSettings('machine-1', 'pi', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default',
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+    })
+
+    it('keeps a restored xhigh effort when the selected model map opts in', async () => {
+        savePreferredAgent('pi')
+        mocks.piModels = [
+            {
+                provider: 'openai-codex',
+                modelId: 'gpt-5.6-sol',
+                reasoning: true,
+                thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+            },
+        ]
+        savePreferredLaunchSettings('machine-1', 'pi', {
+            model: 'openai-codex/gpt-5.6-sol',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default',
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('openai-codex/gpt-5.6-sol')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('xhigh')
+        })
+    })
+
     it('shows Pi machine models and thinking-level effort and forwards both on create', async () => {
         savePreferredAgent('pi')
         mocks.piModels = [

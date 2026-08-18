@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import type { PiModelSummary, PiModelsResponse } from '@hapi/protocol/apiTypes'
 import { parsePiModels } from '../../pi/schemas'
+import { killProcessByChildProcess } from '../../utils/process'
 import { getErrorMessage } from './rpcResponses'
 
 export type ListPiModelsForMachineRequest = Record<string, never>
@@ -44,8 +45,20 @@ const PI_PROBE_ARGS = [
 
 const PROBE_RPC_ID = 'hapi-machine-models-probe'
 
-/** Extract the get_available_models response from one stdout line, if present. */
-export function parsePiModelsProbeLine(line: string): PiModelSummary[] | null {
+/**
+ * Result of scanning one RPC stdout line for the probe response.
+ *
+ * - `null`: unrelated traffic (events, other responses, non-JSON noise).
+ * - `models`: successful get_available_models response for our probe id.
+ * - `error`: explicit failure response — surface Pi's own error text
+ *   immediately instead of letting the probe run into the generic timeout
+ *   (the RPC child is interactive and will not exit on its own).
+ */
+export type PiModelsProbeLineResult =
+    | { kind: 'models'; models: PiModelSummary[] }
+    | { kind: 'error'; error: string }
+
+export function parsePiModelsProbeLine(line: string): PiModelsProbeLineResult | null {
     const trimmed = line.trim()
     if (!trimmed.startsWith('{')) return null
     let parsed: unknown
@@ -57,8 +70,16 @@ export function parsePiModelsProbeLine(line: string): PiModelSummary[] | null {
     if (typeof parsed !== 'object' || parsed === null) return null
     const record = parsed as Record<string, unknown>
     if (record.type !== 'response' || record.command !== 'get_available_models') return null
-    if (record.success !== true) return null
-    return parsePiModels(record.data)
+    // Only accept the response to our own request id so a future probe that
+    // multiplexes RPCs cannot mis-attribute another get_available_models call.
+    if (record.id !== PROBE_RPC_ID) return null
+    if (record.success !== true) {
+        const error = typeof record.error === 'string' && record.error.trim()
+            ? record.error
+            : 'Pi rejected the model probe request'
+        return { kind: 'error', error }
+    }
+    return { kind: 'models', models: parsePiModels(record.data) }
 }
 
 function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
@@ -79,8 +100,14 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
             clearTimeout(timeout)
             // The probe child has no further use once the response (or a
             // failure) landed; never leave an interactive pi process behind.
-            child.kill('SIGTERM')
-            settle()
+            // killProcessByChildProcess tears down the full process tree
+            // (taskkill /T on Windows where shell:true makes `child` the
+            // shell, tree kill on Unix) and polls until the processes are
+            // gone (SIGKILL escalation included) — only then settle, so the
+            // caller never observes completion with a live probe child.
+            void killProcessByChildProcess(child, false)
+                .catch(() => { /* best effort; SIGKILL escalation already attempted */ })
+                .finally(settle)
         }
 
         const timeout = setTimeout(() => {
@@ -97,11 +124,20 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
                 const line = stdoutBuffer.slice(0, newlineIndex)
                 stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
                 newlineIndex = stdoutBuffer.indexOf('\n')
-                const availableModels = parsePiModelsProbeLine(line)
-                if (availableModels !== null) {
-                    finish(() => resolve({ success: true, availableModels, currentModelId: null }))
+                const probeResult = parsePiModelsProbeLine(line)
+                if (probeResult === null) continue
+                if (probeResult.kind === 'error') {
+                    // Explicit RPC failure: surface Pi's own error right away
+                    // instead of degrading it into the generic timeout.
+                    finish(() => reject(new Error(probeResult.error)))
                     return
                 }
+                finish(() => resolve({
+                    success: true,
+                    availableModels: probeResult.models,
+                    currentModelId: null,
+                }))
+                return
             }
         })
         child.stderr?.on('data', (chunk) => {
