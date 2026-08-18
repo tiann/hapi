@@ -629,20 +629,26 @@ export function NewSession(props: {
             setEffort('auto')
             return
         }
-        // Reset a level the current selection cannot offer. Covers both a
-        // resolved model whose map excludes the level and the Default
-        // selection (model === 'auto', piSelectedModel null): the field then
-        // renders with an undefined map, which hides xhigh/max, and a stale
-        // hidden level must not be submitted. While a concrete model is
-        // still resolving (model !== 'auto', piSelectedModel null) do not
-        // reset — the map may prove a restored xhigh/max valid.
+        // Reset a level the current selection cannot offer, so a level the
+        // field no longer renders can never be submitted. This covers:
+        //   - a resolved model whose map excludes the level;
+        //   - the Default selection (model === 'auto', no map, hides xhigh/max);
+        //   - a failed catalog request, where a restored explicit model stays
+        //     unresolved for good and creation is not blocked (only loading
+        //     gates it), so waiting for a map that will never arrive would let
+        //     the hidden level through.
+        // While a concrete model is still resolving (no error yet) do not
+        // reset — the map may still prove a restored xhigh/max valid.
+        const piSelectionSettled = model === 'auto'
+            || Boolean(piSelectedModel)
+            || Boolean(piModelsState.error)
         if (
-            (model === 'auto' || piSelectedModel)
+            piSelectionSettled
             && !isThinkingLevelSupported(effort, piSelectedModel?.thinkingLevelMap)
         ) {
             setEffort('auto')
         }
-    }, [agent, model, piSelectedModel, effort])
+    }, [agent, model, piSelectedModel, piModelsState.error, effort])
     useEffect(() => {
         // Reconcile a restored Pi selection with the live machine catalog
         // (mirrors the Codex/Grok/Copilot validation effects). A model that

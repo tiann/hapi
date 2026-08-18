@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
     piDialogSelection: ['pi-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
+    piModelsError: null as string | null,
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
     addToast: vi.fn()
@@ -140,7 +141,7 @@ vi.mock('@/hooks/queries/usePiModelsForMachine', () => ({
         availableModels: mocks.piModels,
         currentModelId: null,
         isLoading: mocks.piModelsLoading,
-        error: null
+        error: mocks.piModelsError
     })
 }))
 vi.mock('../../utils/formatRunnerSpawnError', () => ({
@@ -263,6 +264,7 @@ describe('NewSession launch preferences', () => {
         mocks.piDialogSelection = ['pi-native-1']
         mocks.piModels = []
         mocks.piModelsLoading = false
+        mocks.piModelsError = null
         mocks.nextModelValue = 'gpt-5.6-terra'
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
@@ -932,6 +934,48 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('openai-codex/gpt-5.6-sol')
             expect(screen.getByTestId('launch-effort')).toHaveTextContent('xhigh')
         })
+    })
+
+    it('does not submit a hidden restored effort when Pi model discovery fails', async () => {
+        savePreferredAgent('pi')
+        // A failed catalog never resolves the restored model, so the effort
+        // field renders with an undefined map and hides xhigh. Creation is not
+        // blocked on error (only on loading), so the hidden level must have
+        // been reconciled away rather than forwarded.
+        mocks.piModels = []
+        mocks.piModelsError = 'probe failed'
+        savePreferredLaunchSettings('machine-1', 'pi', {
+            model: 'openai-codex/gpt-5.6-sol',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default',
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+
+        act(() => {
+            mocks.spawnSession.mockImplementation(async () => ({ type: 'success', sessionId: 'session-1' }))
+        })
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'pi',
+            effort: undefined,
+        }))
     })
 
     it('shows Pi machine models and thinking-level effort and forwards both on create', async () => {
