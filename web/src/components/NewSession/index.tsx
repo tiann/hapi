@@ -55,6 +55,7 @@ import { EffortField } from './EffortField'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { buildGrokEffortOptions, buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
 import { groupModelsByProvider } from '@/components/AssistantChat/piModelGroups'
+import { isThinkingLevelSupported } from '@/components/AssistantChat/piThinkingLevelOptions'
 import {
     loadPreferredAgent,
     loadPreferredLaunchSettings,
@@ -618,8 +619,17 @@ export function NewSession(props: {
     }, [agent, model, piModelsState.availableModels])
     useEffect(() => {
         // A non-reasoning Pi model must not carry a stale launch effort (the
-        // CLI would reject it and fall back to Pi's default).
-        if (agent === 'pi' && piSelectedModel?.reasoning === false && effort !== 'auto') {
+        // CLI would reject it and fall back to Pi's default), and a level the
+        // selected model's thinkingLevelMap marks unsupported must not survive
+        // a model switch (mirrors the HappyComposer effort reconciliation).
+        if (agent !== 'pi' || effort === 'auto') {
+            return
+        }
+        if (piSelectedModel?.reasoning === false) {
+            setEffort('auto')
+            return
+        }
+        if (piSelectedModel && !isThinkingLevelSupported(effort, piSelectedModel.thinkingLevelMap)) {
             setEffort('auto')
         }
     }, [agent, piSelectedModel, effort])
