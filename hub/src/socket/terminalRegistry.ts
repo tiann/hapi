@@ -21,6 +21,10 @@ export class TerminalRegistry {
     private readonly terminalsBySocket = new Map<string, Set<string>>()
     private readonly terminalsBySession = new Map<string, Set<string>>()
     private readonly terminalsByCliSocket = new Map<string, Set<string>>()
+    // Resource ownership is durable across viewer/socket reconnects. Keep it
+    // separate from viewer attachment so detach never releases the resource cap.
+    private readonly terminalOwnerKeys = new Map<string, string>()
+    private readonly terminalsByOwner = new Map<string, Set<string>>()
     private readonly sessionSubscribers = new Map<string, Set<string>>()
     private readonly sessionsBySocket = new Map<string, Set<string>>()
     private readonly idleTimeoutMs: number
@@ -33,7 +37,13 @@ export class TerminalRegistry {
         this.onRemove = options.onRemove
     }
 
-    register(terminalId: string, sessionId: string, socketId: string | null, cliSocketId: string): TerminalRegistryEntry | null {
+    register(
+        terminalId: string,
+        sessionId: string,
+        socketId: string | null,
+        cliSocketId: string,
+        ownerKey?: string
+    ): TerminalRegistryEntry | null {
         const existing = this.terminals.get(terminalId)
         if (existing) {
             if (existing.sessionId !== sessionId) {
@@ -42,6 +52,7 @@ export class TerminalRegistry {
             // Backwards compatibility for older web clients that use
             // terminal:create for transport reconnects. A detached create does
             // not implicitly become a viewer; legacy attached creates still do.
+            // Existing resources retain their original durable owner.
             return socketId ? this.attach(terminalId, sessionId, socketId) : existing
         }
 
@@ -63,8 +74,13 @@ export class TerminalRegistry {
             createdAt: Date.now(),
             idleTimer: null
         }
+        // Direct registry users/tests predate durable owner accounting. Production
+        // terminal:create always supplies a stable authenticated owner key.
+        const resolvedOwnerKey = ownerKey ?? socketId ?? `cli:${cliSocketId}:${sessionId}`
 
         this.terminals.set(terminalId, entry)
+        this.terminalOwnerKeys.set(terminalId, resolvedOwnerKey)
+        this.addToIndex(this.terminalsByOwner, resolvedOwnerKey, terminalId)
         if (socketId) {
             this.addToIndex(this.terminalsBySocket, socketId, terminalId)
         }
@@ -144,6 +160,11 @@ export class TerminalRegistry {
         }
 
         this.terminals.delete(terminalId)
+        const ownerKey = this.terminalOwnerKeys.get(terminalId)
+        if (ownerKey) {
+            this.removeFromIndex(this.terminalsByOwner, ownerKey, terminalId)
+            this.terminalOwnerKeys.delete(terminalId)
+        }
         for (const socketId of entry.viewerSocketIds) {
             this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
         }
@@ -193,6 +214,10 @@ export class TerminalRegistry {
 
     countForSocket(socketId: string): number {
         return this.terminalsBySocket.get(socketId)?.size ?? 0
+    }
+
+    countForOwner(ownerKey: string): number {
+        return this.terminalsByOwner.get(ownerKey)?.size ?? 0
     }
 
     countForSession(sessionId: string): number {
