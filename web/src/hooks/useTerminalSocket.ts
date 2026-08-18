@@ -78,14 +78,20 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
     useEffect(() => {
         const sessionChanged = sessionIdRef.current !== options.sessionId
+        const terminalChanged = terminalIdRef.current !== options.terminalId
         sessionIdRef.current = options.sessionId
         terminalIdRef.current = options.terminalId
         baseUrlRef.current = options.baseUrl
+        // A new xterm instance must report its own dimensions before any attach.
+        // In particular, do not reuse the previous tab's size while a detached
+        // create is waiting for authoritative inventory.
+        if (sessionChanged || terminalChanged) {
+            lastSizeRef.current = null
+        }
         if (sessionChanged) {
             setTerminals([])
             setMaxTerminals(null)
             setHasLoadedTerminals(false)
-            lastSizeRef.current = null
             pendingTerminalIdsRef.current.clear()
         }
     }, [options.sessionId, options.terminalId, options.baseUrl])
@@ -167,10 +173,14 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             requestTerminalList(socket)
             const terminalId = terminalIdRef.current
             const size = lastSizeRef.current
-            if (terminalId && size) {
+            // A pending terminal may not exist on the server yet. Its create
+            // listener is also waiting on this same connect event, so attaching
+            // here could race ahead of terminal:create. Let authoritative
+            // terminal:sessions trigger its first attach instead.
+            if (terminalId && size && !pendingTerminalIdsRef.current.has(terminalId)) {
                 setState({ status: 'connecting' })
                 emitAttach(socket, terminalId, size)
-            } else {
+            } else if (!terminalId) {
                 setState({ status: 'idle' })
             }
         })
@@ -182,6 +192,18 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             setTerminals(payload.terminals)
             setMaxTerminals(payload.maxTerminals)
             setHasLoadedTerminals(true)
+
+            const terminalId = terminalIdRef.current
+            const size = lastSizeRef.current
+            if (
+                terminalId
+                && size
+                && pendingTerminalIdsRef.current.has(terminalId)
+                && payload.terminals.some((terminal) => terminal.terminalId === terminalId)
+            ) {
+                setState({ status: 'connecting' })
+                emitAttach(socket, terminalId, size)
+            }
         })
 
         socket.on('terminal:ready', (payload: TerminalReadyPayload) => {
@@ -262,16 +284,29 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             return
         }
 
+        // Pending creates attach only after terminal:sessions confirms the
+        // resource exists. Request a fresh projection if the xterm size arrived
+        // after an earlier inventory update.
+        if (pendingTerminalIdsRef.current.has(terminalId)) {
+            requestTerminalList(socket)
+            setState({ status: 'connecting' })
+            return
+        }
+
         setState({ status: 'connecting' })
         emitAttach(socket, terminalId, size)
     }, [emitAttach, ensureSocket, requestTerminalList])
 
     const createTerminal = useCallback((terminalId: string, cols: number, rows: number) => {
+        // Mark pending before ensureSocket(): ensureSocket may synchronously fire
+        // the connect handler in tests or fast transports, and that handler must
+        // never attach a resource before its terminal:create is emitted.
+        pendingTerminalIdsRef.current.add(terminalId)
         const socket = ensureSocket()
         if (!socket) {
+            pendingTerminalIdsRef.current.delete(terminalId)
             return
         }
-        pendingTerminalIdsRef.current.add(terminalId)
         setState({ status: 'connecting' })
         const emit = () => {
             socket.emit('terminal:create', {
@@ -337,8 +372,14 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         if (!socket || !socket.connected || !terminalId) {
             return
         }
+        // Keep the first pending-create interaction on the attach path. Resize
+        // requires viewer ownership and would otherwise be silently ignored.
+        if (pendingTerminalIdsRef.current.has(terminalId)) {
+            requestTerminalList(socket)
+            return
+        }
         socket.emit('terminal:resize', { terminalId, cols, rows })
-    }, [])
+    }, [requestTerminalList])
 
     const disconnect = useCallback(() => {
         const socket = socketRef.current
