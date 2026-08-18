@@ -59,20 +59,13 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
     const cliNamespace = io.of('/cli')
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
-
-    // The socket-level limit is an admission-control policy for resources this
-    // connection creates, not a viewer count. Persistent terminals can be born
-    // detached and can outlive this socket, so keep the accounting local to the
-    // connection instead of coupling it to the durable registry's viewer index.
-    const createdTerminalIds = new Set<string>()
-    const countLiveCreatedTerminals = (): number => {
-        for (const terminalId of createdTerminalIds) {
-            if (!terminalRegistry.get(terminalId)) {
-                createdTerminalIds.delete(terminalId)
-            }
-        }
-        return createdTerminalIds.size
-    }
+    const userId = typeof socket.data.userId === 'number' ? socket.data.userId : null
+    // Terminal namespace authentication always supplies namespace + userId in
+    // production. The socket fallback keeps direct handler tests defensive while
+    // ensuring real browser reconnects share one durable resource owner key.
+    const ownerKey = namespace && userId !== null
+        ? `${namespace}:${userId}`
+        : `${namespace ?? 'unknown'}:socket:${socket.id}`
 
     const emitTerminalError = (terminalId: string, message: string) => {
         socket.emit('terminal:error', { terminalId, message })
@@ -251,7 +244,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        if (countLiveCreatedTerminals() >= maxTerminalsPerSocket) {
+        if (terminalRegistry.countForOwner(ownerKey) >= maxTerminalsPerSocket) {
             emitTerminalError(terminalId, `Too many terminals open (max ${maxTerminalsPerSocket}).`)
             return
         }
@@ -268,7 +261,13 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        const entry = terminalRegistry.register(terminalId, sessionId, attach ? socket.id : null, cliSocketId)
+        const entry = terminalRegistry.register(
+            terminalId,
+            sessionId,
+            attach ? socket.id : null,
+            cliSocketId,
+            ownerKey
+        )
         if (!entry) {
             emitTerminalError(terminalId, 'Terminal ID is already in use.')
             return
@@ -282,7 +281,6 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        createdTerminalIds.add(terminalId)
         cliSocket.emit('terminal:open', {
             sessionId,
             terminalId,
@@ -386,7 +384,6 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         const { terminalId, sessionId: requestedSessionId } = parsed.data
         const entry = terminalRegistry.get(terminalId)
         if (!entry) {
-            createdTerminalIds.delete(terminalId)
             if (requestedSessionId && isAuthorizedSession(requestedSessionId)) {
                 subscribeToTerminalSession(requestedSessionId)
                 emitTerminalSessions(requestedSessionId)
@@ -406,7 +403,6 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         }
 
         terminalRegistry.remove(terminalId)
-        createdTerminalIds.delete(terminalId)
         emitCloseToCli(entry)
         emitTerminalSessions(entry.sessionId)
     })
@@ -509,12 +505,12 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
 
     socket.on('disconnect', () => {
         // Browser sockets are only viewers. Detach this viewer and forget its
-        // selector subscriptions; the PTYs remain alive until close/exit/idle.
+        // selector subscriptions; the PTYs and their durable owner accounting
+        // remain alive until close/exit/idle.
         const detached = terminalRegistry.detachBySocket(socket.id)
         for (const sessionId of new Set(detached.map((entry) => entry.sessionId))) {
             emitTerminalSessions(sessionId)
         }
-        createdTerminalIds.clear()
         // On disconnect the socket has already left its rooms, so the room size
         // now reflects the remaining agent-terminal viewers.
         for (const sessionId of subscribedAgentSessions) {
