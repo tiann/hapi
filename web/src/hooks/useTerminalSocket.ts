@@ -83,8 +83,6 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         terminalIdRef.current = options.terminalId
         baseUrlRef.current = options.baseUrl
         // A new xterm instance must report its own dimensions before any attach.
-        // In particular, do not reuse the previous tab's size while a detached
-        // create is waiting for authoritative inventory.
         if (sessionChanged || terminalChanged) {
             lastSizeRef.current = null
         }
@@ -173,15 +171,12 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             requestTerminalList(socket)
             const terminalId = terminalIdRef.current
             const size = lastSizeRef.current
-            // A pending create means the currently-rendered ID may still be the
-            // previous tab (createTerminal runs before React commits the new ID),
-            // or the new resource may not exist yet. Do not attach anything from
-            // this generic reconnect path; authoritative inventory will attach
-            // the pending resource once the new xterm has reported its size.
-            if (terminalId && size && pendingTerminalIdsRef.current.size === 0) {
+            // Only the selected terminal's own pending create blocks attach.
+            // An unselected background create must never strand an existing tab.
+            if (terminalId && size && !pendingTerminalIdsRef.current.has(terminalId)) {
                 setState({ status: 'connecting' })
                 emitAttach(socket, terminalId, size)
-            } else if (!terminalId && pendingTerminalIdsRef.current.size === 0) {
+            } else if (!terminalId) {
                 setState({ status: 'idle' })
             }
         })
@@ -285,10 +280,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             return
         }
 
-        // While any create is pending, React may not yet have committed the new
-        // terminal ID. Never reattach a stale tab from this path. Request a fresh
-        // projection; terminal:sessions will attach only the pending current ID.
-        if (pendingTerminalIdsRef.current.size > 0) {
+        if (pendingTerminalIdsRef.current.has(terminalId)) {
             requestTerminalList(socket)
             setState({ status: 'connecting' })
             return
@@ -299,10 +291,13 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     }, [emitAttach, ensureSocket, requestTerminalList])
 
     const createTerminal = useCallback((terminalId: string, cols: number, rows: number) => {
-        // Mark pending before ensureSocket(): ensureSocket may synchronously fire
-        // the connect handler in tests or fast transports, and that handler must
-        // never attach a resource before its terminal:create is emitted.
+        // Record the intended resource synchronously before reconnect can fire.
+        // Manual New invokes create before React commits activeTerminalId, so
+        // this prevents the generic connect handler from reattaching the stale
+        // previous tab. The new xterm must still report its own size afterward.
         pendingTerminalIdsRef.current.add(terminalId)
+        terminalIdRef.current = terminalId
+        lastSizeRef.current = null
         const socket = ensureSocket()
         if (!socket) {
             pendingTerminalIdsRef.current.delete(terminalId)
@@ -373,7 +368,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         if (!socket || !socket.connected || !terminalId) {
             return
         }
-        if (pendingTerminalIdsRef.current.size > 0) {
+        if (pendingTerminalIdsRef.current.has(terminalId)) {
             requestTerminalList(socket)
             return
         }
