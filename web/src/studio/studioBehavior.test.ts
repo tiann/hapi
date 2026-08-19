@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
     countNewStudioMessages,
     isStudioNearBottom,
-    shouldCollapseStudioMessage
+    shouldCollapseStudioMessage,
+    shouldAutoJumpOnTabOpen
 } from './studioBehavior'
 import type { PublicStudioMessage } from '@/types/api'
 
@@ -26,5 +27,10 @@ describe('Studio Lite conversation behavior', () => {
         expect(shouldCollapseStudioMessage('short answer')).toBe(false)
         expect(shouldCollapseStudioMessage('x'.repeat(700))).toBe(true)
         expect(shouldCollapseStudioMessage(Array.from({ length: 12 }, (_, index) => `line ${index}`).join('\n'))).toBe(true)
+    })
+
+    it('only jumps when opening the conversation tab, not when unread count changes in place', () => {
+        expect(shouldAutoJumpOnTabOpen('discussion', 'conversation', 2)).toBe(true)
+        expect(shouldAutoJumpOnTabOpen('conversation', 'conversation', 2)).toBe(false)
     })
 })

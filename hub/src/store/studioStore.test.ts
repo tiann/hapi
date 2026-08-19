@@ -39,4 +39,25 @@ describe('StudioStore', () => {
         expect(store.studios.decidePost(post.id, room.id, 'submitted', 'Edited')?.status).toBe('submitted')
         expect(store.studios.decidePost(post.id, room.id, 'submitted', 'Again')).toBeNull()
     })
+
+    it('returns the newest posts when the room has more than the page limit', () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        store.sessions.getOrCreateSession('tag-a', {}, null, 'alpha', undefined, undefined, undefined, 'session-a')
+        const room = store.studios.createOrActivateRoom('session-a', 'alpha', 'Room', 'contribute')
+        for (let index = 0; index < 205; index += 1) {
+            store.studios.createPost({
+                roomId: room.id,
+                guestId: 'guest-12345678',
+                authorName: 'Guest',
+                kind: 'discussion',
+                text: `post-${index}`,
+                createdAt: index
+            })
+        }
+        const posts = store.studios.listPosts(room.id)
+        expect(posts).toHaveLength(200)
+        expect(posts[0]?.text).toBe('post-5')
+        expect(posts.at(-1)?.text).toBe('post-204')
+    })
 })

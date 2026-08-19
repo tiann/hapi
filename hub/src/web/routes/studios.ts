@@ -100,18 +100,35 @@ function publicRoom(room: StoredStudioRoom, session: Session) {
     }
 }
 
+const POST_RATE_WINDOW_MS = 60_000
+const POST_RATE_LIMIT_PER_ROOM = 60
+const MAX_POST_RATE_BUCKETS = 1_000
 const postRateBuckets = new Map<string, number[]>()
 
 function allowPost(key: string, now = Date.now()): boolean {
-    const windowStart = now - 60_000
+    const windowStart = now - POST_RATE_WINDOW_MS
+    for (const [bucketKey, times] of postRateBuckets) {
+        const recent = times.filter((time) => time >= windowStart)
+        if (recent.length === 0) postRateBuckets.delete(bucketKey)
+        else if (recent.length !== times.length) postRateBuckets.set(bucketKey, recent)
+    }
+    while (postRateBuckets.size >= MAX_POST_RATE_BUCKETS && !postRateBuckets.has(key)) {
+        const oldestKey = postRateBuckets.keys().next().value as string | undefined
+        if (!oldestKey) break
+        postRateBuckets.delete(oldestKey)
+    }
     const recent = (postRateBuckets.get(key) ?? []).filter((time) => time >= windowStart)
-    if (recent.length >= 12) {
+    if (recent.length >= POST_RATE_LIMIT_PER_ROOM) {
         postRateBuckets.set(key, recent)
         return false
     }
     recent.push(now)
     postRateBuckets.set(key, recent)
     return true
+}
+
+export function resetStudioPostRateLimitForTests(): void {
+    postRateBuckets.clear()
 }
 
 export function createPublicStudioRoutes(options: {
@@ -151,10 +168,7 @@ export function createPublicStudioRoutes(options: {
         const parsed = postSchema.safeParse(body)
         if (!parsed.success) return c.json({ error: 'Invalid post' }, 400)
 
-        const remote = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-            ?? c.req.header('x-real-ip')
-            ?? 'unknown'
-        if (!allowPost(`${room.id}:${remote}:${parsed.data.guestId}`)) {
+        if (!allowPost(`room:${room.id}`)) {
             return c.json({ error: 'Too many posts; try again shortly' }, 429)
         }
         const post = options.store.studios.createPost({ roomId: room.id, ...parsed.data })

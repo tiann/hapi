@@ -152,10 +152,13 @@ export class StudioStore {
 
     listPosts(roomId: string, limit = 200): StoredStudioPost[] {
         const rows = this.db.prepare(`
-            SELECT * FROM studio_posts
-            WHERE room_id = ?
+            SELECT * FROM (
+                SELECT * FROM studio_posts
+                WHERE room_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            )
             ORDER BY created_at ASC, id ASC
-            LIMIT ?
         `).all(roomId, limit) as StudioPostRow[]
         return rows.map(mapPost)
     }
@@ -166,9 +169,10 @@ export class StudioStore {
         authorName: string
         kind: StudioPostKind
         text: string
+        createdAt?: number
     }): StoredStudioPost {
         const id = randomUUID()
-        const now = Date.now()
+        const now = input.createdAt ?? Date.now()
         this.db.prepare(`
             INSERT INTO studio_posts (
                 id, room_id, guest_id, author_name, kind, text,

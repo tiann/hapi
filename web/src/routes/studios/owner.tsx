@@ -7,6 +7,7 @@ import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
 import type { StudioPost } from '@/types/api'
+import { buildStudioShareUrl } from '@/studio/studioUrl'
 
 function SuggestionRow(props: {
     post: StudioPost
@@ -69,7 +70,7 @@ export default function StudioOwnerPage() {
 
 function StudioOwnerRoom(props: { studioId: string }) {
     const { studioId } = props
-    const { api } = useAppContext()
+    const { api, baseUrl } = useAppContext()
     const { t } = useTranslation()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
@@ -90,7 +91,7 @@ function StudioOwnerRoom(props: { studioId: string }) {
         () => posts.filter((post) => post.roomId === room?.id && post.kind === 'discussion'),
         [posts, room?.id]
     )
-    const shareUrl = room ? `${window.location.origin}/studio/${room.shareToken}` : ''
+    const shareUrl = room ? buildStudioShareUrl(window.location.origin, room.shareToken, baseUrl) : ''
 
     const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.studio(studioId) })
     const updateMutation = useMutation({

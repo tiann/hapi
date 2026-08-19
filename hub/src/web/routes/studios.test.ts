@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
-import { createPublicStudioRoutes, createStudioRoutes } from './studios'
+import { createPublicStudioRoutes, createStudioRoutes, resetStudioPostRateLimitForTests } from './studios'
 
 function createSession(store: Store, namespace = 'default', sessionId = 'session-1') {
     store.sessions.getOrCreateSession(
@@ -30,6 +30,27 @@ function createApp(store: Store, engine: unknown) {
 }
 
 describe('studio routes', () => {
+    it('limits a room even when guests rotate their client ids', async () => {
+        resetStudioPostRateLimitForTests()
+        const store = new Store(':memory:')
+        createSession(store)
+        const room = store.studios.createOrActivateRoom('session-1', 'default', 'Room', 'contribute')
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true, sessionId: 'session-1', session: { id: 'session-1', namespace: 'default', active: true, metadata: {} } })
+        }
+        const app = createApp(store, engine)
+        const statuses: number[] = []
+        for (let index = 0; index < 61; index += 1) {
+            const response = await app.request(`/api/public/studios/${room.shareToken}/posts`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ guestId: `guest-${String(index).padStart(8, '0')}`, authorName: 'Guest', kind: 'discussion', text: `post-${index}` })
+            })
+            statuses.push(response.status)
+        }
+        expect(statuses.at(-1)).toBe(429)
+    })
+
     it('creates an isolated room and exposes a redacted public transcript', async () => {
         const store = new Store(':memory:')
         createSession(store)

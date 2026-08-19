@@ -25,3 +25,11 @@ export function shouldCollapseStudioMessage(text: string): boolean {
     if (text.length >= STUDIO_COLLAPSE_CHAR_THRESHOLD) return true
     return text.split(/\r?\n/).length >= STUDIO_COLLAPSE_LINE_THRESHOLD
 }
+
+export function shouldAutoJumpOnTabOpen(
+    previousTab: 'conversation' | 'discussion',
+    nextTab: 'conversation' | 'discussion',
+    unreadCount: number
+): boolean {
+    return previousTab !== 'conversation' && nextTab === 'conversation' && unreadCount > 0
+}
