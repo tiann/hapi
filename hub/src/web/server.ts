@@ -346,6 +346,7 @@ from GitHub Pages instead of through the relay tunnel.
     if (options.embeddedAssetMap) {
         const embeddedAssetMap = options.embeddedAssetMap
         const indexHtmlAsset = embeddedAssetMap.get('/index.html')
+        const studioHtmlAsset = embeddedAssetMap.get('/studio.html')
 
         if (!indexHtmlAsset) {
             app.get('*', (c) => {
@@ -360,6 +361,10 @@ from GitHub Pages instead of through the relay tunnel.
         app.use('*', async (c, next) => {
             if (c.req.path.startsWith('/api')) {
                 return await next()
+            }
+
+            if (c.req.path.startsWith('/studio/') && studioHtmlAsset) {
+                return serveEmbeddedAsset(studioHtmlAsset)
             }
 
             if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
@@ -387,6 +392,7 @@ from GitHub Pages instead of through the relay tunnel.
     }
 
     const { distDir, indexHtmlPath } = findWebappDistDir()
+    const studioHtmlPath = join(distDir, 'studio.html')
 
     if (!existsSync(indexHtmlPath)) {
         app.get('/', (c) => {
@@ -399,6 +405,12 @@ from GitHub Pages instead of through the relay tunnel.
     }
 
     app.use('/assets/*', serveStatic({ root: distDir }))
+
+    if (existsSync(studioHtmlPath)) {
+        app.get('/studio/*', async (c) => {
+            return await serveStatic({ root: distDir, path: 'studio.html' })(c, async () => {})
+        })
+    }
 
     app.use('*', async (c, next) => {
         if (c.req.path.startsWith('/api')) {
