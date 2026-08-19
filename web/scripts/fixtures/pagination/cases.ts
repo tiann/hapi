@@ -23,6 +23,39 @@ function agentMessage(init: { id: string; seq: number; at: number }): DecryptedM
     }
 }
 
+/** A throttled live snapshot of a reasoning stream: the CLI re-sends the
+ *  growing buffer under one stable stream id, so only the newest row of a
+ *  stream carries information. `live: false` marks the settled message that
+ *  closes the stream. */
+function reasoningSnapshot(init: {
+    id: string
+    seq: number
+    at: number
+    streamId: string
+    text: string
+    live?: boolean
+}): DecryptedMessage {
+    return {
+        id: init.id,
+        seq: init.seq,
+        localId: null,
+        content: {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'reasoning',
+                    message: init.text,
+                    id: init.streamId,
+                    ...(init.live === false ? {} : { live: true })
+                }
+            }
+        },
+        createdAt: init.at,
+        invokedAt: init.at
+    }
+}
+
 /** A row the chat pipeline hides (normalizes to null): meta system output. */
 function hiddenAgentMessage(init: { id: string; seq: number; at: number }): DecryptedMessage {
     return {
@@ -406,6 +439,39 @@ export const paginationFixtureCases: PaginationFixtureCase[] = [
             {
                 op: 'sse-messages',
                 messages: paddedAgentRun(201, 402)
+            }
+        ]
+    },
+    {
+        name: 'reasoning-snapshots-collapse-to-newest',
+        description: 'A reasoning stream arrives as repeated growing snapshots under one stream id. Only the newest snapshot of each stream survives the window (the timeline folds them into a single block anyway), streams collapse independently, the settled row that closes a stream supersedes its live snapshots, and rows without a stream id are untouched.',
+        ops: [
+            {
+                op: 'sync-tail',
+                responses: [
+                    pageResponse([
+                        agentMessage({ id: 'a-1', seq: 1, at: 1_000 }),
+                        reasoningSnapshot({ id: 's-1', seq: 2, at: 2_000, streamId: 'stream-a', text: 'th' }),
+                        reasoningSnapshot({ id: 's-2', seq: 3, at: 3_000, streamId: 'stream-a', text: 'thin' }),
+                        reasoningSnapshot({ id: 's-3', seq: 4, at: 4_000, streamId: 'stream-a', text: 'thinking' }),
+                        agentMessage({ id: 'a-2', seq: 5, at: 5_000 }),
+                        reasoningSnapshot({ id: 's-4', seq: 6, at: 6_000, streamId: 'stream-b', text: 'more' }),
+                        reasoningSnapshot({ id: 's-5', seq: 7, at: 7_000, streamId: 'stream-b', text: 'more still', live: false })
+                    ], {
+                        direction: 'latest',
+                        epoch: 0,
+                        hasMore: false,
+                        nextBefore: { at: 1_000, seq: 1 },
+                        snapshotHead: { at: 7_000, seq: 7 }
+                    })
+                ]
+            },
+            {
+                op: 'sse-messages',
+                messages: [
+                    reasoningSnapshot({ id: 's-6', seq: 8, at: 8_000, streamId: 'stream-c', text: 'later' }),
+                    reasoningSnapshot({ id: 's-7', seq: 9, at: 9_000, streamId: 'stream-c', text: 'later still' })
+                ]
             }
         ]
     },

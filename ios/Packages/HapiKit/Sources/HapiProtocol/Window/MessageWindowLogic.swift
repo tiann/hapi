@@ -127,15 +127,66 @@ public enum MessageWindowLogic {
         return type == "agent-run-start" || type == "agent-run-update" || type == "agent-run-trace"
     }
 
-    /// Trim to `regularLimit` while never dropping queued rows: the regular
-    /// budget shrinks by the queued count, `agent-run-*` rows trim against
-    /// their own bucket (`agentRunWindowSize`), and queued rows are re-merged
-    /// afterwards (web `trimPreservingQueued`).
+    /// Web `getReasoningStreamId`: the stream a reasoning row belongs to, or
+    /// `nil` for anything else. Unrecognised shapes read as `nil`, which means
+    /// "keep it".
+    private static func reasoningStreamId(_ message: WindowMessage) -> String? {
+        guard let outer = message.content.objectValue,
+              outer["role"]?.stringValue == "agent",
+              let payload = outer["content"]?.objectValue,
+              payload["type"]?.stringValue == "codex",
+              let data = payload["data"]?.objectValue,
+              data["type"]?.stringValue == "reasoning",
+              let id = data["id"]?.stringValue,
+              !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return id
+    }
+
+    /// Web `dropSupersededReasoningSnapshots`: collapse a reasoning stream to
+    /// the one snapshot that still says something. The CLI re-sends a growing
+    /// buffer under a stable stream id every few hundred milliseconds and the
+    /// timeline folds those rows into a single block, so spending window
+    /// budget on the older ones is what pushes the surrounding conversation
+    /// out of reach. Rows with no stream id are left alone.
+    private static func dropSupersededReasoningSnapshots(
+        _ messages: [WindowMessage]
+    ) -> [WindowMessage] {
+        var newestByStream: [String: WindowMessage] = [:]
+        for message in messages {
+            guard let streamId = reasoningStreamId(message) else { continue }
+            guard let incumbent = newestByStream[streamId] else {
+                newestByStream[streamId] = message
+                continue
+            }
+            // Fall back to arrival order when either row predates seq
+            // numbering: `messages` is kept in display order, so later still
+            // means newer.
+            let newer: Bool
+            if let challengerAt = messagePosition(message),
+               let incumbentAt = messagePosition(incumbent) {
+                newer = !(challengerAt < incumbentAt)
+            } else {
+                newer = true
+            }
+            if newer { newestByStream[streamId] = message }
+        }
+        if newestByStream.isEmpty { return messages }
+        let survivors = Set(newestByStream.values.map(\.id))
+        return messages.filter { reasoningStreamId($0) == nil || survivors.contains($0.id) }
+    }
+
+    /// Trim to `regularLimit` while never dropping queued rows: superseded
+    /// reasoning snapshots are collapsed first, the regular budget shrinks by
+    /// the queued count, `agent-run-*` rows trim against their own bucket
+    /// (`agentRunWindowSize`), and queued rows are re-merged afterwards (web
+    /// `trimPreservingQueued`).
     private static func trimPreservingQueued(
-        _ messages: [WindowMessage],
+        _ incoming: [WindowMessage],
         regularLimit: Int,
         mode: TrimMode
     ) -> Trim {
+        let messages = dropSupersededReasoningSnapshots(incoming)
         let queued = messages.filter(\.isQueuedForInvocation)
         let queuedIds = Set(queued.map(\.id))
         let nonQueued = messages.filter { !queuedIds.contains($0.id) }
