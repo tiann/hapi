@@ -34,6 +34,8 @@ export type MessageWindowState = {
     viewMode: MessageViewMode
     messagesVersion: number
     historyVersion: number
+    /** Number of explicit history navigations currently in flight (0 when idle). */
+    navigationLeaseCount: number
     tailRevision: number
 }
 
@@ -41,6 +43,14 @@ export const VISIBLE_WINDOW_SIZE = 400
 export const HISTORY_WINDOW_SIZE = 600
 const AGENT_RUN_WINDOW_SIZE = 800
 const OLDER_LOAD_WINDOW_SIZE = 800
+// While an explicit navigation is in flight the window keeps both ends of
+// the transcript — the head the jump is about to show and the live tail that
+// feeds the StatusBar — with an explicit gap marker between them, bounded so
+// pathological sessions cannot grow the window unbounded. The gap marker is a
+// synthetic user message, which also resets assistant→prompt association at
+// the boundary (a retained tail response must not link to a head prompt).
+const NAVIGATION_HEAD_LIMIT = HISTORY_WINDOW_SIZE
+const NAVIGATION_TAIL_LIMIT = VISIBLE_WINDOW_SIZE
 const PAGE_SIZE = 200
 
 type MessagePosition = {
@@ -54,6 +64,7 @@ type InternalState = MessageWindowState & {
     newestPositionAt: number | null
     newestPositionSeq: number | null
     requiresLatestReset: boolean
+    navigationLeaseCount: number
     preferLatestOnActivation: boolean
     syncGeneration: number
     olderGeneration: number
@@ -241,6 +252,7 @@ function createState(sessionId: string): InternalState {
         newestPositionAt: null,
         newestPositionSeq: null,
         requiresLatestReset: false,
+        navigationLeaseCount: 0,
         preferLatestOnActivation: false,
         syncGeneration: 0,
         olderGeneration: 0
@@ -391,6 +403,7 @@ function buildState(
         | 'newestPositionAt'
         | 'newestPositionSeq'
         | 'requiresLatestReset'
+        | 'navigationLeaseCount'
         | 'preferLatestOnActivation'
         | 'syncGeneration'
         | 'olderGeneration'
@@ -441,6 +454,81 @@ function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
     }
     const type = (payload.data as { type?: unknown }).type
     return type === 'agent-run-start' || type === 'agent-run-update' || type === 'agent-run-trace'
+}
+
+export function isTranscriptGap(message: DecryptedMessage): boolean {
+    return message.id.startsWith('__transcript-gap__')
+}
+
+function makeTranscriptGapMessage(beforeSeq: number | null, afterSeq: number | null, at: number): DecryptedMessage {
+    const missingStart = beforeSeq !== null ? beforeSeq + 1 : null
+    const missingEnd = afterSeq !== null ? afterSeq - 1 : null
+    const range = missingStart !== null && missingEnd !== null && missingEnd >= missingStart
+        ? `${missingStart}–${missingEnd}`
+        : missingStart !== null ? `from ${missingStart}` : missingEnd !== null ? `up to ${missingEnd}` : ''
+    return {
+        id: `__transcript-gap__${missingStart ?? '?'}-${missingEnd ?? '?'}`,
+        // Keep the seq inside the head range so the gap marker never skews
+        // the window bounds (null would collapse to 0 in deriveSeqBounds).
+        seq: beforeSeq !== null ? beforeSeq + 1 : null,
+        localId: null,
+        // Non-null timestamps: the marker must not look like a queued user
+        // message (isQueuedForInvocation filters those before normalization,
+        // which would hide the prompt-association boundary entirely).
+        content: {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: `[History not loaded: messages ${range} were skipped during this jump.]`
+            }
+        },
+        createdAt: at,
+        invokedAt: at
+    } as DecryptedMessage
+}
+
+function trimNavigationRegularWindow(
+    messages: DecryptedMessage[]
+): DecryptedMessage[] {
+    const limit = NAVIGATION_HEAD_LIMIT + NAVIGATION_TAIL_LIMIT
+    if (messages.length <= limit) {
+        return messages
+    }
+    const head = messages.slice(0, NAVIGATION_HEAD_LIMIT)
+    const tail = messages.slice(-NAVIGATION_TAIL_LIMIT)
+    const headLast = head.at(-1) ?? null
+    const tailFirst = tail[0] ?? null
+    const headLastSeq = headLast?.seq ?? null
+    const tailFirstSeq = tailFirst?.seq ?? null
+    const contiguous = headLastSeq !== null && tailFirstSeq !== null && tailFirstSeq === headLastSeq + 1
+    const gapAt = headLast ? (headLast.invokedAt ?? headLast.createdAt) : 0
+    return contiguous
+        ? [...head, ...tail]
+        : [...head, makeTranscriptGapMessage(headLastSeq, tailFirstSeq, gapAt), ...tail]
+}
+
+function trimNavigationWindow(
+    messages: DecryptedMessage[]
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    // Queued/scheduled rows must survive the trim: the queued-messages bar
+    // reads them straight from the window, so dropping them mid-navigation
+    // would silently disable its edit/cancel/steer controls.
+    const queued = messages.filter(isQueuedForInvocation)
+    const queuedIds = new Set(queued.map((message) => message.id))
+    const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
+    const agentRuns = nonQueued.filter(isCodexAgentRunMessage)
+    const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
+    const regularWindow = trimNavigationRegularWindow(regular)
+    const agentRunWindow = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, 'append')
+    const kept = mergeMessages(
+        [...regularWindow, ...agentRunWindow.kept],
+        queued
+    )
+    const keptIds = new Set(kept.map((message) => message.id))
+    return {
+        kept,
+        dropped: messages.filter((message) => !keptIds.has(message.id))
+    }
 }
 
 function trimPreservingQueued(
@@ -503,10 +591,21 @@ function mergeIntoWindow(
         return previous
     }
     const mode = options.mode ?? (previous.viewMode === 'history' ? 'prepend' : 'append')
+    const navigationInFlight = previous.navigationLeaseCount > 0
     const regularLimit = options.regularLimit
         ?? (previous.viewMode === 'history' ? HISTORY_WINDOW_SIZE : VISIBLE_WINDOW_SIZE)
-    const merged = mergeMessages(previous.messages, retainedIncoming)
-    const { kept, dropped } = trimPreservingQueued(merged, regularLimit, mode)
+    // While navigating, drop stale gap markers before merging: each prepend
+    // re-derives the boundary, so old markers would accumulate and would also
+    // break the contiguity check against real rows.
+    const merged = mergeMessages(
+        navigationInFlight
+            ? previous.messages.filter((message) => !isTranscriptGap(message))
+            : previous.messages,
+        retainedIncoming
+    )
+    const { kept, dropped } = navigationInFlight
+        ? trimNavigationWindow(merged)
+        : trimPreservingQueued(merged, regularLimit, mode)
     let next = buildState(previous, {
         messages: kept,
         ...(options.advanceTailRevision
@@ -514,6 +613,14 @@ function mergeIntoWindow(
             : {})
     })
     if (dropped.length === 0) {
+        return next
+    }
+    if (navigationInFlight) {
+        // Trimmed the middle of the transcript while navigating: the head and
+        // the live tail (plus an explicit gap marker) survive, but the drop
+        // must never trigger a tail reset (that is the failure mode #1587
+        // fixes) or re-arm positions — the navigation's fetchOlderMessages
+        // owns the pagination cursors.
         return next
     }
     if (mode === 'append') {
@@ -744,6 +851,12 @@ function startTailSync(sessionId: string, controller: TailSyncController): Promi
         if (!controller.trailingRequested) {
             return
         }
+        if (getState(sessionId).navigationLeaseCount > 0) {
+            // A navigation is still in flight: leave the refresh queued and
+            // let the last lease release start it, instead of re-running the
+            // sync mid-load (which would invalidate in-flight older pages).
+            return
+        }
         controller.trailingRequested = false
         startTailSync(sessionId, controller)
     }
@@ -848,6 +961,14 @@ export function syncTailMessages(
         tailSyncControllers.set(sessionId, controller)
     }
     controller.api = api
+    if (getState(sessionId).navigationLeaseCount > 0) {
+        // A tail refresh requested during an explicit navigation must not be
+        // dropped: it would bump olderGeneration and invalidate the in-flight
+        // older-page loads. Queue it and let setNavigationInFlight(false)
+        // start the sync once the navigation has landed.
+        controller.trailingRequested = true
+        return Promise.resolve()
+    }
     if (!controller.running) {
         return startTailSync(sessionId, controller)
     }
@@ -994,11 +1115,59 @@ export function setMessageViewMode(sessionId: string, mode: MessageViewMode): vo
         if (previous.viewMode === mode) {
             return previous
         }
+        // An explicit navigation (jump to conversation start / turn input /
+        // outline) pins history mode: while it runs, the scroll handler's
+        // near-bottom frames must not flip back to tail mode, which would
+        // trigger a tail re-sync and reset the window mid-load.
+        if (previous.navigationLeaseCount > 0 && mode === 'tail') {
+            return previous
+        }
         if (mode === 'history') {
             return buildState(previous, { viewMode: 'history' })
         }
         return enterTailMode(previous)
     }, true)
+}
+
+/**
+ * Leases the explicit-navigation state (jump to conversation start, jump to
+ * turn input, outline selection). While any lease is held, the window keeps
+ * the newest messages instead of evicting them past the rolling caps,
+ * suppresses tail resets, pins history mode, and pauses tail synchronization
+ * so the navigation's older-page loads are not invalidated mid-flight.
+ *
+ * Leases are reference-counted so overlapping navigations (an outline click
+ * while a conversation-start load is still running) cannot clear the state
+ * early, and the returned release function is idempotent so component
+ * teardown can release safely. The queued tail refresh runs once the last
+ * lease is released.
+ */
+export function beginNavigation(sessionId: string): () => void {
+    updateState(sessionId, (previous) => {
+        return buildState(previous, { navigationLeaseCount: previous.navigationLeaseCount + 1 })
+    })
+    let released = false
+    return () => {
+        if (released) {
+            return
+        }
+        released = true
+        let lastLeaseReleased = false
+        updateState(sessionId, (previous) => {
+            const next = Math.max(0, previous.navigationLeaseCount - 1)
+            lastLeaseReleased = next === 0
+            return buildState(previous, { navigationLeaseCount: next })
+        })
+        if (!lastLeaseReleased) {
+            return
+        }
+        // Run any tail refresh that was queued while the navigation was in flight.
+        const controller = tailSyncControllers.get(sessionId)
+        if (controller && controller.trailingRequested && !controller.running) {
+            controller.trailingRequested = false
+            void startTailSync(sessionId, controller)
+        }
+    }
 }
 
 export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMessage[]): void {

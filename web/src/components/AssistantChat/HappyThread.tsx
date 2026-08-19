@@ -19,12 +19,13 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
 import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
-import { CloseIcon } from '@/components/icons'
+import { CheckIcon, CloseIcon } from '@/components/icons'
 import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import type { OlderLoadOutcome } from '@/lib/message-window-store'
+import { beginNavigation } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -128,6 +129,12 @@ const AUTO_SCROLL_RESUME_THRESHOLD_PX = 1
 const MANUAL_SCROLL_EPSILON_PX = 1
 const INITIAL_SCROLL_SETTLE_MS = 1800
 const INITIAL_SCROLL_SETTLE_DELAYS_MS = [0, 16, 50, 120, 250, 500, 900, 1400, 1800] as const
+// Prepended history renders in passes (assistant-ui tap scheduler). Chromium
+// cancels an in-flight smooth scroll whenever the content height changes, so
+// the conversation-start jump waits for the height to stabilize before
+// starting the animation and re-fires it if late growth cancels it again.
+const NAVIGATION_SCROLL_SETTLE_DEADLINE_MS = 2500
+const NAVIGATION_SCROLL_RETRY_DEADLINE_MS = 4000
 const HISTORY_PRELOAD_MARGIN_PX = 200
 // Bounded backoff for the same logical history load. A failed page leaves the
 // viewport geometry unchanged, so no new scroll/resize signal is guaranteed.
@@ -143,6 +150,8 @@ const WHEEL_GESTURE_GAP_MS = 250
 const KEYBOARD_SCROLL_INTENT_WINDOW_MS = 750
 const POINTER_CANCEL_INTENT_WINDOW_MS = 750
 const UPWARD_SCROLL_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
+const NAVIGATION_TRANSIENT_RETRY_DELAY_MS = 200
+const MAX_NAVIGATION_TRANSIENT_RETRIES = 150
 
 export function getPullToLoadState(distancePx: number): PullToLoadState {
     if (distancePx >= TOP_PULL_TRIGGER_PX) {
@@ -258,6 +267,251 @@ export function getHistoryCoverageRetryDelay(deadline: number, now: number): num
     return Math.max(0, deadline - now) + 16
 }
 
+export function findPreviousUserMessage(
+    viewport: HTMLElement,
+    messageId: string
+): HTMLElement | null {
+    const messageAnchorId = getConversationMessageAnchorId(messageId)
+    const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
+    const messageIndex = messages.findIndex((message) => message.id === messageAnchorId)
+    if (messageIndex < 0) return null
+    for (let index = messageIndex - 1; index >= 0; index -= 1) {
+        // The navigation window trims the middle of long transcripts and
+        // inserts a synthetic gap row: its prompt lives in the omitted
+        // middle, so the scan must stop at the boundary instead of treating
+        // the gap row (or anything before it) as the turn input.
+        if (messages[index].id.includes('__transcript-gap__')) {
+            return null
+        }
+        if (messages[index].dataset.hapiMessageRole === 'user') {
+            return messages[index]
+        }
+    }
+    return null
+}
+
+export function findPromptTarget(
+    viewport: HTMLElement,
+    messageId: string,
+    assistantAnchorState: { current: boolean; nextAnchorId: string | null }
+): HTMLElement | null {
+    const assistantAnchorId = getConversationMessageAnchorId(messageId)
+    const assistantAnchor = document.getElementById(assistantAnchorId)
+    if (assistantAnchor) {
+        assistantAnchorState.current = true
+        assistantAnchorState.nextAnchorId ??=
+            assistantAnchor.nextElementSibling instanceof HTMLElement
+                ? assistantAnchor.nextElementSibling.id
+                : null
+    }
+
+    const target = findPreviousUserMessage(viewport, messageId)
+    if (target) return target
+    if (!assistantAnchorState.current || assistantAnchor) return null
+
+    const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
+    const boundaryIndex = assistantAnchorState.nextAnchorId
+        ? messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
+        : messages.length
+    if (boundaryIndex >= 0) {
+        for (let index = boundaryIndex - 1; index >= 0; index -= 1) {
+            if (messages[index].id.includes('__transcript-gap__')) return null
+            if (messages[index].dataset.hapiMessageRole === 'user') return messages[index]
+        }
+        return null
+    }
+
+    return messages.filter((message) => message.dataset.hapiMessageRole === 'user').at(-1) ?? null
+}
+
+async function findPreviousUserMessageAfterRender(
+    viewport: HTMLElement,
+    messageId: string,
+    assistantAnchorState: { current: boolean; nextAnchorId: string | null }
+): Promise<HTMLElement | null> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+        const target = findPromptTarget(viewport, messageId, assistantAnchorState)
+        if (target) return target
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+    }
+    return findPromptTarget(viewport, messageId, assistantAnchorState)
+}
+
+export async function loadAllOlderMessages(options: {
+    hasMoreMessages: () => boolean
+    loadOlderPreservingScroll: () => Promise<boolean>
+}): Promise<boolean> {
+    while (options.hasMoreMessages()) {
+        const loaded = await options.loadOlderPreservingScroll()
+        if (!loaded) return false
+    }
+    return true
+}
+
+/**
+ * Smooth-scrolls the chat viewport to the top after an explicit navigation
+ * (jump to conversation start). Freshly prepended pages render in passes, and
+ * Chromium cancels a smooth scroll whenever the content height changes — so
+ * wait for the height to stabilize before starting the animation, then
+ * re-fire it if late growth cancels it again. Bounded so a pathological
+ * session cannot stall the navigation forever.
+ */
+export async function smoothScrollViewportToTop(viewport: HTMLElement): Promise<void> {
+    const startedAt = Date.now()
+    await new Promise<void>((resolve) => {
+        let lastHeight = viewport.scrollHeight
+        let stableFrames = 0
+        const settle = () => {
+            if (Date.now() - startedAt >= NAVIGATION_SCROLL_SETTLE_DEADLINE_MS) {
+                resolve()
+                return
+            }
+            const height = viewport.scrollHeight
+            if (height === lastHeight) {
+                stableFrames += 1
+                if (stableFrames >= 3) {
+                    resolve()
+                    return
+                }
+            } else {
+                stableFrames = 0
+                lastHeight = height
+            }
+            // setTimeout rather than rAF: rAF stops in backgrounded tabs and
+            // the deadline check above would never run, stranding the
+            // navigation state. Timers still fire (throttled) when hidden.
+            window.setTimeout(settle, 50)
+        }
+        window.setTimeout(settle, 50)
+    })
+
+    viewport.scrollTo({ top: 0, behavior: 'smooth' })
+    await new Promise<void>((resolve) => {
+        let lastTop = viewport.scrollTop
+        let stalledFrames = 0
+        const watch = () => {
+            if (viewport.scrollTop === 0) {
+                resolve()
+                return
+            }
+            if (Date.now() - startedAt >= NAVIGATION_SCROLL_RETRY_DEADLINE_MS) {
+                // The animation never took (pathological session); land anyway
+                // rather than leaving the view stranded mid-history.
+                viewport.scrollTop = 0
+                resolve()
+                return
+            }
+            const top = viewport.scrollTop
+            if (top === lastTop) {
+                stalledFrames += 1
+                if (stalledFrames >= 4) {
+                    // The animation was canceled (content grew underneath it).
+                    viewport.scrollTo({ top: 0, behavior: 'smooth' })
+                    stalledFrames = 0
+                }
+            } else {
+                stalledFrames = 0
+                lastTop = top
+            }
+            window.setTimeout(watch, 50)
+        }
+        window.setTimeout(watch, 50)
+    })
+}
+
+/**
+ * Resolves once the viewport's scroll position has been stable for a few
+ * samples, or the deadline expires. scrollIntoView({ behavior: 'smooth' })
+ * returns before the animation lands; callers keep their navigation lease
+ * held until the landing so a live window mutation cannot cancel the
+ * animation mid-flight.
+ */
+export async function waitForViewportScrollEnd(viewport: HTMLElement): Promise<void> {
+    const startedAt = Date.now()
+    await new Promise<void>((resolve) => {
+        let lastTop = viewport.scrollTop
+        let stableSamples = 0
+        const watch = () => {
+            if (Date.now() - startedAt >= NAVIGATION_SCROLL_RETRY_DEADLINE_MS) {
+                resolve()
+                return
+            }
+            const top = viewport.scrollTop
+            if (top === lastTop) {
+                stableSamples += 1
+                if (stableSamples >= 4) {
+                    resolve()
+                    return
+                }
+            } else {
+                stableSamples = 0
+                lastTop = top
+            }
+            window.setTimeout(watch, 50)
+        }
+        window.setTimeout(watch, 50)
+    })
+}
+
+/**
+ * Smooth-scrolls the target into view and keeps retrying until it actually
+ * lands (a canceled animation also produces a stable scrollTop, so stability
+ * alone cannot distinguish completion). Falls back to an instant scroll when
+ * the deadline expires. Callers keep their navigation lease held until this
+ * resolves so a live window mutation cannot cancel the animation mid-flight.
+ */
+export async function scrollTargetIntoView(viewport: HTMLElement, target: HTMLElement): Promise<void> {
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < NAVIGATION_SCROLL_RETRY_DEADLINE_MS) {
+        target.scrollIntoView({ block: 'start', behavior: 'smooth' })
+        await waitForViewportScrollEnd(viewport)
+        // scroll-mt-4 keeps a small offset; anything within ~1 row counts as
+        // landed, while a canceled scroll stops far short of the target.
+        const offset = target.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+        if (offset >= 0 && offset <= 32) {
+            return
+        }
+        // A target near the end of the transcript is clamped by the browser
+        // at the maximum scroll position: the prompt is fully visible at the
+        // best reachable spot even though its top offset stays large.
+        const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+        if (Math.abs(viewport.scrollTop - maxScrollTop) <= 1 && offset > 32) {
+            return
+        }
+    }
+    target.scrollIntoView({ block: 'start', behavior: 'auto' })
+}
+
+export async function runAfterPendingHistoryLoad(
+    pendingLoad: Promise<unknown> | null,
+    action: () => boolean | Promise<boolean>
+): Promise<boolean> {
+    if (pendingLoad) await pendingLoad
+    return await action()
+}
+
+export async function loadOlderForNavigationWithRetry(
+    loadOlder: () => Promise<OlderHistoryLoadResult>,
+    options: {
+        maxTransientRetries?: number
+        retryDelayMs?: number
+        wait?: (delayMs: number) => Promise<void>
+    } = {}
+): Promise<boolean> {
+    const maxTransientRetries = options.maxTransientRetries ?? MAX_NAVIGATION_TRANSIENT_RETRIES
+    const retryDelayMs = options.retryDelayMs ?? NAVIGATION_TRANSIENT_RETRY_DELAY_MS
+    const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolve) => {
+        window.setTimeout(resolve, delayMs)
+    }))
+
+    for (let transientRetries = 0; ; transientRetries += 1) {
+        const result = await loadOlder()
+        if (result === 'loaded') return true
+        if (result === 'terminal-stop' || transientRetries >= maxTransientRetries) return false
+        await wait(retryDelayMs)
+    }
+}
+
 function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
     const { t } = useTranslation()
     if (props.count === 0) {
@@ -271,6 +525,35 @@ function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
         >
             {t('misc.newMessage', { n: props.count })} &#8595;
         </button>
+    )
+}
+
+export function ConversationStartStatus(props: {
+    status: 'idle' | 'loading' | 'success' | 'error'
+    kind?: 'conversationStart' | 'prompt'
+}) {
+    const { t } = useTranslation()
+    if (props.status === 'idle') return null
+
+    const isError = props.status === 'error'
+    const prompt = props.kind === 'prompt'
+    const label = props.status === 'loading'
+        ? t(prompt ? 'message.loadingPrompt' : 'message.loadingConversationStart')
+        : props.status === 'success'
+            ? t(prompt ? 'message.reachedPrompt' : 'message.reachedConversationStart')
+            : t(prompt ? 'message.loadPromptFailed' : 'message.loadConversationStartFailed')
+
+    return (
+        <div
+            role={isError ? 'alert' : 'status'}
+            aria-live={isError ? 'assertive' : 'polite'}
+            className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] shadow-lg"
+        >
+            {props.status === 'loading' ? <Spinner size="sm" label={null} /> : null}
+            {props.status === 'success' ? <CheckIcon className="h-4 w-4 text-green-500" /> : null}
+            {props.status === 'error' ? <span className="text-red-500" aria-hidden="true">!</span> : null}
+            <span>{label}</span>
+        </div>
     )
 }
 
@@ -619,6 +902,12 @@ export function HappyThread(props: {
 
     // Smart scroll state: enabled only while the user is intentionally at the bottom.
     const autoScrollEnabledRef = useRef(true)
+    // Keep pagination refs current during render. Explicit navigation can
+    // continue in a microtask immediately after a layout effect settles a
+    // page load, before passive effects would otherwise update these refs.
+    hasMoreMessagesRef.current = props.hasMoreMessages
+    isLoadingMoreRef.current = props.isLoadingMoreMessages
+    onLoadMoreRef.current = props.onLoadMore
     useEffect(() => {
         onViewModeChangeRef.current = props.onViewModeChange
     }, [props.onViewModeChange])
@@ -1399,20 +1688,205 @@ export function HappyThread(props: {
         return await loadOlderFromConsumer() === 'loaded'
     }, [loadOlderFromConsumer])
 
+    const loadOlderForNavigation = useCallback(async (): Promise<boolean> => {
+        return loadOlderForNavigationWithRetry(loadOlderFromConsumer)
+    }, [loadOlderFromConsumer])
+
+    const markExplicitNavigationAwayFromBottom = useCallback(() => {
+        autoScrollEnabledRef.current = false
+        atBottomRef.current = false
+        onViewModeChangeRef.current('history')
+    }, [])
+
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
-        const target = await locateOutlineTargetMessage({
-            targetMessageId: item.targetMessageId,
-            findTarget: (anchorId) => document.getElementById(anchorId),
-            hasMoreMessages: () => hasMoreMessagesRef.current,
-            loadOlderPreservingScroll: loadOlderForOutline
-        })
-        if (target) {
-            target.scrollIntoView({ block: 'start', behavior: 'smooth' })
-            autoScrollEnabledRef.current = false
+        // Serialize with response navigation: an outline pick while a jump is
+        // loading would race the jump's final scroll for the viewport.
+        if (navigationInFlightRef.current) return
+        navigationInFlightRef.current = true
+        setIsNavigationInFlight(true)
+        initialScrollDeadlineRef.current = 0
+        clearInitialScrollTimers()
+        const releaseNavigation = beginOwnedNavigation()
+        try {
+            const target = await locateOutlineTargetMessage({
+                targetMessageId: item.targetMessageId,
+                findTarget: (anchorId) => document.getElementById(anchorId),
+                hasMoreMessages: () => hasMoreMessagesRef.current,
+                loadOlderPreservingScroll: loadOlderForOutline
+            })
+            if (target && viewportRef.current) {
+                markExplicitNavigationAwayFromBottom()
+                await scrollTargetIntoView(viewportRef.current, target)
+            }
+            props.onOutlineItemClick?.(item)
+            props.onOutlineOpenChange(false)
+        } finally {
+            navigationInFlightRef.current = false
+            setIsNavigationInFlight(false)
+            releaseNavigation()
         }
-        props.onOutlineItemClick?.(item)
-        props.onOutlineOpenChange(false)
-    }, [loadOlderForOutline, props.onOutlineItemClick, props.onOutlineOpenChange])
+    }, [loadOlderForOutline, markExplicitNavigationAwayFromBottom, props.onOutlineItemClick, props.onOutlineOpenChange])
+
+    const scrollToMessage = useCallback(async (messageId: string): Promise<boolean> => {
+        initialScrollDeadlineRef.current = 0
+        clearInitialScrollTimers()
+        const target = document.getElementById(getConversationMessageAnchorId(messageId))
+        const viewport = viewportRef.current
+        if (!target || !viewport?.contains(target)) return false
+        markExplicitNavigationAwayFromBottom()
+        await scrollTargetIntoView(viewport, target)
+        return true
+    }, [clearInitialScrollTimers, markExplicitNavigationAwayFromBottom])
+
+    const [promptNavigationStatus, setPromptNavigationStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+    const [loadingPromptMessageId, setLoadingPromptMessageId] = useState<string | null>(null)
+    const navigationInFlightRef = useRef(false)
+    // Release every in-flight navigation lease on unmount so a session switch
+    // mid-load cannot leave the window store in navigation mode. A Set (not a
+    // single ref): overlapping navigations each own a lease, and the first
+    // completion must not clear teardown ownership for the others.
+    const activeNavigationReleasesRef = useRef(new Set<() => void>())
+    const beginOwnedNavigation = useCallback(() => {
+        const release = beginNavigation(sessionIdRef.current)
+        activeNavigationReleasesRef.current.add(release)
+        return () => {
+            activeNavigationReleasesRef.current.delete(release)
+            release()
+        }
+    }, [])
+    useEffect(() => () => {
+        for (const release of activeNavigationReleasesRef.current) {
+            release()
+        }
+        activeNavigationReleasesRef.current.clear()
+    }, [])
+    const [isNavigationInFlight, setIsNavigationInFlight] = useState(false)
+    const promptNavigationTimerRef = useRef<number | null>(null)
+    const scrollToPromptForMessage = useCallback(async (messageId: string): Promise<boolean> => {
+        if (promptNavigationTimerRef.current !== null) {
+            window.clearTimeout(promptNavigationTimerRef.current)
+            promptNavigationTimerRef.current = null
+        }
+        setLoadingPromptMessageId(messageId)
+        setPromptNavigationStatus('loading')
+        initialScrollDeadlineRef.current = 0
+        clearInitialScrollTimers()
+        markExplicitNavigationAwayFromBottom()
+
+        const viewport = viewportRef.current
+        try {
+            if (!viewport) throw new Error('Chat viewport is unavailable')
+            const assistantAnchorState = {
+                current: false,
+                nextAnchorId: null as string | null
+            }
+            let target = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState)
+            while (!target && hasMoreMessagesRef.current) {
+                const loaded = await loadOlderForNavigation()
+                if (!loaded) throw new Error('Could not load older messages')
+                // assistant-ui applies the expanded external message list in
+                // its own render pass. Wait for the new anchors instead of
+                // treating a successfully loaded page as an immediate miss.
+                target = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState)
+            }
+            if (!target) throw new Error('Could not find the user prompt')
+            await scrollTargetIntoView(viewport, target)
+            setPromptNavigationStatus('success')
+            promptNavigationTimerRef.current = window.setTimeout(() => setPromptNavigationStatus('idle'), 1400)
+            return true
+        } catch (error) {
+            console.error('Failed to locate assistant prompt:', error)
+            setPromptNavigationStatus('error')
+            promptNavigationTimerRef.current = window.setTimeout(() => setPromptNavigationStatus('idle'), 3000)
+            return false
+        } finally {
+            setLoadingPromptMessageId(null)
+        }
+    }, [clearInitialScrollTimers, loadOlderForNavigation, markExplicitNavigationAwayFromBottom])
+
+    const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string): Promise<boolean> => {
+        if (navigationInFlightRef.current) return false
+        navigationInFlightRef.current = true
+        setIsNavigationInFlight(true)
+        const releaseNavigation = beginOwnedNavigation()
+        try {
+            if (replyToMessageId) {
+                const scrolled = await runAfterPendingHistoryLoad(
+                    pendingLoadPromiseRef.current,
+                    () => scrollToMessage(replyToMessageId)
+                )
+                if (scrolled) return true
+            }
+            return await scrollToPromptForMessage(messageId)
+        } finally {
+            navigationInFlightRef.current = false
+            setIsNavigationInFlight(false)
+            releaseNavigation()
+        }
+    }, [scrollToMessage, scrollToPromptForMessage])
+
+    const [conversationStartStatus, setConversationStartStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+    const conversationStartStatusTimerRef = useRef<number | null>(null)
+    const isLoadingConversationStart = conversationStartStatus === 'loading'
+    const scrollToConversationStart = useCallback(async (): Promise<boolean> => {
+        if (navigationInFlightRef.current) return false
+        navigationInFlightRef.current = true
+        setIsNavigationInFlight(true)
+        const releaseNavigation = beginOwnedNavigation()
+        if (conversationStartStatusTimerRef.current !== null) {
+            window.clearTimeout(conversationStartStatusTimerRef.current)
+            conversationStartStatusTimerRef.current = null
+        }
+        initialScrollDeadlineRef.current = 0
+        clearInitialScrollTimers()
+        setConversationStartStatus('loading')
+        markExplicitNavigationAwayFromBottom()
+        try {
+            const loadedAll = await loadAllOlderMessages({
+                hasMoreMessages: () => hasMoreMessagesRef.current,
+                loadOlderPreservingScroll: loadOlderForNavigation
+            })
+            if (!loadedAll) {
+                setConversationStartStatus('error')
+                conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 3000)
+                return false
+            }
+            const viewport = viewportRef.current
+            if (!viewport) {
+                setConversationStartStatus('error')
+                conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 3000)
+                return false
+            }
+            // Preserve the pre-jump baseline so the first smooth-scroll frames
+            // still count as upward movement. Zeroing this first makes an early
+            // near-bottom frame look non-upward and can flip view mode back to
+            // tail, compacting the history we just loaded.
+            lastScrollTopRef.current = viewport.scrollTop
+            await smoothScrollViewportToTop(viewport)
+            setConversationStartStatus('success')
+            conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 1400)
+            return true
+        } catch (error) {
+            console.error('Failed to load conversation start:', error)
+            setConversationStartStatus('error')
+            conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 3000)
+            return false
+        } finally {
+            navigationInFlightRef.current = false
+            setIsNavigationInFlight(false)
+            releaseNavigation()
+        }
+    }, [clearInitialScrollTimers, loadOlderForNavigation, markExplicitNavigationAwayFromBottom])
+
+    useEffect(() => () => {
+        if (conversationStartStatusTimerRef.current !== null) {
+            window.clearTimeout(conversationStartStatusTimerRef.current)
+        }
+        if (promptNavigationTimerRef.current !== null) {
+            window.clearTimeout(promptNavigationTimerRef.current)
+        }
+    }, [])
+
 
     useEffect(() => {
         if (
@@ -1602,6 +2076,8 @@ export function HappyThread(props: {
         })
     }, [props.session])
 
+    const hasNavigationStatus = conversationStartStatus !== 'idle' || promptNavigationStatus !== 'idle'
+
     return (
         <HappyChatProvider value={{
             api: props.api,
@@ -1621,10 +2097,15 @@ export function HappyThread(props: {
             isSyncingTail: props.isSyncingTail,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
             onNestedScrollFollowChange: handleNestedScrollFollowChange,
-            loadOlderMessagesPreservingScroll: loadOlderFromConsumer
+            loadOlderMessagesPreservingScroll: loadOlderFromConsumer,
+            jumpToPrompt,
+            loadingPromptMessageId,
+            scrollToConversationStart,
+            isLoadingConversationStart,
+            isNavigationInFlight
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
-                {!props.isSyncingTail && (
+                {!props.isSyncingTail && !hasNavigationStatus && (
                     props.isLoadingMoreMessages || pullToLoadState !== 'idle'
                 ) ? (
                     <div
@@ -1644,6 +2125,10 @@ export function HappyThread(props: {
                         </span>
                     </div>
                 ) : null}
+                <ConversationStartStatus
+                    status={conversationStartStatus !== 'idle' ? conversationStartStatus : promptNavigationStatus}
+                    kind={conversationStartStatus !== 'idle' ? 'conversationStart' : 'prompt'}
+                />
                 <ThreadPrimitive.Viewport
                     asChild
                     autoScroll={false}
