@@ -1,0 +1,108 @@
+import { describe, expect, it } from 'bun:test'
+import { Hono } from 'hono'
+import { Store } from '../../store'
+import type { WebAppEnv } from '../middleware/auth'
+import { createPublicStudioRoutes, createStudioRoutes } from './studios'
+
+function createSession(store: Store, namespace = 'default', sessionId = 'session-1') {
+    store.sessions.getOrCreateSession(
+        `tag-${sessionId}`,
+        { path: '/repo', host: 'private-host', flavor: 'codex', name: 'Private session' },
+        null,
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        sessionId
+    )
+}
+
+function createApp(store: Store, engine: unknown) {
+    const app = new Hono<WebAppEnv>()
+    app.use('*', async (c, next) => {
+        c.set('namespace', 'default')
+        c.set('userId', 1)
+        await next()
+    })
+    app.route('/api', createStudioRoutes({ store, getSyncEngine: () => engine as never }))
+    app.route('/api', createPublicStudioRoutes({ store, getSyncEngine: () => engine as never }))
+    return app
+}
+
+describe('studio routes', () => {
+    it('creates an isolated room and exposes a redacted public transcript', async () => {
+        const store = new Store(':memory:')
+        createSession(store)
+        const engine = {
+            resolveSessionAccess: () => ({
+                ok: true,
+                sessionId: 'session-1',
+                session: {
+                    id: 'session-1',
+                    namespace: 'default',
+                    active: true,
+                    model: 'gpt-test',
+                    metadata: { flavor: 'codex', path: '/private/repo', host: 'private-host' }
+                }
+            }),
+            sendMessage: async () => undefined
+        }
+        store.messages.addMessage('session-1', { role: 'user', content: { type: 'text', text: 'Review this' } })
+        store.messages.addMessage('session-1', { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Looks good.' } } })
+        const app = createApp(store, engine)
+
+        const created = await app.request('/api/studios', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'session-1' })
+        })
+        expect(created.status).toBe(200)
+        const room = (await created.json() as { room: { id: string; shareToken: string } }).room
+
+        const publicResponse = await app.request(`/api/public/studios/${room.shareToken}`)
+        expect(publicResponse.status).toBe(200)
+        const body = await publicResponse.json() as { messages: Array<{ text: string }>; room: Record<string, unknown> }
+        expect(body.messages.map((message) => message.text)).toEqual(['Review this', 'Looks good.'])
+        expect(body.room).not.toHaveProperty('shareToken')
+        expect(body.room).not.toHaveProperty('sessionId')
+    })
+
+    it('queues a guest suggestion and submits it only through the owner decision endpoint', async () => {
+        const store = new Store(':memory:')
+        createSession(store)
+        const sent: string[] = []
+        const engine = {
+            resolveSessionAccess: () => ({
+                ok: true,
+                sessionId: 'session-1',
+                session: { id: 'session-1', namespace: 'default', active: true, metadata: {} }
+            }),
+            sendMessage: async (_sessionId: string, input: { text: string }) => { sent.push(input.text) }
+        }
+        const app = createApp(store, engine)
+        const created = await app.request('/api/studios', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'session-1' })
+        })
+        const room = (await created.json() as { room: { id: string; shareToken: string } }).room
+
+        const postResponse = await app.request(`/api/public/studios/${room.shareToken}/posts`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ guestId: 'guest-12345678', authorName: 'Guest', kind: 'suggestion', text: 'Run tests' })
+        })
+        expect(postResponse.status).toBe(201)
+        const post = (await postResponse.json() as { post: { id: string; status: string } }).post
+        expect(post.status).toBe('open')
+        expect(sent).toEqual([])
+
+        const decision = await app.request(`/api/studios/${room.id}/posts/${post.id}/decision`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'submit', text: 'Run the focused tests first.' })
+        })
+        expect(decision.status).toBe(200)
+        expect(sent).toEqual(['[Studio suggestion from Guest]\nRun the focused tests first.'])
+    })
+})

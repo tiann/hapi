@@ -28,7 +28,10 @@ import type {
     HubHealthResponse,
     SessionResponse,
     SessionTitleSuggestionResponse,
-    SessionsResponse
+    SessionsResponse,
+    StudioAccessMode,
+    StudioOwnerResponse,
+    StudioPost
 } from '@/types/api'
 import type {
     AgyModelsResponse,
@@ -351,6 +354,50 @@ export class ApiClient {
 
     async getSession(sessionId: string): Promise<SessionResponse> {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+    }
+
+    async createStudio(input: {
+        sessionId: string
+        title?: string
+        accessMode?: StudioAccessMode
+    }): Promise<StudioOwnerResponse> {
+        return await this.request<StudioOwnerResponse>('/api/studios', {
+            method: 'POST',
+            body: JSON.stringify(input)
+        })
+    }
+
+    async getStudio(studioId: string): Promise<StudioOwnerResponse> {
+        return await this.request<StudioOwnerResponse>(`/api/studios/${encodeURIComponent(studioId)}`)
+    }
+
+    async getStudioForSession(sessionId: string): Promise<{ room: StudioOwnerResponse['room'] | null; posts: StudioPost[] }> {
+        return await this.request(`/api/studios/session/${encodeURIComponent(sessionId)}`)
+    }
+
+    async updateStudio(
+        studioId: string,
+        input: { title?: string; accessMode?: StudioAccessMode; rotateToken?: boolean }
+    ): Promise<{ room: StudioOwnerResponse['room'] }> {
+        return await this.request(`/api/studios/${encodeURIComponent(studioId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify(input)
+        })
+    }
+
+    async revokeStudio(studioId: string): Promise<void> {
+        await this.request(`/api/studios/${encodeURIComponent(studioId)}`, { method: 'DELETE' })
+    }
+
+    async decideStudioPost(
+        studioId: string,
+        postId: string,
+        input: { action: 'submit' | 'dismiss'; text?: string }
+    ): Promise<{ post: StudioPost | null }> {
+        return await this.request(
+            `/api/studios/${encodeURIComponent(studioId)}/posts/${encodeURIComponent(postId)}/decision`,
+            { method: 'POST', body: JSON.stringify(input) }
+        )
     }
 
     async getSessionExport(sessionId: string, options?: { signal?: AbortSignal }): Promise<HapiSessionExport> {
