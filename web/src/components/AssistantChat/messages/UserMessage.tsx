@@ -8,9 +8,11 @@ import { PeerSenderChip } from '@/components/AssistantChat/messages/PeerSenderCh
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { useTranslation } from '@/lib/use-translation'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
+    const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
