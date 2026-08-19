@@ -2,6 +2,8 @@ import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
+import { getLiveReasoningStreamId } from '@hapi/protocol/messages'
+
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
 
@@ -381,6 +383,49 @@ export function getDeliverableMessagesAfter(
     `).all(sessionId, safeAfterSeq, now, safeLimit) as DbMessageRow[]
 
     return rows.map(toStoredMessage)
+}
+
+/** How far back to look for a stream's replaceable snapshots.
+ *
+ *  The CLI re-sends a growing reasoning buffer every few hundred milliseconds,
+ *  so the previous snapshot of a stream is always among the newest rows of its
+ *  session. Scanning a bounded tail keeps this off the hot path on sessions
+ *  with tens of thousands of messages; anything older than the window is left
+ *  alone, which errs toward keeping data. */
+const REASONING_SNAPSHOT_LOOKBACK = 50
+
+/** Drop the replaceable snapshots of one reasoning stream.
+ *
+ *  Only messages explicitly marked live are eligible, and `keepMessageId` is
+ *  always spared. Callers run this *after* storing the message that supersedes
+ *  them, so the stream never passes through a moment with no row at all — the
+ *  two statements are separate transactions, and a crash between them must not
+ *  be able to take the whole stream with it. Returns how many rows were
+ *  removed. */
+export function deleteLiveReasoningSnapshots(
+    db: Database,
+    sessionId: string,
+    streamId: string,
+    keepMessageId?: string
+): number {
+    const rows = db.prepare(`
+        SELECT id, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+
+    const staleIds = rows
+        .filter((row) => row.id !== keepMessageId
+            && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
+        .map((row) => row.id)
+    if (staleIds.length === 0) return 0
+
+    const placeholders = staleIds.map(() => '?').join(', ')
+    const result = db.prepare(
+        `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
+    ).run(sessionId, ...staleIds)
+    return Number(result.changes)
 }
 
 /** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.

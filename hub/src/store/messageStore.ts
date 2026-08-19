@@ -5,6 +5,7 @@ import {
     addMessage,
     addImportedMessage,
     cancelQueuedMessage,
+    deleteLiveReasoningSnapshots,
     deleteQueuedMessageById,
     claimIndeterminateMessage,
     lookupQueuedMessage,
@@ -52,6 +53,10 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    deleteLiveReasoningSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
+        return deleteLiveReasoningSnapshots(this.db, sessionId, streamId, keepMessageId)
     }
 
     addImportedMessage(sessionId: string, content: unknown, localId: string, createdAt: number): { message: StoredMessage; inserted: boolean } {
