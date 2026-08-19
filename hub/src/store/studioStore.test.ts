@@ -73,4 +73,16 @@ describe('StudioStore', () => {
         expect(store.studios.listPostsByKind(room.id, 'discussion')).toHaveLength(1)
         expect(store.studios.listPostsByKind(room.id, 'suggestion', null)).toHaveLength(205)
     })
+
+    it('enforces a durable lifetime post limit atomically', () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        store.sessions.getOrCreateSession('tag-a', {}, null, 'alpha', undefined, undefined, undefined, 'session-a')
+        const room = store.studios.createOrActivateRoom('session-a', 'alpha', 'Room', 'contribute')
+        const input = { roomId: room.id, guestId: 'guest-12345678', authorName: 'Guest', kind: 'discussion' as const, text: 'Post' }
+
+        expect(store.studios.createPostWithinLimit(input, 1)).not.toBeNull()
+        expect(store.studios.createPostWithinLimit(input, 1)).toBeNull()
+        expect(store.studios.listPosts(room.id, 10)).toHaveLength(1)
+    })
 })

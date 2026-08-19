@@ -124,7 +124,12 @@ function StudioOwnerRoom(props: { studioId: string }) {
     const decisionMutation = useMutation({
         mutationFn: (input: { postId: string; action: 'submit' | 'dismiss'; text?: string }) =>
             api.decideStudioPost(studioId, input.postId, input),
-        onSuccess: refresh
+        onSuccess: (result) => {
+            if (result.post) {
+                setOlderSuggestions((current) => current.map((post) => post.id === result.post!.id ? result.post! : post))
+            }
+            refresh()
+        }
     })
     const revokeMutation = useMutation({
         mutationFn: () => api.revokeStudio(studioId),
@@ -213,7 +218,7 @@ function StudioOwnerRoom(props: { studioId: string }) {
                     <section>
                         <div className="mb-2 flex items-center justify-between">
                             <h2 className="text-xs font-semibold uppercase text-[var(--app-hint)]">{t('studio.owner.suggestions')}</h2>
-                            <span className="text-xs text-[var(--app-hint)]">{suggestions.filter((post) => post.status === 'open').length}</span>
+                            <span className="text-xs text-[var(--app-hint)]">{query.data?.openSuggestionCount ?? suggestions.filter((post) => post.status === 'open').length}</span>
                         </div>
                         <div className="overflow-hidden rounded-md border border-[var(--app-border)]">
                             {suggestions.length === 0 ? (
@@ -247,7 +252,21 @@ function StudioOwnerRoom(props: { studioId: string }) {
                                 <div className="p-4 text-center text-sm text-[var(--app-hint)]">{t('studio.owner.noDiscussion')}</div>
                             ) : discussions.map((post) => (
                                 <div key={post.id} className="px-3 py-3">
-                                    <div className="text-xs font-medium text-[var(--app-hint)]">{post.authorName}</div>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="text-xs font-medium text-[var(--app-hint)]">{post.authorName}</div>
+                                        {post.status === 'open' ? (
+                                            <button
+                                                type="button"
+                                                disabled={decisionMutation.isPending}
+                                                onClick={() => decisionMutation.mutate({ postId: post.id, action: 'dismiss' })}
+                                                className="shrink-0 rounded-md px-2 py-1 text-xs text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] disabled:opacity-50"
+                                            >
+                                                {t('studio.owner.dismiss')}
+                                            </button>
+                                        ) : (
+                                            <span className="shrink-0 text-xs text-[var(--app-hint)]">{t(`studio.post.status.${post.status}`)}</span>
+                                        )}
+                                    </div>
                                     <div className="mt-1 whitespace-pre-wrap text-sm text-[var(--app-fg)]">{post.text}</div>
                                 </div>
                             ))}

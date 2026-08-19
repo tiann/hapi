@@ -6,7 +6,7 @@
     "type": "module",
     "scripts": {
         "dev": "vite",
-        "build": "vite build && cp dist/index.html dist/404.html && rm -rf dist-studio && vite build --config vite.studio.config.ts && cp dist-studio/studio.html dist/studio.html && mkdir -p dist/studio-assets && cp -R dist-studio/studio-assets/. dist/studio-assets/ && rm -rf dist-studio",
+        "build": "vite build && rm -rf dist-studio && vite build --config vite.studio.config.ts && cp dist-studio/studio.html dist/studio.html && mkdir -p dist/studio-assets && cp -R dist-studio/studio-assets/. dist/studio-assets/ && rm -rf dist-studio",
         "typecheck": "tsc --noEmit",
         "preview": "vite preview",
         "test": "vitest run",

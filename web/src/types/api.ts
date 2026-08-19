@@ -358,6 +358,8 @@ export type StudioPost = {
     submittedText: string | null
 }
 
+export type PublicStudioPost = Pick<StudioPost, 'id' | 'roomId' | 'authorName' | 'kind' | 'text' | 'createdAt'>
+
 export type StudioOwnerResponse = {
     room: StudioRoom
     posts: StudioPost[]
@@ -380,7 +382,7 @@ export type PublicStudioResponse = {
         model: string | null
     }
     messages: PublicStudioMessage[]
-    posts: StudioPost[]
+    posts: PublicStudioPost[]
 }
 
 export type SyncEvent = ProtocolSyncEvent

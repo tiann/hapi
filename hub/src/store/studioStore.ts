@@ -65,6 +65,25 @@ function mapPost(row: StudioPostRow): StoredStudioPost {
 export class StudioStore {
     constructor(private readonly db: Database) {}
 
+    private insertPost(input: {
+        roomId: string
+        guestId: string
+        authorName: string
+        kind: StudioPostKind
+        text: string
+        createdAt?: number
+    }): StoredStudioPost {
+        const id = randomUUID()
+        const now = input.createdAt ?? Date.now()
+        this.db.prepare(`
+            INSERT INTO studio_posts (
+                id, room_id, guest_id, author_name, kind, text,
+                status, created_at, decided_at, submitted_text
+            ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, NULL, NULL)
+        `).run(id, input.roomId, input.guestId, input.authorName, input.kind, input.text, now)
+        return this.getPost(id, input.roomId)!
+    }
+
     createOrActivateRoom(
         sessionId: string,
         namespace: string,
@@ -236,15 +255,33 @@ export class StudioStore {
         text: string
         createdAt?: number
     }): StoredStudioPost {
-        const id = randomUUID()
-        const now = input.createdAt ?? Date.now()
-        this.db.prepare(`
-            INSERT INTO studio_posts (
-                id, room_id, guest_id, author_name, kind, text,
-                status, created_at, decided_at, submitted_text
-            ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, NULL, NULL)
-        `).run(id, input.roomId, input.guestId, input.authorName, input.kind, input.text, now)
-        return this.getPost(id, input.roomId)!
+        return this.insertPost(input)
+    }
+
+    /**
+     * Atomically enforce a lifetime post cap for public rooms. The in-memory
+     * rate limiter protects bursts, while this durable cap protects the hub's
+     * SQLite file across restarts and rotating guest identities.
+     */
+    createPostWithinLimit(
+        input: {
+            roomId: string
+            guestId: string
+            authorName: string
+            kind: StudioPostKind
+            text: string
+            createdAt?: number
+        },
+        maxPosts: number
+    ): StoredStudioPost | null {
+        const limit = Math.max(1, Math.floor(maxPosts))
+        return this.db.transaction(() => {
+            const row = this.db.prepare(
+                'SELECT COUNT(*) AS count FROM studio_posts WHERE room_id = ?'
+            ).get(input.roomId) as { count: number }
+            if (row.count >= limit) return null
+            return this.insertPost(input)
+        })()
     }
 
     getPost(id: string, roomId: string): StoredStudioPost | null {

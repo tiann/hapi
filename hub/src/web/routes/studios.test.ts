@@ -130,6 +130,28 @@ describe('studio routes', () => {
         const body = await response.json() as { posts: Array<{ kind: string; text: string }> }
         expect(body.posts).toHaveLength(1)
         expect(body.posts[0]).toMatchObject({ kind: 'discussion', text: 'Visible' })
+        expect(body.posts[0]).not.toHaveProperty('guestId')
+        expect(body.posts[0]).not.toHaveProperty('status')
+    })
+
+    it('allows the owner to dismiss a public discussion', async () => {
+        const store = new Store(':memory:')
+        createSession(store)
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true, sessionId: 'session-1', session: { id: 'session-1', namespace: 'default', active: true, metadata: {} } })
+        }
+        const room = store.studios.createOrActivateRoom('session-1', 'default', 'Room', 'contribute')
+        const post = store.studios.createPost({ roomId: room.id, guestId: 'guest-a-12345678', authorName: 'A', kind: 'discussion', text: 'Remove me' })
+        const app = createApp(store, engine)
+
+        const decision = await app.request(`/api/studios/${room.id}/posts/${post.id}/decision`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'dismiss' })
+        })
+        expect(decision.status).toBe(200)
+        const publicResponse = await app.request(`/api/public/studios/${room.shareToken}`)
+        expect((await publicResponse.json() as { posts: unknown[] }).posts).toHaveLength(0)
     })
 
     it('keeps recent discussions and all suggestions independently beyond 200 mixed posts', async () => {

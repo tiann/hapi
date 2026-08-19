@@ -5,7 +5,7 @@ import {
 } from '@hapi/protocol'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import type { Store, StoredMessage, StoredStudioRoom } from '../../store'
+import type { Store, StoredMessage, StoredStudioPost, StoredStudioRoom } from '../../store'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSession, requireSyncEngine } from './guards'
@@ -45,6 +45,19 @@ type PublicStudioMessage = {
     text: string
     createdAt: number
     seq: number
+}
+
+type PublicStudioPost = Pick<StoredStudioPost, 'id' | 'roomId' | 'authorName' | 'kind' | 'text' | 'createdAt'>
+
+function projectPublicPost(post: StoredStudioPost): PublicStudioPost {
+    return {
+        id: post.id,
+        roomId: post.roomId,
+        authorName: post.authorName,
+        kind: post.kind,
+        text: post.text,
+        createdAt: post.createdAt
+    }
 }
 
 function sessionTitle(session: Session): string {
@@ -130,6 +143,7 @@ function publicRoom(room: StoredStudioRoom, session: Session) {
 const POST_RATE_WINDOW_MS = 60_000
 const POST_RATE_LIMIT_PER_ROOM = 60
 const MAX_POST_RATE_BUCKETS = 1_000
+const MAX_STUDIO_POSTS_PER_ROOM = 2_000
 const postRateBuckets = new Map<string, number[]>()
 
 function allowPost(key: string, now = Date.now()): boolean {
@@ -187,7 +201,10 @@ export function createPublicStudioRoutes(options: {
             if (page.length < 200) break
         }
         const publicMessages = messages.slice(-200)
-        const publicPosts = options.store.studios.listPostsByKind(room.id, 'discussion', 200)
+        const publicPosts = options.store.studios
+            .listPostsByKind(room.id, 'discussion', 200)
+            .filter((post) => post.status === 'open')
+            .map(projectPublicPost)
         return c.json({
             room: publicRoom(room, session.session),
             messages: publicMessages,
@@ -208,7 +225,11 @@ export function createPublicStudioRoutes(options: {
         if (!allowPost(`room:${room.id}`)) {
             return c.json({ error: 'Too many posts; try again shortly' }, 429)
         }
-        const post = options.store.studios.createPost({ roomId: room.id, ...parsed.data })
+        const post = options.store.studios.createPostWithinLimit(
+            { roomId: room.id, ...parsed.data },
+            MAX_STUDIO_POSTS_PER_ROOM
+        )
+        if (!post) return c.json({ error: 'This studio has reached its post limit' }, 429)
         return c.json({ post }, 201)
     })
 
@@ -291,14 +312,18 @@ export function createStudioRoutes(options: {
         const body = await c.req.json().catch(() => null)
         const parsed = decidePostSchema.safeParse(body)
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
+        if (parsed.data.action === 'dismiss') {
+            const post = options.store.studios.getPost(c.req.param('postId'), room.id)
+            if (!post || post.status !== 'open') {
+                return c.json({ error: 'Open post not found' }, 404)
+            }
+            const updated = options.store.studios.decidePost(post.id, room.id, 'dismissed')
+            return c.json({ post: updated })
+        }
+
         const post = options.store.studios.getPost(c.req.param('postId'), room.id)
         if (!post || post.kind !== 'suggestion' || post.status !== 'open') {
             return c.json({ error: 'Open suggestion not found' }, 404)
-        }
-
-        if (parsed.data.action === 'dismiss') {
-            const updated = options.store.studios.decidePost(post.id, room.id, 'dismissed')
-            return c.json({ post: updated })
         }
 
         const engine = requireSyncEngine(c, options.getSyncEngine)
