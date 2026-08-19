@@ -58,11 +58,12 @@ export class FcmNotificationChannel implements NotificationChannel {
         const sessionName = getSessionName(session)
         const title = formatModelErrorTitle(notification.kind)
         const body = formatModelErrorBody(notification, { agentName, sessionName })
+        const tag = `model-error-${session.id}-${notification.eventId}`
 
         const result = await this.deliver(session, {
             title,
             body,
-            tag: `model-error-${session.id}-${notification.eventId}`,
+            tag,
             data: {
                 type: 'model-error',
                 sessionId: session.id,
@@ -71,7 +72,8 @@ export class FcmNotificationChannel implements NotificationChannel {
                 title,
                 body,
                 contractVersion: NATIVE_CONTRACT_VERSION,
-                severity: 'error'
+                severity: 'error',
+                tag
             }
         }, ctx)
         if ((result?.sent ?? 0) > 0) {

@@ -627,6 +627,7 @@ describe('FcmNotificationChannel', () => {
         expect(sent[0].data.type).toBe('model-error')
         expect(sent[0].data.severity).toBe('error')
         expect(sent[0].tag).toBe('model-error-session-ready-evt-1710000000000')
+        expect(sent[0].data.tag).toBe('model-error-session-ready-evt-1710000000000')
         expect(sent[0].title).toBe('Quota exhausted')
         expect(sent[0].body).toContain('Codex')
         expect(sent[0].body).toContain('Demo')

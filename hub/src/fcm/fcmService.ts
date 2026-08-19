@@ -29,6 +29,11 @@ export type FcmDataPayload = {
      * when the agent did not emit a summary.
      */
     notifySummary?: string
+    /**
+     * Coalescing identity. Present on `model-error` as
+     * `model-error-<sessionId>-<eventId>` so distinct errors do not overwrite.
+     */
+    tag?: string
 }
 
 export type FcmSendPayload = {
@@ -186,6 +191,8 @@ export class FcmService {
         }
         if (payload.tag) {
             dataRecord.tag = payload.tag
+        } else if (payload.data.tag) {
+            dataRecord.tag = payload.data.tag
         }
 
         // Data-only: if we also send `notification`, Android does not call
