@@ -506,4 +506,65 @@ describe('mergeSessions job redirect through SessionCache (#1404)', () => {
                 ?.jobsTransferredToSessionId
         ).toBeUndefined()
     })
+
+    it('resolves + heartbeats via oldSessionId while scratchlist attachment I/O is still awaited', async () => {
+        const { store, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+        store.sessionJobs.upsert(oldSession.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 12,
+            runId: 'run-mid-merge'
+        })
+        const created = store.scratchlist.create(oldSession.id, 'note with attachment', {
+            entryId: 'note-1',
+            attachments: [{
+                id: 'att-1',
+                filename: 'clip.png',
+                mimeType: 'image/png',
+                size: 4,
+                path: `hub://scratchlist/${oldSession.id}/att-1-clip.png`
+            }]
+        })
+        expect(created.outcome).toBe('created')
+
+        let releaseGate!: () => void
+        const gate = new Promise<void>((resolve) => {
+            releaseGate = resolve
+        })
+        const storage = await import('../scratchlistAttachments/storage')
+        const moveSpy = spyOn(storage, 'moveScratchlistAttachmentFilesForSession')
+            .mockImplementation(async (_home, _ns, _from, _to, attachments) => {
+                await gate
+                return attachments
+            })
+        spyOn(storage, 'deleteScratchlistSessionAttachmentDir').mockResolvedValue(undefined)
+
+        const mergePromise = cache.mergeSessionHistory(oldSession.id, newSession.id, 'default', {
+            mergeAgentState: false
+        })
+
+        // Wait until merge is blocked inside attachment I/O (redirects already committed).
+        for (let i = 0; i < 50 && moveSpy.mock.calls.length === 0; i += 1) {
+            await Bun.sleep(10)
+        }
+        expect(moveSpy.mock.calls.length).toBeGreaterThan(0)
+
+        // Cache must already follow the redirect — not wait for scratchlist I/O.
+        expect(cache.resolveAttachedJobSessionId(oldSession.id, 'default')).toBe(newSession.id)
+        const ownerId = cache.resolveAttachedJobSessionId(oldSession.id, 'default')
+        const patched = store.sessionJobs.patch(ownerId, 'beets', {
+            remaining: 11,
+            expectedRunId: 'run-mid-merge'
+        })
+        expect(patched.outcome).toBe('patched')
+        if (patched.outcome !== 'patched') throw new Error('unreachable')
+        expect(patched.job.remaining).toBe(11)
+        expect(store.sessionJobs.getPrimaryRunning(newSession.id)?.remaining).toBe(11)
+        expect(store.sessionJobs.getPrimaryRunning(oldSession.id)).toBeNull()
+
+        releaseGate()
+        await mergePromise
+        moveSpy.mockRestore()
+    })
 })

@@ -1224,6 +1224,13 @@ export class SessionCache {
             namespace,
             targetWasRedirectedToSource
         )
+        // Redirect metadata is in SQLite now, but resolveAttachedJobSessionId
+        // still reads the in-memory SessionCache. Refresh before any await
+        // (scratchlist attachment I/O) so a concurrent heartbeat/terminal
+        // PATCH via the pre-merge $HAPI_SESSION_ID follows the pointer instead
+        // of 404ing on the emptied source row.
+        this.refreshSession(oldSessionId)
+        this.refreshSession(newSessionId)
         // Source transfer pointer + acceptor list landed in the same SQLite
         // commit as the row move. Merge can still spend time on scratchlist
         // attachment I/O; retained $HAPI_SESSION_ID follows the pointer.
