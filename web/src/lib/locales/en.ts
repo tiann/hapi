@@ -1154,6 +1154,8 @@ export default {
   'studio.guest.postFailed': 'Could not post',
   'studio.guest.owner': 'Owner',
   'studio.guest.agent': 'Agent',
+  'studio.guest.tab.conversation': 'Conversation',
+  'studio.guest.tab.discussion': 'Discussion',
   'sessions.refresh.pull': 'Pull to refresh',
   'sessions.refresh.release': 'Release to refresh',
   'sessions.refresh.refreshing': 'Refreshing…',

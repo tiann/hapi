@@ -1153,6 +1153,8 @@ export default {
   'studio.guest.postFailed': '发送失败',
   'studio.guest.owner': '主人',
   'studio.guest.agent': 'Agent',
+  'studio.guest.tab.conversation': '对话',
+  'studio.guest.tab.discussion': '讨论',
   'sessions.refresh.pull': '下拉即可刷新',
   'sessions.refresh.release': '释放即可刷新',
   'sessions.refresh.refreshing': '正在刷新…',

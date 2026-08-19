@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import type { PublicStudioResponse, StudioPostKind } from '@/types/api'
 
 const GUEST_ID_KEY = 'hapi.studio.guestId'
@@ -24,13 +25,14 @@ async function requestStudio(token: string): Promise<PublicStudioResponse> {
 
 export default function PublicStudioPage() {
     const { shareToken } = useParams({ from: '/studio/$shareToken' })
-    const { t } = useTranslation()
+    const { t, setLocale } = useTranslation()
     const queryClient = useQueryClient()
     const [guestId] = useState(getGuestId)
     const [authorName, setAuthorName] = useState(() => localStorage.getItem(GUEST_NAME_KEY) ?? '')
     const [kind, setKind] = useState<StudioPostKind>('discussion')
     const [text, setText] = useState('')
     const [postError, setPostError] = useState<string | null>(null)
+    const [mobileTab, setMobileTab] = useState<'conversation' | 'discussion'>('conversation')
 
     const query = useQuery({
         queryKey: ['public-studio', shareToken],
@@ -44,6 +46,12 @@ export default function PublicStudioPage() {
     useEffect(() => {
         if (authorName.trim()) localStorage.setItem(GUEST_NAME_KEY, authorName.trim())
     }, [authorName])
+
+    useEffect(() => {
+        if (!localStorage.getItem('hapi-lang') && navigator.language.toLowerCase().startsWith('zh')) {
+            setLocale('zh-CN')
+        }
+    }, [setLocale])
 
     const postMutation = useMutation({
         mutationFn: async () => {
@@ -88,26 +96,43 @@ export default function PublicStudioPage() {
                 </div>
             </header>
 
+            <nav className="grid grid-cols-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-1 md:hidden">
+                {(['conversation', 'discussion'] as const).map((tab) => (
+                    <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setMobileTab(tab)}
+                        className={`h-9 rounded-md text-sm font-medium ${mobileTab === tab ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
+                    >
+                        {t(`studio.guest.tab.${tab}`)}
+                    </button>
+                ))}
+            </nav>
+
             <main className="min-h-0 flex-1 overflow-hidden">
-                <div className="mx-auto grid h-full max-w-[72rem] grid-cols-1 md:grid-cols-[minmax(0,1fr)_20rem]">
-                    <section className="app-scroll-y min-h-0 border-b border-[var(--app-border)] md:border-b-0 md:border-r">
-                        <div className="space-y-3 p-3 pb-6">
+                <div className="mx-auto grid h-full max-w-[72rem] grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[minmax(0,1fr)_20rem]">
+                    <section className={`${mobileTab === 'conversation' ? 'block' : 'hidden'} app-scroll-y min-h-0 md:block md:border-r`}>
+                        <div className="mx-auto max-w-[52rem] space-y-4 px-3 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:px-5">
                             {messages.map((message) => (
                                 <div
                                     key={message.id}
-                                    className={`max-w-[92%] rounded-md px-3 py-2 ${message.role === 'user' ? 'ml-auto bg-[var(--app-user-bg)] text-[var(--app-user-fg)]' : 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'}`}
+                                    className={`min-w-0 rounded-md px-3.5 py-3 ${message.role === 'user' ? 'ml-auto max-w-[88%] bg-[var(--app-user-bg)] text-[var(--app-user-fg)]' : 'w-full border border-[var(--app-border)] bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'}`}
                                 >
                                     <div className="mb-1 text-[10px] font-semibold uppercase opacity-60">
                                         {t(message.role === 'user' ? 'studio.guest.owner' : 'studio.guest.agent')}
                                     </div>
-                                    <div className="whitespace-pre-wrap break-words text-sm leading-6">{message.text}</div>
+                                    {message.role === 'assistant' ? (
+                                        <MarkdownRenderer standalone content={message.text} className="text-sm leading-6" />
+                                    ) : (
+                                        <div className="whitespace-pre-wrap break-words text-sm leading-6">{message.text}</div>
+                                    )}
                                 </div>
                             ))}
                         </div>
                     </section>
 
-                    <aside className="app-scroll-y min-h-0">
-                        <div className="space-y-4 p-3 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+                    <aside className={`${mobileTab === 'discussion' ? 'block' : 'hidden'} app-scroll-y min-h-0 md:block`}>
+                        <div className="space-y-5 p-3 pb-[calc(5rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(2rem+env(safe-area-inset-bottom))]">
                             <section>
                                 <h2 className="mb-2 text-xs font-semibold uppercase text-[var(--app-hint)]">{t('studio.owner.discussion')}</h2>
                                 <div className="divide-y divide-[var(--app-border)] rounded-md border border-[var(--app-border)]">

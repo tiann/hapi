@@ -67,6 +67,27 @@ describe('studio routes', () => {
         expect(body.room).not.toHaveProperty('sessionId')
     })
 
+    it('keeps guest suggestions out of the public room response', async () => {
+        const store = new Store(':memory:')
+        createSession(store)
+        const engine = {
+            resolveSessionAccess: () => ({
+                ok: true,
+                sessionId: 'session-1',
+                session: { id: 'session-1', namespace: 'default', active: true, metadata: {} }
+            })
+        }
+        const room = store.studios.createOrActivateRoom('session-1', 'default', 'Room', 'contribute')
+        store.studios.createPost({ roomId: room.id, guestId: 'guest-a-12345678', authorName: 'A', kind: 'discussion', text: 'Visible' })
+        store.studios.createPost({ roomId: room.id, guestId: 'guest-b-12345678', authorName: 'B', kind: 'suggestion', text: 'Owner only' })
+        const app = createApp(store, engine)
+
+        const response = await app.request(`/api/public/studios/${room.shareToken}`)
+        const body = await response.json() as { posts: Array<{ kind: string; text: string }> }
+        expect(body.posts).toHaveLength(1)
+        expect(body.posts[0]).toMatchObject({ kind: 'discussion', text: 'Visible' })
+    })
+
     it('queues a guest suggestion and submits it only through the owner decision endpoint', async () => {
         const store = new Store(':memory:')
         createSession(store)

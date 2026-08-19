@@ -130,10 +130,12 @@ export function createPublicStudioRoutes(options: {
         const messages = options.store.messages.getMessages(room.sessionId, 200)
             .map(projectMessage)
             .filter((message): message is PublicStudioMessage => message !== null)
+        const publicPosts = options.store.studios.listPosts(room.id)
+            .filter((post) => post.kind === 'discussion')
         return c.json({
             room: publicRoom(room, session.session),
             messages,
-            posts: options.store.studios.listPosts(room.id)
+            posts: publicPosts
         })
     })
 
