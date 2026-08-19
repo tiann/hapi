@@ -1135,6 +1135,8 @@ export default {
   'studio.owner.sendToAgent': '提交给 Agent',
   'studio.owner.suggestions': '建议队列',
   'studio.owner.noSuggestions': '暂时没有建议。',
+  'studio.owner.loadOlder': '加载更早建议',
+  'studio.owner.loadingOlder': '加载中…',
   'studio.owner.discussion': '讨论区',
   'studio.owner.noDiscussion': '暂时没有讨论。',
   'studio.owner.createFailed': '创建工作室失败',

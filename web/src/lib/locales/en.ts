@@ -1136,6 +1136,8 @@ export default {
   'studio.owner.sendToAgent': 'Send to agent',
   'studio.owner.suggestions': 'Suggestions',
   'studio.owner.noSuggestions': 'No suggestions yet.',
+  'studio.owner.loadOlder': 'Load older suggestions',
+  'studio.owner.loadingOlder': 'Loading…',
   'studio.owner.discussion': 'Discussion',
   'studio.owner.noDiscussion': 'No discussion yet.',
   'studio.owner.createFailed': 'Could not create studio',
