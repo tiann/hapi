@@ -47,7 +47,7 @@ describe('StudioLiteApp', () => {
         render(<StudioLiteApp />)
 
         expect(await screen.findByText('Review studio')).toBeInTheDocument()
-        await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'auto' }))
+        await waitFor(() => expect(scrollTo.mock.calls.filter(([options]) => options?.behavior === 'auto').length).toBeGreaterThanOrEqual(2))
 
         expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument()

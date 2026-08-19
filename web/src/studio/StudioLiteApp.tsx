@@ -126,6 +126,7 @@ function StudioPage() {
     const conversationRef = useRef<HTMLDivElement | null>(null)
     const previousLastMessageIdRef = useRef<string | null>(null)
     const initialScrollDoneRef = useRef(false)
+    const initialScrollTimersRef = useRef<number[]>([])
     const previousTabRef = useRef(tab)
 
     useEffect(() => {
@@ -163,7 +164,9 @@ function StudioPage() {
     const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
         const element = conversationRef.current
         if (!element) return
-        element.scrollTo({ top: element.scrollHeight, behavior })
+        const top = element.scrollHeight
+        element.scrollTop = top
+        element.scrollTo({ top, behavior })
         setNearBottom(true)
         setUnreadCount(0)
     }, [])
@@ -175,12 +178,16 @@ function StudioPage() {
         const previousLastId = previousLastMessageIdRef.current
 
         if (!initialScrollDoneRef.current) {
-            initialScrollDoneRef.current = true
             previousLastMessageIdRef.current = nextLastId
-            const frame = window.requestAnimationFrame(() => {
-                window.requestAnimationFrame(() => scrollToLatest('auto'))
-            })
-            return () => window.cancelAnimationFrame(frame)
+            initialScrollTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+            initialScrollTimersRef.current = [0, 60, 180, 420].map((delay) => window.setTimeout(() => {
+                scrollToLatest('auto')
+                if (delay === 420) initialScrollDoneRef.current = true
+            }, delay))
+            return () => {
+                initialScrollTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+                initialScrollTimersRef.current = []
+            }
         }
 
         if (nextLastId && nextLastId !== previousLastId) {

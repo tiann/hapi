@@ -28,7 +28,7 @@ button:disabled { cursor: default; opacity: 0.5; }
 .studio-layout { width: min(72rem, 100%); height: 100%; min-height: 0; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 20rem; }
 .studio-conversation, .studio-discussion { min-height: 0; }
 .studio-conversation { position: relative; overflow: hidden; border-right: 1px solid #e2e8f0; }
-.studio-conversation-scroll { height: 100%; overflow-y: auto; }
+.studio-conversation-scroll { height: 100%; min-height: 0; overflow-y: auto; overflow-anchor: none; }
 .studio-discussion { overflow-y: auto; }
 .studio-message-list { width: min(52rem, 100%); margin: 0 auto; padding: 1rem; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 0.9rem; }
 .studio-message { min-width: 0; border-radius: 0.5rem; padding: 0.85rem 1rem; background: #f1f5f9; }
