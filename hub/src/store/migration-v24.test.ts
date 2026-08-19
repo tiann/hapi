@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v23 to v25', () => {
+describe('schema migration v23 to v26', () => {
     it('adds fcm_devices.push_key to a V23 database and keeps existing rows', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-'))
         tempDirs.push(dir)
