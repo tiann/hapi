@@ -14,6 +14,8 @@ const harness = vi.hoisted(() => ({
     cleanupCount: 0,
     session: {
         sessionId: 'hapi-session-test',
+        isMaterializedAttachmentPath: vi.fn(() => false),
+        isAuthorizedMaterializedAttachment: vi.fn(() => false),
         keepAlive: vi.fn(),
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
@@ -175,6 +177,8 @@ describe('runPi startup', () => {
         harness.session.emitMessagesConsumed.mockReset();
         harness.session.sendSessionEvent.mockReset();
         harness.session.updateMetadata.mockReset();
+        harness.session.isMaterializedAttachmentPath.mockReset();
+        harness.session.isAuthorizedMaterializedAttachment.mockReset();
         harness.killCount = 0;
         harness.cleanupCount = 0;
         vi.useRealTimers();

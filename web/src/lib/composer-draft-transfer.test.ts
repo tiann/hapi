@@ -123,6 +123,29 @@ describe('transferComposerDraft', () => {
         expect(mocks.clearDraft).toHaveBeenCalledWith('old-stored')
     })
 
+    it('retains a durable attachment id while retargeting a resumed draft', async () => {
+        const file = new File(['durable'], 'durable.txt')
+        setComposerDraftSnapshot('old-stored', 'persisted text', [{
+            id: 'uploaded-1',
+            file,
+            attachmentId: 'durable-attachment-1',
+            uploadSessionId: 'old-stored',
+            previewUrl: 'blob:preview',
+        }])
+
+        await transferComposerDraft('old-stored', 'new-stored')
+
+        expectMovedAttachments('old-stored', 'new-stored', [{
+            id: 'uploaded-1',
+            file,
+            attachmentId: 'durable-attachment-1',
+            uploadSessionId: 'new-stored',
+            previewUrl: 'blob:preview',
+            path: undefined,
+        }])
+        expect(mocks.clearDraft).toHaveBeenCalledWith('old-stored')
+    })
+
     it('does not resurrect persisted text when the live composer is empty', async () => {
         mocks.getDraft.mockReturnValue('stale persisted text')
         setComposerDraftSnapshot('old-empty', '', [])

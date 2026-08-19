@@ -125,6 +125,15 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
+        const namespace = c.get('namespace')
+        const invalidAttachment = parsed.data.attachments?.find(
+            (attachment) => attachment.attachmentId
+                && !engine.hasAttachment(sessionId, namespace, attachment.attachmentId)
+        )
+        if (invalidAttachment) {
+            return c.json({ error: 'Attachment not found or not owned by this session' }, 400)
+        }
+
         await engine.sendMessage(sessionId, {
             text: parsed.data.text,
             localId: parsed.data.localId,

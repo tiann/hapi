@@ -484,6 +484,12 @@ export function getUninvokedLocalMessages(
     return rows.map(toStoredMessage)
 }
 
+export function updateMessageContent(db: Database, messageId: string, content: unknown): boolean {
+    return db.prepare(
+        'UPDATE messages SET content = ? WHERE id = ?'
+    ).run(encodeMessageContent(truncateOversizedMessageContent(content)), messageId).changes > 0
+}
+
 export type LocalMessageState = {
     localId: string
     invokedAt: number | null

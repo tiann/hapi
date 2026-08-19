@@ -37,7 +37,7 @@ describe('Store V19->current migration: usage re-index', () => {
             const scanRows = internalDb.prepare('SELECT COUNT(*) AS count FROM usage_scan_state').get() as { count: number }
             const usageRows = internalDb.prepare('SELECT COUNT(*) AS count FROM usage_events').get() as { count: number }
 
-            expect(version.user_version).toBe(24)
+            expect(version.user_version).toBe(25)
             expect(scanRows.count).toBe(0)
             expect(usageRows.count).toBe(0)
         } finally {

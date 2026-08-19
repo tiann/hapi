@@ -446,11 +446,30 @@ public struct CodexModelsResponse: Codable, Equatable, Sendable {
 public struct UploadFileResponse: Codable, Equatable, Sendable {
     public var success: Bool
     public var path: String?
+    public var attachmentId: String?
+    public var filename: String?
+    public var mimeType: String?
+    public var size: Int?
+    public var thumbnailAvailable: Bool?
     public var error: String?
 
-    public init(success: Bool, path: String? = nil, error: String? = nil) {
+    public init(
+        success: Bool,
+        path: String? = nil,
+        attachmentId: String? = nil,
+        filename: String? = nil,
+        mimeType: String? = nil,
+        size: Int? = nil,
+        thumbnailAvailable: Bool? = nil,
+        error: String? = nil
+    ) {
         self.success = success
         self.path = path
+        self.attachmentId = attachmentId
+        self.filename = filename
+        self.mimeType = mimeType
+        self.size = size
+        self.thumbnailAvailable = thumbnailAvailable
         self.error = error
     }
 }

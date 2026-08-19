@@ -32,9 +32,11 @@ import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { attachmentContentDisposition } from '../attachmentHeaders'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const MAX_UPLOAD_THUMBNAIL_BYTES = 4 * 1024 * 1024
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -292,13 +294,20 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (estimatedBytes > MAX_UPLOAD_BYTES) {
             return c.json({ success: false, error: 'File too large (max 50MB)' }, 413)
         }
+        if (parsed.data.thumbnailContent
+            && estimateBase64Bytes(parsed.data.thumbnailContent) > MAX_UPLOAD_THUMBNAIL_BYTES) {
+            return c.json({ success: false, error: 'Thumbnail too large' }, 413)
+        }
 
         try {
-            const result = await engine.uploadFile(
+            const result = await engine.createAttachment(
                 sessionResult.sessionId,
+                c.get('namespace'),
                 parsed.data.filename,
                 parsed.data.content,
-                parsed.data.mimeType
+                parsed.data.mimeType,
+                parsed.data.thumbnailContent,
+                parsed.data.thumbnailMimeType
             )
             return c.json(result)
         } catch (error) {
@@ -315,7 +324,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: false })
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -325,9 +334,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
+        if (!parsed.data.attachmentId && !sessionResult.session.active) {
+            return c.json({ error: 'Session is inactive' }, 409)
+        }
 
         try {
-            const result = await engine.deleteUploadFile(sessionResult.sessionId, parsed.data.path)
+            const result = parsed.data.attachmentId
+                ? await engine.deleteAttachment(sessionResult.sessionId, c.get('namespace'), parsed.data.attachmentId)
+                : await engine.deleteUploadFile(sessionResult.sessionId, parsed.data.path!)
             return c.json(result)
         } catch (error) {
             return c.json({
@@ -335,6 +349,44 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 error: error instanceof Error ? error.message : 'Failed to delete upload'
             }, 500)
         }
+    })
+
+    app.get('/sessions/:id/attachments/:attachmentId/:variant', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const variant = c.req.param('variant')
+        if (variant !== 'original' && variant !== 'thumbnail') {
+            return c.json({ error: 'Invalid attachment variant' }, 400)
+        }
+        const attachment = await engine.readAttachment(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            c.req.param('attachmentId'),
+            variant
+        )
+        if (!attachment) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+
+        return new Response(new Uint8Array(attachment.data), {
+            headers: {
+                'Content-Type': attachment.mimeType,
+                'Content-Length': String(attachment.size),
+                'Content-Disposition': attachmentContentDisposition(attachment.attachment.filename),
+                'Content-Security-Policy': "sandbox; default-src 'none'",
+                'Cache-Control': 'private, max-age=31536000, immutable',
+                'ETag': `"${attachment.sha256}"`,
+                'X-Hapi-Attachment-Sha256': attachment.sha256,
+                'X-Hapi-Attachment-Size': String(attachment.size),
+                'X-Content-Type-Options': 'nosniff'
+            }
+        })
     })
 
     app.post('/sessions/:id/abort', async (c) => {

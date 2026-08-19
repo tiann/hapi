@@ -250,8 +250,14 @@ data class CodexModelSummary(
 @Serializable
 data class UploadFileResponse(
     val success: Boolean,
-    /** Pass through as `AttachmentMetadata.path` when sending the message. */
+    /** Legacy CLI-local upload reference; absent for durable Hub attachments. */
     val path: String? = null,
+    /** Opaque Hub attachment reference used by new clients. */
+    val attachmentId: String? = null,
+    val filename: String? = null,
+    val mimeType: String? = null,
+    val size: Long? = null,
+    val thumbnailAvailable: Boolean? = null,
     val error: String? = null,
 )
 

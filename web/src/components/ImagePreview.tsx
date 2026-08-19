@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
-import { CloseIcon } from '@/components/icons'
+import { CloseIcon, RefreshIcon } from '@/components/icons'
+import { useTranslation } from '@/lib/use-translation'
 
 const MIN_IMAGE_SCALE = 0.25
 const MAX_IMAGE_SCALE = 8
@@ -16,7 +17,10 @@ type PreviewImage = {
     src: string
     fileName: string
     label: string
+    onOpen?: () => Promise<string | undefined>
 }
+
+const imagePreviewOpeners = new WeakMap<HTMLButtonElement, () => Promise<string | undefined>>()
 
 function getPointDistance(a: ImagePoint, b: ImagePoint): number {
     return Math.hypot(a.x - b.x, a.y - b.y)
@@ -38,10 +42,14 @@ export function ImagePreview(props: {
     imageStyle?: CSSProperties
     caption?: ReactNode
     galleryId?: string
+    onOpen?: () => Promise<string | undefined>
 }) {
+    const { t } = useTranslation()
     const [viewerOpen, setViewerOpen] = useState(false)
     const [previewImages, setPreviewImages] = useState<PreviewImage[]>([])
     const [previewIndex, setPreviewIndex] = useState(0)
+    const [originalLoading, setOriginalLoading] = useState(false)
+    const [originalLoadFailed, setOriginalLoadFailed] = useState(false)
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
     const scaleRef = useRef(scale)
@@ -50,10 +58,51 @@ export function ImagePreview(props: {
     const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
     const pinchRef = useRef<{ startDistance: number; startScale: number; startCenter: ImagePoint; origin: ImagePoint } | null>(null)
     const backdropPressRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
+    const originalRequestRef = useRef(0)
+    const triggerRef = useRef<HTMLButtonElement | null>(null)
+
+    useEffect(() => {
+        const trigger = triggerRef.current
+        if (!trigger || !props.onOpen) return
+        imagePreviewOpeners.set(trigger, props.onOpen)
+        return () => {
+            imagePreviewOpeners.delete(trigger)
+        }
+    }, [props.onOpen])
 
     const stopEvent = useCallback((event: SyntheticEvent) => {
         event.stopPropagation()
     }, [])
+
+    const loadOriginal = useCallback(async (
+        activeIndex: number,
+        openOriginal?: () => Promise<string | undefined>
+    ) => {
+        const onOpen = openOriginal ?? previewImages[activeIndex]?.onOpen ?? props.onOpen
+        if (!onOpen) return
+        const requestId = ++originalRequestRef.current
+        setOriginalLoading(true)
+        setOriginalLoadFailed(false)
+        try {
+            const original = await onOpen()
+            if (requestId !== originalRequestRef.current) return
+            if (original) {
+                setPreviewImages((current) => current.map((preview, previewIndex) => (
+                    previewIndex === activeIndex ? { ...preview, src: original } : preview
+                )))
+            } else {
+                setOriginalLoadFailed(true)
+            }
+        } catch {
+            if (requestId === originalRequestRef.current) {
+                setOriginalLoadFailed(true)
+            }
+        } finally {
+            if (requestId === originalRequestRef.current) {
+                setOriginalLoading(false)
+            }
+        }
+    }, [previewImages, props.onOpen])
 
     const openViewer = useCallback((event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault()
@@ -67,14 +116,22 @@ export function ImagePreview(props: {
             return [{
                 src: image.getAttribute('src') ?? image.src,
                 fileName: trigger.dataset.imagePreviewFileName ?? image.alt,
-                label: trigger.dataset.imagePreviewLabel ?? image.alt
+                label: trigger.dataset.imagePreviewLabel ?? image.alt,
+                onOpen: imagePreviewOpeners.get(trigger)
             }]
         })
         const index = triggers.indexOf(event.currentTarget)
+        const activeOpener = imagePreviewOpeners.get(event.currentTarget) ?? props.onOpen
         setPreviewImages(images)
-        setPreviewIndex(index >= 0 ? index : 0)
+        const activeIndex = index >= 0 ? index : 0
+        setPreviewIndex(activeIndex)
+        setOriginalLoading(Boolean(props.onOpen))
+        setOriginalLoadFailed(false)
         setViewerOpen(true)
-    }, [props.galleryId])
+        if (props.onOpen) {
+            void loadOriginal(activeIndex, activeOpener)
+        }
+    }, [loadOriginal, props.galleryId, props.onOpen])
 
     const updateScale = useCallback((next: number | ((current: number) => number)) => {
         setScale((current) => {
@@ -96,6 +153,9 @@ export function ImagePreview(props: {
 
     const closeViewer = useCallback(() => {
         setViewerOpen(false)
+        originalRequestRef.current += 1
+        setOriginalLoading(false)
+        setOriginalLoadFailed(false)
         activePointersRef.current.clear()
         dragRef.current = null
         pinchRef.current = null
@@ -103,10 +163,22 @@ export function ImagePreview(props: {
         resetView()
     }, [resetView])
 
+    const retryOriginal = useCallback(() => {
+        void loadOriginal(previewIndex, previewImages[previewIndex]?.onOpen)
+    }, [loadOriginal, previewImages, previewIndex])
+
     const showPreview = useCallback((index: number) => {
         setPreviewIndex(index)
         resetView()
-    }, [resetView])
+        const openOriginal = previewImages[index]?.onOpen
+        if (openOriginal) {
+            void loadOriginal(index, openOriginal)
+        } else {
+            originalRequestRef.current += 1
+            setOriginalLoading(false)
+            setOriginalLoadFailed(false)
+        }
+    }, [loadOriginal, previewImages, resetView])
 
     const zoomBy = useCallback((delta: number) => {
         updateScale((current) => clampImageScale(current + delta))
@@ -258,6 +330,7 @@ export function ImagePreview(props: {
     return (
         <>
             <button
+                ref={triggerRef}
                 type="button"
                 onPointerDown={stopEvent}
                 onMouseDown={stopEvent}
@@ -371,6 +444,42 @@ export function ImagePreview(props: {
                                 transformOrigin: 'center center'
                             }}
                         />
+                        {originalLoading ? (
+                            <div
+                                className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-start px-4"
+                                role="status"
+                                aria-live="polite"
+                            >
+                                <span className="rounded-full bg-black/70 px-4 py-2 text-sm text-white shadow-lg">
+                                    {t('image.original.loading')}
+                                </span>
+                            </div>
+                        ) : originalLoadFailed ? (
+                            <div
+                                className="pointer-events-none absolute inset-x-0 bottom-4 flex items-center justify-start gap-2 px-4"
+                                role="status"
+                                aria-live="polite"
+                            >
+                                <span className="rounded-full bg-red-950/80 px-4 py-2 text-sm text-white shadow-lg">
+                                    {t('image.original.unavailable')}
+                                </span>
+                                <button
+                                    type="button"
+                                    onPointerDown={stopEvent}
+                                    onMouseDown={stopEvent}
+                                    onTouchStart={stopEvent}
+                                    onClick={(event) => {
+                                        event.stopPropagation()
+                                        retryOriginal()
+                                    }}
+                                    className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full bg-red-950/80 text-white shadow-lg hover:bg-red-900/90"
+                                    title={t('image.original.retry')}
+                                    aria-label={t('image.original.retry')}
+                                >
+                                    <RefreshIcon className="h-4 w-4" />
+                                </button>
+                            </div>
+                        ) : null}
                     </div>
                 </div>
             ) : null}

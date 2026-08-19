@@ -470,13 +470,18 @@ export type CursorMigrateRefusalReason =
 export const UploadFileRequestSchema = z.object({
     filename: z.string().min(1).max(255),
     content: z.string().min(1),
-    mimeType: z.string().min(1).max(255)
+    mimeType: z.string().min(1).max(255),
+    thumbnailContent: z.string().min(1).optional(),
+    thumbnailMimeType: z.string().min(1).max(255).optional()
 })
 
 export type UploadFileRequest = z.infer<typeof UploadFileRequestSchema>
 
 export const DeleteUploadRequestSchema = z.object({
-    path: z.string().min(1)
+    path: z.string().min(1).optional(),
+    attachmentId: z.string().min(1).optional()
+}).refine((value) => Boolean(value.path || value.attachmentId), {
+    message: 'Delete request must include either path or attachmentId'
 })
 
 export type DeleteUploadRequest = z.infer<typeof DeleteUploadRequestSchema>
@@ -668,6 +673,11 @@ export type GeneratedImageResponse = {
 export type UploadFileResponse = {
     success: boolean
     path?: string
+    attachmentId?: string
+    filename?: string
+    mimeType?: string
+    size?: number
+    thumbnailAvailable?: boolean
     error?: string
 }
 

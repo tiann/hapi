@@ -10,7 +10,7 @@ describe('Store V12/V13→V14 schema reconciliation', () => {
         const store = new Store(':memory:')
         expect(tableExists(store, 'message_epochs')).toBe(true)
         expect(tableExists(store, 'session_scratchlist')).toBe(true)
-        expect(getUserVersion(store)).toBe(24)
+        expect(getUserVersion(store)).toBe(25)
         store.close()
     })
 
@@ -34,7 +34,7 @@ describe('Store V12/V13→V14 schema reconciliation', () => {
             store = new Store(dbPath)
             expect(tableExists(store, 'message_epochs')).toBe(true)
             expect(tableExists(store, 'session_scratchlist')).toBe(true)
-            expect(getUserVersion(store)).toBe(24)
+            expect(getUserVersion(store)).toBe(25)
             expect(store.messages.getMessageEpoch('session-1')).toBe(0)
             expect(store.messages.getMessages('session-1')).toHaveLength(1)
         } finally {
@@ -72,7 +72,7 @@ describe('Store V12/V13→V14 schema reconciliation', () => {
             store = new Store(dbPath)
             expect(tableExists(store, 'message_epochs')).toBe(true)
             expect(tableExists(store, 'session_scratchlist')).toBe(true)
-            expect(getUserVersion(store)).toBe(24)
+            expect(getUserVersion(store)).toBe(25)
             expect(store.messages.getMessages('session-1')).toHaveLength(1)
         } finally {
             store?.close()

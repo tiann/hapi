@@ -28,10 +28,10 @@ object AttachmentPolicy {
     const val COMPRESS_JPEG_QUALITY: Int = 85
 
     /**
-     * Longest edge of the thumbnail embedded as `AttachmentMetadata.previewUrl`
-     * (a JPEG data URL). The web embeds the full original (≤ 5 MB) there; a
-     * small thumb keeps `SendMessageRequest` bodies tiny while still giving
-     * every client (web included) something to render in the user bubble.
+     * Longest edge of the thumbnail sent alongside a durable upload. The web
+     * stores only an opaque attachment id in the message; clients fetch this
+     * small variant for the user bubble instead of carrying image bytes in
+     * `SendMessageRequest`.
      */
     const val PREVIEW_MAX_DIMENSION: Int = 512
 

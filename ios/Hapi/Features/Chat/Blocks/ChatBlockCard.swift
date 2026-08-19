@@ -67,6 +67,38 @@ final class GeneratedImageLoader {
         }
         return image
     }
+
+    /// Loads a durable chat attachment variant through the authenticated API.
+    /// Thumbnail and original bytes share the immutable URL cache and the
+    /// in-memory decode cache, keyed by variant plus opaque attachment id.
+    func attachmentImage(for attachmentId: String, variant: String = "thumbnail") async -> UIImage? {
+        let key = "attachment:\(variant):\(attachmentId)"
+        if let cached = cache.object(forKey: key as NSString) {
+            return cached
+        }
+        if let running = inFlight[key] {
+            return await running.value
+        }
+        let api = api
+        let sessionId = sessionId
+        let task = Task<UIImage?, Never> {
+            guard let payload = try? await api.attachment(
+                sessionId: sessionId,
+                attachmentId: attachmentId,
+                variant: variant
+            ) else {
+                return nil
+            }
+            return UIImage(data: payload.data)
+        }
+        inFlight[key] = task
+        let image = await task.value
+        inFlight[key] = nil
+        if let image {
+            cache.setObject(image, forKey: key as NSString)
+        }
+        return image
+    }
 }
 
 private struct ChatMediaKey: EnvironmentKey {

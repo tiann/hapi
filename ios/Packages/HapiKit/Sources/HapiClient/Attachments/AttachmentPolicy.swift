@@ -25,10 +25,10 @@ public enum AttachmentPolicy {
     /// JPEG quality for recompressed uploads (Android: 85/100).
     public static let compressJPEGQuality = 0.85
 
-    /// Longest edge of the thumbnail embedded as `AttachmentMetadata.previewUrl`
-    /// (a JPEG data URL). The web embeds the full original (≤ 5 MB) there; a
-    /// small thumb keeps `SendMessageRequest` bodies tiny while still giving
-    /// every client (web included) something to render in the user bubble.
+    /// Longest edge of the thumbnail sent alongside a durable upload. The web
+    /// stores only an opaque attachment id in the message; clients fetch this
+    /// small variant for the user bubble instead of carrying image bytes in
+    /// `SendMessageRequest`.
     public static let previewMaxDimension = 512
 
     /// JPEG quality for the embedded preview thumbnail (Android: 80/100).

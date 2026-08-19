@@ -43,7 +43,7 @@ describe('Store V20->V21 migration: usage semantics re-index', () => {
             store = new Store(dbPath)
             const internalDb = (store as unknown as { db: Database }).db
             const count = (table: string): number => (internalDb.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count
-            expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(24)
+            expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(25)
             expect(count('usage_events')).toBe(0)
             expect(count('usage_scan_state')).toBe(0)
             expect(store.messages.getMessages(session.id)).toHaveLength(1)

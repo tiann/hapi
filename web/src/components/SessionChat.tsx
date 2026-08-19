@@ -65,6 +65,7 @@ import {
     finalizeMigratedScratchlistParkCleanup,
     prepareScratchlistParkAttachments,
     rehydrateScratchlistAttachmentsToComposer,
+    sendStagedComposeAttachments,
     stageScratchlistAttachmentsForComposeSend,
     type PendingParkAttachment,
     type ScratchlistParkResult,
@@ -309,7 +310,7 @@ export function shouldRouteToScratchlist(
     // Only park when every attachment is already hub-resident. Composer
     // uploads made before scratchlist mode was enabled still have normal
     // CLI paths; the hub rejects those as scratchlist metadata.
-    return (attachments ?? []).every((att) => isHubScratchlistAttachmentPath(att.path))
+    return (attachments ?? []).every((att) => Boolean(att.path && isHubScratchlistAttachmentPath(att.path)))
 }
 
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
@@ -418,7 +419,12 @@ export function ScratchlistDrawerHost(props: {
         }
         // This action is explicitly labelled “Send to queue”. It must retain
         // that contract even when the Pi session is actively thinking.
-        const accepted = await props.onSend(entry.text, attachments, undefined, 'queue')
+        const accepted = await sendStagedComposeAttachments(
+            props.api,
+            props.sessionId,
+            attachments ?? [],
+            () => props.onSend(entry.text, attachments, undefined, 'queue'),
+        )
         if (accepted) {
             props.onExitScratchlistMode()
         }
@@ -822,19 +828,24 @@ function SessionChatInner(props: SessionChatProps) {
             // it off before send, pending items still carry hub paths. Stage
             // those through the normal CLI upload dir before chat send.
             const list = attachments ?? []
-            const hubItems = list.filter((att) => isHubScratchlistAttachmentPath(att.path))
+            const hubItems = list.filter((att) => Boolean(att.path && isHubScratchlistAttachmentPath(att.path)))
             if (hubItems.length > 0) {
-                const normalItems = list.filter((att) => !isHubScratchlistAttachmentPath(att.path))
+                const normalItems = list.filter((att) => !att.path || !isHubScratchlistAttachmentPath(att.path))
                 const staged = await stageScratchlistAttachmentsForComposeSend(
                     props.api,
                     props.session.id,
                     hubItems,
                 )
-                const accepted = await props.onSend(
-                    text,
-                    [...normalItems, ...staged],
-                    scheduledAt,
-                    deliveryMode,
+                const accepted = await sendStagedComposeAttachments(
+                    props.api,
+                    props.session.id,
+                    staged,
+                    () => props.onSend(
+                        text,
+                        [...normalItems, ...staged],
+                        scheduledAt,
+                        deliveryMode,
+                    ),
                 )
                 if (accepted) {
                     // Hub blobs were copied into the normal upload dir; drop the

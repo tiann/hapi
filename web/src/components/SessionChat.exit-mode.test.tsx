@@ -4,9 +4,13 @@ import { I18nProvider } from '@/lib/i18n-context'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
 import type { ApiClient } from '@/api/client'
 
+const mockFetchScratchlistAttachmentBlob = vi.fn()
+const mockUploadFile = vi.fn()
+const mockDeleteAttachment = vi.fn()
 const mockApi = {
-    fetchScratchlistAttachmentBlob: vi.fn(),
-    uploadFile: vi.fn(),
+    fetchScratchlistAttachmentBlob: mockFetchScratchlistAttachmentBlob,
+    uploadFile: mockUploadFile,
+    deleteAttachment: mockDeleteAttachment,
 } as unknown as ApiClient
 const mockSessionId = 'sess-test'
 
@@ -45,6 +49,9 @@ function makeEntry(overrides: Partial<ScratchlistEntry> & { id: string }): Scrat
 afterEach(() => {
     cleanup()
     setText.mockReset()
+    mockFetchScratchlistAttachmentBlob.mockReset()
+    mockUploadFile.mockReset()
+    mockDeleteAttachment.mockReset()
 })
 
 describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
@@ -145,6 +152,51 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         ))
         expect(onExitScratchlistMode).not.toHaveBeenCalled()
         expect(setText).not.toHaveBeenCalled()
+    })
+
+    it('cleans durable staged attachments when promote-to-queue send is rejected', async () => {
+        const onExitScratchlistMode = vi.fn()
+        const onSend = vi.fn(async () => false)
+        mockFetchScratchlistAttachmentBlob.mockResolvedValue(
+            new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+        )
+        mockUploadFile.mockResolvedValue({
+            success: true,
+            attachmentId: 'durable-attachment-1',
+        })
+        mockDeleteAttachment.mockResolvedValue({ success: true })
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawerHost
+                    sessionId={mockSessionId}
+                    api={mockApi}
+                    entries={[makeEntry({
+                        id: 'e1',
+                        text: 'send attachment',
+                        attachments: [{
+                            id: 'scratch-1',
+                            filename: 'photo.png',
+                            mimeType: 'image/png',
+                            size: 3,
+                            path: 'hapi-hub:scratchlist/default/sess-test/scratch-1-photo.png',
+                        }],
+                    })]}
+                    onMove={vi.fn()}
+                    onDelete={vi.fn()}
+                    onSend={onSend}
+                    onExitScratchlistMode={onExitScratchlistMode}
+                />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getAllByRole('button', { name: /queue|send/i })[0]!)
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        await waitFor(() => expect(mockDeleteAttachment).toHaveBeenCalledWith(
+            mockSessionId,
+            'durable-attachment-1',
+        ))
+        expect(onExitScratchlistMode).not.toHaveBeenCalled()
     })
 })
 

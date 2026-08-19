@@ -12,7 +12,7 @@ public struct PreparedAttachment: Sendable {
     public let mimeType: String
     /// The exact bytes that will upload (post-compression when applicable).
     public let bytes: Data
-    /// Small JPEG thumbnail for the chip + wire `previewUrl`; nil for non-images.
+    /// Small JPEG thumbnail for the chip + durable Hub upload; nil for non-images.
     public let previewBytes: Data?
 
     public var sizeBytes: Int { bytes.count }
@@ -89,12 +89,54 @@ public protocol AttachmentUploading: Sendable {
         mimeType: String
     ) async throws -> UploadFileResponse
 
+    /// Durable upload with an optional server-side thumbnail.
+    func uploadFile(
+        sessionId: String,
+        filename: String,
+        data: Data,
+        mimeType: String,
+        thumbnailData: Data?,
+        thumbnailMimeType: String?
+    ) async throws -> UploadFileResponse
+
     /// `POST /api/sessions/:id/upload/delete`.
     @discardableResult
     func deleteUpload(sessionId: String, path: String) async throws -> DeleteUploadResponse
+
+    /// Delete by either the legacy path or opaque durable attachment id.
+    @discardableResult
+    func deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?
+    ) async throws -> DeleteUploadResponse
 }
 
 extension APIClient: AttachmentUploading {}
+
+public extension AttachmentUploading {
+    func uploadFile(
+        sessionId: String,
+        filename: String,
+        data: Data,
+        mimeType: String,
+        thumbnailData: Data?,
+        thumbnailMimeType: String?
+    ) async throws -> UploadFileResponse {
+        try await uploadFile(sessionId: sessionId, filename: filename, data: data, mimeType: mimeType)
+    }
+
+    func deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?
+    ) async throws -> DeleteUploadResponse {
+        guard let path, attachmentId == nil else {
+            return DeleteUploadResponse(success: false, error: "Attachment reference unavailable")
+        }
+        return try await deleteUpload(sessionId: sessionId, path: path)
+    }
+}
 
 /// Composer attachment tray (A-M3f): upload-on-pick state machine feeding
 /// `SendMessageRequest.attachments` — the iOS port of the Android
@@ -110,9 +152,8 @@ extension APIClient: AttachmentUploading {}
 ///   lets the upload finish and then deletes the orphan (web
 ///   `cancelledAttachmentIds` semantics).
 /// - ``consume()`` converts every Ready chip into `AttachmentMetadata` for
-///   the send body — `previewUrl` is a small JPEG data URL
-///   (``AttachmentPolicy/previewMaxDimension``) so user bubbles render
-///   thumbnails on every client.
+///   the send body. Durable responses use `attachmentId`; legacy path
+///   responses remain supported for older hubs.
 /// - **Drafts (v1 simplification)**: unlike the web (IndexedDB attachment
 ///   drafts), attachments never persist. The tray lives with its
 ///   ``ChatInteractor`` across screen covers (the interactor's
@@ -130,8 +171,10 @@ extension APIClient: AttachmentUploading {}
 public final class ComposerAttachments {
     private struct Entry {
         var ui: ComposerAttachmentUI
-        /// Hub upload path once Ready.
+        /// Legacy Hub upload path once Ready.
         var path: String?
+        /// Opaque durable Hub attachment id once Ready.
+        var attachmentId: String?
         /// Upload payload, retained only until the upload succeeds (retry source).
         var bytes: Data?
     }
@@ -154,9 +197,9 @@ public final class ComposerAttachments {
         // delete them best-effort on a detached task (Android
         // `discardAllDetached` from the holder's `onCleared`). Only Sendable
         // stored lets are touched here.
-        let paths = uploadedPaths.drain()
-        guard !paths.isEmpty else { return }
-        Self.deleteDetached(api: api, sessionId: sessionId, paths: paths)
+        let references = uploadedPaths.drain()
+        guard !references.isEmpty else { return }
+        Self.deleteDetached(api: api, sessionId: sessionId, references: references)
     }
 
     // MARK: - Read surface
@@ -188,7 +231,7 @@ public final class ComposerAttachments {
             previewBytes: prepared.previewBytes,
             status: .uploading
         )
-        entries.append(Entry(ui: ui, path: nil, bytes: prepared.bytes))
+        entries.append(Entry(ui: ui, path: nil, attachmentId: nil, bytes: prepared.bytes))
         upload(id: prepared.id, filename: prepared.filename, mimeType: prepared.mimeType, bytes: prepared.bytes)
     }
 
@@ -200,7 +243,7 @@ public final class ComposerAttachments {
             return
         }
         let ui = entries[index].ui
-        entries[index] = Entry(ui: ui.with(status: .uploading), path: nil, bytes: bytes)
+        entries[index] = Entry(ui: ui.with(status: .uploading), path: nil, attachmentId: nil, bytes: bytes)
         upload(id: id, filename: ui.filename, mimeType: ui.mimeType, bytes: bytes)
     }
 
@@ -210,11 +253,15 @@ public final class ComposerAttachments {
         guard let index = entries.firstIndex(where: { $0.ui.id == id }) else { return }
         let removed = entries.remove(at: index)
         uploadedPaths.forget(id: id)
-        guard let path = removed.path else { return }
+        guard removed.path != nil || removed.attachmentId != nil else { return }
         let api = api
         let sessionId = sessionId
         Task {
-            _ = try? await api.deleteUpload(sessionId: sessionId, path: path)
+            _ = try? await api.deleteUpload(
+                sessionId: sessionId,
+                path: removed.path,
+                attachmentId: removed.attachmentId
+            )
         }
     }
 
@@ -226,7 +273,7 @@ public final class ComposerAttachments {
     public func consume() -> [AttachmentMetadata]? {
         var taken: [Entry] = []
         entries.removeAll { entry in
-            guard entry.ui.status == .ready, entry.path != nil else { return false }
+            guard entry.ui.status == .ready, entry.path != nil || entry.attachmentId != nil else { return false }
             taken.append(entry)
             return true
         }
@@ -241,10 +288,11 @@ public final class ComposerAttachments {
                 filename: entry.ui.filename,
                 mimeType: entry.ui.mimeType,
                 size: entry.ui.sizeBytes,
-                path: entry.path!,
-                previewUrl: entry.ui.previewBytes.map {
+                path: entry.path,
+                attachmentId: entry.attachmentId,
+                previewUrl: entry.path.flatMap { _ in entry.ui.previewBytes.map {
                     AttachmentPolicy.dataUrl(mimeType: "image/jpeg", bytes: $0)
-                }
+                } }
             )
         }
     }
@@ -254,9 +302,9 @@ public final class ComposerAttachments {
     /// down). `deinit` does the same for whatever is left.
     public func discardAllDetached() {
         entries = []
-        let paths = uploadedPaths.drain()
-        guard !paths.isEmpty else { return }
-        Self.deleteDetached(api: api, sessionId: sessionId, paths: paths)
+        let references = uploadedPaths.drain()
+        guard !references.isEmpty else { return }
+        Self.deleteDetached(api: api, sessionId: sessionId, references: references)
     }
 
     // MARK: - Internals
@@ -270,38 +318,57 @@ public final class ComposerAttachments {
             // base64 encode of up to 50 MB inside it runs off the main actor
             // (SE-0338 executor hopping).
             var path: String?
+            var attachmentId: String?
             do {
                 let response = try await api.uploadFile(
                     sessionId: sessionId,
                     filename: filename,
                     data: bytes,
-                    mimeType: mimeType
+                    mimeType: mimeType,
+                    thumbnailData: entries.first(where: { $0.ui.id == id })?.ui.previewBytes,
+                    thumbnailMimeType: entries.first(where: { $0.ui.id == id })?.ui.previewBytes == nil ? nil : "image/jpeg"
                 )
                 path = response.success ? response.path : nil
+                attachmentId = response.success ? response.attachmentId : nil
             } catch {
                 path = nil
+                attachmentId = nil
             }
 
-            let applied = settleUpload(id: id, path: path)
+            let applied = settleUpload(id: id, path: path, attachmentId: attachmentId)
             // Removed while uploading: the hub file just became an orphan.
-            if !applied, let path {
-                _ = try? await api.deleteUpload(sessionId: sessionId, path: path)
+            if !applied, path != nil || attachmentId != nil {
+                _ = try? await api.deleteUpload(
+                    sessionId: sessionId,
+                    path: path,
+                    attachmentId: attachmentId
+                )
             }
         }
     }
 
     /// Applies the upload outcome to the chip; false when the chip is gone.
-    private func settleUpload(id: String, path: String?) -> Bool {
+    private func settleUpload(id: String, path: String?, attachmentId: String?) -> Bool {
         guard let index = entries.firstIndex(where: { $0.ui.id == id }) else {
             return false
         }
-        if let path {
+        if path != nil || attachmentId != nil {
             // Success: drop the payload bytes — only the preview stays.
-            entries[index] = Entry(ui: entries[index].ui.with(status: .ready), path: path, bytes: nil)
-            uploadedPaths.set(id: id, path: path)
+            entries[index] = Entry(
+                ui: entries[index].ui.with(status: .ready),
+                path: path,
+                attachmentId: attachmentId,
+                bytes: nil
+            )
+            uploadedPaths.set(id: id, path: path, attachmentId: attachmentId)
         } else {
             let bytes = entries[index].bytes
-            entries[index] = Entry(ui: entries[index].ui.with(status: .failed), path: nil, bytes: bytes)
+            entries[index] = Entry(
+                ui: entries[index].ui.with(status: .failed),
+                path: nil,
+                attachmentId: nil,
+                bytes: bytes
+            )
         }
         return true
     }
@@ -311,26 +378,35 @@ public final class ComposerAttachments {
     private nonisolated static func deleteDetached(
         api: any AttachmentUploading,
         sessionId: String,
-        paths: [String]
+        references: [UploadedReference]
     ) {
         Task.detached {
-            for path in paths {
-                _ = try? await api.deleteUpload(sessionId: sessionId, path: path)
+            for reference in references {
+                _ = try? await api.deleteUpload(
+                    sessionId: sessionId,
+                    path: reference.path,
+                    attachmentId: reference.attachmentId
+                )
             }
         }
     }
 }
 
-/// Lock-guarded `id → uploaded path` map living outside the main actor so
+/// Lock-guarded `id → uploaded reference` map living outside the main actor so
 /// ``ComposerAttachments/deinit`` can read it. Kept in lockstep with the
 /// entries by every main-actor mutation.
+private struct UploadedReference: Sendable {
+    let path: String?
+    let attachmentId: String?
+}
+
 private final class UploadedPathBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var paths: [String: String] = [:]
+    private var paths: [String: UploadedReference] = [:]
 
-    func set(id: String, path: String) {
+    func set(id: String, path: String?, attachmentId: String?) {
         lock.lock()
-        paths[id] = path
+        paths[id] = UploadedReference(path: path, attachmentId: attachmentId)
         lock.unlock()
     }
 
@@ -340,7 +416,7 @@ private final class UploadedPathBox: @unchecked Sendable {
         lock.unlock()
     }
 
-    func drain() -> [String] {
+    func drain() -> [UploadedReference] {
         lock.lock()
         let values = Array(paths.values)
         paths = [:]

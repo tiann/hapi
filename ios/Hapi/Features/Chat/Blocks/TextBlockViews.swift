@@ -7,9 +7,9 @@ import SwiftUI
 
 /// Operator prompt: right-aligned bubble. Whitespace is preserved and the
 /// text is NOT rendered as markdown — matching the web user bubble and the
-/// Android port. Image attachments with a `previewUrl` render as thumbnails
-/// (decoded off-main; also covers web-sent attachments), everything else as
-/// filename chips (`AttachmentPreviewView`, A-M3f); a failed optimistic row
+/// Android port. Image attachments with an inline preview or durable id render
+/// as thumbnails (decoded off-main or fetched through the authenticated media
+/// loader), everything else as filename chips (`AttachmentPreviewView`, A-M3f); a failed optimistic row
 /// gets a "Not delivered" hint that retries the send when the interaction
 /// engine is present (A-M3a).
 struct UserTextBlockView: View {

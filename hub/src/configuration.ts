@@ -28,6 +28,7 @@
  *   direct-APNs credentials (settings: apnsKeyP8Path, apnsKeyId, apnsTeamId, apnsBundleId, apnsEnv)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
  * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)
+ * - HAPI_ATTACHMENTS_ROOT: Durable attachment blob directory (default: {HAPI_HOME}/attachments)
  */
 
 import { existsSync, mkdirSync } from 'node:fs'

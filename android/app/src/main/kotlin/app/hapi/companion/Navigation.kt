@@ -306,9 +306,15 @@ fun HapiNavigation() {
             ChatScreen(
                 viewModel = holder.viewModel,
                 media = remember(hubGraph, sessionId) {
-                    ChatMedia(hubGraph.imageLoader) { imageId ->
-                        hubGraph.generatedImageUrl(sessionId, imageId)
-                    }
+                    ChatMedia(
+                        imageLoader = hubGraph.imageLoader,
+                        generatedImageUrl = { imageId ->
+                            hubGraph.generatedImageUrl(sessionId, imageId)
+                        },
+                        attachmentUrl = { attachmentId, variant ->
+                            hubGraph.attachmentUrl(sessionId, attachmentId, variant)
+                        },
+                    )
                 },
                 onBack = { navController.popBackStack() },
                 onNavigateToSession = { supersededId ->

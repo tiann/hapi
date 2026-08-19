@@ -29,6 +29,7 @@ function createApp(opts: {
         invokedLocalMessages: Array<{ localId: string; invokedAt: number }>
     }
     steerQueuedMessage?: (sessionId: string, messageId: string) => Promise<unknown>
+    hasAttachment?: (sessionId: string, namespace: string, attachmentId: string) => boolean
 }) {
     const sentMessages: Array<{ sessionId: string; payload: unknown }> = []
     const queuedStateCalls: Array<{ sessionId: string; localIds: string[] }> = []
@@ -71,6 +72,7 @@ function createApp(opts: {
         getQueuedState,
         cancelQueuedMessage: async () => ({ status: 'cancelled' }),
         steerQueuedMessage: opts.steerQueuedMessage ?? (async () => ({ status: 'failed', error: 'Steer failed', localId: null })),
+        hasAttachment: opts.hasAttachment ?? (() => true),
         getMessagesPage,
     } as unknown as SyncEngine
 
@@ -405,6 +407,66 @@ describe('POST /api/sessions/:id/messages — scheduledAt + attachments rejected
 
         expect(response.status).toBe(200)
         expect(sentMessages).toHaveLength(1)
+    })
+
+    it('accepts pathless durable attachment references after ownership validation', async () => {
+        const ownershipCalls: string[][] = []
+        const { app, sentMessages } = createApp({
+            hasAttachment: (sessionId, namespace, attachmentId) => {
+                ownershipCalls.push([sessionId, namespace, attachmentId])
+                return true
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                text: 'hello',
+                attachments: [{
+                    id: 'att-3',
+                    filename: 'b.png',
+                    mimeType: 'image/png',
+                    size: 10,
+                    attachmentId: 'attachment-1'
+                }]
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(ownershipCalls).toEqual([['session-1', 'default', 'attachment-1']])
+        expect(sentMessages[0]?.payload).toEqual(expect.objectContaining({
+            attachments: [{
+                id: 'att-3',
+                filename: 'b.png',
+                mimeType: 'image/png',
+                size: 10,
+                attachmentId: 'attachment-1'
+            }]
+        }))
+    })
+
+    it('rejects a durable attachment owned by another session', async () => {
+        const { app, sentMessages } = createApp({ hasAttachment: () => false })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                text: 'hello',
+                attachments: [{
+                    id: 'att-4',
+                    filename: 'secret.pdf',
+                    mimeType: 'application/pdf',
+                    size: 10,
+                    attachmentId: 'attachment-other'
+                }]
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Attachment not found or not owned by this session' })
+        expect(sentMessages).toHaveLength(0)
     })
 })
 

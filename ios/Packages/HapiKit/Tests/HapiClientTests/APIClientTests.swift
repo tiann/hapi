@@ -133,4 +133,26 @@ struct APIClientTests {
                 == "\(testHubURLString)/api/sessions/s1/generated-images/img1"
         )
     }
+
+    @Test func attachmentReturnsRawThumbnailBytesFromTheDurableEndpoint() async throws {
+        let harness = try makeHarness(jwt: freshJWT())
+        await harness.performer.enqueue(
+            json: "thumbnail-bytes",
+            headers: ["Content-Type": "image/jpeg"]
+        )
+
+        let image = try await harness.client.attachment(
+            sessionId: "s1",
+            attachmentId: "durable-1",
+            variant: "thumbnail"
+        )
+        #expect(image.data == Data("thumbnail-bytes".utf8))
+        #expect(image.mimeType == "image/jpeg")
+        let requests = await harness.performer.requests
+        try #require(requests.count == 1)
+        #expect(
+            requests[0].url?.absoluteString
+                == "\(testHubURLString)/api/sessions/s1/attachments/durable-1/thumbnail"
+        )
+    }
 }

@@ -191,6 +191,38 @@ class HapiApiTest {
     }
 
     @Test
+    fun `durable upload posts optional thumbnail and decodes attachment id`() {
+        server.enqueue(ok("""{"success":true,"attachmentId":"durable-1","thumbnailAvailable":true}"""))
+
+        val response = runBlocking {
+            session.api.uploadFile(
+                "s1",
+                "shot.jpg",
+                "QUJDRA==",
+                "image/jpeg",
+                thumbnailBase64 = "VEhVTUI=",
+                thumbnailMimeType = "image/jpeg",
+            )
+        }
+
+        assertTrue(response.success)
+        assertNull(response.path)
+        assertEquals("durable-1", response.attachmentId)
+        assertTrue(response.thumbnailAvailable == true)
+        val request = server.takeRequest()
+        assertEquals(
+            buildJsonObject {
+                put("filename", "shot.jpg")
+                put("content", "QUJDRA==")
+                put("mimeType", "image/jpeg")
+                put("thumbnailContent", "VEhVTUI=")
+                put("thumbnailMimeType", "image/jpeg")
+            },
+            Json.parseToJsonElement(request.body.readUtf8()).jsonObject,
+        )
+    }
+
+    @Test
     fun `delete upload posts the path`() {
         server.enqueue(ok("""{"success":true}"""))
 
@@ -201,6 +233,22 @@ class HapiApiTest {
         assertEquals("/api/sessions/s1/upload/delete", request.path)
         assertEquals(
             buildJsonObject { put("path", "/tmp/uploads/shot.jpg") },
+            Json.parseToJsonElement(request.body.readUtf8()).jsonObject,
+        )
+    }
+
+    @Test
+    fun `delete upload can post a durable attachment id`() {
+        server.enqueue(ok("""{"success":true}"""))
+
+        val response = runBlocking {
+            session.api.deleteUpload("s1", path = null, attachmentId = "durable-1")
+        }
+
+        assertTrue(response.success)
+        val request = server.takeRequest()
+        assertEquals(
+            buildJsonObject { put("attachmentId", "durable-1") },
             Json.parseToJsonElement(request.body.readUtf8()).jsonObject,
         )
     }

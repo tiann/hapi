@@ -33,9 +33,10 @@ import coil.ImageLoader
 data class ChatMedia(
     val imageLoader: ImageLoader?,
     val generatedImageUrl: (imageId: String) -> String?,
+    val attachmentUrl: (attachmentId: String, variant: String) -> String? = { _, _ -> null },
 )
 
-val LocalChatMedia = staticCompositionLocalOf { ChatMedia(imageLoader = null) { null } }
+val LocalChatMedia = staticCompositionLocalOf { ChatMedia(imageLoader = null, generatedImageUrl = { null }) }
 
 /** Stable LazyColumn key. */
 val VisibleChatBlock.stableId: String

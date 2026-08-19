@@ -125,6 +125,31 @@ describe('attachmentAdapter image previews', () => {
         expect(emitted.every((attachment) => attachment.previewUrl === undefined)).toBe(true)
     })
 
+    it('does not instantiate the image decoder for large image uploads', async () => {
+        const imageConstructor = vi.fn()
+        vi.stubGlobal('Image', class {
+            constructor() {
+                imageConstructor()
+            }
+        })
+        try {
+            const file = new File([
+                new Uint8Array(5 * 1024 * 1024 + 1)
+            ], 'large.png', { type: 'image/png' })
+            const { uploadFile } = await collectAdditions(file)
+
+            expect(imageConstructor).not.toHaveBeenCalled()
+            expect(uploadFile).toHaveBeenCalledWith(
+                'session-1',
+                'large.png',
+                expect.any(String),
+                'image/png',
+            )
+        } finally {
+            vi.unstubAllGlobals()
+        }
+    })
+
     it('hands an inactive attachment to the resumed session before uploading', async () => {
         const { createAttachmentAdapter } = await import('./attachmentAdapter')
         const file = new File(['image'], 'ready.png', { type: 'image/png' })

@@ -136,9 +136,17 @@ function triggerIncomingUserMessage(
     socket: (typeof socketHarness.sockets)[number],
     message: {
         id?: string
+        localId?: string | null
         seq: number
         text: string
         sentFrom: 'cli' | 'webapp' | 'telegram-bot'
+        attachments?: Array<{
+            id: string
+            filename: string
+            mimeType: string
+            size: number
+            attachmentId: string
+        }>
     }
 ): void {
     socket.trigger('update', {
@@ -147,12 +155,13 @@ function triggerIncomingUserMessage(
             message: {
                 id: message.id,
                 seq: message.seq,
-                localId: null,
+                localId: message.localId ?? null,
                 content: {
                     role: 'user',
                     content: {
                         type: 'text',
-                        text: message.text
+                        text: message.text,
+                        ...(message.attachments ? { attachments: message.attachments } : {})
                     },
                     meta: {
                         sentFrom: message.sentFrom
@@ -546,6 +555,354 @@ describe('ApiSessionClient incoming user messages', () => {
         client.close()
     })
 
+    it('queues a complete reconnect backfill page before live messages', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const download = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        axiosHarness.get.mockImplementation((url: string) => {
+            if (url.includes('/messages')) {
+                return Promise.resolve({
+                    data: {
+                        messages: [
+                            {
+                                id: 'backfilled-attachment-message',
+                                seq: 2,
+                                createdAt: 2,
+                                localId: null,
+                                content: {
+                                    role: 'user',
+                                    content: {
+                                        type: 'text',
+                                        text: 'backfilled attachment prompt',
+                                        attachments: [{
+                                            id: 'backfill-attachment-metadata',
+                                            filename: 'slow.txt',
+                                            mimeType: 'text/plain',
+                                            size: 4,
+                                            attachmentId: 'backfill-attachment'
+                                        }]
+                                    },
+                                    meta: { sentFrom: 'webapp' }
+                                }
+                            },
+                            {
+                                id: 'backfilled-plain-message',
+                                seq: 3,
+                                createdAt: 3,
+                                localId: null,
+                                content: {
+                                    role: 'user',
+                                    content: { type: 'text', text: 'backfilled plain prompt' },
+                                    meta: { sentFrom: 'webapp' }
+                                }
+                            }
+                        ]
+                    }
+                })
+            }
+            return download.promise
+        })
+
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const receivedTexts: string[] = []
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text)
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'initial-message',
+            seq: 1,
+            text: 'initial prompt',
+            sentFrom: 'webapp'
+        })
+
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await vi.waitFor(() => expect(
+            axiosHarness.get.mock.calls.some(([url]) => String(url).includes('/attachments/'))
+        ).toBe(true))
+        triggerIncomingUserMessage(socket, {
+            id: 'live-message-during-backfill',
+            seq: 4,
+            text: 'live prompt during backfill',
+            sentFrom: 'webapp'
+        })
+
+        download.resolve({
+            data: Buffer.from('slow'),
+            headers: {
+                'content-length': '4',
+                'x-hapi-attachment-size': '4'
+            }
+        })
+        await vi.waitFor(() => expect(receivedTexts).toEqual([
+            'initial prompt',
+            'backfilled attachment prompt',
+            'backfilled plain prompt',
+            'live prompt during backfill'
+        ]))
+        client.close()
+    })
+
+    it('keeps live messages behind every reconnect backfill page', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const download = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const makeBackfillMessage = (seq: number, text: string, withAttachment = false) => ({
+            id: `backfilled-${seq}`,
+            seq,
+            createdAt: seq,
+            localId: null,
+            content: {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text,
+                    ...(withAttachment ? {
+                        attachments: [{
+                            id: 'backfill-attachment-metadata',
+                            filename: 'slow.txt',
+                            mimeType: 'text/plain',
+                            size: 4,
+                            attachmentId: 'backfill-attachment'
+                        }]
+                    } : {})
+                },
+                meta: { sentFrom: 'webapp' }
+            }
+        })
+        const firstPage = Array.from({ length: 200 }, (_, index) => (
+            makeBackfillMessage(index + 2, `backfill page one ${index + 1}`, index === 0)
+        ))
+        axiosHarness.get.mockImplementation((url: string, options?: { params?: { afterSeq?: number } }) => {
+            if (!url.includes('/messages')) return download.promise
+            const afterSeq = options?.params?.afterSeq
+            if (afterSeq === 1) {
+                return Promise.resolve({ data: { messages: firstPage } })
+            }
+            if (afterSeq === 201) {
+                return Promise.resolve({
+                    data: { messages: [makeBackfillMessage(202, 'backfill page two')] }
+                })
+            }
+            return Promise.resolve({ data: { messages: [] } })
+        })
+
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const receivedTexts: string[] = []
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text)
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'initial-message',
+            seq: 1,
+            text: 'initial prompt',
+            sentFrom: 'webapp'
+        })
+
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await vi.waitFor(() => expect(
+            axiosHarness.get.mock.calls.some(([url]) => String(url).includes('/attachments/'))
+        ).toBe(true))
+        triggerIncomingUserMessage(socket, {
+            id: 'live-message-during-backfill-pages',
+            seq: 203,
+            text: 'live prompt during backfill pages',
+            sentFrom: 'webapp'
+        })
+        expect(receivedTexts).not.toContain('live prompt during backfill pages')
+
+        download.resolve({
+            data: Buffer.from('slow'),
+            headers: {
+                'content-length': '4',
+                'x-hapi-attachment-size': '4'
+            }
+        })
+        await vi.waitFor(() => expect(receivedTexts).toHaveLength(203))
+        expect(receivedTexts.slice(-3)).toEqual([
+            'backfill page one 200',
+            'backfill page two',
+            'live prompt during backfill pages'
+        ])
+        expect(axiosHarness.get.mock.calls.some(([, options]) => (
+            (options as { params?: { afterSeq?: number } } | undefined)?.params?.afterSeq === 201
+        ))).toBe(true)
+        client.close()
+    })
+
+    it('automatically retries a failed reconnect backfill while the socket remains connected', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const pageTwoFailure = deferred<{ data: { messages: unknown[] } }>()
+        const makeBackfillMessage = (seq: number, text: string) => ({
+            id: `backfilled-${seq}`,
+            seq,
+            createdAt: seq,
+            localId: null,
+            content: {
+                role: 'user',
+                content: { type: 'text', text },
+                meta: { sentFrom: 'webapp' }
+            }
+        })
+        const firstPage = Array.from({ length: 200 }, (_, index) => (
+            makeBackfillMessage(index + 2, `backfill page one ${index + 1}`)
+        ))
+        let pageTwoAttempts = 0
+        axiosHarness.get.mockImplementation((url: string, options?: { params?: { afterSeq?: number } }) => {
+            if (!url.includes('/messages')) {
+                return Promise.resolve({ data: Buffer.from('unused'), headers: {} })
+            }
+            const afterSeq = options?.params?.afterSeq
+            if (afterSeq === 1) {
+                return Promise.resolve({ data: { messages: firstPage } })
+            }
+            if (afterSeq === 201) {
+                pageTwoAttempts += 1
+                if (pageTwoAttempts === 1) return pageTwoFailure.promise
+                return Promise.resolve({
+                    data: { messages: [makeBackfillMessage(202, 'backfill page two')] }
+                })
+            }
+            return Promise.resolve({ data: { messages: [] } })
+        })
+
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const receivedTexts: string[] = []
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text)
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'initial-message',
+            seq: 1,
+            text: 'initial prompt',
+            sentFrom: 'webapp'
+        })
+
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(pageTwoAttempts).toBe(1))
+
+        triggerIncomingUserMessage(socket, {
+            id: 'live-message-after-failed-backfill',
+            seq: 203,
+            text: 'live prompt after failed backfill',
+            sentFrom: 'webapp'
+        })
+        expect(receivedTexts).not.toContain('live prompt after failed backfill')
+
+        pageTwoFailure.reject(new Error('temporary backfill failure'))
+        await vi.waitFor(() => expect(receivedTexts).toHaveLength(201))
+        expect(socket.connected).toBe(true)
+        await vi.waitFor(() => expect(pageTwoAttempts).toBe(2), { timeout: 3_000 })
+        await vi.waitFor(() => expect(receivedTexts).toHaveLength(203))
+        expect(receivedTexts.slice(-3)).toEqual([
+            'backfill page one 200',
+            'backfill page two',
+            'live prompt after failed backfill'
+        ])
+        client.close()
+    })
+
+    it('cancels a live message deferred during reconnect backfill', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const download = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        axiosHarness.get.mockImplementation((url: string) => {
+            if (url.includes('/messages')) {
+                return Promise.resolve({
+                    data: {
+                        messages: [{
+                            id: 'backfilled-attachment-message',
+                            seq: 2,
+                            createdAt: 2,
+                            localId: null,
+                            content: {
+                                role: 'user',
+                                content: {
+                                    type: 'text',
+                                    text: 'backfilled attachment prompt',
+                                    attachments: [{
+                                        id: 'backfill-attachment-metadata',
+                                        filename: 'slow.txt',
+                                        mimeType: 'text/plain',
+                                        size: 4,
+                                        attachmentId: 'backfill-attachment'
+                                    }]
+                                },
+                                meta: { sentFrom: 'webapp' }
+                            }
+                        }]
+                    }
+                })
+            }
+            return download.promise
+        })
+
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const receivedTexts: string[] = []
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text)
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'initial-message',
+            seq: 1,
+            text: 'initial prompt',
+            sentFrom: 'webapp'
+        })
+
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(
+            axiosHarness.get.mock.calls.some(([url]) => String(url).includes('/attachments/'))
+        ).toBe(true))
+
+        triggerIncomingUserMessage(socket, {
+            id: 'deferred-live-message',
+            localId: 'deferred-live-local-id',
+            seq: 3,
+            text: 'do not deliver this deferred prompt',
+            sentFrom: 'webapp'
+        })
+        const ack = vi.fn()
+        socket.trigger('update', {
+            body: {
+                t: 'cancel-queued-message',
+                localId: 'deferred-live-local-id'
+            }
+        }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: true })
+
+        download.resolve({
+            data: Buffer.from('slow'),
+            headers: {
+                'content-length': '4',
+                'x-hapi-attachment-size': '4'
+            }
+        })
+        await vi.waitFor(() => expect(receivedTexts).toEqual([
+            'initial prompt',
+            'backfilled attachment prompt'
+        ]))
+        expect(receivedTexts).not.toContain('do not deliver this deferred prompt')
+        client.close()
+    })
+
     it.each(['webapp', 'telegram-bot'] as const)(
         'delivers %s-originated user messages',
         (sentFrom) => {
@@ -573,6 +930,475 @@ describe('ApiSessionClient incoming user messages', () => {
             client.close()
         }
     )
+
+    it('materializes hub-resident attachments before delivering the prompt', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        axiosHarness.get.mockResolvedValue({
+            data: Buffer.from('hello'),
+            headers: {
+                'content-length': '5',
+                'x-hapi-attachment-size': '5',
+                'x-hapi-attachment-sha256': '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
+            }
+        })
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'attachment-message',
+            seq: 1,
+            text: 'inspect this file',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'hello.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                attachmentId: 'attachment-1'
+            }]
+        })
+
+        await vi.waitFor(() => expect(onUserMessage).toHaveBeenCalledOnce())
+        const message = onUserMessage.mock.calls[0]?.[0]
+        expect(message.content.attachments).toHaveLength(1)
+        expect(message.content.attachments[0]).toEqual(expect.objectContaining({
+            attachmentId: 'attachment-1',
+            path: expect.stringContaining('attachment-')
+        }))
+        expect(axiosHarness.get).toHaveBeenCalledWith(
+            expect.stringContaining('/cli/sessions/11111111-1111-4111-8111-111111111111/attachments/attachment-1/original'),
+            expect.objectContaining({ responseType: 'arraybuffer' })
+        )
+        client.close()
+    })
+
+    it('delivers the text turn when an attachment cannot be materialized', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        axiosHarness.get.mockRejectedValue(new Error('attachment unavailable'))
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'attachment-failure-message',
+            seq: 1,
+            text: 'keep this prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'missing.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                attachmentId: 'missing-attachment'
+            }]
+        })
+
+        await vi.waitFor(() => expect(onUserMessage).toHaveBeenCalledOnce())
+        expect(onUserMessage.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+            content: expect.objectContaining({ text: 'keep this prompt\n\nAttachment unavailable: missing.txt' })
+        }))
+        expect(onUserMessage.mock.calls[0]?.[0].content.attachments[0]).toEqual(expect.objectContaining({
+            attachmentId: 'missing-attachment'
+        }))
+        client.close()
+    })
+
+    it('keeps an attachment-only turn visible when materialization fails', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        axiosHarness.get.mockRejectedValue(new Error('attachment unavailable'))
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'attachment-only-failure-message',
+            seq: 1,
+            text: '',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'missing.png',
+                mimeType: 'image/png',
+                size: 5,
+                attachmentId: 'missing-image'
+            }]
+        })
+
+        await vi.waitFor(() => expect(onUserMessage).toHaveBeenCalledOnce())
+        expect(onUserMessage.mock.calls[0]?.[0].content.text)
+            .toBe('Attachment unavailable: missing.png')
+        client.close()
+    })
+
+    it('keeps plain messages behind all queued attachment materialization', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const first = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const second = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const response = (text: string) => ({
+            data: Buffer.from(text),
+            headers: {
+                'content-length': String(text.length),
+                'x-hapi-attachment-size': String(text.length)
+            }
+        })
+        axiosHarness.get.mockImplementation((url: string) => {
+            if (url.includes('first-attachment')) return first.promise
+            return second.promise
+        })
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const receivedTexts: string[] = []
+        client.onUserMessage((message) => receivedTexts.push(message.content.text))
+
+        triggerIncomingUserMessage(socket, {
+            id: 'first-attachment-message',
+            seq: 1,
+            text: 'first attachment prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'first.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                attachmentId: 'first-attachment'
+            }]
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'second-attachment-message',
+            seq: 2,
+            text: 'second attachment prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-2',
+                filename: 'second.txt',
+                mimeType: 'text/plain',
+                size: 6,
+                attachmentId: 'second-attachment'
+            }]
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'plain-message',
+            seq: 3,
+            text: 'plain prompt',
+            sentFrom: 'webapp'
+        })
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledTimes(1))
+        expect(receivedTexts).toEqual([])
+
+        first.resolve(response('first'))
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledTimes(2))
+        expect(receivedTexts).toEqual(['first attachment prompt'])
+
+        second.resolve(response('second'))
+        await vi.waitFor(() => expect(receivedTexts).toEqual([
+            'first attachment prompt',
+            'second attachment prompt',
+            'plain prompt'
+        ]))
+        client.close()
+    })
+
+    it('drops queued attachment materialization after the client closes', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const first = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const second = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const response = (text: string) => ({
+            data: Buffer.from(text),
+            headers: {
+                'content-length': String(text.length),
+                'x-hapi-attachment-size': String(text.length)
+            }
+        })
+        axiosHarness.get.mockImplementation((url: string) => (
+            url.includes('first-attachment') ? first.promise : second.promise
+        ))
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'first-attachment-message',
+            seq: 1,
+            text: 'first attachment prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'first.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                attachmentId: 'first-attachment'
+            }]
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'second-attachment-message',
+            seq: 2,
+            text: 'second attachment prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-2',
+                filename: 'second.txt',
+                mimeType: 'text/plain',
+                size: 6,
+                attachmentId: 'second-attachment'
+            }]
+        })
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledTimes(1))
+        client.close()
+        first.resolve(response('first'))
+        second.resolve(response('second'))
+
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(axiosHarness.get).toHaveBeenCalledTimes(1)
+        expect(onUserMessage).not.toHaveBeenCalled()
+    })
+
+    it('materializes multiple attachments in one prompt sequentially', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const first = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const second = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const response = (text: string) => ({
+            data: Buffer.from(text),
+            headers: {
+                'content-length': String(text.length),
+                'x-hapi-attachment-size': String(text.length)
+            }
+        })
+        axiosHarness.get.mockImplementation((url: string) => (
+            url.includes('first-attachment') ? first.promise : second.promise
+        ))
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'multi-attachment-message',
+            seq: 1,
+            text: 'two attachments',
+            sentFrom: 'webapp',
+            attachments: [
+                {
+                    id: 'att-1',
+                    filename: 'first.txt',
+                    mimeType: 'text/plain',
+                    size: 5,
+                    attachmentId: 'first-attachment'
+                },
+                {
+                    id: 'att-2',
+                    filename: 'second.txt',
+                    mimeType: 'text/plain',
+                    size: 6,
+                    attachmentId: 'second-attachment'
+                }
+            ]
+        })
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledTimes(1))
+        expect(onUserMessage).not.toHaveBeenCalled()
+
+        first.resolve(response('first'))
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledTimes(2))
+        expect(onUserMessage).not.toHaveBeenCalled()
+
+        second.resolve(response('second'))
+        await vi.waitFor(() => expect(onUserMessage).toHaveBeenCalledOnce())
+        expect(onUserMessage.mock.calls[0]?.[0].content.attachments).toHaveLength(2)
+        client.close()
+    })
+
+    it('acknowledges cancellation during attachment materialization without enqueueing the prompt', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const download = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        axiosHarness.get.mockReturnValue(download.promise)
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'cancelled-attachment-message',
+            localId: 'cancelled-attachment-local-id',
+            seq: 1,
+            text: 'do not deliver this prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'slow.txt',
+                mimeType: 'text/plain',
+                size: 4,
+                attachmentId: 'slow-attachment'
+            }]
+        })
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledOnce())
+        const ack = vi.fn()
+        socket.trigger('update', {
+            body: {
+                t: 'cancel-queued-message',
+                localId: 'cancelled-attachment-local-id'
+            }
+        }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: true })
+
+        download.resolve({
+            data: Buffer.from('slow'),
+            headers: {
+                'content-length': '4',
+                'x-hapi-attachment-size': '4'
+            }
+        })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(onUserMessage).not.toHaveBeenCalled()
+        client.close()
+    })
+
+    it('keeps cancellation active across duplicate deliveries of one local message', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const download = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        axiosHarness.get.mockReturnValue(download.promise)
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        const message = {
+            id: 'duplicate-attachment-message',
+            localId: 'duplicate-attachment-local-id',
+            seq: 1,
+            text: 'do not deliver duplicate copies',
+            sentFrom: 'webapp' as const,
+            attachments: [{
+                id: 'att-1',
+                filename: 'slow.txt',
+                mimeType: 'text/plain',
+                size: 4,
+                attachmentId: 'slow-attachment'
+            }]
+        }
+        triggerIncomingUserMessage(socket, message)
+        triggerIncomingUserMessage(socket, message)
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledOnce())
+        const ack = vi.fn()
+        socket.trigger('update', {
+            body: {
+                t: 'cancel-queued-message',
+                localId: 'duplicate-attachment-local-id'
+            }
+        }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: true })
+
+        download.resolve({
+            data: Buffer.from('slow'),
+            headers: {
+                'content-length': '4',
+                'x-hapi-attachment-size': '4'
+            }
+        })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(onUserMessage).not.toHaveBeenCalled()
+        client.close()
+    })
+
+    it('cancels a prompt present in both deferred and agent-queue paths', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const download = deferred<{ data: Buffer; headers: Record<string, string> }>()
+        const backfill = deferred<{ data: { messages: unknown[] } }>()
+        axiosHarness.get.mockImplementation((url: string) => (
+            url.includes('/messages') ? backfill.promise : download.promise
+        ))
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+        const cancelQueuedMessage = vi.fn(() => true)
+        client.onCancelQueuedMessage(cancelQueuedMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'cursor-message',
+            seq: 1,
+            text: 'establish backfill cursor',
+            sentFrom: 'webapp'
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'materializing-message',
+            localId: 'overlapping-local-id',
+            seq: 2,
+            text: 'do not deliver this materializing prompt',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'slow.txt',
+                mimeType: 'text/plain',
+                size: 4,
+                attachmentId: 'slow-attachment'
+            }]
+        })
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledOnce())
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(
+            axiosHarness.get.mock.calls.some(([url]) => String(url).includes('/messages'))
+        ).toBe(true))
+
+        triggerIncomingUserMessage(socket, {
+            id: 'deferred-overlap-message',
+            localId: 'overlapping-local-id',
+            seq: 3,
+            text: 'do not deliver this deferred duplicate',
+            sentFrom: 'webapp'
+        })
+        const ack = vi.fn()
+        socket.trigger('update', {
+            body: {
+                t: 'cancel-queued-message',
+                localId: 'overlapping-local-id'
+            }
+        }, ack)
+        expect(cancelQueuedMessage).toHaveBeenCalledWith('overlapping-local-id')
+        expect(ack).toHaveBeenCalledWith({ removed: true })
+
+        backfill.resolve({ data: { messages: [] } })
+        download.resolve({
+            data: Buffer.from('slow'),
+            headers: {
+                'content-length': '4',
+                'x-hapi-attachment-size': '4'
+            }
+        })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(onUserMessage).toHaveBeenCalledOnce()
+        expect(onUserMessage.mock.calls[0]?.[0].content.text).toBe('establish backfill cursor')
+        client.close()
+    })
 })
 
 describe('isExternalUserMessage', () => {

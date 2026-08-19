@@ -593,19 +593,48 @@ class HapiApi(
         filename: String,
         contentBase64: String,
         mimeType: String,
+    ): UploadFileResponse = uploadFile(
+        sessionId,
+        filename,
+        contentBase64,
+        mimeType,
+        thumbnailBase64 = null,
+        thumbnailMimeType = null,
+    )
+
+    override suspend fun uploadFile(
+        sessionId: String,
+        filename: String,
+        contentBase64: String,
+        mimeType: String,
+        thumbnailBase64: String?,
+        thumbnailMimeType: String?,
     ): UploadFileResponse =
         request(
             "POST",
             url("api", "sessions", sessionId, "upload").build(),
-            UploadFileRequest(filename, contentBase64, mimeType).toJsonBody(),
+            UploadFileRequest(
+                filename = filename,
+                content = contentBase64,
+                mimeType = mimeType,
+                thumbnailContent = thumbnailBase64,
+                thumbnailMimeType = thumbnailMimeType,
+            ).toJsonBody(),
         )
 
     /** `POST /api/sessions/:id/upload/delete`. */
     override suspend fun deleteUpload(sessionId: String, path: String): DeleteUploadResponse =
+        deleteUpload(sessionId, path = path, attachmentId = null)
+
+    override suspend fun deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?,
+    ): DeleteUploadResponse =
         request(
             "POST",
             url("api", "sessions", sessionId, "upload", "delete").build(),
-            DeleteUploadRequest(path).toJsonBody(),
+            DeleteUploadRequest(path = path, attachmentId = attachmentId).toJsonBody(),
         )
 
     // ---------------------------------------------------- usage & storage --

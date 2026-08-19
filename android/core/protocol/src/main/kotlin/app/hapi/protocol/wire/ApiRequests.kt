@@ -146,12 +146,15 @@ data class UploadFileRequest(
     val filename: String,
     val content: String,
     val mimeType: String,
+    val thumbnailContent: String? = null,
+    val thumbnailMimeType: String? = null,
 )
 
 /** `POST /api/sessions/:id/upload/delete` (`DeleteUploadRequestSchema`). */
 @Serializable
 data class DeleteUploadRequest(
-    val path: String,
+    val path: String? = null,
+    val attachmentId: String? = null,
 )
 
 /**

@@ -297,10 +297,20 @@ public struct UploadFileRequest: Codable, Equatable, Sendable {
     /// Base64-encoded file content.
     public var content: String
     public var mimeType: String
+    public var thumbnailContent: String?
+    public var thumbnailMimeType: String?
 
-    public init(filename: String, content: String, mimeType: String) {
+    public init(
+        filename: String,
+        content: String,
+        mimeType: String,
+        thumbnailContent: String? = nil,
+        thumbnailMimeType: String? = nil
+    ) {
         self.filename = filename
         self.content = content
         self.mimeType = mimeType
+        self.thumbnailContent = thumbnailContent
+        self.thumbnailMimeType = thumbnailMimeType
     }
 }

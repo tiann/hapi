@@ -12,6 +12,7 @@ const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 type PendingUploadAttachment = PendingAttachment & {
     path?: string
+    attachmentId?: string
     previewUrl?: string
     uploadSessionId?: string
 }
@@ -27,10 +28,18 @@ export function createAttachmentAdapter(
 ): AttachmentAdapter {
     const cancelledAttachmentIds = new Set<string>()
 
-    const deleteUpload = async (path?: string, uploadSessionId = sessionId) => {
-        if (!path) return
+    const deleteUpload = async (
+        path?: string,
+        attachmentId?: string,
+        uploadSessionId = sessionId
+    ) => {
+        if (!path && !attachmentId) return
         try {
-            await api.deleteUploadFile(uploadSessionId, path)
+            if (attachmentId) {
+                await api.deleteAttachment(uploadSessionId, attachmentId)
+            } else if (path) {
+                await api.deleteUploadFile(uploadSessionId, path)
+            }
         } catch {
             // Best effort cleanup
         }
@@ -50,7 +59,7 @@ export function createAttachmentAdapter(
             // metadata still supplies a stable id so draft merge cannot
             // duplicate the same File across persistence passes.
             const restored = getRestoredUploadMetadata(file)
-            if (!resolveSessionId && restored?.path) {
+            if (!resolveSessionId && (restored?.path || restored?.attachmentId)) {
                 yield {
                     id: restored.id,
                     type: 'file',
@@ -59,6 +68,7 @@ export function createAttachmentAdapter(
                     file,
                     status: { type: 'requires-action', reason: 'composer-send' },
                     path: restored.path,
+                    attachmentId: restored.attachmentId,
                     previewUrl: restored.previewUrl,
                     uploadSessionId: restored.uploadSessionId,
                 } as PendingUploadAttachment
@@ -105,6 +115,23 @@ export function createAttachmentAdapter(
                 }
 
                 const uploadSessionId = resolveSessionId ? await resolveSessionId() : sessionId
+                if (restored
+                    && restored.uploadSessionId === uploadSessionId
+                    && (restored.path || restored.attachmentId)) {
+                    yield {
+                        id,
+                        type: 'file',
+                        name: file.name,
+                        contentType,
+                        file,
+                        status: { type: 'requires-action', reason: 'composer-send' },
+                        path: restored.path,
+                        attachmentId: restored.attachmentId,
+                        previewUrl: restored.previewUrl,
+                        uploadSessionId,
+                    } as PendingUploadAttachment
+                    return
+                }
                 // Resume may already have merged the source session away. Always
                 // hand off with a live cancellation predicate so transfer can
                 // drop this id (even if already persisted on the source draft).
@@ -121,9 +148,16 @@ export function createAttachmentAdapter(
                     return
                 }
 
+                // Reuse the preview Data URL only as the original payload: it
+                // was read directly from the File above and has not been
+                // resized or recompressed. The derived thumbnail is uploaded
+                // separately and never replaces the original bytes.
                 const content = previewUrl
                     ? base64FromDataUrl(previewUrl)
                     : await fileToBase64(file)
+                const thumbnail = isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES
+                    ? await createThumbnailDataUrl(`data:${contentType};base64,${content}`)
+                    : undefined
 
                 if (cancelledAttachmentIds.has(id)) {
                     return
@@ -139,15 +173,17 @@ export function createAttachmentAdapter(
                     previewUrl
                 } as PendingUploadAttachment
 
-                const result = await api.uploadFile(uploadSessionId, file.name, content, contentType)
+                const result = thumbnail
+                    ? await api.uploadFile(uploadSessionId, file.name, content, contentType, thumbnail)
+                    : await api.uploadFile(uploadSessionId, file.name, content, contentType)
                 if (cancelledAttachmentIds.has(id)) {
-                    if (result.success && result.path) {
-                        await deleteUpload(result.path, uploadSessionId)
+                    if (result.success && (result.path || result.attachmentId)) {
+                        await deleteUpload(result.path, result.attachmentId, uploadSessionId)
                     }
                     return
                 }
 
-                if (!result.success || !result.path) {
+                if (!result.success || (!result.path && !result.attachmentId)) {
                     yield {
                         id,
                         type: 'file',
@@ -167,6 +203,7 @@ export function createAttachmentAdapter(
                     file,
                     status: { type: 'requires-action', reason: 'composer-send' },
                     path: result.path,
+                    attachmentId: result.attachmentId,
                     previewUrl,
                     uploadSessionId,
                 } as PendingUploadAttachment
@@ -185,23 +222,23 @@ export function createAttachmentAdapter(
 
         async remove(attachment: Attachment): Promise<void> {
             cancelledAttachmentIds.add(attachment.id)
-            const path = (attachment as PendingUploadAttachment).path
-            const uploadSessionId = (attachment as PendingUploadAttachment).uploadSessionId
-            await deleteUpload(path, uploadSessionId)
+            const pending = attachment as PendingUploadAttachment
+            await deleteUpload(pending.path, pending.attachmentId, pending.uploadSessionId)
         },
 
         async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
             const pending = attachment as PendingUploadAttachment
             const path = pending.path
+            const attachmentId = pending.attachmentId
 
             // Build AttachmentMetadata to be sent with the message
-            const metadata: AttachmentMetadata | undefined = path ? {
+            const metadata: AttachmentMetadata | undefined = (path || attachmentId) ? {
                 id: attachment.id,
                 filename: attachment.name,
                 mimeType: attachment.contentType ?? 'application/octet-stream',
                 size: attachment.file?.size ?? 0,
-                path,
-                previewUrl: pending.previewUrl
+                ...(path ? { path, previewUrl: pending.previewUrl } : {}),
+                ...(attachmentId ? { attachmentId } : {})
             } : undefined
 
             return {
@@ -219,6 +256,50 @@ export function createAttachmentAdapter(
 
 async function fileToBase64(file: File): Promise<string> {
     return base64FromDataUrl(await fileToDataUrl(file))
+}
+
+async function createThumbnailDataUrl(dataUrl: string): Promise<{ content: string; mimeType: string } | undefined> {
+    if (typeof document === 'undefined' || typeof Image === 'undefined') return undefined
+    try {
+        const canvas = document.createElement('canvas')
+        if (typeof canvas.toBlob !== 'function') return undefined
+        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const element = new Image()
+            const timeout = window.setTimeout(() => reject(new Error('Image decode timed out')), 250)
+            element.onload = () => {
+                window.clearTimeout(timeout)
+                resolve(element)
+            }
+            element.onerror = () => {
+                window.clearTimeout(timeout)
+                reject(new Error('Failed to decode image'))
+            }
+            element.src = dataUrl
+        })
+        const maxSide = 768
+        const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
+        canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale))
+        canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale))
+        const context = canvas.getContext('2d')
+        if (!context) return undefined
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', 0.8))
+        if (!blob) return undefined
+        return { content: await blobToBase64(blob), mimeType: blob.type || 'image/webp' }
+    } catch {
+        // Thumbnail creation is an optional UI optimization. Uploading the
+        // original must continue when a browser cannot decode or encode it.
+        return undefined
+    }
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+    return base64FromDataUrl(await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(blob)
+    }))
 }
 
 function base64FromDataUrl(dataUrl: string): string {
