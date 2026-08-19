@@ -121,6 +121,8 @@ export function createPublicStudioRoutes(options: {
     const app = new Hono()
 
     app.get('/public/studios/:token', (c) => {
+        c.header('Cache-Control', 'no-store, private, max-age=0')
+        c.header('Pragma', 'no-cache')
         const room = options.store.studios.getActiveRoomByToken(c.req.param('token'))
         if (!room) return c.json({ error: 'Studio not found or link revoked' }, 404)
         const engine = options.getSyncEngine()

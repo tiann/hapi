@@ -64,6 +64,11 @@ function SuggestionRow(props: {
 
 export default function StudioOwnerPage() {
     const { studioId } = useParams({ from: '/studios/$studioId' })
+    return <StudioOwnerRoom key={studioId} studioId={studioId} />
+}
+
+function StudioOwnerRoom(props: { studioId: string }) {
+    const { studioId } = props
     const { api } = useAppContext()
     const { t } = useTranslation()
     const navigate = useNavigate()
@@ -77,8 +82,14 @@ export default function StudioOwnerPage() {
     })
     const room = query.data?.room
     const posts = query.data?.posts ?? []
-    const suggestions = useMemo(() => posts.filter((post) => post.kind === 'suggestion'), [posts])
-    const discussions = useMemo(() => posts.filter((post) => post.kind === 'discussion'), [posts])
+    const suggestions = useMemo(
+        () => posts.filter((post) => post.roomId === room?.id && post.kind === 'suggestion'),
+        [posts, room?.id]
+    )
+    const discussions = useMemo(
+        () => posts.filter((post) => post.roomId === room?.id && post.kind === 'discussion'),
+        [posts, room?.id]
+    )
     const shareUrl = room ? `${window.location.origin}/studio/${room.shareToken}` : ''
 
     const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.studio(studioId) })

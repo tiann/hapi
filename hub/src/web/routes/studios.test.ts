@@ -61,6 +61,7 @@ describe('studio routes', () => {
 
         const publicResponse = await app.request(`/api/public/studios/${room.shareToken}`)
         expect(publicResponse.status).toBe(200)
+        expect(publicResponse.headers.get('cache-control')).toContain('no-store')
         const body = await publicResponse.json() as { messages: Array<{ text: string }>; room: Record<string, unknown> }
         expect(body.messages.map((message) => message.text)).toEqual(['Review this', 'Looks good.'])
         expect(body.room).not.toHaveProperty('shareToken')

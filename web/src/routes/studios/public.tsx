@@ -18,13 +18,21 @@ function getGuestId(): string {
 }
 
 async function requestStudio(token: string): Promise<PublicStudioResponse> {
-    const response = await fetch(`/api/public/studios/${encodeURIComponent(token)}`)
+    const response = await fetch(`/api/public/studios/${encodeURIComponent(token)}`, {
+        cache: 'no-store',
+        headers: { 'cache-control': 'no-cache' }
+    })
     if (!response.ok) throw new Error(response.status === 404 ? 'not-found' : 'unavailable')
     return await response.json() as PublicStudioResponse
 }
 
 export default function PublicStudioPage() {
     const { shareToken } = useParams({ from: '/studio/$shareToken' })
+    return <PublicStudioRoom key={shareToken} shareToken={shareToken} />
+}
+
+function PublicStudioRoom(props: { shareToken: string }) {
+    const { shareToken } = props
     const { t, setLocale } = useTranslation()
     const queryClient = useQueryClient()
     const [guestId] = useState(getGuestId)
@@ -41,7 +49,10 @@ export default function PublicStudioPage() {
         retry: false
     })
     const posts = query.data?.posts ?? []
-    const discussions = useMemo(() => posts.filter((post) => post.kind === 'discussion'), [posts])
+    const discussions = useMemo(
+        () => posts.filter((post) => post.roomId === query.data?.room.id && post.kind === 'discussion'),
+        [posts, query.data?.room.id]
+    )
 
     useEffect(() => {
         if (authorName.trim()) localStorage.setItem(GUEST_NAME_KEY, authorName.trim())
