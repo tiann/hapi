@@ -361,6 +361,8 @@ export type StudioPost = {
 export type StudioOwnerResponse = {
     room: StudioRoom
     posts: StudioPost[]
+    openSuggestionCount?: number
+    nextSuggestionCursor?: { beforeAt: number; beforeId: string } | null
 }
 
 export type PublicStudioMessage = {

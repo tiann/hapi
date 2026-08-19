@@ -69,13 +69,12 @@ function getGuestId(): string {
 
 function getToken(): string {
     const match = window.location.pathname.match(/^\/studio\/([^/]+)/)
-    return match?.[1] ?? ''
+    return match?.[1] ?? new URLSearchParams(window.location.search).get('token') ?? ''
 }
 
 async function loadStudio(token: string, apiOrigin: string): Promise<PublicStudioResponse> {
     const response = await fetch(new URL(`/api/public/studios/${encodeURIComponent(token)}`, apiOrigin), {
-        cache: 'no-store',
-        headers: { 'cache-control': 'no-cache' }
+        cache: 'no-store'
     })
     if (!response.ok) throw new Error('not-found')
     return await response.json() as PublicStudioResponse

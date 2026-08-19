@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useAppContext } from '@/lib/app-context'
@@ -75,6 +75,9 @@ function StudioOwnerRoom(props: { studioId: string }) {
     const navigate = useNavigate()
     const queryClient = useQueryClient()
     const [copied, setCopied] = useState(false)
+    const [olderSuggestions, setOlderSuggestions] = useState<StudioPost[]>([])
+    const [suggestionCursor, setSuggestionCursor] = useState<{ beforeAt: number; beforeId: string } | null>(null)
+    const [loadingOlderSuggestions, setLoadingOlderSuggestions] = useState(false)
 
     const query = useQuery({
         queryKey: queryKeys.studio(studioId),
@@ -82,7 +85,7 @@ function StudioOwnerRoom(props: { studioId: string }) {
         refetchInterval: 2_000
     })
     const room = query.data?.room
-    const posts = query.data?.posts ?? []
+    const posts = [...(query.data?.posts ?? []), ...olderSuggestions]
     const suggestions = useMemo(
         () => posts.filter((post) => post.roomId === room?.id && post.kind === 'suggestion'),
         [posts, room?.id]
@@ -92,6 +95,26 @@ function StudioOwnerRoom(props: { studioId: string }) {
         [posts, room?.id]
     )
     const shareUrl = room ? buildStudioShareUrl(window.location.origin, room.shareToken, baseUrl) : ''
+
+    const loadOlderSuggestions = async () => {
+        if (!suggestionCursor || loadingOlderSuggestions) return
+        setLoadingOlderSuggestions(true)
+        try {
+            const page = await api.getStudioSuggestions(studioId, suggestionCursor)
+            setOlderSuggestions((current) => [...current, ...page.items])
+            setSuggestionCursor(page.nextCursor)
+        } finally {
+            setLoadingOlderSuggestions(false)
+        }
+    }
+
+    const suggestionCursorKey = query.data?.nextSuggestionCursor
+        ? `${query.data.nextSuggestionCursor.beforeAt}:${query.data.nextSuggestionCursor.beforeId}`
+        : ''
+    useEffect(() => {
+        setSuggestionCursor(query.data?.nextSuggestionCursor ?? null)
+        setOlderSuggestions([])
+    }, [suggestionCursorKey])
 
     const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.studio(studioId) })
     const updateMutation = useMutation({
@@ -205,6 +228,16 @@ function StudioOwnerRoom(props: { studioId: string }) {
                                 />
                             ))}
                         </div>
+                        {suggestionCursor ? (
+                            <button
+                                type="button"
+                                disabled={loadingOlderSuggestions}
+                                onClick={() => void loadOlderSuggestions()}
+                                className="mt-2 w-full rounded-md border border-[var(--app-border)] px-3 py-2 text-sm text-[var(--app-link)] hover:bg-[var(--app-secondary-bg)] disabled:opacity-50"
+                            >
+                                {loadingOlderSuggestions ? t('studio.owner.loadingOlder') : t('studio.owner.loadOlder')}
+                            </button>
+                        ) : null}
                     </section>
 
                     <section>

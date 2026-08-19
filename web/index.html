@@ -104,6 +104,17 @@
     </head>
     <body>
         <div id="root"></div>
+        <script>
+            (function () {
+                var match = window.location.pathname.match(/^\/studio\/([^/]+)/)
+                if (match) {
+                    var target = new URL('/studio.html', window.location.origin)
+                    target.search = window.location.search
+                    target.searchParams.set('token', match[1])
+                    window.location.replace(target.toString())
+                }
+            })()
+        </script>
         <script type="module" src="/src/main.tsx"></script>
     </body>
 </html>

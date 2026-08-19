@@ -20,8 +20,7 @@ function getGuestId(): string {
 
 async function requestStudio(token: string, apiOrigin: string): Promise<PublicStudioResponse> {
     const response = await fetch(new URL(`/api/public/studios/${encodeURIComponent(token)}`, apiOrigin), {
-        cache: 'no-store',
-        headers: { 'cache-control': 'no-cache' }
+        cache: 'no-store'
     })
     if (!response.ok) throw new Error(response.status === 404 ? 'not-found' : 'unavailable')
     return await response.json() as PublicStudioResponse

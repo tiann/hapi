@@ -93,6 +93,24 @@ describe('studio routes', () => {
         expect(body.room).not.toHaveProperty('sessionId')
     })
 
+    it('pages past tool-only raw rows to retain older visible conversation', async () => {
+        const store = new Store(':memory:')
+        createSession(store)
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true, sessionId: 'session-1', session: { id: 'session-1', namespace: 'default', active: true, metadata: {} } })
+        }
+        store.messages.addMessage('session-1', { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Older visible answer' } } })
+        for (let index = 0; index < 210; index += 1) {
+            store.messages.addMessage('session-1', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'exec', input: `${index}` } } })
+        }
+        const room = store.studios.createOrActivateRoom('session-1', 'default', 'Room', 'contribute')
+        const app = createApp(store, engine)
+
+        const response = await app.request(`/api/public/studios/${room.shareToken}`)
+        const body = await response.json() as { messages: Array<{ text: string }> }
+        expect(body.messages.map((message) => message.text)).toEqual(['Older visible answer'])
+    })
+
     it('keeps guest suggestions out of the public room response', async () => {
         const store = new Store(':memory:')
         createSession(store)
@@ -133,7 +151,7 @@ describe('studio routes', () => {
 
         const ownerResponse = await app.request(`/api/studios/${room.id}`)
         const ownerBody = await ownerResponse.json() as { posts: Array<{ kind: string }> }
-        expect(ownerBody.posts.filter((post) => post.kind === 'suggestion')).toHaveLength(205)
+        expect(ownerBody.posts.filter((post) => post.kind === 'suggestion')).toHaveLength(200)
     })
 
     it('queues a guest suggestion and submits it only through the owner decision endpoint', async () => {

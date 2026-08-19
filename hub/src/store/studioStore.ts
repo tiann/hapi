@@ -179,6 +179,55 @@ export class StudioStore {
         return rows.reverse().map(mapPost)
     }
 
+    listOpenSuggestions(roomId: string, limit: number | null = null): StoredStudioPost[] {
+        const limitClause = limit === null ? '' : 'LIMIT ?'
+        const params = limit === null ? [roomId] : [roomId, limit]
+        const rows = this.db.prepare(`
+            SELECT * FROM studio_posts
+            WHERE room_id = ? AND kind = 'suggestion' AND status = 'open'
+            ORDER BY created_at DESC, id DESC
+            ${limitClause}
+        `).all(...params) as StudioPostRow[]
+        return rows.reverse().map(mapPost)
+    }
+
+    listOpenSuggestionsPage(
+        roomId: string,
+        limit = 200,
+        before?: { createdAt: number; id: string }
+    ): StoredStudioPost[] {
+        const beforeClause = before
+            ? 'AND (created_at < ? OR (created_at = ? AND id < ?))'
+            : ''
+        const params = before
+            ? [roomId, before.createdAt, before.createdAt, before.id, limit]
+            : [roomId, limit]
+        return (this.db.prepare(`
+            SELECT * FROM studio_posts
+            WHERE room_id = ? AND kind = 'suggestion' AND status = 'open'
+            ${beforeClause}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+        `).all(...params) as StudioPostRow[]).map(mapPost)
+    }
+
+    countOpenSuggestions(roomId: string): number {
+        const row = this.db.prepare(
+            "SELECT COUNT(*) AS count FROM studio_posts WHERE room_id = ? AND kind = 'suggestion' AND status = 'open'"
+        ).get(roomId) as { count: number }
+        return row.count
+    }
+
+    listResolvedSuggestions(roomId: string, limit = 50): StoredStudioPost[] {
+        const rows = this.db.prepare(`
+            SELECT * FROM studio_posts
+            WHERE room_id = ? AND kind = 'suggestion' AND status != 'open'
+            ORDER BY decided_at DESC, created_at DESC, id DESC
+            LIMIT ?
+        `).all(roomId, limit) as StudioPostRow[]
+        return rows.reverse().map(mapPost)
+    }
+
     createPost(input: {
         roomId: string
         guestId: string

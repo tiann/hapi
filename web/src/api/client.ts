@@ -371,6 +371,16 @@ export class ApiClient {
         return await this.request<StudioOwnerResponse>(`/api/studios/${encodeURIComponent(studioId)}`)
     }
 
+    async getStudioSuggestions(studioId: string, cursor?: { beforeAt: number; beforeId: string }): Promise<{
+        items: StudioPost[]
+        nextCursor: { beforeAt: number; beforeId: string } | null
+    }> {
+        const params = cursor
+            ? `?beforeAt=${encodeURIComponent(cursor.beforeAt)}&beforeId=${encodeURIComponent(cursor.beforeId)}`
+            : ''
+        return await this.request(`/api/studios/${encodeURIComponent(studioId)}/suggestions${params}`)
+    }
+
     async getStudioForSession(sessionId: string): Promise<{ room: StudioOwnerResponse['room'] | null; posts: StudioPost[] }> {
         return await this.request(`/api/studios/session/${encodeURIComponent(sessionId)}`)
     }

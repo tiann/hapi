@@ -34,6 +34,11 @@ const decidePostSchema = z.object({
     text: z.string().trim().min(1).max(4000).optional()
 })
 
+const suggestionPageQuerySchema = z.object({
+    beforeAt: z.coerce.number().int().nonnegative().optional(),
+    beforeId: z.string().min(1).optional()
+}).refine((value) => (value.beforeAt === undefined) === (value.beforeId === undefined))
+
 type PublicStudioMessage = {
     id: string
     role: 'user' | 'assistant'
@@ -92,11 +97,21 @@ function projectMessage(message: StoredMessage): PublicStudioMessage | null {
     return null
 }
 
-function ownerPosts(store: Store, roomId: string) {
-    return [
+function ownerRoomPayload(store: Store, roomId: string) {
+    const openSuggestionsNewestFirst = store.studios.listOpenSuggestionsPage(roomId, 200)
+    const posts = [
         ...store.studios.listPostsByKind(roomId, 'discussion', 200),
-        ...store.studios.listPostsByKind(roomId, 'suggestion', null)
+        ...[...openSuggestionsNewestFirst].reverse(),
+        ...store.studios.listResolvedSuggestions(roomId, 50)
     ].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+    const oldest = openSuggestionsNewestFirst.at(-1)
+    return {
+        posts,
+        openSuggestionCount: store.studios.countOpenSuggestions(roomId),
+        nextSuggestionCursor: openSuggestionsNewestFirst.length === 200 && oldest
+            ? { beforeAt: oldest.createdAt, beforeId: oldest.id }
+            : null
+    }
 }
 
 function publicRoom(room: StoredStudioRoom, session: Session) {
@@ -158,13 +173,24 @@ export function createPublicStudioRoutes(options: {
         const session = engine?.resolveSessionAccess(room.sessionId, room.namespace)
         if (!engine || !session?.ok) return c.json({ error: 'Studio session unavailable' }, 503)
 
-        const messages = options.store.messages.getMessages(room.sessionId, 200)
-            .map(projectMessage)
-            .filter((message): message is PublicStudioMessage => message !== null)
+        const messages: PublicStudioMessage[] = []
+        let before: { at: number; seq: number } | undefined
+        while (messages.length < 200) {
+            const page = options.store.messages.getMessagesByPosition(room.sessionId, 200, before)
+            if (page.length === 0) break
+            const projectedPage = page
+                .map(projectMessage)
+                .filter((message): message is PublicStudioMessage => message !== null)
+            messages.unshift(...projectedPage)
+            const first = page[0]
+            before = first ? { at: first.invokedAt ?? first.createdAt, seq: first.seq } : undefined
+            if (page.length < 200) break
+        }
+        const publicMessages = messages.slice(-200)
         const publicPosts = options.store.studios.listPostsByKind(room.id, 'discussion', 200)
         return c.json({
             room: publicRoom(room, session.session),
-            messages,
+            messages: publicMessages,
             posts: publicPosts
         })
     })
@@ -219,13 +245,31 @@ export function createStudioRoutes(options: {
         const sessionResult = requireSession(c, engine, c.req.param('sessionId'))
         if (sessionResult instanceof Response) return sessionResult
         const room = options.store.studios.getRoomBySession(sessionResult.sessionId, c.get('namespace'))
-        return room ? c.json({ room, posts: ownerPosts(options.store, room.id) }) : c.json({ room: null, posts: [] })
+        return room ? c.json({ room, ...ownerRoomPayload(options.store, room.id) }) : c.json({ room: null, posts: [], openSuggestionCount: 0, nextSuggestionCursor: null })
+    })
+
+    app.get('/studios/:id/suggestions', (c) => {
+        const room = options.store.studios.getRoomById(c.req.param('id'), c.get('namespace'))
+        if (!room) return c.json({ error: 'Studio not found' }, 404)
+        const parsed = suggestionPageQuerySchema.safeParse(c.req.query())
+        if (!parsed.success) return c.json({ error: 'Invalid query' }, 400)
+        const before = parsed.data.beforeAt !== undefined && parsed.data.beforeId !== undefined
+            ? { createdAt: parsed.data.beforeAt, id: parsed.data.beforeId }
+            : undefined
+        const items = options.store.studios.listOpenSuggestionsPage(room.id, 200, before)
+        const oldest = items.at(-1)
+        return c.json({
+            items,
+            nextCursor: items.length === 200 && oldest
+                ? { beforeAt: oldest.createdAt, beforeId: oldest.id }
+                : null
+        })
     })
 
     app.get('/studios/:id', (c) => {
         const room = options.store.studios.getRoomById(c.req.param('id'), c.get('namespace'))
         if (!room) return c.json({ error: 'Studio not found' }, 404)
-        return c.json({ room, posts: ownerPosts(options.store, room.id) })
+        return c.json({ room, ...ownerRoomPayload(options.store, room.id) })
     })
 
     app.patch('/studios/:id', async (c) => {
