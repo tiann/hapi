@@ -75,11 +75,14 @@ export class StudioStore {
             const existing = this.getRoomBySession(sessionId, namespace)
             const now = Date.now()
             if (existing) {
+                const shareToken = existing.status === 'revoked'
+                    ? randomBytes(32).toString('base64url')
+                    : existing.shareToken
                 this.db.prepare(`
                     UPDATE studio_rooms
-                    SET title = ?, access_mode = ?, status = 'active', updated_at = ?
+                    SET title = ?, access_mode = ?, share_token = ?, status = 'active', updated_at = ?
                     WHERE id = ? AND namespace = ?
-                `).run(title, accessMode, now, existing.id, namespace)
+                `).run(title, accessMode, shareToken, now, existing.id, namespace)
                 return this.getRoomById(existing.id, namespace)!
             }
 

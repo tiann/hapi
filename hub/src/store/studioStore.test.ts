@@ -18,6 +18,9 @@ describe('StudioStore', () => {
         expect(store.studios.getActiveRoomByToken(room.shareToken)?.id).toBe(room.id)
         expect(store.studios.revokeRoom(room.id, 'alpha')).toBe(true)
         expect(store.studios.getActiveRoomByToken(room.shareToken)).toBeNull()
+        const reopened = store.studios.createOrActivateRoom('session-a', 'alpha', 'Room', 'contribute')
+        expect(reopened.shareToken).not.toBe(room.shareToken)
+        expect(store.studios.getActiveRoomByToken(room.shareToken)).toBeNull()
     })
 
     it('claims a suggestion once', () => {
