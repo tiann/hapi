@@ -828,11 +828,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * #1470 / #1502: ACP foreground state → hub thinking via keepalive.
-     * Bucket flicker with attached jobs is handled in web/sessionInProgress (#1553).
+     * #1470 / #1502 / #1553: ACP foreground state → hub thinking via keepalive.
+     * Ignore ambient Cursor `state_update_running` when no HAPI prompt is in
+     * flight — that chatter otherwise floats quiet sessions into Working and
+     * hides an attached job from the Jobs bucket. Prompt-owned running,
+     * permission, and requires_action still bump thinking.
      */
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
-        backend.setAgentActivityListener((thinking) => {
+        backend.setAgentActivityListener((thinking, source) => {
+            if (source === 'state_update_running' && !this.promptInFlight) {
+                return;
+            }
             if (session.thinking !== thinking) {
                 session.onThinkingChange(thinking);
             }

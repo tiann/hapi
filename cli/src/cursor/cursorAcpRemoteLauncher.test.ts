@@ -596,7 +596,7 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(legacyLauncher).not.toHaveBeenCalled();
     });
 
-    it('applies harness thinking transitions once per edge (#1470)', async () => {
+    it('ignores ambient state_update_running without a prompt; still applies idle/permission (#1553)', async () => {
         const keepAlive = vi.fn();
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = {
@@ -617,25 +617,74 @@ describe('cursorAcpRemoteLauncher', () => {
             permissionMode: 'default'
         });
         session.onSessionFoundWithProtocol = vi.fn();
-        // Keep the launcher in the main loop long enough to wire the listener.
         const runPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
 
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
-        // Foreground ACP activity maps to hub thinking (#1470); bucket flicker with
-        // attached jobs is handled in web/sessionInProgress (#1553).
+        // Ambient Cursor chatter while queue-idle must not float Working.
         harness.agentActivityListener!(true, 'state_update_running');
+        expect(session.thinking).toBe(false);
+        expect(keepAlive).not.toHaveBeenCalled();
+
+        harness.agentActivityListener!(true, 'permission');
         expect(session.thinking).toBe(true);
         expect(keepAlive).toHaveBeenCalled();
 
         keepAlive.mockClear();
         harness.agentActivityListener!(false, 'state_update_idle');
-
         expect(session.thinking).toBe(false);
         expect(keepAlive).toHaveBeenCalled();
 
+        queue.close();
+        await runPromise;
+    });
+
+    it('applies state_update_running while a prompt is in flight (#1470)', async () => {
+        const keepAlive = vi.fn();
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = {
+            ...makeClient(),
+            keepAlive
+        } as unknown as ApiSessionClient;
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        queue.push('do work', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBeGreaterThan(0));
+        await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
+
+        // Prompt start already set thinking; clear so we can assert the listener edge.
+        session.onThinkingChange(false);
+        keepAlive.mockClear();
+        harness.agentActivityListener!(true, 'state_update_running');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        harness.agentActivityListener!(true, 'state_update_requires_action');
+        expect(session.thinking).toBe(true);
+
+        harness.releasePrompt?.();
+        harness.releasePrompt = null;
+        harness.deferPrompt = null;
         queue.close();
         await runPromise;
     });
