@@ -73,7 +73,9 @@ ${chalk.bold('startedAt / elapsed:')}
   steal the older wrapper's PATCHes or DELETE the newer run.
 
 ${chalk.bold('Notes:')}
-  Hub-persisted. Prefer "$HAPI_SESSION_ID" for this chat.
+  Hub-persisted. Prefer "$HAPI_SESSION_ID" when it matches the operator chat row
+  (/sessions/<id> in the web URL). Remote Cursor runner may export a worker-row id —
+  pass that URL uuid explicitly (see docs/guide/session-jobs.md).
   Needs a hub/CLI that includes the job subcommand (soup / feat build — not every npm release).
   Job key: 1-128 chars, alnum / . _ -
   Session lookup prefers exact id; prefix scan is the 500 most-recently-updated sessions.

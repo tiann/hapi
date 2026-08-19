@@ -29,7 +29,9 @@ export class SessionJobError extends Error {
 
 /** Exact Shell recipe agents should run instead of MCP set or update-before-create. */
 export const SESSION_JOB_RUN_RECIPE =
-    'hapi job run "$HAPI_SESSION_ID" <job-key> --label "<label>" [--done N --total M|--remaining N] [--unit …] -- <cmd>…'
+    'hapi job run <session-id> <job-key> --label "<label>" [--done N --total M|--remaining N] [--unit …] -- <cmd>…'
+    + ' (use "$HAPI_SESSION_ID" only when it matches the operator /sessions/<id> chat row;'
+    + ' remote Cursor: pass the URL uuid explicitly)'
 
 export function formatSessionJobNotFoundHint(action: 'update' | 'clear'): string {
     return [

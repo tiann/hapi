@@ -54,6 +54,8 @@ Treat this like `ping_peer` / `inspect_peer`: it is first-class HAPI tooling, no
 ### CLI supervisor (required for process-shaped work)
 
 ```bash
+# Prefer "$HAPI_SESSION_ID" only when it matches the operator chat URL uuid.
+# Remote Cursor runner: pass /sessions/<id> explicitly (see "Which session id").
 hapi job run "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
   --remaining 150 --done 1637 --total 1787 --unit units \

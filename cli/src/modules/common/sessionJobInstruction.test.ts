@@ -13,6 +13,7 @@ describe('sessionJobInstruction', () => {
         expect(SESSION_JOB_INSTRUCTION).toMatch(/action=set \(refused\)/)
         expect(SESSION_JOB_INSTRUCTION).toContain('Never invent a fake percent')
         expect(SESSION_JOB_INSTRUCTION).toContain('HAPI_SESSION_ID')
+        expect(SESSION_JOB_INSTRUCTION).toMatch(/operator chat URL uuid|URL uuid explicitly/i)
     })
 
     it('appends after an existing prompt block', () => {

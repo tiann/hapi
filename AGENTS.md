@@ -178,7 +178,7 @@ When an agent starts process-shaped work that will keep running after the agent 
 
 Agent contract (idle agents cannot heartbeat — bare set + nohup freezes the bar):
 
-1. **Required for process-shaped work:** Shell `hapi job run "$HAPI_SESSION_ID" <key> --label … -- <cmd>` (auto-heartbeat + exit status)
+1. **Required for process-shaped work:** Shell `hapi job run <session-id> <key> --label … -- <cmd>` (auto-heartbeat + exit status). Use `"$HAPI_SESSION_ID"` only when it matches the operator chat row (`/sessions/<id>` in the web URL); for remote Cursor runner, pass that URL UUID explicitly (shell env can point at a worker row — see `docs/guide/session-jobs.md`).
 2. MCP `session_job` **refuses `action=set`**. Use it only for `update` / `clear` / `list` on a job the supervisor already created
 3. Manual CLI `set` only with a self-heartbeating wrapper (`update` ≥~10m); never MCP set + nohup
 4. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent
