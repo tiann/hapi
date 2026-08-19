@@ -163,6 +163,22 @@ export class StudioStore {
         return rows.map(mapPost)
     }
 
+    listPostsByKind(
+        roomId: string,
+        kind: StudioPostKind,
+        limit: number | null = 200
+    ): StoredStudioPost[] {
+        const limitClause = limit === null ? '' : 'LIMIT ?'
+        const params = limit === null ? [roomId, kind] : [roomId, kind, limit]
+        const rows = this.db.prepare(`
+            SELECT * FROM studio_posts
+            WHERE room_id = ? AND kind = ?
+            ORDER BY created_at DESC, id DESC
+            ${limitClause}
+        `).all(...params) as StudioPostRow[]
+        return rows.reverse().map(mapPost)
+    }
+
     createPost(input: {
         roomId: string
         guestId: string

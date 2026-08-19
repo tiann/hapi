@@ -76,6 +76,11 @@ function extractUserText(content: unknown): string | null {
 function projectMessage(message: StoredMessage): PublicStudioMessage | null {
     const record = unwrapRoleWrappedRecordEnvelope(message.content)
     if (!record) return null
+    if (record.role === 'user' && message.invokedAt === null) return null
+    if (isObject(record.content)) {
+        const data = isObject(record.content.data) ? record.content.data : null
+        if (data?.isMeta === true || data?.isCompactSummary === true) return null
+    }
     if (record.role === 'user') {
         const text = extractUserText(record.content)
         return text ? { id: message.id, role: 'user', text, createdAt: message.createdAt, seq: message.seq } : null
@@ -85,6 +90,13 @@ function projectMessage(message: StoredMessage): PublicStudioMessage | null {
         return text ? { id: message.id, role: 'assistant', text, createdAt: message.createdAt, seq: message.seq } : null
     }
     return null
+}
+
+function ownerPosts(store: Store, roomId: string) {
+    return [
+        ...store.studios.listPostsByKind(roomId, 'discussion', 200),
+        ...store.studios.listPostsByKind(roomId, 'suggestion', null)
+    ].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
 }
 
 function publicRoom(room: StoredStudioRoom, session: Session) {
@@ -149,8 +161,7 @@ export function createPublicStudioRoutes(options: {
         const messages = options.store.messages.getMessages(room.sessionId, 200)
             .map(projectMessage)
             .filter((message): message is PublicStudioMessage => message !== null)
-        const publicPosts = options.store.studios.listPosts(room.id)
-            .filter((post) => post.kind === 'discussion')
+        const publicPosts = options.store.studios.listPostsByKind(room.id, 'discussion', 200)
         return c.json({
             room: publicRoom(room, session.session),
             messages,
@@ -208,13 +219,13 @@ export function createStudioRoutes(options: {
         const sessionResult = requireSession(c, engine, c.req.param('sessionId'))
         if (sessionResult instanceof Response) return sessionResult
         const room = options.store.studios.getRoomBySession(sessionResult.sessionId, c.get('namespace'))
-        return room ? c.json({ room, posts: options.store.studios.listPosts(room.id) }) : c.json({ room: null, posts: [] })
+        return room ? c.json({ room, posts: ownerPosts(options.store, room.id) }) : c.json({ room: null, posts: [] })
     })
 
     app.get('/studios/:id', (c) => {
         const room = options.store.studios.getRoomById(c.req.param('id'), c.get('namespace'))
         if (!room) return c.json({ error: 'Studio not found' }, 404)
-        return c.json({ room, posts: options.store.studios.listPosts(room.id) })
+        return c.json({ room, posts: ownerPosts(options.store, room.id) })
     })
 
     app.patch('/studios/:id', async (c) => {

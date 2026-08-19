@@ -60,4 +60,17 @@ describe('StudioStore', () => {
         expect(posts[0]?.text).toBe('post-5')
         expect(posts.at(-1)?.text).toBe('post-204')
     })
+
+    it('limits kinds independently', () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        store.sessions.getOrCreateSession('tag-a', {}, null, 'alpha', undefined, undefined, undefined, 'session-a')
+        const room = store.studios.createOrActivateRoom('session-a', 'alpha', 'Room', 'contribute')
+        store.studios.createPost({ roomId: room.id, guestId: 'guest-12345678', authorName: 'Guest', kind: 'discussion', text: 'discussion', createdAt: 0 })
+        for (let index = 1; index <= 205; index += 1) {
+            store.studios.createPost({ roomId: room.id, guestId: 'guest-12345678', authorName: 'Guest', kind: 'suggestion', text: `suggestion-${index}`, createdAt: index })
+        }
+        expect(store.studios.listPostsByKind(room.id, 'discussion')).toHaveLength(1)
+        expect(store.studios.listPostsByKind(room.id, 'suggestion', null)).toHaveLength(205)
+    })
 })

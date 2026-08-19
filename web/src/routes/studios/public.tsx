@@ -5,6 +5,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import type { PublicStudioResponse, StudioPostKind } from '@/types/api'
+import { resolveStudioApiOrigin } from '@/studio/studioUrl'
 
 const GUEST_ID_KEY = 'hapi.studio.guestId'
 const GUEST_NAME_KEY = 'hapi.studio.guestName'
@@ -17,8 +18,8 @@ function getGuestId(): string {
     return id
 }
 
-async function requestStudio(token: string): Promise<PublicStudioResponse> {
-    const response = await fetch(`/api/public/studios/${encodeURIComponent(token)}`, {
+async function requestStudio(token: string, apiOrigin: string): Promise<PublicStudioResponse> {
+    const response = await fetch(new URL(`/api/public/studios/${encodeURIComponent(token)}`, apiOrigin), {
         cache: 'no-store',
         headers: { 'cache-control': 'no-cache' }
     })
@@ -28,11 +29,13 @@ async function requestStudio(token: string): Promise<PublicStudioResponse> {
 
 export default function PublicStudioPage() {
     const { shareToken } = useParams({ from: '/studio/$shareToken' })
-    return <PublicStudioRoom key={shareToken} shareToken={shareToken} />
+    const apiOrigin = resolveStudioApiOrigin(new URLSearchParams(window.location.search).get('hub'), window.location.origin)
+    return <PublicStudioRoom key={`${shareToken}:${apiOrigin}`} shareToken={shareToken} apiOrigin={apiOrigin} />
 }
 
-function PublicStudioRoom(props: { shareToken: string }) {
+function PublicStudioRoom(props: { shareToken: string; apiOrigin: string }) {
     const { shareToken } = props
+    const { apiOrigin } = props
     const { t, setLocale } = useTranslation()
     const queryClient = useQueryClient()
     const [guestId] = useState(getGuestId)
@@ -44,7 +47,7 @@ function PublicStudioRoom(props: { shareToken: string }) {
 
     const query = useQuery({
         queryKey: ['public-studio', shareToken],
-        queryFn: () => requestStudio(shareToken),
+        queryFn: () => requestStudio(shareToken, apiOrigin),
         refetchInterval: 2_000,
         retry: false
     })
@@ -66,7 +69,7 @@ function PublicStudioRoom(props: { shareToken: string }) {
 
     const postMutation = useMutation({
         mutationFn: async () => {
-            const response = await fetch(`/api/public/studios/${encodeURIComponent(shareToken)}/posts`, {
+            const response = await fetch(new URL(`/api/public/studios/${encodeURIComponent(shareToken)}/posts`, apiOrigin), {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ guestId, authorName: authorName.trim(), kind, text: text.trim() })
