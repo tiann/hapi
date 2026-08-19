@@ -206,10 +206,6 @@ export default defineConfig({
         outDir: 'dist',
         emptyOutDir: true,
         rollupOptions: {
-            input: {
-                app: resolve(__dirname, 'index.html'),
-                studio: resolve(__dirname, 'studio.html')
-            },
             output: {
                 manualChunks(id) {
                     return getVendorChunkName(id)

@@ -211,6 +211,8 @@ function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
         headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         headers['CDN-Cache-Control'] = 'no-store'
         headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
+    } else if (asset.path.startsWith('/studio-assets/')) {
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     }
 
     return new Response(Bun.file(asset.sourcePath), {
@@ -274,6 +276,13 @@ function createWebApp(options: {
     // would otherwise still get a gzip body it cannot consume.
     const gzipCompress = compress({ encoding: 'gzip' })
     app.use('/api/*', async (c, next) => {
+        if (acceptsGzip(c.req.header('Accept-Encoding'))) {
+            return gzipCompress(c, next)
+        }
+        return next()
+    })
+    app.use('/studio-assets/*', async (c, next) => {
+        c.header('Cache-Control', 'public, max-age=31536000, immutable')
         if (acceptsGzip(c.req.header('Accept-Encoding'))) {
             return gzipCompress(c, next)
         }
@@ -405,6 +414,7 @@ from GitHub Pages instead of through the relay tunnel.
     }
 
     app.use('/assets/*', serveStatic({ root: distDir }))
+    app.use('/studio-assets/*', serveStatic({ root: distDir }))
 
     if (existsSync(studioHtmlPath)) {
         app.get('/studio/*', async (c) => {
