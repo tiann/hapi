@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { PublicStudioMessage, PublicStudioResponse, StudioPostKind } from '@/types/api'
+import {
+    countNewStudioMessages,
+    isStudioNearBottom,
+    shouldCollapseStudioMessage
+} from './studioBehavior'
 
 type Locale = 'en' | 'zh-CN'
 type Copy = {
@@ -20,6 +25,10 @@ type Copy = {
     send: string
     sending: string
     postFailed: string
+    expand: string
+    collapse: string
+    jumpToLatest: string
+    newMessages: (count: number) => string
 }
 
 const COPY: Record<Locale, Copy> = {
@@ -27,13 +36,15 @@ const COPY: Record<Locale, Copy> = {
         loading: 'Loading studio…', notFound: 'This studio is unavailable or its link was revoked.', owner: 'Owner', agent: 'Agent',
         discussion: 'Discussion', conversation: 'Conversation', emptyDiscussion: 'No discussion yet.', name: 'Your name',
         discuss: 'Discuss', suggest: 'Suggest', discussionPlaceholder: 'Add a comment…', suggestionPlaceholder: 'Suggest the next step…',
-        send: 'Post', sending: 'Posting…', postFailed: 'Could not post'
+        send: 'Post', sending: 'Posting…', postFailed: 'Could not post', expand: 'Show more', collapse: 'Show less',
+        jumpToLatest: 'Jump to latest', newMessages: (count) => `${count} new message${count === 1 ? '' : 's'}`
     },
     'zh-CN': {
         loading: '正在加载工作室…', notFound: '工作室不可用，或分享链接已撤销。', owner: '主人', agent: 'Agent',
         discussion: '讨论', conversation: '对话', emptyDiscussion: '暂时没有讨论。', name: '你的称呼',
         discuss: '讨论', suggest: '建议', discussionPlaceholder: '发表讨论…', suggestionPlaceholder: '建议下一步做什么…',
-        send: '发送', sending: '发送中…', postFailed: '发送失败'
+        send: '发送', sending: '发送中…', postFailed: '发送失败', expand: '展开全文', collapse: '收起',
+        jumpToLatest: '回到底部', newMessages: (count) => `${count} 条新消息`
     }
 }
 
@@ -68,15 +79,31 @@ async function loadStudio(token: string): Promise<PublicStudioResponse> {
     return await response.json() as PublicStudioResponse
 }
 
-function MessageBody(props: { message: PublicStudioMessage }) {
+function AssistantMessageBody(props: { message: PublicStudioMessage; latestAssistant: boolean; copy: Copy }) {
+    const collapsible = shouldCollapseStudioMessage(props.message.text)
+    const [expanded, setExpanded] = useState(props.latestAssistant || !collapsible)
+    return (
+        <div className="studio-assistant-response">
+            <div className={`studio-message-content ${collapsible && !expanded ? 'collapsed' : ''}`}>
+                <div className="studio-message-body">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.message.text}</ReactMarkdown>
+                </div>
+                {collapsible && !expanded ? <div className="studio-message-fade" aria-hidden="true" /> : null}
+            </div>
+            {collapsible ? (
+                <button className="studio-collapse-toggle" type="button" onClick={() => setExpanded((value) => !value)}>
+                    {expanded ? props.copy.collapse : props.copy.expand}
+                </button>
+            ) : null}
+        </div>
+    )
+}
+
+function MessageBody(props: { message: PublicStudioMessage; latestAssistant: boolean; copy: Copy }) {
     if (props.message.role === 'user') {
         return <div className="studio-message-body">{props.message.text}</div>
     }
-    return (
-        <div className="studio-message-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.message.text}</ReactMarkdown>
-        </div>
-    )
+    return <AssistantMessageBody {...props} />
 }
 
 function StudioPage() {
@@ -92,6 +119,11 @@ function StudioPage() {
     const [text, setText] = useState('')
     const [sending, setSending] = useState(false)
     const [postError, setPostError] = useState<string | null>(null)
+    const [nearBottom, setNearBottom] = useState(true)
+    const [unreadCount, setUnreadCount] = useState(0)
+    const conversationRef = useRef<HTMLDivElement | null>(null)
+    const previousLastMessageIdRef = useRef<string | null>(null)
+    const initialScrollDoneRef = useRef(false)
 
     useEffect(() => {
         let stopped = false
@@ -120,6 +152,49 @@ function StudioPage() {
         () => data?.posts.filter((post) => post.roomId === data.room.id && post.kind === 'discussion') ?? [],
         [data]
     )
+    const latestAssistantId = useMemo(
+        () => [...(data?.messages ?? [])].reverse().find((message) => message.role === 'assistant')?.id ?? null,
+        [data?.messages]
+    )
+
+    const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+        const element = conversationRef.current
+        if (!element) return
+        element.scrollTo({ top: element.scrollHeight, behavior })
+        setNearBottom(true)
+        setUnreadCount(0)
+    }, [])
+
+    useLayoutEffect(() => {
+        const messages = data?.messages ?? []
+        if (messages.length === 0) return undefined
+        const nextLastId = messages.at(-1)?.id ?? null
+        const previousLastId = previousLastMessageIdRef.current
+
+        if (!initialScrollDoneRef.current) {
+            initialScrollDoneRef.current = true
+            previousLastMessageIdRef.current = nextLastId
+            const frame = window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => scrollToLatest('auto'))
+            })
+            return () => window.cancelAnimationFrame(frame)
+        }
+
+        if (nextLastId && nextLastId !== previousLastId) {
+            const appended = countNewStudioMessages(previousLastId, messages)
+            previousLastMessageIdRef.current = nextLastId
+            if (nearBottom) {
+                const frame = window.requestAnimationFrame(() => scrollToLatest('smooth'))
+                return () => window.cancelAnimationFrame(frame)
+            }
+            setUnreadCount((count) => count + appended)
+        }
+        return undefined
+    }, [data?.messages, nearBottom, scrollToLatest])
+
+    useEffect(() => {
+        if (tab === 'conversation' && unreadCount > 0) scrollToLatest('smooth')
+    }, [scrollToLatest, tab, unreadCount])
 
     const submitPost = async () => {
         if (!authorName.trim() || !text.trim() || sending) return
@@ -164,14 +239,30 @@ function StudioPage() {
             <main className="studio-main">
                 <div className="studio-layout">
                     <section className={`studio-conversation ${tab === 'conversation' ? '' : 'hidden'}`}>
+                        <div
+                            ref={conversationRef}
+                            className="studio-conversation-scroll"
+                            onScroll={(event) => {
+                                const atBottom = isStudioNearBottom(event.currentTarget)
+                                setNearBottom(atBottom)
+                                if (atBottom) setUnreadCount(0)
+                            }}
+                        >
                         <div className="studio-message-list">
                             {data.messages.map((message) => (
                                 <article className={`studio-message ${message.role}`} key={message.id}>
                                     <div className="studio-label">{message.role === 'user' ? copy.owner : copy.agent}</div>
-                                    <MessageBody message={message} />
+                                    <MessageBody message={message} latestAssistant={message.id === latestAssistantId} copy={copy} />
                                 </article>
                             ))}
                         </div>
+                        </div>
+                        {!nearBottom ? (
+                            <button className="studio-jump-latest" type="button" onClick={() => scrollToLatest()}>
+                                {unreadCount > 0 ? copy.newMessages(unreadCount) : copy.jumpToLatest}
+                                <span aria-hidden="true">↓</span>
+                            </button>
+                        ) : null}
                     </section>
                     <aside className={`studio-discussion ${tab === 'discussion' ? '' : 'hidden'}`}>
                         <h2 className="studio-section-title">{copy.discussion}</h2>

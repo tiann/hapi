@@ -26,8 +26,10 @@ button:disabled { cursor: default; opacity: 0.5; }
 .studio-tabs button.active { background: #f1f5f9; color: #172033; font-weight: 600; }
 .studio-main { min-height: 0; flex: 1; overflow: hidden; }
 .studio-layout { width: min(72rem, 100%); height: 100%; min-height: 0; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 20rem; }
-.studio-conversation, .studio-discussion { min-height: 0; overflow-y: auto; }
-.studio-conversation { border-right: 1px solid #e2e8f0; }
+.studio-conversation, .studio-discussion { min-height: 0; }
+.studio-conversation { position: relative; overflow: hidden; border-right: 1px solid #e2e8f0; }
+.studio-conversation-scroll { height: 100%; overflow-y: auto; }
+.studio-discussion { overflow-y: auto; }
 .studio-message-list { width: min(52rem, 100%); margin: 0 auto; padding: 1rem; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 0.9rem; }
 .studio-message { min-width: 0; border-radius: 0.5rem; padding: 0.85rem 1rem; background: #f1f5f9; }
 .studio-message.user { max-width: 88%; margin-left: auto; color: #fff; background: #273449; }
@@ -45,6 +47,11 @@ button:disabled { cursor: default; opacity: 0.5; }
 .studio-message-body pre code { padding: 0; background: transparent; }
 .studio-message-body blockquote { margin: 0.6rem 0; padding-left: 0.75rem; border-left: 3px solid #94a3b8; color: #64748b; }
 .studio-message-body a { color: #2563eb; text-decoration: underline; }
+.studio-message-content { position: relative; }
+.studio-message-content.collapsed { max-height: 18rem; overflow: hidden; }
+.studio-message-fade { position: absolute; right: 0; bottom: 0; left: 0; height: 4rem; pointer-events: none; background: linear-gradient(to bottom, rgba(241,245,249,0), #f1f5f9); }
+.studio-collapse-toggle { margin-top: 0.45rem; padding: 0.25rem 0; border: 0; background: transparent; color: #2563eb; font-size: 0.78rem; font-weight: 600; }
+.studio-jump-latest { position: absolute; right: 1rem; bottom: calc(1rem + env(safe-area-inset-bottom)); z-index: 2; display: inline-flex; min-height: 2.25rem; align-items: center; gap: 0.4rem; padding: 0.4rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 999px; box-shadow: 0 4px 16px rgba(15,23,42,0.12); background: #fff; color: #334155; font-size: 0.78rem; font-weight: 600; }
 .studio-discussion { padding: 1rem; }
 .studio-section-title { margin: 0 0 0.55rem; color: #64748b; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
 .studio-discussion-list { overflow: hidden; margin-bottom: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
