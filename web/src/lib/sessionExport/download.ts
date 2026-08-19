@@ -1,10 +1,15 @@
 import type { ApiClient } from '@/api/client'
-import type { HapiSessionExport } from '@/types/api'
+import type { HapiSessionExport, HapiSessionExportWarning } from '@/types/api'
+import { SESSION_EXPORT_MAX_BYTES } from '@hapi/protocol/sessionExport'
 import { serializeSessionMarkdown } from './markdown'
 
 export type SessionExportFormat = 'json' | 'markdown'
 
 export const SESSION_EXPORT_FORMAT_STORAGE_KEY = 'hapi.sessionExportFormat'
+
+export type SessionExportDownloadResult =
+    | { type: 'download'; filename: string; messageCount: number }
+    | HapiSessionExportWarning
 
 export function readSessionExportFormat(): SessionExportFormat {
     if (typeof window === 'undefined') return 'json'
@@ -49,6 +54,9 @@ export function buildSessionExportFilename(payload: HapiSessionExport, format: S
 
 function downloadTextFile(filename: string, text: string, mimeType: string): void {
     const blob = new Blob([text], { type: mimeType })
+    if (blob.size > SESSION_EXPORT_MAX_BYTES) {
+        throw new Error(`Session export exceeds ${SESSION_EXPORT_MAX_BYTES} bytes`)
+    }
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -64,14 +72,22 @@ export async function downloadSessionExport(
     api: ApiClient,
     sessionId: string,
     format: SessionExportFormat,
-    options?: { signal?: AbortSignal }
-): Promise<{ filename: string; messageCount: number }> {
-    const payload = await api.getSessionExport(sessionId, { signal: options?.signal })
+    options?: { signal?: AbortSignal; allowLarge?: boolean }
+): Promise<SessionExportDownloadResult> {
+    const response = await api.getSessionExport(sessionId, {
+        signal: options?.signal,
+        allowLarge: options?.allowLarge
+    })
+    if (!('schemaVersion' in response)) {
+        return response
+    }
+
+    const payload = response
     const filename = buildSessionExportFilename(payload, format)
     if (format === 'json') {
         downloadTextFile(filename, `${JSON.stringify(payload, null, 2)}\n`, 'application/json;charset=utf-8')
     } else {
         downloadTextFile(filename, serializeSessionMarkdown(payload), 'text/markdown;charset=utf-8')
     }
-    return { filename, messageCount: payload.messages.length }
+    return { type: 'download', filename, messageCount: payload.messages.length }
 }

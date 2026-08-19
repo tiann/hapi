@@ -12,6 +12,7 @@ import { DecryptedMessageSchema, ScratchlistEntrySchema, SessionSchema } from '.
  */
 export const HAPI_SESSION_EXPORT_SCHEMA_VERSION = 2
 export const SESSION_EXPORT_MESSAGE_LIMIT = 20_000
+export const SESSION_EXPORT_MAX_BYTES = 100 * 1024 * 1024
 
 export const HapiSessionExportSchema = z.object({
     schemaVersion: z.literal(HAPI_SESSION_EXPORT_SCHEMA_VERSION),
@@ -23,6 +24,22 @@ export const HapiSessionExportSchema = z.object({
 
 export type HapiSessionExport = z.infer<typeof HapiSessionExportSchema>
 
+export type HapiSessionExportWarning = {
+    type: 'warning'
+    count: number
+    limit: number
+    sizeBytes: number
+}
+
+export type HapiSessionExportTooLarge = {
+    type: 'too-large'
+    count: number
+    limit: number
+    sizeBytes: number
+    maxBytes: number
+}
+
 export type HapiSessionExportResult =
     | { type: 'success'; payload: HapiSessionExport }
-    | { type: 'too-large'; count: number; limit: number }
+    | HapiSessionExportWarning
+    | HapiSessionExportTooLarge

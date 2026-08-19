@@ -306,6 +306,8 @@ export default {
   'session.export.format.markdown': 'Markdown',
   'session.export.format.markdown.description': '从同一份导出载荷生成的可读视图。',
   'session.export.download': '下载',
+  'session.export.warning': '此导出包含 {count} 条消息（约 {size}），超过建议的 {limit} 条阈值。仍要下载吗？',
+  'session.export.warning.confirm': '仍要下载',
   'session.export.downloading': '导出中…',
   'session.export.error.noApi': '未连接到服务器',
   'session.export.error.default': '导出对话失败',

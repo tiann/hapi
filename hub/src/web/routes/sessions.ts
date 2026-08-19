@@ -139,12 +139,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        const result = engine.getSessionExport(sessionResult.sessionId, sessionResult.session)
+        const result = engine.getSessionExport(sessionResult.sessionId, sessionResult.session, {
+            allowLarge: c.req.query('confirmLarge') === 'true'
+        })
+        if (result.type === 'warning') {
+            return c.json(result)
+        }
         if (result.type === 'too-large') {
             return c.json({
                 error: 'Session export too large',
                 count: result.count,
-                limit: result.limit
+                limit: result.limit,
+                sizeBytes: result.sizeBytes,
+                maxBytes: result.maxBytes
             }, 413)
         }
 

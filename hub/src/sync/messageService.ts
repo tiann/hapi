@@ -1,6 +1,8 @@
 import {
     HAPI_SESSION_EXPORT_SCHEMA_VERSION,
+    SESSION_EXPORT_MAX_BYTES,
     SESSION_EXPORT_MESSAGE_LIMIT,
+    type HapiSessionExport,
     type HapiSessionExportResult
 } from '@hapi/protocol/sessionExport'
 import type { AttachmentMetadata, DecryptedMessage, Session } from '@hapi/protocol/types'
@@ -177,8 +179,9 @@ export class MessageService {
     getSessionExport(
         sessionId: string,
         session: Session,
-        limit: number = SESSION_EXPORT_MESSAGE_LIMIT
+        options: { limit?: number; allowLarge?: boolean } = {}
     ): HapiSessionExportResult {
+        const limit = options.limit ?? SESSION_EXPORT_MESSAGE_LIMIT
         const messages = this.store.messages.getAllMessages(sessionId)
             .filter(isExportVisibleStoredMessage)
             .sort((a, b) => {
@@ -187,14 +190,6 @@ export class MessageService {
                 return aAt !== bAt ? aAt - bAt : a.seq - b.seq
             })
             .map(toDecryptedMessage)
-
-        if (messages.length > limit) {
-            return {
-                type: 'too-large',
-                count: messages.length,
-                limit
-            }
-        }
 
         // Chronological ASC for archive readability (store list is DESC).
         const scratchlist = this.store.scratchlist.list(sessionId)
@@ -211,15 +206,36 @@ export class MessageService {
                 attachments: row.attachments
             }))
 
+        const payload: HapiSessionExport = {
+            schemaVersion: HAPI_SESSION_EXPORT_SCHEMA_VERSION,
+            exportedAt: Date.now(),
+            session,
+            messages,
+            scratchlist
+        }
+        const serialized = `${JSON.stringify(payload, null, 2)}\n`
+        const sizeBytes = Buffer.byteLength(serialized, 'utf8')
+        if (sizeBytes > SESSION_EXPORT_MAX_BYTES) {
+            return {
+                type: 'too-large',
+                count: messages.length,
+                limit,
+                sizeBytes,
+                maxBytes: SESSION_EXPORT_MAX_BYTES
+            }
+        }
+        if (!options.allowLarge && messages.length > limit) {
+            return {
+                type: 'warning',
+                count: messages.length,
+                limit,
+                sizeBytes
+            }
+        }
+
         return {
             type: 'success',
-            payload: {
-                schemaVersion: HAPI_SESSION_EXPORT_SCHEMA_VERSION,
-                exportedAt: Date.now(),
-                session,
-                messages,
-                scratchlist
-            }
+            payload
         }
     }
 

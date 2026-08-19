@@ -302,6 +302,8 @@ export default {
   'session.export.format.markdown': 'Markdown',
   'session.export.format.markdown.description': 'Readable view generated from the same export payload.',
   'session.export.download': 'Download',
+  'session.export.warning': 'This export contains {count} messages (about {size}) and exceeds the recommended {limit}-message threshold. Download anyway?',
+  'session.export.warning.confirm': 'Download anyway',
   'session.export.downloading': 'Exporting…',
   'session.export.error.noApi': 'Not connected to server',
   'session.export.error.default': 'Failed to export conversation',

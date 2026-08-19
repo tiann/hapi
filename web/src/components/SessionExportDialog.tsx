@@ -8,6 +8,7 @@ import {
 } from '@/lib/sessionExport/download'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
+import type { HapiSessionExportWarning } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import {
     Dialog,
@@ -24,19 +25,34 @@ type SessionExportDialogProps = {
     api: ApiClient | null
 }
 
+function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`
+    const units = ['KiB', 'MiB', 'GiB']
+    let value = bytes
+    let unit = 'B'
+    for (const nextUnit of units) {
+        value /= 1024
+        unit = nextUnit
+        if (value < 1024 || nextUnit === units.at(-1)) break
+    }
+    return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`
+}
+
 export function SessionExportDialog(props: SessionExportDialogProps) {
     const { t } = useTranslation()
     const toast = useToast()
     const [format, setFormat] = useState<SessionExportFormat>('json')
     const [isExporting, setIsExporting] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [warning, setWarning] = useState<HapiSessionExportWarning | null>(null)
     const abortRef = useRef<AbortController | null>(null)
 
     useEffect(() => {
         if (!props.isOpen) return
         setFormat(readSessionExportFormat())
         setError(null)
-    }, [props.isOpen])
+        setWarning(null)
+    }, [props.isOpen, props.sessionId])
 
     useEffect(() => {
         return () => {
@@ -48,6 +64,7 @@ export function SessionExportDialog(props: SessionExportDialogProps) {
         abortRef.current?.abort()
         abortRef.current = null
         setIsExporting(false)
+        setWarning(null)
         props.onClose()
     }
 
@@ -65,8 +82,13 @@ export function SessionExportDialog(props: SessionExportDialogProps) {
 
         try {
             const result = await downloadSessionExport(props.api, props.sessionId, format, {
-                signal: controller.signal
+                signal: controller.signal,
+                allowLarge: warning !== null
             })
+            if (result.type === 'warning') {
+                setWarning(result)
+                return
+            }
             toast.addToast({
                 title: t('session.export.toast.success.title'),
                 body: t('session.export.toast.success.body', { filename: result.filename }),
@@ -147,12 +169,26 @@ export function SessionExportDialog(props: SessionExportDialogProps) {
                     </div>
                 ) : null}
 
+                {warning ? (
+                    <div role="alert" className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                        {t('session.export.warning', {
+                            count: warning.count,
+                            limit: warning.limit,
+                            size: formatBytes(warning.sizeBytes)
+                        })}
+                    </div>
+                ) : null}
+
                 <div className="mt-4 flex justify-end gap-2">
                     <Button type="button" variant="secondary" onClick={handleClose} disabled={isExporting}>
                         {t('button.cancel')}
                     </Button>
                     <Button type="button" onClick={handleDownload} disabled={isExporting}>
-                        {isExporting ? t('session.export.downloading') : t('session.export.download')}
+                        {isExporting
+                            ? t('session.export.downloading')
+                            : warning
+                                ? t('session.export.warning.confirm')
+                                : t('session.export.download')}
                     </Button>
                 </div>
             </DialogContent>

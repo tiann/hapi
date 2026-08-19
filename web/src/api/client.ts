@@ -25,6 +25,7 @@ import type {
     SpawnResponse,
     VisibilityPayload,
     HapiSessionExport,
+    HapiSessionExportWarning,
     HubHealthResponse,
     SessionResponse,
     SessionTitleSuggestionResponse,
@@ -353,9 +354,13 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getSessionExport(sessionId: string, options?: { signal?: AbortSignal }): Promise<HapiSessionExport> {
-        return await this.request<HapiSessionExport>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/export`,
+    async getSessionExport(
+        sessionId: string,
+        options?: { signal?: AbortSignal; allowLarge?: boolean }
+    ): Promise<HapiSessionExport | HapiSessionExportWarning> {
+        const query = options?.allowLarge ? '?confirmLarge=true' : ''
+        return await this.request<HapiSessionExport | HapiSessionExportWarning>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/export${query}`,
             { signal: options?.signal }
         )
     }

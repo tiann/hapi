@@ -407,8 +407,8 @@ export class SyncEngine {
         return this.messageService.getQueuedState(sessionId, localIds)
     }
 
-    getSessionExport(sessionId: string, session: Session): HapiSessionExportResult {
-        return this.messageService.getSessionExport(sessionId, session)
+    getSessionExport(sessionId: string, session: Session, options?: { allowLarge?: boolean }): HapiSessionExportResult {
+        return this.messageService.getSessionExport(sessionId, session, options)
     }
 
     getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
