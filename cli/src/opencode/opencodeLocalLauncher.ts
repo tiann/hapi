@@ -1,4 +1,5 @@
 import { logger } from '@/ui/logger';
+import { canonicalizeDiffToolInput } from '@/agent/utils';
 import { opencodeLocal } from './opencodeLocal';
 import { OpencodeSession } from './session';
 import { ensureOpencodeHookPlugin } from './utils/hookPlugin';
@@ -238,6 +239,10 @@ export async function opencodeLocalLauncher(
     const sentTextParts = new Set<string>();
     const sentToolCalls = new Set<string>();
     const sentToolResults = new Set<string>();
+    // Emitted tool input per callId. When a partial native edit/write call is
+    // emitted first (e.g. `{filePath}`), a later canonical full input replaces
+    // it so the web Edit/Write view receives the complete arguments.
+    const emittedToolInputs = new Map<string, unknown>();
     const textBuffers = new Map<string, string>();
     const toolExecutionQueues = new Map<string, string[]>();
 
@@ -328,16 +333,29 @@ export async function opencodeLocalLauncher(
             }
 
             const toolCall = parseToolCall(part);
-            if (toolCall && isUsableToolInput(toolCall.input) && !sentToolCalls.has(toolCall.callId)) {
+            if (toolCall && isUsableToolInput(toolCall.input) && !sentToolResults.has(toolCall.callId)) {
                 // Wait for non-empty input (OpenCode pending often has input:{}).
-                sentToolCalls.add(toolCall.callId);
-                session.sendAgentMessage({
-                    type: 'tool-call',
-                    name: toolCall.name,
-                    callId: toolCall.callId,
-                    input: toolCall.input,
-                    ...(toolCall.title ? { nativeTitle: toolCall.title } : {})
-                });
+                const previousInput = emittedToolInputs.get(toolCall.callId);
+                const previousCanonical = canonicalizeDiffToolInput(previousInput, toolCall.name);
+                const currentCanonical = canonicalizeDiffToolInput(toolCall.input, toolCall.name);
+                // Emit on first usable input, and re-emit whenever the canonical
+                // input changes (a partial native edit/write that already
+                // canonicalizes — e.g. {content: ""} — must be replaced when the
+                // final content arrives).
+                const canonicalChanged = currentCanonical !== null
+                    && hashObject(currentCanonical) !== hashObject(previousCanonical);
+                const shouldEmit = previousInput === undefined || canonicalChanged;
+                if (shouldEmit) {
+                    emittedToolInputs.set(toolCall.callId, toolCall.input);
+                    sentToolCalls.add(toolCall.callId);
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name: toolCall.name,
+                        callId: toolCall.callId,
+                        input: toolCall.input,
+                        ...(toolCall.title ? { nativeTitle: toolCall.title } : {})
+                    });
+                }
             }
 
             const toolResult = parseToolResult(part);
@@ -355,6 +373,7 @@ export async function opencodeLocalLauncher(
                     });
                 }
                 sentToolResults.add(toolResult.callId);
+                emittedToolInputs.delete(toolResult.callId);
                 session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId: toolResult.callId,
@@ -370,13 +389,25 @@ export async function opencodeLocalLauncher(
             }
             const record = payload as Record<string, unknown>;
             const tool = isObject(record.tool) ? record.tool as Record<string, unknown> : record;
-            const name = getString(tool.name) || getString(record.name);
+            let name = getString(tool.name) || getString(record.name);
             if (!name) {
                 return;
             }
-            const toolInput = parseMaybeJson(tool.input ?? tool.args ?? record.input ?? record.args);
+            let toolInput: unknown = parseMaybeJson(tool.input ?? tool.args ?? record.input ?? record.args);
+            // Compute the pairing signature from the raw name/input BEFORE
+            // canonicalizing: an id-less `before` with empty/partial args must
+            // share a queue key with the full `after`. Canonicalizing first would
+            // re-key the `after` (edit -> Edit) and miss the queued call.
             const signature = buildToolSignature(name, toolInput);
             const fallbackSignature = buildToolSignature(name, null);
+            // Native edit/write args are canonicalized for emit so the web
+            // Edit/Write views match the ACP path. Gate on the tool name so an
+            // arbitrary non-edit tool isn't misclassified as Write.
+            const canonical = canonicalizeDiffToolInput(toolInput, name);
+            if (canonical) {
+                name = canonical.name;
+                toolInput = canonical.input;
+            }
             const existingId = getString(tool.id)
                 || getString(tool.tool_call_id)
                 || getString(tool.toolCallId);
@@ -410,25 +441,45 @@ export async function opencodeLocalLauncher(
                     removeFromQueue(toolExecutionQueues, fallbackSignature, callId);
                 }
             }
-            if (eventType === 'tool.execute.before' && !sentToolCalls.has(callId)) {
+            if (eventType === 'tool.execute.before' && !sentToolResults.has(callId)) {
                 // Match message.part.updated path: skip empty placeholder args.
                 if (!usableInput) {
                     return;
                 }
-                sentToolCalls.add(callId);
-                session.sendAgentMessage({
-                    type: 'tool-call',
-                    name,
-                    callId,
-                    input: toolInput,
-                    ...(getString(tool.title ?? record.title) ? { nativeTitle: getString(tool.title ?? record.title) } : {})
-                });
+                const previousInput = emittedToolInputs.get(callId);
+                const previousCanonical = canonicalizeDiffToolInput(previousInput, name);
+                const currentCanonical = canonicalizeDiffToolInput(toolInput, name);
+                // Emit on first usable input; re-emit whenever the canonical
+                // input changes (a partial native edit/write that already
+                // canonicalizes must be replaced when the final input arrives).
+                const canonicalChanged = currentCanonical !== null
+                    && hashObject(currentCanonical) !== hashObject(previousCanonical);
+                const shouldEmit = previousInput === undefined || canonicalChanged;
+                if (shouldEmit) {
+                    emittedToolInputs.set(callId, toolInput);
+                    sentToolCalls.add(callId);
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name,
+                        callId,
+                        input: toolInput,
+                        ...(getString(tool.title ?? record.title) ? { nativeTitle: getString(tool.title ?? record.title) } : {})
+                    });
+                }
                 return;
             }
             if (eventType === 'tool.execute.after' && !sentToolResults.has(callId)) {
                 // Late tool-call recovery: before may have skipped empty `{}`.
-                // Mirror message.part.updated so result is never unpaired.
-                if (!sentToolCalls.has(callId)) {
+                // Mirror message.part.updated so result is never unpaired, and
+                // replace a partial native edit/write call with the full input.
+                const previousInput = emittedToolInputs.get(callId);
+                const previousCanonical = canonicalizeDiffToolInput(previousInput, name);
+                const currentCanonical = canonicalizeDiffToolInput(toolInput, name);
+                const canonicalChanged = currentCanonical !== null
+                    && hashObject(currentCanonical) !== hashObject(previousCanonical);
+                const shouldEmit = previousInput === undefined || canonicalChanged;
+                if (!sentToolCalls.has(callId) || shouldEmit) {
+                    emittedToolInputs.set(callId, toolInput);
                     sentToolCalls.add(callId);
                     session.sendAgentMessage({
                         type: 'tool-call',
@@ -439,6 +490,7 @@ export async function opencodeLocalLauncher(
                     });
                 }
                 sentToolResults.add(callId);
+                emittedToolInputs.delete(callId);
                 session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId,
