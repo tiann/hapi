@@ -1155,7 +1155,7 @@ export default {
   'studio.guest.send': '发送',
   'studio.guest.sending': '发送中…',
   'studio.guest.postFailed': '发送失败',
-  'studio.guest.owner': '主人',
+  'studio.guest.owner': '主持人',
   'studio.guest.agent': 'Agent',
   'studio.guest.tab.conversation': '对话',
   'studio.guest.tab.discussion': '讨论',

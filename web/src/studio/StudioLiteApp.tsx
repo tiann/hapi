@@ -35,14 +35,14 @@ type Copy = {
 
 const COPY: Record<Locale, Copy> = {
     en: {
-        loading: 'Loading studio…', notFound: 'This studio is unavailable or its link was revoked.', owner: 'Owner', agent: 'Agent',
+        loading: 'Loading studio…', notFound: 'This studio is unavailable or its link was revoked.', owner: 'Host', agent: 'Agent',
         discussion: 'Discussion', conversation: 'Conversation', emptyDiscussion: 'No discussion yet.', name: 'Your name',
         discuss: 'Discuss', suggest: 'Suggest', discussionPlaceholder: 'Add a comment…', suggestionPlaceholder: 'Suggest the next step…',
         send: 'Post', sending: 'Posting…', postFailed: 'Could not post', expand: 'Show more', collapse: 'Show less',
         jumpToLatest: 'Jump to latest', newMessages: (count) => `${count} new message${count === 1 ? '' : 's'}`
     },
     'zh-CN': {
-        loading: '正在加载工作室…', notFound: '工作室不可用，或分享链接已撤销。', owner: '主人', agent: 'Agent',
+        loading: '正在加载工作室…', notFound: '工作室不可用，或分享链接已撤销。', owner: '主持人', agent: 'Agent',
         discussion: '讨论', conversation: '对话', emptyDiscussion: '暂时没有讨论。', name: '你的称呼',
         discuss: '讨论', suggest: '建议', discussionPlaceholder: '发表讨论…', suggestionPlaceholder: '建议下一步做什么…',
         send: '发送', sending: '发送中…', postFailed: '发送失败', expand: '展开全文', collapse: '收起',
