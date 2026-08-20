@@ -625,11 +625,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             session.onThinkingChange(true);
             this.promptInFlight = true;
-<<<<<<< HEAD
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
-=======
->>>>>>> 0323ba842 (fix(cursor,web): stop attached-job sessions bouncing Running/Jobs (#1553))
 
             try {
                 this.promptInFlight = true;
