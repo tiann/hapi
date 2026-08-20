@@ -10,8 +10,10 @@ export function resolveStudioApiOrigin(hub: string | null, pageOrigin: string): 
     }
 }
 
-export function buildStudioShareUrl(pageOrigin: string, token: string, hubBaseUrl: string): string {
-    const page = new URL(`/studio/${encodeURIComponent(token)}`, pageOrigin)
+export function buildStudioShareUrl(pageOrigin: string, token: string, hubBaseUrl: string, basePath = '/'): string {
+    const base = new URL(basePath || '/', pageOrigin)
+    if (!base.pathname.endsWith('/')) base.pathname += '/'
+    const page = new URL(`studio/${encodeURIComponent(token)}`, base)
     const hubOrigin = resolveStudioApiOrigin(hubBaseUrl, page.origin)
     if (hubOrigin !== page.origin) page.searchParams.set('hub', hubOrigin)
     return page.toString()

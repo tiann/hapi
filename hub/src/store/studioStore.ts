@@ -169,6 +169,11 @@ export class StudioStore {
         return result.changes > 0
     }
 
+    clearPosts(roomId: string): number {
+        const result = this.db.prepare('DELETE FROM studio_posts WHERE room_id = ?').run(roomId)
+        return result.changes
+    }
+
     listPosts(roomId: string, limit = 200): StoredStudioPost[] {
         const rows = this.db.prepare(`
             SELECT * FROM (

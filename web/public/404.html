@@ -5,11 +5,11 @@
   <title>HAPI</title>
   <script>
     (function () {
-      var studio = window.location.pathname.match(/^\/studio\/([^/]+)/)
+      var studio = window.location.pathname.match(/^(.*\/)studio\/([^/]+)/)
       if (studio) {
-        var target = new URL('/studio.html', window.location.origin)
+        var target = new URL(studio[1] + 'studio.html', window.location.origin)
         target.search = window.location.search
-        target.searchParams.set('token', studio[1])
+        target.searchParams.set('token', studio[2])
         window.location.replace(target.toString())
         return
       }

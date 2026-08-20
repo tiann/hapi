@@ -1132,6 +1132,8 @@ export default {
   'studio.owner.copied': 'Copied',
   'studio.owner.rotate': 'Regenerate link',
   'studio.owner.revoke': 'Revoke',
+  'studio.owner.clearPosts': 'Clear posts',
+  'studio.owner.clearPostsConfirm': 'Delete all discussion and suggestion posts from this studio?',
   'studio.owner.dismiss': 'Dismiss',
   'studio.owner.sendToAgent': 'Send to agent',
   'studio.owner.suggestions': 'Suggestions',

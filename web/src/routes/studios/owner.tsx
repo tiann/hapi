@@ -94,7 +94,7 @@ function StudioOwnerRoom(props: { studioId: string }) {
         () => posts.filter((post) => post.roomId === room?.id && post.kind === 'discussion'),
         [posts, room?.id]
     )
-    const shareUrl = room ? buildStudioShareUrl(window.location.origin, room.shareToken, baseUrl) : ''
+    const shareUrl = room ? buildStudioShareUrl(window.location.origin, room.shareToken, baseUrl, import.meta.env.BASE_URL) : ''
 
     const loadOlderSuggestions = async () => {
         if (!suggestionCursor || loadingOlderSuggestions) return
@@ -126,8 +126,15 @@ function StudioOwnerRoom(props: { studioId: string }) {
             api.decideStudioPost(studioId, input.postId, input),
         onSuccess: (result) => {
             if (result.post) {
-                setOlderSuggestions((current) => current.map((post) => post.id === result.post!.id ? result.post! : post))
+                setOlderSuggestions((current) => current.filter((post) => post.id !== result.post!.id))
             }
+            refresh()
+        }
+    })
+    const clearPostsMutation = useMutation({
+        mutationFn: () => api.clearStudioPosts(studioId),
+        onSuccess: () => {
+            setOlderSuggestions([])
             refresh()
         }
     })
@@ -211,6 +218,16 @@ function StudioOwnerRoom(props: { studioId: string }) {
                                 className="rounded-md px-3 py-1.5 text-sm text-red-500 hover:bg-red-500/10"
                             >
                                 {t('studio.owner.revoke')}
+                            </button>
+                            <button
+                                type="button"
+                                disabled={clearPostsMutation.isPending}
+                                onClick={() => {
+                                    if (window.confirm(t('studio.owner.clearPostsConfirm'))) clearPostsMutation.mutate()
+                                }}
+                                className="rounded-md px-3 py-1.5 text-sm text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                            >
+                                {t('studio.owner.clearPosts')}
                             </button>
                         </div>
                     </section>

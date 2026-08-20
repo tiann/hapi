@@ -14,4 +14,10 @@ describe('Studio Lite hub URL routing', () => {
         )
         expect(resolveStudioApiOrigin('javascript:alert(1)', 'https://app.hapi.run')).toBe('https://app.hapi.run')
     })
+
+    it('keeps a configured Vite base path in shared links', () => {
+        expect(buildStudioShareUrl('https://app.example.com', 'token', 'https://hub.example.com', '/hapi/')).toBe(
+            'https://app.example.com/hapi/studio/token?hub=https%3A%2F%2Fhub.example.com'
+        )
+    })
 })

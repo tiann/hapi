@@ -399,6 +399,10 @@ export class ApiClient {
         await this.request(`/api/studios/${encodeURIComponent(studioId)}`, { method: 'DELETE' })
     }
 
+    async clearStudioPosts(studioId: string): Promise<{ deleted: number }> {
+        return await this.request(`/api/studios/${encodeURIComponent(studioId)}/posts`, { method: 'DELETE' })
+    }
+
     async decideStudioPost(
         studioId: string,
         postId: string,

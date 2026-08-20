@@ -1131,6 +1131,8 @@ export default {
   'studio.owner.copied': '已复制',
   'studio.owner.rotate': '重新生成链接',
   'studio.owner.revoke': '撤销链接',
+  'studio.owner.clearPosts': '清空帖子',
+  'studio.owner.clearPostsConfirm': '确定删除这个工作室中的全部讨论和建议吗？',
   'studio.owner.dismiss': '忽略',
   'studio.owner.sendToAgent': '提交给 Agent',
   'studio.owner.suggestions': '建议队列',

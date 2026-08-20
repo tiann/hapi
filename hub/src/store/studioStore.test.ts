@@ -85,4 +85,14 @@ describe('StudioStore', () => {
         expect(store.studios.createPostWithinLimit(input, 1)).toBeNull()
         expect(store.studios.listPosts(room.id, 10)).toHaveLength(1)
     })
+
+    it('clears all room posts so a capped room can accept new contributions', () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        store.sessions.getOrCreateSession('tag-a', {}, null, 'alpha', undefined, undefined, undefined, 'session-a')
+        const room = store.studios.createOrActivateRoom('session-a', 'alpha', 'Room', 'contribute')
+        store.studios.createPost({ roomId: room.id, guestId: 'guest-12345678', authorName: 'Guest', kind: 'discussion', text: 'Post' })
+        expect(store.studios.clearPosts(room.id)).toBe(1)
+        expect(store.studios.createPostWithinLimit({ roomId: room.id, guestId: 'guest-12345678', authorName: 'Guest', kind: 'discussion', text: 'Post again' }, 1)).not.toBeNull()
+    })
 })

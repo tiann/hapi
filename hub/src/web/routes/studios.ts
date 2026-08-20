@@ -144,6 +144,7 @@ const POST_RATE_WINDOW_MS = 60_000
 const POST_RATE_LIMIT_PER_ROOM = 60
 const MAX_POST_RATE_BUCKETS = 1_000
 const MAX_STUDIO_POSTS_PER_ROOM = 2_000
+const MAX_RAW_MESSAGES_SCANNED = 2_000
 const postRateBuckets = new Map<string, number[]>()
 
 function allowPost(key: string, now = Date.now()): boolean {
@@ -189,9 +190,11 @@ export function createPublicStudioRoutes(options: {
 
         const messages: PublicStudioMessage[] = []
         let before: { at: number; seq: number } | undefined
-        while (messages.length < 200) {
+        let scanned = 0
+        while (messages.length < 200 && scanned < MAX_RAW_MESSAGES_SCANNED) {
             const page = options.store.messages.getMessagesByPosition(room.sessionId, 200, before)
             if (page.length === 0) break
+            scanned += page.length
             const projectedPage = page
                 .map(projectMessage)
                 .filter((message): message is PublicStudioMessage => message !== null)
@@ -304,6 +307,13 @@ export function createStudioRoutes(options: {
     app.delete('/studios/:id', (c) => {
         const revoked = options.store.studios.revokeRoom(c.req.param('id'), c.get('namespace'))
         return revoked ? c.json({ ok: true }) : c.json({ error: 'Studio not found' }, 404)
+    })
+
+    app.delete('/studios/:id/posts', (c) => {
+        const room = options.store.studios.getRoomById(c.req.param('id'), c.get('namespace'))
+        if (!room) return c.json({ error: 'Studio not found' }, 404)
+        const deleted = options.store.studios.clearPosts(room.id)
+        return c.json({ ok: true, deleted })
     })
 
     app.post('/studios/:id/posts/:postId/decision', async (c) => {

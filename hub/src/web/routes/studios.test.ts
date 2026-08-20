@@ -154,6 +154,19 @@ describe('studio routes', () => {
         expect((await publicResponse.json() as { posts: unknown[] }).posts).toHaveLength(0)
     })
 
+    it('allows the owner to clear all room posts', async () => {
+        const store = new Store(':memory:')
+        createSession(store)
+        const room = store.studios.createOrActivateRoom('session-1', 'default', 'Room', 'contribute')
+        store.studios.createPost({ roomId: room.id, guestId: 'guest-a-12345678', authorName: 'A', kind: 'discussion', text: 'Remove me' })
+        const app = createApp(store, { resolveSessionAccess: () => ({ ok: true, sessionId: 'session-1', session: { id: 'session-1', namespace: 'default', active: true, metadata: {} } }) })
+
+        const response = await app.request(`/api/studios/${room.id}/posts`, { method: 'DELETE' })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({ ok: true, deleted: 1 })
+        expect(store.studios.listPosts(room.id)).toHaveLength(0)
+    })
+
     it('keeps recent discussions and all suggestions independently beyond 200 mixed posts', async () => {
         const store = new Store(':memory:')
         createSession(store)

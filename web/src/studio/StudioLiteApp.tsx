@@ -68,7 +68,7 @@ function getGuestId(): string {
 }
 
 function getToken(): string {
-    const match = window.location.pathname.match(/^\/studio\/([^/]+)/)
+    const match = window.location.pathname.match(/\/studio\/([^/]+)/)
     return match?.[1] ?? new URLSearchParams(window.location.search).get('token') ?? ''
 }
 

@@ -106,11 +106,11 @@
         <div id="root"></div>
         <script>
             (function () {
-                var match = window.location.pathname.match(/^\/studio\/([^/]+)/)
+                var match = window.location.pathname.match(/^(.*\/)studio\/([^/]+)/)
                 if (match) {
-                    var target = new URL('/studio.html', window.location.origin)
+                    var target = new URL(match[1] + 'studio.html', window.location.origin)
                     target.search = window.location.search
-                    target.searchParams.set('token', match[1])
+                    target.searchParams.set('token', match[2])
                     window.location.replace(target.toString())
                 }
             })()
