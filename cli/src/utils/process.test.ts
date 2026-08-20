@@ -1395,10 +1395,15 @@ describe.skipIf(process.platform !== 'linux')('strict Linux token ownership', ()
     const uid = process.getuid?.() ?? 1_000;
     let tokenSequence = 0;
 
-    function linuxStat(pid: number, processGroupId: number, startTime: string): string {
+    function linuxStat(
+        pid: number,
+        processGroupId: number,
+        startTime: string,
+        parentPid = 1
+    ): string {
         const fields = Array.from({ length: 20 }, () => '0');
         fields[0] = 'S';
-        fields[1] = '1';
+        fields[1] = String(parentPid);
         fields[2] = String(processGroupId);
         fields[19] = startTime;
         return `${pid} (node) ${fields.join(' ')}`;
@@ -1409,6 +1414,7 @@ describe.skipIf(process.platform !== 'linux')('strict Linux token ownership', ()
         pid: number;
         processGroupId: number;
         startTime?: string;
+        parentPid?: number;
     }): void {
         fsOverrides.readdirSync = (path) => {
             expect(path).toBe('/proc');
@@ -1423,7 +1429,8 @@ describe.skipIf(process.platform !== 'linux')('strict Linux token ownership', ()
                 return linuxStat(
                     options.pid,
                     options.processGroupId,
-                    options.startTime ?? '4242'
+                    options.startTime ?? '4242',
+                    options.parentPid
                 );
             }
             if (path === `/proc/${options.pid}/environ`) {
@@ -1723,6 +1730,133 @@ describe.skipIf(process.platform !== 'linux')('strict Linux token ownership', ()
                 if (pid === 123) return processExited();
                 return true;
             }
+            signals.push(`${pid}:${String(signal)}`);
+            return true;
+        }) as typeof process.kill);
+
+        await expect(killProcessByChildProcess(
+            child,
+            false,
+            rootStartMarker,
+            Date.now() + 200,
+            true,
+            ownershipToken
+        )).resolves.toBe(true);
+
+        expect(signals).toEqual([]);
+    });
+
+    it('ignores a newer unreadable unrelated same-UID environment', async () => {
+        tokenSequence += 1;
+        const ownershipToken = `linux-newer-unrelated-token-${tokenSequence}`;
+        const child = { pid: 123 } as ChildProcess;
+        let rootAlive = true;
+        const signals: string[] = [];
+        fsOverrides.readdirSync = () => ['999', '123'];
+        fsOverrides.statSync = (path) => {
+            if (path === '/proc/123' && !rootAlive) {
+                throw Object.assign(new Error('root exited'), { code: 'ENOENT' });
+            }
+            return { uid };
+        };
+        fsOverrides.readFileSync = (path) => {
+            if (path === '/proc/999/stat') return linuxStat(999, 999, '5000');
+            if (path === '/proc/999/environ') {
+                throw Object.assign(new Error('environment denied'), { code: 'EACCES' });
+            }
+            if (path === '/proc/123/stat') {
+                if (!rootAlive) {
+                    throw Object.assign(new Error('root exited'), { code: 'ENOENT' });
+                }
+                return linuxStat(123, 123, '4000');
+            }
+            if (path === '/proc/123/environ') {
+                return Buffer.from(`${strictOwnershipEnv}=${ownershipToken}\0`);
+            }
+            throw new Error(`Unexpected proc read: ${String(path)}`);
+        };
+        vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+            if (signal === 0) {
+                if (pid === 123 && !rootAlive) return processExited();
+                return true;
+            }
+            signals.push(`${pid}:${String(signal)}`);
+            if (pid === -123 || pid === 123) rootAlive = false;
+            return true;
+        }) as typeof process.kill);
+
+        await expect(killProcessByChildProcess(
+            child,
+            false,
+            rootStartMarker,
+            Date.now() + 200,
+            true,
+            ownershipToken
+        )).resolves.toBe(true);
+
+        expect(signals).toContain('-123:SIGTERM');
+        expect(signals.some((entry) => entry.startsWith('999:'))).toBe(false);
+    });
+
+    it('fails closed for an unreadable direct child outside the root process group', async () => {
+        tokenSequence += 1;
+        const ownershipToken = `linux-direct-child-token-${tokenSequence}`;
+        const child = { pid: 123 } as ChildProcess;
+        const signals: string[] = [];
+        fsOverrides.readdirSync = () => ['456', '123'];
+        fsOverrides.statSync = () => ({ uid });
+        fsOverrides.readFileSync = (path) => {
+            if (path === '/proc/456/stat') return linuxStat(456, 456, '5000', 123);
+            if (path === '/proc/456/environ') {
+                throw Object.assign(new Error('environment denied'), { code: 'EACCES' });
+            }
+            if (path === '/proc/123/stat') return linuxStat(123, 123, '4000');
+            if (path === '/proc/123/environ') {
+                return Buffer.from(`${strictOwnershipEnv}=${ownershipToken}\0`);
+            }
+            throw new Error(`Unexpected proc read: ${String(path)}`);
+        };
+        vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+            if (signal === 0) {
+                if (pid === 123) return processExited();
+                return true;
+            }
+            signals.push(`${pid}:${String(signal)}`);
+            return true;
+        }) as typeof process.kill);
+
+        await expect(killProcessByChildProcess(
+            child,
+            false,
+            rootStartMarker,
+            Date.now() + 200,
+            true,
+            ownershipToken
+        )).resolves.toBe(false);
+
+        expect(signals).toEqual([]);
+    });
+
+    it('does not trust an unreadable child after its parent PID is reused', async () => {
+        tokenSequence += 1;
+        const ownershipToken = `linux-reused-parent-token-${tokenSequence}`;
+        const child = { pid: 123 } as ChildProcess;
+        const signals: string[] = [];
+        fsOverrides.readdirSync = () => ['456'];
+        fsOverrides.statSync = (path) => {
+            expect(path).toBe('/proc/456');
+            return { uid };
+        };
+        fsOverrides.readFileSync = (path) => {
+            if (path === '/proc/456/stat') return linuxStat(456, 456, '5000', 123);
+            if (path === '/proc/456/environ') {
+                throw Object.assign(new Error('environment denied'), { code: 'EACCES' });
+            }
+            if (path === '/proc/123/stat') return linuxStat(123, 123, '6000');
+            throw new Error(`Unexpected proc read: ${String(path)}`);
+        };
+        vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+            if (signal === 0) return true;
             signals.push(`${pid}:${String(signal)}`);
             return true;
         }) as typeof process.kill);
@@ -2068,7 +2202,7 @@ describe.skipIf(process.platform === 'win32')('strict POSIX process-group termin
     });
 
     it.skipIf(process.platform !== 'linux')(
-        'fails closed for a newer nondumpable setsid helper after the root exits',
+        'ignores an unobserved nondumpable setsid helper after the root exits',
         async () => {
             const ownershipToken = `nondumpable-helper-${process.pid}-${Date.now()}`;
             const helperScript = [
@@ -2112,7 +2246,7 @@ describe.skipIf(process.platform === 'win32')('strict POSIX process-group termin
                     Date.now() + 5_000,
                     true,
                     ownershipToken
-                )).resolves.toBe(false);
+                )).resolves.toBe(true);
 
                 expect(isProcessAlive(helperPid)).toBe(true);
             } finally {

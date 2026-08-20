@@ -710,12 +710,21 @@ function listLinuxOwnedProcessGenerations(
       if (isMissingProcessError(error)) continue;
       if (isUnreadableProcessEnvironment(error)) {
         const key = processGenerationKey(recordBefore.value);
-        const candidateStartTime = linuxStartTime(recordBefore.value.startMarker);
-        if (candidateStartTime === null) return null;
-        if ((pid === rootPid
+        const hasPotentialOwnedParent = Array.from(knownOwned.values()).some((record) => (
+          record.pid === recordBefore.value.parentPid
+        ));
+        let hasKnownOwnedParent = false;
+        if (hasPotentialOwnedParent) {
+          const parentRecord = readLinuxProcessRecord(recordBefore.value.parentPid);
+          if (parentRecord.kind === 'unknown') return null;
+          hasKnownOwnedParent = parentRecord.kind === 'ok'
+            && knownOwned.has(processGenerationKey(parentRecord.value));
+        }
+        const plausiblyOwned = pid === rootPid
           || knownOwned.has(key)
-          || candidateStartTime >= rootStartTime)
-          && !confirmedExited.has(key)) {
+          || recordBefore.value.processGroupId === rootPid
+          || hasKnownOwnedParent;
+        if (plausiblyOwned && !confirmedExited.has(key)) {
           return 'retryable';
         }
         const recordAfter = readLinuxProcessRecord(pid);
