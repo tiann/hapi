@@ -14,6 +14,7 @@ afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
     localStorage.removeItem('hapi-pin-in-progress-sessions')
+    localStorage.removeItem('hapi-pin-active-sessions')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -568,7 +569,7 @@ describe('SessionList collapse behavior', () => {
         expect(screen.queryByTitle('Idle')).toBeNull()
     })
 
-    it('keeps quiet active sessions in the Active section when pin-in-progress is on', () => {
+    it('keeps quiet active sessions in their directory when pin-in-progress is on', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         const sessions = [
             makeSession({
@@ -597,17 +598,9 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('In progress')).toBeInTheDocument()
         expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
         expect(screen.getByText(/pending \(1\)/)).toBeInTheDocument()
-        // Quiet active sessions float into their own Active section (finished
-        // executing, still connected) instead of falling into directory groups.
-        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
-        expect(screen.getByText(/Active \(1\)/)).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
-        // The directory header survives as an action-only header (copy-path /
-        // new-session-in-directory) even though every row floated.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/hapi').nextElementSibling).toBeNull()
         expect(screen.getByTitle('/work/other')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/other').nextElementSibling).toBeNull()
     })
 
     it('keeps new-session-in-directory actions for projects whose rows all floated', () => {
@@ -635,16 +628,47 @@ describe('SessionList collapse behavior', () => {
             />
         )
 
-        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
-        // The project header survives as an action-only header.
         const header = screen.getByTitle('/work/hapi')
-        expect(header.nextElementSibling).toBeNull()
+        expect(header.nextElementSibling).not.toBeNull()
 
         fireEvent.click(screen.getByRole('button', { name: 'New session in this directory' }))
         expect(onNewSessionInDirectory).toHaveBeenCalledWith({
             machineId: 'machine-1',
             directory: '/work/hapi',
         })
+    })
+
+    it('pins every active session when pin-active is on', () => {
+        localStorage.setItem('hapi-pin-active-sessions', 'true')
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Running task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-quiet',
+                active: true,
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Quiet task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-inactive',
+                updatedAt: 80,
+                metadata: { path: '/work/hapi', name: 'Inactive task', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
+        expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
+        expect(screen.getByText(/Active \(1\)/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Running task/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Inactive task/ })).toBeInTheDocument()
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
     })
 
     it('auto-expands the path again when the selected session changes', async () => {
@@ -705,6 +729,7 @@ describe('SessionList collapse behavior', () => {
 
     it('toggles the Active section independently of In progress', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-active-sessions', 'true')
         const sessions = [
             makeSession({
                 id: 'session-running',
