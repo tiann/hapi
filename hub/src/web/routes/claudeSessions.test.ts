@@ -7,7 +7,7 @@ import { RpcRegistry } from '../../socket/rpcRegistry'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import { type Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
-import { createClaudeSessionRoutes, importClaudeSession } from './claudeSessions'
+import { createClaudeSessionRoutes, importClaudeSession, importClaudeSessionFromPages } from './claudeSessions'
 
 function machine(id = 'machine-1'): Machine {
     return {
@@ -384,6 +384,41 @@ describe('Claude session import', () => {
             }
         })
         expect(events).toContainEqual({ type: 'session-updated', sessionId: existing.id })
+    })
+
+    it('preserves normal Claude session metadata when initial transcript analysis fails', async () => {
+        const { store, engine } = setup()
+        const selectedMachine = machine()
+        const source = transcript('native-analysis-failure', ['one'])
+        const existing = store.sessions.getOrCreateSession(
+            'claude-analysis-failure',
+            {
+                path: '/tmp/project',
+                host: selectedMachine.metadata!.host,
+                machineId: selectedMachine.id,
+                flavor: 'claude',
+                claudeSessionId: source.id
+            },
+            {},
+            'default'
+        )
+
+        const result = await importClaudeSessionFromPages({
+            store,
+            engine,
+            namespace: 'default',
+            machine: selectedMachine,
+            claudeSessionId: source.id,
+            loadPage: async () => ({ success: false, error: 'first page failed' })
+        })
+
+        expect(result.error).toMatchObject({ code: 'import_failed', message: 'first page failed' })
+        expect(store.sessions.getSession(existing.id)?.metadata).toMatchObject({
+            path: '/tmp/project',
+            host: selectedMachine.metadata!.host,
+            claudeSessionId: source.id
+        })
+        expect(store.sessions.getSession(existing.id)?.metadata).not.toHaveProperty('claudeImportState')
     })
 
     it('locks a newly created session until every import page is persisted', async () => {

@@ -701,7 +701,8 @@ function markImportAnalysisFailure(
     error: string
 ): void {
     updateMetadataWithRetry(store, sessionId, namespace, (metadata) => {
-        const currentState = asRecord(metadata.claudeImportState) ?? {}
+        const currentState = asRecord(metadata.claudeImportState)
+        if (!currentState) return metadata as Metadata
         return {
             ...metadata,
             claudeImportState: {
@@ -724,7 +725,7 @@ function liveImportedSessionActive(
     return access.ok ? access.session.active : null
 }
 
-async function importClaudeSessionFromPages(options: {
+export async function importClaudeSessionFromPages(options: {
     store: Store
     engine: SyncEngine
     namespace: string
