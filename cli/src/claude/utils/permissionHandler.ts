@@ -263,11 +263,12 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             if (response.approved) {
                 logger.debug('Plan approved - injecting PLAN_FAKE_RESTART');
                 // Inject the approval message at the beginning of the queue
-                if (response.mode && PLAN_EXIT_MODES.includes(response.mode)) {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode });
-                } else {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'default' });
-                }
+                const nextMode = response.mode && PLAN_EXIT_MODES.includes(response.mode)
+                    ? response.mode
+                    : this.permissionMode === 'plan'
+                        ? 'default'
+                        : this.permissionMode;
+                this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: nextMode });
                 pending.resolve({ behavior: 'deny', message: PLAN_FAKE_REJECT });
             } else {
                 pending.resolve({ behavior: 'deny', message: response.reason || 'Plan rejected' });
