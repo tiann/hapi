@@ -233,25 +233,29 @@ export default function SettingsNotificationsPage() {
                 <SettingsSwitch
                     label={t('settings.notifications.permissionRequests')}
                     description={t('settings.notifications.permissionRequestsDescription')}
-                    checked={prefs ? Boolean(prefs.permissionRequests) : true}
+                    checked={Boolean(prefs?.permissionRequests)}
+                    disabled={!prefs}
                     onChange={handleToggle('permissionRequests')}
                 />
                 <SettingsSwitch
                     label={t('settings.notifications.sessionReady')}
                     description={t('settings.notifications.sessionReadyDescription')}
-                    checked={prefs ? Boolean(prefs.sessionReady) : true}
+                    checked={Boolean(prefs?.sessionReady)}
+                    disabled={!prefs}
                     onChange={handleToggle('sessionReady')}
                 />
                 <SettingsSwitch
                     label={t('settings.notifications.taskNotifications')}
                     description={t('settings.notifications.taskNotificationsDescription')}
-                    checked={prefs ? Boolean(prefs.taskNotifications) : true}
+                    checked={Boolean(prefs?.taskNotifications)}
+                    disabled={!prefs}
                     onChange={handleToggle('taskNotifications')}
                 />
                 <SettingsSwitch
                     label={t('settings.notifications.sessionCompletion')}
                     description={t('settings.notifications.sessionCompletionDescription')}
-                    checked={prefs ? Boolean(prefs.sessionCompletion) : true}
+                    checked={Boolean(prefs?.sessionCompletion)}
+                    disabled={!prefs}
                     onChange={handleToggle('sessionCompletion')}
                 />
                 {saveError ? <SettingsRow label={saveError} /> : null}

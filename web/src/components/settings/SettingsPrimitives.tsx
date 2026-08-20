@@ -71,12 +71,12 @@ export function SettingsRow(props: { label: string; description?: string; traili
     )
 }
 
-export function SettingsSwitch(props: { label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void }) {
+export function SettingsSwitch(props: { label: string; description?: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
     return (
         <SettingsRow label={props.label} description={props.description} trailing={
-            <label className="relative inline-flex h-6 w-11 items-center">
-                <input type="checkbox" checked={props.checked} onChange={(event) => props.onChange(event.target.checked)} className="peer sr-only" aria-label={props.label} />
-                <span className="absolute inset-0 rounded-full bg-[var(--app-border)] transition-colors peer-checked:bg-[var(--app-link)]" />
+            <label className={`relative inline-flex h-6 w-11 items-center ${props.disabled ? 'opacity-50' : ''}`}>
+                <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.target.checked)} className="peer sr-only" aria-label={props.label} />
+                <span className="absolute inset-0 rounded-full bg-[var(--app-border)] transition-colors peer-checked:bg-[var(--app-link)] peer-disabled:cursor-not-allowed" />
                 <span className="absolute left-0.5 h-5 w-5 rounded-full bg-[var(--app-bg)] shadow-sm transition-transform peer-checked:translate-x-5" />
             </label>
         } />

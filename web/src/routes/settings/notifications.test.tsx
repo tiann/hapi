@@ -73,15 +73,33 @@ describe('SettingsNotificationsPage', () => {
     it('renders all four toggles from server preferences', async () => {
         renderPage()
         const permissionSwitch = await screen.findByLabelText('Permission requests')
+        await waitFor(() => expect(permissionSwitch).toBeEnabled())
         expect(permissionSwitch).toBeChecked()
         expect(screen.getByLabelText('Session ready')).toBeChecked()
         expect(screen.getByLabelText('Task notifications')).toBeChecked()
         expect(screen.getByLabelText('Session completion')).toBeChecked()
     })
 
+    it('keeps toggles disabled until server preferences load', async () => {
+        let resolvePreferences!: (value: typeof defaultPrefs) => void
+        getNotificationPreferences.mockReturnValueOnce(new Promise((resolve) => { resolvePreferences = resolve }))
+        renderPage()
+
+        const permissionSwitch = await screen.findByLabelText('Permission requests')
+        expect(permissionSwitch).toBeDisabled()
+        expect(permissionSwitch).not.toBeChecked()
+        fireEvent.click(permissionSwitch)
+        expect(updateNotificationPreferences).not.toHaveBeenCalled()
+
+        await act(async () => resolvePreferences(defaultPrefs))
+        await waitFor(() => expect(permissionSwitch).toBeEnabled())
+        expect(permissionSwitch).toBeChecked()
+    })
+
     it('saves a toggle change through the API', async () => {
         renderPage()
         const sessionReadySwitch = await screen.findByLabelText('Session ready')
+        await waitFor(() => expect(sessionReadySwitch).toBeEnabled())
         fireEvent.click(sessionReadySwitch)
         await waitFor(() => {
             expect(updateNotificationPreferences).toHaveBeenCalledWith({ sessionReady: 0 })
@@ -100,7 +118,9 @@ describe('SettingsNotificationsPage', () => {
             }))
         const queryClient = renderPage()
 
-        fireEvent.click(await screen.findByLabelText('Session ready'))
+        const sessionReadySwitch = await screen.findByLabelText('Session ready')
+        await waitFor(() => expect(sessionReadySwitch).toBeEnabled())
+        fireEvent.click(sessionReadySwitch)
         fireEvent.click(screen.getByLabelText('Task notifications'))
 
         await waitFor(() => expect(updateNotificationPreferences).toHaveBeenCalledTimes(1))
@@ -126,6 +146,7 @@ describe('SettingsNotificationsPage', () => {
     it('asks for confirmation before disabling permission requests', async () => {
         renderPage()
         const permissionSwitch = await screen.findByLabelText('Permission requests')
+        await waitFor(() => expect(permissionSwitch).toBeEnabled())
         fireEvent.click(permissionSwitch)
         expect(updateNotificationPreferences).not.toHaveBeenCalled()
         expect(screen.getByText('Turn off permission request notifications?')).toBeTruthy()
@@ -134,6 +155,7 @@ describe('SettingsNotificationsPage', () => {
     it('applies the permission disable after confirming', async () => {
         renderPage()
         const permissionSwitch = await screen.findByLabelText('Permission requests')
+        await waitFor(() => expect(permissionSwitch).toBeEnabled())
         fireEvent.click(permissionSwitch)
         const confirmButton = screen.getByText('Turn off anyway')
         fireEvent.click(confirmButton)
@@ -145,7 +167,9 @@ describe('SettingsNotificationsPage', () => {
     it('keeps the confirmation open when disabling permission notifications fails', async () => {
         updateNotificationPreferences.mockRejectedValueOnce(new Error('save failed'))
         renderPage()
-        fireEvent.click(await screen.findByLabelText('Permission requests'))
+        const permissionSwitch = await screen.findByLabelText('Permission requests')
+        await waitFor(() => expect(permissionSwitch).toBeEnabled())
+        fireEvent.click(permissionSwitch)
         fireEvent.click(screen.getByText('Turn off anyway'))
 
         expect(await screen.findByText('save failed')).toBeTruthy()
