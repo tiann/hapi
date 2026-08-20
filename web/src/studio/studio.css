@@ -7,13 +7,13 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #studio-root { min-height: 100%; margin: 0; }
+html, body, #studio-root { height: 100%; min-height: 0; margin: 0; overflow: hidden; }
 body { min-width: 320px; background: #f8fafc; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: 0.5; }
 
-.studio-shell { min-height: 100dvh; display: flex; flex-direction: column; }
+.studio-shell { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .studio-header { padding: calc(0.75rem + env(safe-area-inset-top)) 1rem 0.75rem; background: #fff; border-bottom: 1px solid #e2e8f0; }
 .studio-header-inner { width: min(72rem, 100%); margin: 0 auto; display: flex; align-items: center; gap: 0.75rem; }
 .studio-title { min-width: 0; flex: 1; }
