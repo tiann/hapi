@@ -75,6 +75,34 @@ describe('spawnWithTerminalGuard', () => {
         await expect(spawnWithTerminalGuard(dummyOptions)).rejects.toThrow(error);
     });
 
+    // Once the controlling terminal is gone, process.stdin.resume() (or
+    // restoreTerminalState()'s own writes to the dead tty) can itself
+    // throw/reject. Each cleanup step runs in its own try/catch, isolated
+    // from the others and from the spawn result, so a teardown failure can
+    // neither turn a clean spawn into a crash nor mask the real spawn
+    // failure with an unrelated terminal-teardown error.
+    it('a stdin.resume() failure during cleanup does not mask a successful spawn or crash the caller', async () => {
+        mockSpawnWithAbort.mockResolvedValue();
+        stdinResumeSpy.mockImplementationOnce(() => { throw Object.assign(new Error('EIO'), { code: 'EIO' }); });
+
+        await expect(spawnWithTerminalGuard(dummyOptions)).resolves.toBeUndefined();
+    });
+
+    it('a stdin.resume() failure during cleanup does not replace the original spawn error', async () => {
+        const spawnError = new Error('process exited with code 1');
+        mockSpawnWithAbort.mockRejectedValue(spawnError);
+        stdinResumeSpy.mockImplementationOnce(() => { throw Object.assign(new Error('EIO'), { code: 'EIO' }); });
+
+        await expect(spawnWithTerminalGuard(dummyOptions)).rejects.toThrow(spawnError);
+    });
+
+    it('a restoreTerminalState() failure during cleanup does not mask a successful spawn or crash the caller', async () => {
+        mockSpawnWithAbort.mockResolvedValue();
+        mockRestoreTerminalState.mockImplementationOnce(() => { throw new Error('write EIO'); });
+
+        await expect(spawnWithTerminalGuard(dummyOptions)).resolves.toBeUndefined();
+    });
+
     it('calls pause before spawn, and resume after spawn', async () => {
         mockSpawnWithAbort.mockResolvedValue();
 

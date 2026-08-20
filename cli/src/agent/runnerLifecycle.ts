@@ -2,6 +2,7 @@ import type { ApiSessionClient } from '@/api/apiSession'
 import type { SessionEndReason } from '@hapi/protocol'
 import { logger } from '@/ui/logger'
 import { restoreTerminalState } from '@/ui/terminalState'
+import { markTerminalLost, installTerminalOutputGuard } from '@/agent/terminalLossState'
 
 type RunnerLifecycleOptions = {
     session: ApiSessionClient
@@ -20,7 +21,7 @@ export type RunnerLifecycle = {
     cleanup: () => Promise<void>
     cleanupConfirmed: (options?: { timeoutMs?: number }) => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
-    registerProcessHandlers: () => void
+    registerProcessHandlers: (options?: { surviveTerminalHangup?: boolean }) => void
 }
 
 export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLifecycle {
@@ -180,7 +181,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         sessionEndReason = 'error'
     }
 
-    const registerProcessHandlers = () => {
+    const registerProcessHandlers = (handlerOptions?: { surviveTerminalHangup?: boolean }) => {
         // tiann/hapi#914: SIGTERM is treated as the default reason ('Hub restart')
         // because the runner is restarted by systemd as part of hub restart in
         // production. If a future code path needs to distinguish "operator
@@ -206,6 +207,38 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
             markCrash(reason)
             void cleanupAndExit(1)
         })
+
+        // Closing the terminal sends SIGHUP to the whole
+        // foreground process group (this process + any local claude child).
+        // The kernel's default action (terminate) would kill the runner
+        // before graceful archive could run, leaving the hub session stuck
+        // at lifecycleState='running' forever — but only flavors that opt
+        // in via `surviveTerminalHangup: true` install a handler here at
+        // all; every other flavor keeps the platform default (SIGHUP
+        // terminates the process), unchanged from upstream.
+        //
+        // When opted in: survive. Mark terminalLost (consulted by
+        // claudeLocalLauncher to redirect a local-child death into the
+        // existing local→remote switch path instead of ending the session)
+        // and guard stdout/stderr so any in-flight writes from
+        // readline/ink components don't crash the process via EPIPE/EIO.
+        //
+        // Escape hatch: HAPI_EXIT_ON_HANGUP=1 restores something close to
+        // the old behaviour, except it now exits *gracefully* (archived,
+        // reported to hub) instead of just being killed.
+        if (handlerOptions?.surviveTerminalHangup) {
+            process.on('SIGHUP', () => {
+                if (process.env.HAPI_EXIT_ON_HANGUP === '1') {
+                    archiveReason = 'SIGHUP (terminal closed, HAPI_EXIT_ON_HANGUP set)'
+                    void cleanupAndExit()
+                    return
+                }
+
+                logger.debug(`${logPrefix} SIGHUP received (terminal lost) — surviving, marking terminalLost`)
+                markTerminalLost()
+                installTerminalOutputGuard()
+            })
+        }
     }
 
     return {
