@@ -74,7 +74,11 @@ vi.mock('node:child_process', () => ({
             },
             stdin: {
                 end: (...args: unknown[]) => spawnState.stdinEnd(...args),
-                write: (chunk: string) => spawnState.stdinWrite(chunk)
+                write: (chunk: string, callback?: (error?: Error | null) => void) => {
+                    const result = spawnState.stdinWrite(chunk);
+                    callback?.();
+                    return result;
+                }
             },
             on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
                 if (event === 'exit') {
@@ -91,7 +95,7 @@ vi.mock('node:child_process', () => ({
     })
 }));
 
-import { AcpStdioTransport } from './AcpStdioTransport';
+import { AcpRpcResponseError, AcpStdioTransport } from './AcpStdioTransport';
 import { killProcessByChildProcess } from '@/utils/process';
 
 function emitStdout(chunk: string): void {
@@ -235,6 +239,25 @@ describe('AcpStdioTransport plain-text stdout', () => {
         await expect(pending).resolves.toEqual({ ok: true });
         expect(spawnState.stdinEnd).not.toHaveBeenCalled();
         expect(killProcessByChildProcess).not.toHaveBeenCalled();
+        await transport.close();
+    });
+
+    test('classifies JSON-RPC error responses separately from transport failures', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'gemini' });
+        const pending = transport.sendRequest('session/prompt');
+
+        emitStdout(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            error: { code: -32602, message: 'prompt rejected', data: { reason: 'busy' } }
+        })}\n`);
+
+        await expect(pending).rejects.toMatchObject({
+            name: 'AcpRpcResponseError',
+            code: -32602,
+            data: { reason: 'busy' }
+        });
+        await expect(pending).rejects.toBeInstanceOf(AcpRpcResponseError);
         await transport.close();
     });
 
@@ -600,7 +623,11 @@ describe('AcpStdioTransport closed stdin writes', () => {
         });
 
         const transport = await AcpStdioTransport.create({ command: 'gemini' });
-        await expect(transport.sendRequest('initialize')).rejects.toThrow('WritableIterable is closed');
+        const request = transport.sendRequestWithDispatch('initialize');
+        await Promise.all([
+            expect(request.dispatched).rejects.toThrow('WritableIterable is closed'),
+            expect(request.completed).rejects.toThrow('WritableIterable is closed')
+        ]);
         await expect(transport.sendRequest('session/new')).rejects.toThrow('WritableIterable is closed');
     });
 });

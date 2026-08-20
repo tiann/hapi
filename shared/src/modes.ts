@@ -195,7 +195,7 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  *
  * Claude / others: not supported (no reachable soft-steer path) — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['codex', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['codex', 'pi', 'cursor'] as const
 
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
     return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
@@ -217,5 +217,8 @@ export function isSteeringSupportedForSession(metadata?: {
     if (metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
         return true
     }
-    return false
+    if (metadata?.flavor !== 'cursor') return false
+    if (metadata.cursorSessionProtocol === 'stream-json') return false
+    if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) return false
+    return true
 }

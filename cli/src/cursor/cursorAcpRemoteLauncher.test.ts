@@ -30,7 +30,10 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null
+    agentActivityListener: null as ((thinking: boolean) => void) | null,
+    rpcHandlers: new Map<string, (payload: unknown) => unknown>(),
+    softSteerDispatched: Promise.resolve() as Promise<void>,
+    softSteerCompleted: Promise.resolve() as Promise<void>
 }));
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
@@ -144,6 +147,13 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 const error = harness.promptErrors.shift();
                 if (error) throw error;
             }),
+            beginSoftSteerPrompt: vi.fn((_sessionId: string, content: unknown[]) => {
+                harness.prompts.push(content);
+                return {
+                    dispatched: harness.softSteerDispatched,
+                    completed: harness.softSteerCompleted
+                };
+            }),
             cancelPrompt: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn((handler) => {
@@ -241,7 +251,9 @@ function makeClient() {
     return {
         sessionId: 'test-session-id',
         rpcHandlerManager: {
-            registerHandler: vi.fn(),
+            registerHandler: vi.fn((method: string, handler: (payload: unknown) => unknown) => {
+                harness.rpcHandlers.set(method, handler);
+            }),
             unregisterHandler: vi.fn()
         },
         updateMetadata: vi.fn(),
@@ -250,7 +262,11 @@ function makeClient() {
         sendAgentMessage: vi.fn(),
         sendClaudeSessionMessage: vi.fn(),
         keepAlive: vi.fn(),
-        emitSessionReady: vi.fn()
+        emitSessionReady: vi.fn(),
+        updateAgentState: vi.fn(),
+        setSteerDeliveryState: vi.fn(async () => true),
+        emitSteerIndeterminate: vi.fn(),
+        emitMessagesConsumed: vi.fn()
     } as unknown as ApiSessionClient;
 }
 
@@ -282,6 +298,9 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         harness.agentActivityListener = null;
+        harness.rpcHandlers.clear();
+        harness.softSteerDispatched = Promise.resolve();
+        harness.softSteerCompleted = Promise.resolve();
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
@@ -299,6 +318,42 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(createCursorAcpBackend).toHaveBeenCalled();
         expect(harness.backendArgs).toEqual({ command: 'agent', args: ['acp'] });
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('soft-steers a queued message into an active Cursor ACP prompt', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient();
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        const mode: EnhancedMode = { permissionMode: 'default' };
+        queue.push('main prompt', mode, 'main');
+        const running = cursorAcpRemoteLauncher(session);
+
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        queue.push('change direction', mode, 'steer');
+        const handler = harness.rpcHandlers.get('steer-queued-message');
+        expect(handler).toBeDefined();
+        await expect(Promise.resolve(handler?.({ localId: 'steer' }))).resolves.toEqual({ steered: true });
+        await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer'], { steered: true }));
+        expect(harness.prompts.at(-1)).toEqual([{ type: 'text', text: 'change direction' }]);
+
+        queue.close();
+        releasePrompt();
+        await running;
     });
 
     it('applies harness thinking transitions once per edge (#1470)', async () => {
