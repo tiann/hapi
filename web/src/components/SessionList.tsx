@@ -68,13 +68,15 @@ const RUNNING_BUCKETS = [
 type RunningBucketKey = (typeof RUNNING_BUCKETS)[number]['key']
 
 /**
- * Sessions that warrant the optional pinned top sections.
- * Any connected session floats — a session that just finished executing stays
- * visible at the top (Active tier) because the operator usually continues the
- * conversation; only disconnected sessions fall into directory groups.
+ * Sessions that warrant the existing in-progress pinned section. Quiet active
+ * sessions are only floated when the broader active-session setting is on.
  */
 function isPinnedInProgressSession(session: SessionSummary): boolean {
-    return session.active
+    return session.active && (
+        session.thinking
+        || (session.backgroundTaskCount ?? 0) > 0
+        || (session.pendingRequestsCount ?? 0) > 0
+    )
 }
 
 export type SessionTimeRange = {
@@ -1327,7 +1329,7 @@ export function SessionList(props: {
                 buckets.working.push(session)
             } else if ((session.pendingRequestsCount ?? 0) > 0) {
                 buckets.pending.push(session)
-            } else {
+            } else if (pinActiveSessions) {
                 // Quiet but connected: finished executing, operator will continue.
                 buckets.active.push(session)
             }
