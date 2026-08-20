@@ -299,7 +299,8 @@ function HappyNestedBlockList(props: {
                                 sessionId={ctx.sessionId}
                                 metadata={ctx.metadata}
                                 terminalToolDisplayMode={ctx.terminalToolDisplayMode}
-                                disabled={ctx.disabled}
+                                disabled={ctx.disabled || ctx.controlledByUser === true}
+                                controlledByUser={ctx.controlledByUser === true}
                                 onDone={ctx.onRefresh}
                                 block={block}
                             />
@@ -410,7 +411,8 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
                 sessionId={ctx.sessionId}
                 metadata={ctx.metadata}
                 terminalToolDisplayMode={ctx.terminalToolDisplayMode}
-                disabled={ctx.disabled}
+                disabled={ctx.disabled || ctx.controlledByUser === true}
+                controlledByUser={ctx.controlledByUser === true}
                 onDone={ctx.onRefresh}
                 block={block}
             />
