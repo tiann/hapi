@@ -1,4 +1,5 @@
 import chalk from 'chalk'
+import { stripVTControlCharacters } from 'node:util'
 import { initializeToken } from '@/ui/tokenInit'
 import type { AttachedJobPatch, AttachedJobUpsert } from '@hapi/protocol'
 import {
@@ -329,7 +330,16 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
     return result
 }
 
-function formatJobLine(job: {
+/**
+ * Job fields can carry agent- or repo-supplied text. Strip VT/ANSI and remaining
+ * C0 controls before printing so `hapi job list|set|update` cannot emit OSC
+ * clipboard / title escapes into the operator terminal.
+ */
+export function terminalText(value: string): string {
+    return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f]/g, ' ')
+}
+
+export function formatJobLine(job: {
     key: string
     label: string
     status: string
@@ -342,11 +352,12 @@ function formatJobLine(job: {
     heartbeatAt: number
     startedAt: number
 }): string {
-    const parts = [`${job.key}`, job.label, job.status]
+    const unit = job.unit ? ` ${terminalText(job.unit)}` : ''
+    const parts = [terminalText(job.key), terminalText(job.label), terminalText(job.status)]
     if (job.remaining !== undefined) {
-        parts.push(`${job.remaining}${job.unit ? ` ${job.unit}` : ''} left`)
+        parts.push(`${job.remaining}${unit} left`)
     } else if (job.done !== undefined && job.total !== undefined) {
-        parts.push(`${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''}`)
+        parts.push(`${job.done}/${job.total}${unit}`)
     }
     const elapsedSec = Math.max(0, Math.round((Date.now() - job.startedAt) / 1000))
     if (elapsedSec < 60) {
@@ -362,8 +373,8 @@ function formatJobLine(job: {
         const h = Math.floor((elapsedSec % 86400) / 3600)
         parts.push(h > 0 ? `elapsed ${d}d ${h}h` : `elapsed ${d}d`)
     }
-    if (job.detail) parts.push(job.detail)
-    if (job.runId) parts.push(`runId ${job.runId}`)
+    if (job.detail) parts.push(terminalText(job.detail))
+    if (job.runId) parts.push(`runId ${terminalText(job.runId)}`)
     const ageSec = Math.max(0, Math.round((Date.now() - job.heartbeatAt) / 1000))
     parts.push(`heartbeat ${ageSec}s ago`)
     return parts.join(' · ')
