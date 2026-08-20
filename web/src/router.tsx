@@ -74,6 +74,8 @@ import SettingsUsagePage from '@/routes/settings/usage'
 import SharePage from '@/routes/share'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
+import StudioOwnerPage from '@/routes/studios/owner'
+import PublicStudioPage from '@/routes/studios/public'
 
 
 function BackIcon(props: { className?: string }) {
@@ -1267,6 +1269,18 @@ const shareRoute = createRoute({
     component: SharePage,
 })
 
+const studioOwnerRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/studios/$studioId',
+    component: StudioOwnerPage,
+})
+
+const publicStudioRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/studio/$shareToken',
+    component: PublicStudioPage,
+})
+
 export const routeTree = rootRoute.addChildren([
     indexRoute,
     sessionsRoute.addChildren([
@@ -1293,6 +1307,8 @@ export const routeTree = rootRoute.addChildren([
         settingsAboutRoute,
     ]),
     shareRoute,
+    studioOwnerRoute,
+    publicStudioRoute,
 ])
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']

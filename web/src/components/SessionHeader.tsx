@@ -27,6 +27,7 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
+import { ApiError } from '@/api/client'
 
 /** Same preference order as session-list chips: display label → host → short id. */
 export function resolveSessionHeaderMachineLabel(
@@ -222,6 +223,7 @@ export function SessionHeader(props: {
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [isSyncingCodex, setIsSyncingCodex] = useState(false)
     const [isSyncingPi, setIsSyncingPi] = useState(false)
+    const [isCreatingStudio, setIsCreatingStudio] = useState(false)
 
     const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, setPinMode, deleteSession, isPending } = useSessionActions(
         api,
@@ -350,6 +352,24 @@ export function SessionHeader(props: {
             })
         } finally {
             setIsSyncingPi(false)
+        }
+    }
+
+    const handleCreateStudio = async () => {
+        if (!api || isCreatingStudio) return
+        setIsCreatingStudio(true)
+        try {
+            const result = await api.createStudio({ sessionId: session.id, title })
+            window.location.assign(`/studios/${result.room.id}`)
+        } catch (error) {
+            addToast({
+                title: t('studio.owner.createFailed'),
+                body: error instanceof ApiError ? error.message : t('studio.owner.createFailed'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } finally {
+            setIsCreatingStudio(false)
         }
     }
 
@@ -521,6 +541,7 @@ export function SessionHeader(props: {
                 onRename={() => setRenameOpen(true)}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
+                onStudio={api ? () => void handleCreateStudio() : undefined}
                 onSyncCodex={api && codexSessionId ? handleSyncCodex : undefined}
                 onSyncPi={api && piSessionId && !session.active ? handleSyncPi : undefined}
                 onArchive={() => setArchiveOpen(true)}

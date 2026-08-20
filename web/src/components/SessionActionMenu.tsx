@@ -12,7 +12,7 @@ import { HoverTooltip } from '@/components/HoverTooltip'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
-import { CopyIcon } from '@/components/icons'
+import { CopyIcon, ShareIcon } from '@/components/icons'
 
 type SessionActionMenuProps = {
     isOpen: boolean
@@ -25,6 +25,7 @@ type SessionActionMenuProps = {
     sessionGlobalPinned?: boolean
     onSetPinMode?: (mode: 'none' | 'project' | 'global') => void
     onExport?: () => void
+    onStudio?: () => void
     onSyncCodex?: () => void
     onSyncPi?: () => void
     onArchive: () => void
@@ -196,6 +197,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionGlobalPinned = false,
         onSetPinMode,
         onExport,
+        onStudio,
         onSyncCodex,
         onSyncPi,
         onArchive,
@@ -245,6 +247,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleExport = () => {
         onClose()
         onExport?.()
+    }
+
+    const handleStudio = () => {
+        onClose()
+        onStudio?.()
     }
 
     const handleSyncCodex = () => {
@@ -380,6 +387,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     <EditIcon className="text-[var(--app-hint)]" />
                     {t('session.action.rename')}
                 </button>
+
+                {onStudio ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleStudio}
+                    >
+                        <ShareIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                        {t('studio.action.create')}
+                    </button>
+                ) : null}
 
                 <button
                     type="button"

@@ -98,6 +98,35 @@ export type StoredScratchlistEntry = {
     attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
 }
 
+export type StudioAccessMode = 'view' | 'contribute'
+export type StudioPostKind = 'discussion' | 'suggestion'
+export type StudioPostStatus = 'open' | 'submitted' | 'dismissed'
+
+export type StoredStudioRoom = {
+    id: string
+    sessionId: string
+    namespace: string
+    title: string
+    shareToken: string
+    accessMode: StudioAccessMode
+    status: 'active' | 'revoked'
+    createdAt: number
+    updatedAt: number
+}
+
+export type StoredStudioPost = {
+    id: string
+    roomId: string
+    guestId: string
+    authorName: string
+    kind: StudioPostKind
+    text: string
+    status: StudioPostStatus
+    createdAt: number
+    decidedAt: number | null
+    submittedText: string | null
+}
+
 export type VersionedUpdateResult<T> =
     | { result: 'success'; version: number; value: T }
     | { result: 'version-mismatch'; version: number; value: T }

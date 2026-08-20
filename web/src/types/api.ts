@@ -329,4 +329,60 @@ export type VisibilityPayload = {
     visibility: 'visible' | 'hidden'
 }
 
+export type StudioAccessMode = 'view' | 'contribute'
+export type StudioPostKind = 'discussion' | 'suggestion'
+export type StudioPostStatus = 'open' | 'submitted' | 'dismissed'
+
+export type StudioRoom = {
+    id: string
+    sessionId: string
+    namespace: string
+    title: string
+    shareToken: string
+    accessMode: StudioAccessMode
+    status: 'active' | 'revoked'
+    createdAt: number
+    updatedAt: number
+}
+
+export type StudioPost = {
+    id: string
+    roomId: string
+    guestId: string
+    authorName: string
+    kind: StudioPostKind
+    text: string
+    status: StudioPostStatus
+    createdAt: number
+    decidedAt: number | null
+    submittedText: string | null
+}
+
+export type PublicStudioPost = Pick<StudioPost, 'id' | 'roomId' | 'authorName' | 'kind' | 'text' | 'createdAt'>
+
+export type StudioOwnerResponse = {
+    room: StudioRoom
+    posts: StudioPost[]
+    openSuggestionCount?: number
+    nextSuggestionCursor?: { beforeAt: number; beforeId: string } | null
+}
+
+export type PublicStudioMessage = {
+    id: string
+    role: 'user' | 'assistant'
+    text: string
+    createdAt: number
+    seq: number
+}
+
+export type PublicStudioResponse = {
+    room: Pick<StudioRoom, 'id' | 'title' | 'accessMode' | 'createdAt' | 'updatedAt'> & {
+        active: boolean
+        agent: string
+        model: string | null
+    }
+    messages: PublicStudioMessage[]
+    posts: PublicStudioPost[]
+}
+
 export type SyncEvent = ProtocolSyncEvent

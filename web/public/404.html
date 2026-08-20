@@ -4,8 +4,18 @@
   <meta charset="utf-8">
   <title>HAPI</title>
   <script>
-    sessionStorage.setItem('spaRedirect', window.location.pathname + window.location.search + window.location.hash)
-    window.location.replace('/')
+    (function () {
+      var studio = window.location.pathname.match(/^(.*\/)studio\/([^/]+)/)
+      if (studio) {
+        var target = new URL(studio[1] + 'studio.html', window.location.origin)
+        target.search = window.location.search
+        target.searchParams.set('token', studio[2])
+        window.location.replace(target.toString())
+        return
+      }
+      sessionStorage.setItem('spaRedirect', window.location.pathname + window.location.search + window.location.hash)
+      window.location.replace('/')
+    })()
   </script>
 </head>
 <body></body>

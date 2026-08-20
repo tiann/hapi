@@ -405,6 +405,17 @@ function AppInner() {
         enabled: sseEnabled && Boolean(sessionEventSubscription)
     })
 
+    // Public studio links intentionally do not require a HAPI login token.
+    // Keep this route outside the authenticated shell; the public API only
+    // exposes a redacted transcript and the studio's own guest post endpoint.
+    if (pathname.startsWith('/studio/')) {
+        return (
+            <div className="h-full min-h-0 flex flex-col">
+                <Outlet />
+            </div>
+        )
+    }
+
     // Loading auth source
     if (isAuthSourceLoading) {
         return withPwaBanner(

@@ -15,7 +15,7 @@ function spaFallback(): Plugin {
                     next()
                     return
                 }
-                req.url = '/index.html'
+                req.url = url.startsWith('/studio/') ? '/studio.html' : '/index.html'
                 next()
             })
         }

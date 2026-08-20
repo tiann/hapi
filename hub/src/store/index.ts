@@ -12,6 +12,7 @@ import { ScratchlistStore } from './scratchlistStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 import { UsageStore } from './usageStore'
+import { StudioStore } from './studioStore'
 import { WorkGraphStore } from './workGraphStore'
 
 export type {
@@ -24,6 +25,11 @@ export type {
     StoredScratchlistEntry,
     StoredSession,
     StoredUser,
+    StoredStudioRoom,
+    StoredStudioPost,
+    StudioAccessMode,
+    StudioPostKind,
+    StudioPostStatus,
     VersionedUpdateResult
 } from './types'
 export type { CancelQueuedMessageResult, LookupQueuedMessageResult } from './messages'
@@ -35,6 +41,7 @@ export { ScratchlistStore } from './scratchlistStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { UsageStore } from './usageStore'
+export { StudioStore } from './studioStore'
 export { WorkGraphStore } from './workGraphStore'
 export {
     WorkGraphNotFoundError,
@@ -42,7 +49,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 25
+const SCHEMA_VERSION: number = 26
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -55,7 +62,9 @@ const REQUIRED_TABLES = [
     'usage_events',
     'usage_scan_state',
     'events',
-    'event_links'
+    'event_links',
+    'studio_rooms',
+    'studio_posts'
 ] as const
 
 export class Store {
@@ -71,6 +80,7 @@ export class Store {
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
     readonly usage: UsageStore
+    readonly studios: StudioStore
     readonly workGraph: WorkGraphStore
 
     /**
@@ -125,6 +135,7 @@ export class Store {
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
         this.usage = new UsageStore(this.db)
+        this.studios = new StudioStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
     }
 
@@ -347,6 +358,7 @@ export class Store {
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
         })
 
         if (currentVersion === 0) {
@@ -591,6 +603,37 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+
+            CREATE TABLE IF NOT EXISTS studio_rooms (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL UNIQUE,
+                namespace TEXT NOT NULL,
+                title TEXT NOT NULL,
+                share_token TEXT NOT NULL UNIQUE,
+                access_mode TEXT NOT NULL CHECK (access_mode IN ('view', 'contribute')),
+                status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_studio_rooms_namespace
+                ON studio_rooms(namespace, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS studio_posts (
+                id TEXT PRIMARY KEY,
+                room_id TEXT NOT NULL,
+                guest_id TEXT NOT NULL,
+                author_name TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('discussion', 'suggestion')),
+                text TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'dismissed')),
+                created_at INTEGER NOT NULL,
+                decided_at INTEGER,
+                submitted_text TEXT,
+                FOREIGN KEY (room_id) REFERENCES studio_rooms(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_studio_posts_room_created
+                ON studio_posts(room_id, created_at ASC);
         `)
     }
 
@@ -975,6 +1018,41 @@ export class Store {
         if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
             this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
         }
+    }
+
+    /** v25->v26: add shared Agent Studio rooms and guest posts. */
+    private migrateFromV25ToV26(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS studio_rooms (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL UNIQUE,
+                namespace TEXT NOT NULL,
+                title TEXT NOT NULL,
+                share_token TEXT NOT NULL UNIQUE,
+                access_mode TEXT NOT NULL CHECK (access_mode IN ('view', 'contribute')),
+                status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_studio_rooms_namespace
+                ON studio_rooms(namespace, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS studio_posts (
+                id TEXT PRIMARY KEY,
+                room_id TEXT NOT NULL,
+                guest_id TEXT NOT NULL,
+                author_name TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('discussion', 'suggestion')),
+                text TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'dismissed')),
+                created_at INTEGER NOT NULL,
+                decided_at INTEGER,
+                submitted_text TEXT,
+                FOREIGN KEY (room_id) REFERENCES studio_rooms(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_studio_posts_room_created
+                ON studio_posts(room_id, created_at ASC);
+        `)
     }
 
     /**
