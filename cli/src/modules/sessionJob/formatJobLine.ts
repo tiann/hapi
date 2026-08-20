@@ -6,7 +6,8 @@ import { stripVTControlCharacters } from 'node:util'
  * OSC clipboard / title escapes into agent or operator terminals.
  */
 export function terminalText(value: string): string {
-    return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f]/g, ' ')
+    // stripVT removes ESC-based VT; also scrub C0 + DEL + C1 (incl. 8-bit OSC/ST).
+    return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
 }
 
 export type FormatJobLineJob = {

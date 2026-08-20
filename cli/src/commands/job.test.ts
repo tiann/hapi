@@ -207,14 +207,14 @@ describe('formatJobLine terminal sanitization', () => {
             label: '\u001b[31mimport\u001b[0m',
             status: 'running',
             unit: 'tracks\u001b]8;;http://evil\u0007',
-            detail: 'phase\u001b]52;c;QUFB\u0007done',
+            detail: 'phase\u001b]52;c;QUFB\u0007done\u009devil\u009c',
             runId: 'run-\u001b[1mid\u001b[0m',
             remaining: 3,
             heartbeatAt: Date.now() - 5_000,
             startedAt: Date.now() - 60_000
         }, { includeTiming: true })
         expect(line).not.toMatch(/\u001b/)
-        expect(line).not.toMatch(/[\u0000-\u001f\u007f]/)
+        expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
         expect(line).toContain('beets')
         expect(line).toContain('import')
         expect(line).toContain('3 tracks left')
@@ -223,5 +223,6 @@ describe('formatJobLine terminal sanitization', () => {
         expect(line).toContain('runId run-id')
         expect(line).not.toMatch(/http:\/\/evil/)
         expect(line).not.toMatch(/QUFB/)
+        expect(line).not.toMatch(/evil/)
     })
 })
