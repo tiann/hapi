@@ -16,8 +16,10 @@ import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
 
 export type {
+    NativeDevicePlatform,
     StoredMachine,
     StoredMessage,
+    MessageDeliveryState,
     StoredPushSubscription,
     StoredFcmDevice,
     StoredScratchlistEntry,
@@ -42,7 +44,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 24
+const SCHEMA_VERSION: number = 26
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -157,6 +159,47 @@ export class Store {
                 throw new Error('session activity was not persisted after messages-consumed transition')
             }
 
+            return session.updatedAt
+        })()
+    }
+
+    /** Persist a steer delivery state before/after the native request. */
+    recordSteerDeliveryState(
+        sessionId: string,
+        localIds: string[],
+        state: 'queued' | 'dispatching' | 'indeterminate',
+        namespace: string
+    ): boolean {
+        return this.db.transaction(() => {
+            const changes = this.messages.setMessagesDeliveryState(sessionId, localIds, state)
+            const now = Date.now()
+            if (changes > 0) {
+                this.sessions.touchSessionUpdatedAt(sessionId, now, namespace)
+            }
+            const session = this.sessions.getSessionByNamespace(sessionId, namespace)
+            if (!session) {
+                throw new Error('session not found after steer delivery transition')
+            }
+            return changes > 0
+        })()
+    }
+
+    /** Persist an ambiguous agent steer without stamping it delivered. */
+    recordMessagesIndeterminate(
+        sessionId: string,
+        localIds: string[],
+        namespace: string
+    ): number {
+        return this.db.transaction(() => {
+            const changes = this.messages.markMessagesIndeterminate(sessionId, localIds)
+            const now = Date.now()
+            if (changes > 0) {
+                this.sessions.touchSessionUpdatedAt(sessionId, now, namespace)
+            }
+            const session = this.sessions.getSessionByNamespace(sessionId, namespace)
+            if (!session) {
+                throw new Error('session not found after indeterminate transition')
+            }
             return session.updatedAt
         })()
     }
@@ -308,6 +351,8 @@ export class Store {
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
+            24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
         })
 
         if (currentVersion === 0) {
@@ -407,6 +452,7 @@ export class Store {
                 local_id TEXT,
                 invoked_at INTEGER,
                 scheduled_at INTEGER,
+                delivery_state TEXT NOT NULL DEFAULT 'queued',
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
@@ -451,6 +497,7 @@ export class Store {
                 token TEXT NOT NULL,
                 platform TEXT NOT NULL,
                 device_id TEXT NOT NULL,
+                push_key TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(namespace, device_id, platform)
@@ -987,9 +1034,24 @@ export class Store {
         `)
     }
 
+    /** v23->v24: add the iOS push envelope key. */
     private migrateFromV23ToV24(): void {
-        // Per-namespace notification preferences. Defaults are all-enabled so
-        // existing namespaces keep the pre-preferences behavior.
+        const fcmColumns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
+        if (fcmColumns.length > 0 && !fcmColumns.some((column) => column.name === 'push_key')) {
+            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
+        }
+    }
+
+    /** v24->v25: add durable unknown-delivery state for steers. */
+    private migrateFromV24ToV25(): void {
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
+            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
+        }
+    }
+
+    /** v25->v26: add per-namespace notification preferences. */
+    private migrateFromV25ToV26(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS notification_preferences (
                 namespace TEXT PRIMARY KEY,
