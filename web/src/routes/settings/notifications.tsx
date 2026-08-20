@@ -97,9 +97,11 @@ export default function SettingsNotificationsPage() {
     const [openCopyBlock, setOpenCopyBlock] = useState<CopyKey | null>(null)
 
     const isAdmin = Boolean(token) && getNamespace(token) === 'default'
+    const namespace = getNamespace(token) ?? 'unknown'
+    const preferencesKey = queryKeys.notificationPreferences(namespace)
 
     const query = useQuery({
-        queryKey: queryKeys.notificationPreferences,
+        queryKey: preferencesKey,
         queryFn: async () => {
             if (!api) throw new Error('API unavailable')
             return await api.getNotificationPreferences()
@@ -116,7 +118,7 @@ export default function SettingsNotificationsPage() {
             return await api.updateNotificationPreferences(update)
         },
         onSuccess: (data) => {
-            queryClient.setQueryData(queryKeys.notificationPreferences, data)
+            queryClient.setQueryData(preferencesKey, data)
             setSaveError(null)
         },
         onError: () => {

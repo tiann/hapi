@@ -136,7 +136,7 @@ describe('SettingsNotificationsPage', () => {
             resolveSecond({ ...defaultPrefs, sessionReady: 0, taskNotifications: 0 })
         })
         await waitFor(() => {
-            expect(queryClient.getQueryData(queryKeys.notificationPreferences)).toMatchObject({
+            expect(queryClient.getQueryData(queryKeys.notificationPreferences('default'))).toMatchObject({
                 sessionReady: 0,
                 taskNotifications: 0,
             })
