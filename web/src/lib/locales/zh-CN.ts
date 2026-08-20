@@ -1152,6 +1152,7 @@ export default {
   'studio.guest.name': '你的称呼',
   'studio.guest.placeholder.discussion': '发表讨论…',
   'studio.guest.placeholder.suggestion': '建议下一步做什么…',
+  'studio.guest.suggestionHint': '建议会先交给主持人确认，确认后再发送到当前会话。',
   'studio.guest.send': '发送',
   'studio.guest.sending': '发送中…',
   'studio.guest.postFailed': '发送失败',

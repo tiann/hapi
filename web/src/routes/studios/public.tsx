@@ -39,7 +39,7 @@ function PublicStudioRoom(props: { shareToken: string; apiOrigin: string }) {
     const queryClient = useQueryClient()
     const [guestId] = useState(getGuestId)
     const [authorName, setAuthorName] = useState(() => localStorage.getItem(GUEST_NAME_KEY) ?? '')
-    const [kind, setKind] = useState<StudioPostKind>('discussion')
+    const [kind, setKind] = useState<StudioPostKind>('suggestion')
     const [text, setText] = useState('')
     const [postError, setPostError] = useState<string | null>(null)
     const [mobileTab, setMobileTab] = useState<'conversation' | 'discussion'>('conversation')
@@ -124,7 +124,7 @@ function PublicStudioRoom(props: { shareToken: string; apiOrigin: string }) {
 
             <main className="min-h-0 flex-1 overflow-hidden">
                 <div className="mx-auto grid h-full max-w-[72rem] grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[minmax(0,1fr)_20rem]">
-                    <section className={`${mobileTab === 'conversation' ? 'block' : 'hidden'} app-scroll-y min-h-0 md:block md:border-r`}>
+                    <section className={`${mobileTab === 'conversation' ? 'block' : 'hidden'} app-scroll-y min-h-0 overscroll-contain md:block md:border-r`}>
                         <div className="mx-auto max-w-[52rem] space-y-4 px-3 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:px-5">
                             {messages.map((message) => (
                                 <div
@@ -144,7 +144,7 @@ function PublicStudioRoom(props: { shareToken: string; apiOrigin: string }) {
                         </div>
                     </section>
 
-                    <aside className={`${mobileTab === 'discussion' ? 'block' : 'hidden'} app-scroll-y min-h-0 md:block`}>
+                    <aside className={`${mobileTab === 'discussion' ? 'block' : 'hidden'} app-scroll-y min-h-0 overscroll-contain md:block md:h-full md:sticky md:top-0`}>
                         <div className="space-y-5 p-3 pb-[calc(5rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(2rem+env(safe-area-inset-bottom))]">
                             <section>
                                 <h2 className="mb-2 text-xs font-semibold uppercase text-[var(--app-hint)]">{t('studio.owner.discussion')}</h2>
@@ -170,7 +170,7 @@ function PublicStudioRoom(props: { shareToken: string; apiOrigin: string }) {
                                         className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] outline-none focus:border-[var(--app-link)]"
                                     />
                                     <div className="inline-flex overflow-hidden rounded-md border border-[var(--app-border)]">
-                                        {(['discussion', 'suggestion'] as const).map((value) => (
+                                        {(['suggestion', 'discussion'] as const).map((value) => (
                                             <button
                                                 key={value}
                                                 type="button"
@@ -181,6 +181,9 @@ function PublicStudioRoom(props: { shareToken: string; apiOrigin: string }) {
                                             </button>
                                         ))}
                                     </div>
+                                    {kind === 'suggestion' ? (
+                                        <div className="text-xs leading-5 text-[var(--app-hint)]">{t('studio.guest.suggestionHint')}</div>
+                                    ) : null}
                                     <textarea
                                         value={text}
                                         onChange={(event) => setText(event.target.value)}

@@ -1153,6 +1153,7 @@ export default {
   'studio.guest.name': 'Your name',
   'studio.guest.placeholder.discussion': 'Add a comment…',
   'studio.guest.placeholder.suggestion': 'Suggest the next step…',
+  'studio.guest.suggestionHint': 'Suggestions go to the host for confirmation before they are sent to the session.',
   'studio.guest.send': 'Post',
   'studio.guest.sending': 'Posting…',
   'studio.guest.postFailed': 'Could not post',

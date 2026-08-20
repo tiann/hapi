@@ -27,6 +27,7 @@ type Copy = {
     send: string
     sending: string
     postFailed: string
+    suggestionHint: string
     expand: string
     collapse: string
     jumpToLatest: string
@@ -38,14 +39,14 @@ const COPY: Record<Locale, Copy> = {
         loading: 'Loading studio…', notFound: 'This studio is unavailable or its link was revoked.', owner: 'Host', agent: 'Agent',
         discussion: 'Discussion', conversation: 'Conversation', emptyDiscussion: 'No discussion yet.', name: 'Your name',
         discuss: 'Discuss', suggest: 'Suggest', discussionPlaceholder: 'Add a comment…', suggestionPlaceholder: 'Suggest the next step…',
-        send: 'Post', sending: 'Posting…', postFailed: 'Could not post', expand: 'Show more', collapse: 'Show less',
+        send: 'Post', sending: 'Posting…', postFailed: 'Could not post', suggestionHint: 'Suggestions go to the host for confirmation before they are sent to the session.', expand: 'Show more', collapse: 'Show less',
         jumpToLatest: 'Jump to latest', newMessages: (count) => `${count} new message${count === 1 ? '' : 's'}`
     },
     'zh-CN': {
         loading: '正在加载工作室…', notFound: '工作室不可用，或分享链接已撤销。', owner: '主持人', agent: 'Agent',
         discussion: '讨论', conversation: '对话', emptyDiscussion: '暂时没有讨论。', name: '你的称呼',
         discuss: '讨论', suggest: '建议', discussionPlaceholder: '发表讨论…', suggestionPlaceholder: '建议下一步做什么…',
-        send: '发送', sending: '发送中…', postFailed: '发送失败', expand: '展开全文', collapse: '收起',
+        send: '发送', sending: '发送中…', postFailed: '发送失败', suggestionHint: '建议会先交给主持人确认，确认后再发送到当前会话。', expand: '展开全文', collapse: '收起',
         jumpToLatest: '回到底部', newMessages: (count) => `${count} 条新消息`
     }
 }
@@ -117,7 +118,7 @@ function StudioPage() {
     const [tab, setTab] = useState<'conversation' | 'discussion'>('conversation')
     const [guestId] = useState(getGuestId)
     const [authorName, setAuthorName] = useState(() => localStorage.getItem(GUEST_NAME_KEY) ?? '')
-    const [kind, setKind] = useState<StudioPostKind>('discussion')
+    const [kind, setKind] = useState<StudioPostKind>('suggestion')
     const [text, setText] = useState('')
     const [sending, setSending] = useState(false)
     const [postError, setPostError] = useState<string | null>(null)
@@ -290,9 +291,10 @@ function StudioPage() {
                             <div className="studio-form">
                                 <input className="studio-input" value={authorName} maxLength={40} onChange={(event) => setAuthorName(event.target.value)} placeholder={copy.name} />
                                 <div className="studio-kind">
-                                    <button type="button" className={kind === 'discussion' ? 'active' : ''} onClick={() => setKind('discussion')}>{copy.discuss}</button>
                                     <button type="button" className={kind === 'suggestion' ? 'active' : ''} onClick={() => setKind('suggestion')}>{copy.suggest}</button>
+                                    <button type="button" className={kind === 'discussion' ? 'active' : ''} onClick={() => setKind('discussion')}>{copy.discuss}</button>
                                 </div>
+                                {kind === 'suggestion' ? <div className="studio-form-hint">{copy.suggestionHint}</div> : null}
                                 <textarea className="studio-textarea" value={text} maxLength={2000} onChange={(event) => setText(event.target.value)} placeholder={kind === 'discussion' ? copy.discussionPlaceholder : copy.suggestionPlaceholder} />
                                 {postError ? <div className="studio-error">{postError}</div> : null}
                                 <button className="studio-send" type="button" disabled={!authorName.trim() || !text.trim() || sending} onClick={() => void submitPost()}>{sending ? copy.sending : copy.send}</button>
