@@ -838,7 +838,7 @@ export default {
   'settings.display.activeSessionsOnly': '仅显示活跃会话',
   'settings.display.activeSessionsOnly.desc': '在侧边栏隐藏非活跃会话；当前打开的会话仍会保留显示。',
   'settings.display.pinInProgressSessions': '置顶进行中会话',
-  'settings.display.pinInProgressSessions.desc': '将未置顶的已连接会话移到项目文件夹上方的分区：先运行中和待处理，再是安静的活跃会话（已执行完但仍在连接）。全局置顶仍在其上。关闭后全部保留在目录分组中。',
+  'settings.display.pinInProgressSessions.desc': '将未置顶的运行中和待处理会话移到项目目录上方。空闲的活跃会话留在项目目录中，除非开启「置顶活跃会话」。',
   'settings.display.pinActiveSessions': '置顶活跃会话',
   'settings.display.pinActiveSessions.desc': '将所有仍连接的会话移到顶部，包括当前空闲的活跃会话。',
   'settings.display.sessionListStatus': '会话列表状态提示',

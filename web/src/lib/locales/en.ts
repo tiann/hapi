@@ -839,7 +839,7 @@ export default {
   'settings.display.activeSessionsOnly': 'Active sessions only',
   'settings.display.activeSessionsOnly.desc': 'Hide inactive sessions in the sidebar. The session you have open stays visible.',
   'settings.display.pinInProgressSessions': 'Pin in-progress sessions',
-  'settings.display.pinInProgressSessions.desc': 'Move unpinned connected sessions into sections above project folders: running and pending work first, then quiet active sessions (finished executing, still connected). Global pins remain above them. Off keeps everything in directory groups.',
+  'settings.display.pinInProgressSessions.desc': 'Move unpinned working and pending sessions into sections above project folders. Quiet active sessions stay in their project folders unless Pin active sessions is enabled.',
   'settings.display.pinActiveSessions': 'Pin active sessions',
   'settings.display.pinActiveSessions.desc': 'Move all connected sessions to the top, including sessions that are currently idle.',
   'settings.display.sessionListStatus': 'Session list status hints',
