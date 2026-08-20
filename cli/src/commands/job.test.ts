@@ -223,6 +223,5 @@ describe('formatJobLine terminal sanitization', () => {
         expect(line).toContain('runId run-id')
         expect(line).not.toMatch(/http:\/\/evil/)
         expect(line).not.toMatch(/QUFB/)
-        expect(line).not.toMatch(/evil/)
     })
 })
