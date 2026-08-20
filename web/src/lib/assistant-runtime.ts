@@ -10,7 +10,7 @@ import {
 } from '@/lib/messageDelivery'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
-import type { ChatBlock, CliOutputBlock, CodexReview, UsageData } from '@/chat/types'
+import type { ChatBlock, CliOutputBlock, CodexReview, RoundSummary, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import { visibleBlockRole } from '@/chat/toolGroups'
@@ -27,6 +27,7 @@ export type AggregatedAssistantMeta = {
     invokedAt: number | null
     durationMs: undefined
     turnCount: number
+    roundSummary?: RoundSummary
 }
 
 export type HappyChatMessageMetadata = {
@@ -43,6 +44,7 @@ export type HappyChatMessageMetadata = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     review?: CodexReview
     /**
      * Distinct turn count when this block carries an aggregated response
@@ -256,16 +258,18 @@ export function aggregateResponseGroups(
     let groupInvokedAt: number | null = null
     let groupUsage: UsageData | undefined
     let groupTurnCount = 0
+    let groupRoundSummary: RoundSummary | undefined
 
     const flush = () => {
-        if (groupFirstBlockId !== null && groupTurnCount >= 2) {
+        if (groupFirstBlockId !== null && (groupTurnCount >= 2 || groupRoundSummary)) {
             const joinedModel = seenModels.length > 0 ? seenModels.join(', ') : null
             aggregates.set(groupFirstBlockId, {
                 usage: groupUsage,
                 model: joinedModel,
                 invokedAt: groupInvokedAt,
                 durationMs: undefined,
-                turnCount: groupTurnCount
+                turnCount: groupTurnCount,
+                roundSummary: groupRoundSummary
             })
         }
         groupFirstBlockId = null
@@ -274,6 +278,7 @@ export function aggregateResponseGroups(
         groupInvokedAt = null
         groupUsage = undefined
         groupTurnCount = 0
+        groupRoundSummary = undefined
     }
 
     for (const block of blocks) {
@@ -287,6 +292,13 @@ export function aggregateResponseGroups(
         if (groupFirstBlockId === null) {
             groupFirstBlockId = block.id
         }
+
+        const roundSummary = block.kind === 'tool-group'
+            ? block.roundSummary
+            : block.kind === 'user-text' || block.kind === 'agent-event'
+                ? undefined
+                : block.roundSummary
+        groupRoundSummary ??= roundSummary
 
         for (const turn of turnSourcesFromBlock(block)) {
             // Prefer the CLI-stamped `localId` when present. When it is null
@@ -890,7 +902,8 @@ export function useHappyRuntime(props: {
                         model: aggregate.model,
                         invokedAt: aggregate.invokedAt,
                         durationMs: aggregate.durationMs,
-                        turnCount: aggregate.turnCount
+                        turnCount: aggregate.turnCount,
+                        roundSummary: aggregate.roundSummary
                     } satisfies HappyChatMessageMetadata
                 }
             }

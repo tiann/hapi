@@ -14,6 +14,21 @@ export type UsageData = {
     service_tier?: string
 }
 
+export type RoundModelUsage = {
+    inputTokens?: number
+    outputTokens?: number
+    cacheReadInputTokens?: number
+    cacheCreationInputTokens?: number
+}
+
+export type RoundSummary = {
+    usage?: UsageData
+    modelUsage: Record<string, RoundModelUsage>
+    totalCostUsd?: number
+    numTurns?: number
+    durationMs?: number
+}
+
 export type AgentEvent =
     | { type: 'switch'; mode: 'local' | 'remote' }
     | { type: 'message'; message: string }
@@ -24,6 +39,7 @@ export type AgentEvent =
     | { type: 'ready' }
     | { type: 'api-error'; retryAttempt: number; maxRetries: number; error: unknown }
     | { type: 'turn-duration'; durationMs: number; targetMessageId?: string }
+    | { type: 'turn-summary'; summary: RoundSummary }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
     | { type: 'compact'; trigger: string; preTokens: number }
     // Structured result of Pi's compact RPC; rendered as a dedicated chat block.
@@ -222,6 +238,7 @@ export type AgentTextBlock = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     text: string
     meta?: unknown
 }
@@ -235,6 +252,7 @@ export type AgentReasoningBlock = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     text: string
     meta?: unknown
 }
@@ -248,6 +266,7 @@ export type CodexReviewBlock = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     review: CodexReview
     meta?: unknown
 }
@@ -261,6 +280,7 @@ export type CliOutputBlock = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     text: string
     source: 'user' | 'assistant'
     meta?: unknown
@@ -276,6 +296,7 @@ export type GeneratedImageBlock = {
     fileName: string
     mimeType: string | null
     source?: InlineMediaSource
+    roundSummary?: RoundSummary
     meta?: unknown
 }
 
@@ -298,6 +319,7 @@ export type ToolCallBlock = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     tool: ChatToolCall
     children: ChatBlock[]
     meta?: unknown
