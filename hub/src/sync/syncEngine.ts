@@ -60,6 +60,7 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { SessionReaper } from './reaper'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -177,6 +178,7 @@ export class SyncEngine {
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
     private readonly rpcGateway: RpcGateway
+    private readonly reaper: SessionReaper
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
@@ -221,6 +223,29 @@ export class SyncEngine {
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
+        // hub reaper: clears sessions whose CLI connection dropped without a
+        // chance to archive on exit (SIGHUP/SIGKILL, hub-restart cascades).
+        // Disabled by default (see reaper.ts's class doc comment on why a
+        // dropped connection alone isn't proof the CLI process is dead) - an
+        // operator opts in with `HAPI_REAPER_INTERVAL_MS`, and start() below
+        // is then a no-op until that env var is set. When enabled, start()
+        // sweeps once synchronously to arm the timer, but under the
+        // hub-downtime floor (see SessionReaper's class doc comment in
+        // reaper.ts) that first sweep never archives anything - it can only
+        // measure disconnect duration from the hub's own just-captured start
+        // instant, so every session looks age-zero. A genuine pre-existing
+        // zombie (CLI never reconnects) is still caught, by the first
+        // periodic sweep landing after `hub start + staleMs`, not by this
+        // synchronous one.
+        this.reaper = new SessionReaper(this.sessionCache, {
+            onReap: (sessionId) => {
+                console.warn('[hub-reaper] archived stale session', { sessionId })
+            },
+            onError: (sessionId, error) => {
+                console.error('[hub-reaper] failed to archive stale session', { sessionId, error })
+            }
+        })
+        this.reaper.start()
     }
 
     setHubOwnerUserId(ownerUserId: string | number): void {
@@ -232,6 +257,7 @@ export class SyncEngine {
             clearInterval(this.inactivityTimer)
             this.inactivityTimer = null
         }
+        this.reaper.stop()
     }
 
     subscribe(listener: SyncEventListener): () => void {
