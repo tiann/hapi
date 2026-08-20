@@ -627,7 +627,11 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 // A FAILURE envelope proves the prompt ran but the
                                 // turn failed; surface it (exit code may still be 0).
                                 if (event.status !== 'SUCCESS') {
-                                    resultFailure = event.response?.trim()
+                                    // The reason lives in `error`; `response` is the
+                                    // answer field and stays filled on a failed turn,
+                                    // so reading it here repeated the whole answer in
+                                    // the chat as if it were the failure text.
+                                    resultFailure = event.error?.trim()
                                         || `agy turn failed: ${event.status}`;
                                 } else if (event.response?.trim()) {
                                     const response = event.response.trim();
