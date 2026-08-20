@@ -50,6 +50,18 @@ export type AcpStderrError = {
     raw: string;
 };
 
+export class AcpRpcResponseError extends Error {
+    readonly code: number;
+    readonly data?: unknown;
+
+    constructor(message: string, options: { code: number; data?: unknown }) {
+        super(message);
+        this.name = 'AcpRpcResponseError';
+        this.code = options.code;
+        this.data = options.data;
+    }
+}
+
 /** @internal Exported for regression tests. */
 export function buildAcpStdioSpawnOptions(env?: Record<string, string>): SpawnOptions {
     return {
@@ -244,10 +256,19 @@ export class AcpStdioTransport {
     static readonly DEFAULT_TIMEOUT_MS = 120_000;
 
     async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown> {
+        const request = this.sendRequestWithDispatch(method, params, options);
+        void request.dispatched.catch(() => {});
+        return request.completed;
+    }
+
+    sendRequestWithDispatch(
+        method: string,
+        params?: unknown,
+        options?: { timeoutMs?: number }
+    ): { dispatched: Promise<void>; completed: Promise<unknown> } {
         if (this.closed || this.exited) {
-            return Promise.reject(
-                this.closeError ?? this.exitError ?? new Error('ACP transport is closed')
-            );
+            const error = this.closeError ?? this.exitError ?? new Error('ACP transport is closed');
+            return { dispatched: Promise.reject(error), completed: Promise.reject(error) };
         }
 
         const id = this.nextId++;
@@ -260,36 +281,54 @@ export class AcpStdioTransport {
 
         const timeoutMs = options?.timeoutMs ?? AcpStdioTransport.DEFAULT_TIMEOUT_MS;
 
-        // Skip timeout for infinite/no-timeout requests (e.g., long-running prompts)
-        if (!Number.isFinite(timeoutMs)) {
-            return new Promise<unknown>((resolve, reject) => {
-                this.pending.set(id, { resolve, reject });
-                this.writePayload(payload);
-            });
-        }
-
-        return new Promise<unknown>((resolve, reject) => {
-            const timer = setTimeout(() => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let resolveCompleted!: (value: unknown) => void;
+        let rejectCompleted!: (error: Error) => void;
+        const completed = new Promise<unknown>((resolve, reject) => {
+            resolveCompleted = resolve;
+            rejectCompleted = reject;
+        });
+        if (Number.isFinite(timeoutMs)) {
+            timer = setTimeout(() => {
                 if (this.pending.has(id)) {
                     this.pending.delete(id);
-                    reject(new Error(`ACP request '${method}' timed out after ${timeoutMs}ms`));
+                    rejectCompleted(new Error(`ACP request '${method}' timed out after ${timeoutMs}ms`));
                 }
             }, timeoutMs);
-            // Don't let timer keep Node alive if process wants to exit
             timer.unref();
+        }
 
-            this.pending.set(id, {
-                resolve: (value) => {
-                    clearTimeout(timer);
-                    resolve(value);
-                },
-                reject: (error) => {
-                    clearTimeout(timer);
-                    reject(error);
-                }
-            });
-            this.writePayload(payload);
+        this.pending.set(id, {
+            resolve: (value) => {
+                if (timer) clearTimeout(timer);
+                resolveCompleted(value);
+            },
+            reject: (error) => {
+                if (timer) clearTimeout(timer);
+                rejectCompleted(error);
+            }
         });
+
+        const dispatched = new Promise<void>((resolve, reject) => {
+            try {
+                const serialized = JSON.stringify(payload);
+                this.process.stdin.write(`${serialized}\n`, (error) => {
+                    if (error) {
+                        const writeError = error instanceof Error ? error : new Error(String(error));
+                        this.markClosed(writeError);
+                        reject(writeError);
+                        return;
+                    }
+                    resolve();
+                });
+            } catch (error) {
+                const writeError = error instanceof Error ? error : new Error(String(error));
+                this.markClosed(writeError);
+                reject(writeError);
+            }
+        });
+
+        return { dispatched, completed };
     }
 
     sendNotification(method: string, params?: unknown): void {
@@ -443,7 +482,10 @@ export class AcpStdioTransport {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            pending.reject(new AcpRpcResponseError(response.error.message, {
+                code: response.error.code,
+                data: response.error.data
+            }));
             return;
         }
 
