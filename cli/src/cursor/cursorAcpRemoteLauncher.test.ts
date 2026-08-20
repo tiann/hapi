@@ -287,7 +287,6 @@ import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
@@ -341,8 +340,7 @@ function makeClient() {
         setSteerDeliveryState: vi.fn(async () => true),
         sendClaudeSessionMessage: vi.fn(),
         keepAlive: vi.fn(),
-        emitSessionReady: vi.fn(),
-        emitMessagesConsumed: vi.fn()
+        emitSessionReady: vi.fn()
     } as unknown as ApiSessionClient;
 }
 
@@ -357,7 +355,6 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.loadSessionCalled = false;
         harness.newSessionAttempts = 0;
         harness.newSessionCalled = false;
-        harness.newSessionAttempts = 0;
         harness.promptCalls = 0;
         harness.prompts = [];
         harness.deferPrompt = null;
@@ -407,7 +404,7 @@ describe('cursorAcpRemoteLauncher', () => {
         // Soft-steer completion never settles — simulates Cursor keeping the
         // concurrent request open after an ordinary Abort.
         harness.deferSoftSteer = new Promise(() => {});
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -434,7 +431,7 @@ describe('cursorAcpRemoteLauncher', () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.softSteerDispatchError = new Error('stdin closed');
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -461,7 +458,7 @@ describe('cursorAcpRemoteLauncher', () => {
         let rejectSoftSteer!: (error: Error) => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteer = new Promise((_, reject) => { rejectSoftSteer = reject; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -493,7 +490,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.deferSoftSteer = new Promise((_, reject) => { rejectSoftSteer = reject; });
         const indeterminate = new Error('ACP transport closed');
         Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -523,7 +520,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const indeterminate = new Error('ACP write callback failed');
         Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
         harness.softSteerDispatchError = indeterminate;
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -550,7 +547,7 @@ describe('cursorAcpRemoteLauncher', () => {
         let releaseDispatch!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -581,7 +578,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
         harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -614,7 +611,7 @@ describe('cursorAcpRemoteLauncher', () => {
         let releaseDispatch!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -647,7 +644,7 @@ describe('cursorAcpRemoteLauncher', () => {
         // Completion never resolves — simulates Cursor keeping the concurrent
         // request open past Exit/Switch.
         harness.deferSoftSteer = new Promise(() => {});
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
