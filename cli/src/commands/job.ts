@@ -1,5 +1,4 @@
 import chalk from 'chalk'
-import { stripVTControlCharacters } from 'node:util'
 import { initializeToken } from '@/ui/tokenInit'
 import type { AttachedJobPatch, AttachedJobUpsert } from '@hapi/protocol'
 import {
@@ -12,8 +11,11 @@ import {
     setSessionJob,
     updateSessionJob
 } from '@/modules/sessionJob/sessionJob'
+import { formatJobLine } from '@/modules/sessionJob/formatJobLine'
 import { runSessionJob } from '@/modules/sessionJob/runSessionJob'
 import type { CommandDefinition } from './types'
+
+export { formatJobLine, terminalText } from '@/modules/sessionJob/formatJobLine'
 
 export type ParsedJobArgs = {
     help: boolean
@@ -330,16 +332,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
     return result
 }
 
-/**
- * Job fields can carry agent- or repo-supplied text. Strip VT/ANSI and remaining
- * C0 controls before printing so `hapi job list|set|update` cannot emit OSC
- * clipboard / title escapes into the operator terminal.
- */
-export function terminalText(value: string): string {
-    return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f]/g, ' ')
-}
-
-export function formatJobLine(job: {
+function formatCliJobLine(job: {
     key: string
     label: string
     status: string
@@ -352,32 +345,7 @@ export function formatJobLine(job: {
     heartbeatAt: number
     startedAt: number
 }): string {
-    const unit = job.unit ? ` ${terminalText(job.unit)}` : ''
-    const parts = [terminalText(job.key), terminalText(job.label), terminalText(job.status)]
-    if (job.remaining !== undefined) {
-        parts.push(`${job.remaining}${unit} left`)
-    } else if (job.done !== undefined && job.total !== undefined) {
-        parts.push(`${job.done}/${job.total}${unit}`)
-    }
-    const elapsedSec = Math.max(0, Math.round((Date.now() - job.startedAt) / 1000))
-    if (elapsedSec < 60) {
-        parts.push(`elapsed ${elapsedSec}s`)
-    } else if (elapsedSec < 3600) {
-        parts.push(`elapsed ${Math.floor(elapsedSec / 60)}m`)
-    } else if (elapsedSec < 86400) {
-        const h = Math.floor(elapsedSec / 3600)
-        const m = Math.floor((elapsedSec % 3600) / 60)
-        parts.push(m > 0 ? `elapsed ${h}h ${m}m` : `elapsed ${h}h`)
-    } else {
-        const d = Math.floor(elapsedSec / 86400)
-        const h = Math.floor((elapsedSec % 86400) / 3600)
-        parts.push(h > 0 ? `elapsed ${d}d ${h}h` : `elapsed ${d}d`)
-    }
-    if (job.detail) parts.push(terminalText(job.detail))
-    if (job.runId) parts.push(`runId ${terminalText(job.runId)}`)
-    const ageSec = Math.max(0, Math.round((Date.now() - job.heartbeatAt) / 1000))
-    parts.push(`heartbeat ${ageSec}s ago`)
-    return parts.join(' · ')
+    return formatJobLine(job, { includeTiming: true })
 }
 
 export async function handleJobCommand(args: string[]): Promise<void> {
@@ -406,7 +374,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         }
         for (const job of result.jobs) {
             const mark = result.primary?.key === job.key ? '*' : ' '
-            console.log(`${mark} ${formatJobLine(job)}`)
+            console.log(`${mark} ${formatCliJobLine(job)}`)
         }
         return
     }
@@ -454,7 +422,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             jobKey: parsed.jobKey,
             body
         })
-        console.log(`set ${formatJobLine(result.job)}`)
+        console.log(`set ${formatCliJobLine(result.job)}`)
         return
     }
 
@@ -511,7 +479,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         }
         throw error
     }
-    console.log(`updated ${formatJobLine(result.job)}`)
+    console.log(`updated ${formatCliJobLine(result.job)}`)
     if (result.job.status === 'running' && result.job.remaining === 0) {
         console.error(chalk.yellow('hapi job hint:'), SESSION_JOB_REMAINING_ZERO_HINT)
     }

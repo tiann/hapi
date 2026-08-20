@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod'
-import type { AttachedJob, AttachedJobPatch } from '@hapi/protocol'
+import type { AttachedJobPatch } from '@hapi/protocol'
 import {
     SessionJobError,
     SESSION_JOB_RUN_RECIPE,
@@ -18,6 +18,7 @@ import {
     listSessionJobs,
     updateSessionJob
 } from './sessionJob'
+import { formatJobLine } from './formatJobLine'
 
 export const SESSION_JOB_TOOL_NAME = 'session_job'
 
@@ -97,18 +98,6 @@ export type SessionJobToolArgs = {
     detail?: string | null
     expectedRunId?: string
     startedAt?: number
-}
-
-function formatJobLine(job: AttachedJob): string {
-    const parts = [`${job.key}`, job.label, job.status]
-    if (job.remaining !== undefined) {
-        parts.push(`${job.remaining}${job.unit ? ` ${job.unit}` : ''} left`)
-    } else if (job.done !== undefined && job.total !== undefined) {
-        parts.push(`${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''}`)
-    }
-    if (job.detail) parts.push(job.detail)
-    if (job.runId) parts.push(`runId ${job.runId}`)
-    return parts.join(' · ')
 }
 
 function sessionJobMcpMutationFieldsUsed(args: SessionJobToolArgs): boolean {

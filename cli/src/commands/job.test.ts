@@ -212,7 +212,7 @@ describe('formatJobLine terminal sanitization', () => {
             remaining: 3,
             heartbeatAt: Date.now() - 5_000,
             startedAt: Date.now() - 60_000
-        })
+        }, { includeTiming: true })
         expect(line).not.toMatch(/\u001b/)
         expect(line).not.toMatch(/[\u0000-\u001f\u007f]/)
         expect(line).toContain('beets')

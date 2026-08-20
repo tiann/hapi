@@ -164,4 +164,31 @@ describe('sessionJobMcp', () => {
             })
         )
     })
+
+    it('sanitizes ANSI/OSC from MCP update text', async () => {
+        const { updateSessionJob } = await import('./sessionJob')
+        vi.mocked(updateSessionJob).mockResolvedValueOnce({
+            sessionId: 'sid-1',
+            job: {
+                key: 'beets',
+                label: '\u001b[31mimport\u001b[0m',
+                status: 'running',
+                detail: 'phase\u001b]52;c;QUFB\u0007done',
+                remaining: 11,
+                heartbeatAt: 2,
+                startedAt: 1,
+                updatedAt: 2
+            }
+        })
+        const result = await handleSessionJobTool(
+            { action: 'update', jobKey: 'beets', remaining: 11 },
+            'sid-1'
+        )
+        expect(result.isError).toBe(false)
+        expect(result.text).not.toMatch(/\u001b/)
+        expect(result.text).not.toMatch(/[\u0000-\u001f\u007f]/)
+        expect(result.text).toContain('import')
+        expect(result.text).toContain('phase')
+        expect(result.text).not.toMatch(/QUFB/)
+    })
 })
