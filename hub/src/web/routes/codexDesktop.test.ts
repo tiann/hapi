@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
@@ -44,6 +44,18 @@ function createTranscript(codexHome: string, sessionId: string, cwd = 'C:\\work\
         }
     ]
     writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
+}
+
+function appendAssistantResponseItem(codexHome: string, sessionId: string, text: string): void {
+    const transcriptPath = join(codexHome, 'sessions', '2026', '06', '04', `rollout-${sessionId}.jsonl`)
+    appendFileSync(transcriptPath, `${JSON.stringify({
+        type: 'response_item',
+        payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text }]
+        }
+    })}\n`, 'utf-8')
 }
 
 function createMirroredTranscript(codexHome: string, sessionId: string): void {
@@ -472,6 +484,260 @@ describe('Codex Desktop import routes', () => {
                 codexSessionId: 'fork-session-id',
                 codexSourceSessionId: codexSessionId
             })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('allows appending Codex transcript messages to an active but idle Hapi session', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-active-idle-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '17171717-1717-4717-8717-171717171717'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            store.sessions.setSessionActive(imported.id, true, Date.now(), 'default')
+            appendAssistantResponseItem(codexHome, codexSessionId, 'new desktop assistant message')
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(second.success).toBe(true)
+            expect(second.hapiSessionIds).toEqual([imported.id])
+            const messages = store.messages.getAllMessages(imported.id)
+            expect(messages).toHaveLength(3)
+            expect(messages[2]?.content).toEqual({
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'message',
+                        message: 'new desktop assistant message',
+                        id: expect.any(String)
+                    }
+                },
+                meta: {
+                    sentFrom: 'cli'
+                }
+            })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('rejects appending Codex transcript messages while the target Hapi session is thinking', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-thinking-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '18181818-1818-4818-8818-181818181818'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            store.sessions.setSessionActive(imported.id, true, Date.now(), 'default')
+            appendAssistantResponseItem(codexHome, codexSessionId, 'new desktop assistant message')
+            const engine = {
+                getOnlineMachinesByNamespace: () => [],
+                handleRealtimeEvent: () => {},
+                getSessionsByNamespace: () => [{
+                    ...store.sessions.getSession(imported.id),
+                    active: true,
+                    thinking: true,
+                    thinkingAt: Date.now(),
+                    backgroundTaskCount: 0
+                }]
+            } as unknown as SyncEngine
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            if (second.success) {
+                throw new Error('Expected thinking session sync to fail')
+            }
+            expect(second.error).toContain('停止或归档后再同步')
+            expect(store.messages.getAllMessages(imported.id)).toHaveLength(2)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('rejects appending Codex transcript messages while the target Hapi session has background work', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-background-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '19191919-1919-4919-8919-191919191919'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            appendAssistantResponseItem(codexHome, codexSessionId, 'new desktop assistant message')
+            const engine = {
+                getOnlineMachinesByNamespace: () => [],
+                handleRealtimeEvent: () => {},
+                getSessionsByNamespace: () => [{
+                    ...store.sessions.getSession(imported.id),
+                    active: true,
+                    thinking: false,
+                    thinkingAt: Date.now(),
+                    backgroundTaskCount: 1
+                }]
+            } as unknown as SyncEngine
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            if (second.success) {
+                throw new Error('Expected background work session sync to fail')
+            }
+            expect(second.error).toContain('停止或归档后再同步')
+            expect(store.messages.getAllMessages(imported.id)).toHaveLength(2)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('rejects appending Codex transcript messages while the target Hapi session has queued local messages', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-queued-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '20202020-2020-4020-8020-202020202020'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            store.messages.addMessage(imported.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'queued local prompt'
+                },
+                meta: {
+                    sentFrom: 'user'
+                }
+            }, 'queued-local-id')
+            appendAssistantResponseItem(codexHome, codexSessionId, 'new desktop assistant message')
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            if (second.success) {
+                throw new Error('Expected queued local message session sync to fail')
+            }
+            expect(second.error).toContain('停止或归档后再同步')
+            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+            expect(store.messages.getAllMessages(imported.id)).toHaveLength(3)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('does not let a busy duplicate Codex session block an idle matching import target', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-busy-duplicate-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '21212121-2121-4121-8121-212121212121'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const idleTarget = store.sessions.getSessionsByNamespace('default')[0]
+            expect(idleTarget).toBeDefined()
+            const busyDuplicate = store.sessions.getOrCreateSession('busy-duplicate-session', {
+                path: 'C:/work/project',
+                flavor: 'codex',
+                codexSessionId,
+                codexSourceSessionId: codexSessionId
+            }, {}, 'default')
+            store.messages.addMessage(busyDuplicate.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'queued duplicate prompt'
+                },
+                meta: {
+                    sentFrom: 'user'
+                }
+            }, 'busy-duplicate-queued-local-id')
+            appendAssistantResponseItem(codexHome, codexSessionId, 'new desktop assistant message')
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(second.success).toBe(true)
+            expect(second.hapiSessionIds).toEqual([idleTarget.id])
+            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(2)
+            expect(store.messages.getAllMessages(idleTarget.id)).toHaveLength(3)
+            expect(store.messages.getAllMessages(busyDuplicate.id)).toHaveLength(1)
         } finally {
             store.close()
             rmSync(codexHome, { recursive: true, force: true })

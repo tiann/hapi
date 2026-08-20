@@ -117,6 +117,8 @@ type RemoteCodexSession = CodexTranscriptImportData
 type ImportCandidate = {
     sessionId: string
     active: boolean
+    thinking: boolean
+    backgroundTaskCount: number
     updatedAt: number
     metadata: Record<string, unknown> | null
     persisted: boolean
@@ -1108,6 +1110,8 @@ function collectImportCandidates(
         candidatesBySessionId.set(session.id, {
             sessionId: session.id,
             active: session.active,
+            thinking: false,
+            backgroundTaskCount: 0,
             updatedAt: session.updatedAt,
             metadata: asRecord(session.metadata),
             persisted: true
@@ -1120,6 +1124,8 @@ function collectImportCandidates(
         candidatesBySessionId.set(session.id, {
             sessionId: session.id,
             active: session.active || Boolean(existing?.active),
+            thinking: session.thinking || Boolean(existing?.thinking),
+            backgroundTaskCount: Math.max(session.backgroundTaskCount ?? 0, existing?.backgroundTaskCount ?? 0),
             updatedAt: Math.max(session.updatedAt, existing?.updatedAt ?? 0),
             metadata: asRecord(session.metadata) ?? existing?.metadata ?? null,
             persisted: Boolean(existing?.persisted)
@@ -1127,6 +1133,30 @@ function collectImportCandidates(
     }
 
     return Array.from(candidatesBySessionId.values())
+}
+
+function isImportTargetBusyForCodexSync(
+    store: Store,
+    candidate: ImportCandidate | undefined
+): boolean {
+    if (!candidate) return false
+    if (candidate.thinking) return true
+    if (candidate.backgroundTaskCount > 0) return true
+    return store.messages.getImmediateQueuedLocalMessages(candidate.sessionId).length > 0
+}
+
+function isImportCandidateForCodexSession(
+    candidate: ImportCandidate,
+    codexSessionId: string,
+    sourceMachineId?: string | null
+): boolean {
+    if (!candidate.persisted || !isImportCandidateReusable(candidate)) return false
+    const matchesCodexSession = candidate.metadata?.codexSessionId === codexSessionId
+        || candidate.metadata?.codexSourceSessionId === codexSessionId
+    if (!matchesCodexSession) return false
+    return !sourceMachineId
+        || typeof candidate.metadata?.machineId !== 'string'
+        || candidate.metadata.machineId === sourceMachineId
 }
 
 function getCodexImportIds(metadata: Record<string, unknown> | null | undefined): string[] {
@@ -1150,16 +1180,7 @@ function selectImportTargetSession(
     sourceMachineId?: string | null
 ): ImportTargetSelection {
     const relatedCandidates = candidates
-        .filter((candidate) => candidate.persisted && isImportCandidateReusable(candidate))
-        .filter((candidate) => (
-            candidate.metadata?.codexSessionId === codexSessionId
-            || candidate.metadata?.codexSourceSessionId === codexSessionId
-        ))
-        .filter((candidate) => (
-            !sourceMachineId
-            || typeof candidate.metadata?.machineId !== 'string'
-            || candidate.metadata.machineId === sourceMachineId
-        ))
+        .filter((candidate) => isImportCandidateForCodexSession(candidate, codexSessionId, sourceMachineId))
         .sort((a, b) => b.updatedAt - a.updatedAt)
 
     let bestSessionId: string | null = null
@@ -2020,6 +2041,17 @@ function importSingleCodexSession(options: {
             importedComparableMessages,
             options.machineId
         )
+        const comparablePrefixCount = target.sessionId ? target.comparablePrefixCount : 0
+        const messagesToAppend = transcript.messages.slice(comparablePrefixCount)
+        const candidateToGuard = target.sessionId
+            ? candidates.find((candidate) => candidate.sessionId === target.sessionId)
+            : candidates.find((candidate) => (
+                isImportCandidateForCodexSession(candidate, options.codexSessionId, options.machineId)
+                && isImportTargetBusyForCodexSync(options.store, candidate)
+            ))
+        if (messagesToAppend.length > 0 && isImportTargetBusyForCodexSync(options.store, candidateToGuard)) {
+            throw new Error('当前会话正在运行且 Codex transcript 有新消息，停止或归档后再同步，避免消息顺序错乱')
+        }
         const engine = options.getSyncEngine?.() ?? null
         const existingStored = target.sessionId ? options.store.sessions.getSessionByNamespace(target.sessionId, options.namespace) : null
         const metadata = buildImportedSessionMetadata(
@@ -2067,12 +2099,6 @@ function importSingleCodexSession(options: {
             throw new Error(`Failed to determine target Hapi session for Codex thread: ${options.codexSessionId}`)
         }
 
-        const comparablePrefixCount = sessionId ? target.comparablePrefixCount : 0
-        const messagesToAppend = transcript.messages.slice(comparablePrefixCount)
-        const targetIsActive = Boolean(candidates.find((candidate) => candidate.sessionId === sessionId)?.active)
-        if (targetIsActive && messagesToAppend.length > 0) {
-            throw new Error('当前会话正在运行且 Codex transcript 有新消息，停止或归档后再同步，避免消息顺序错乱')
-        }
         const appendedMessages = messagesToAppend.map((message) => options.store.messages.addMessage(sessionId!, message))
 
         // 中文注释：更新 Hapi 会话的 updatedAt，并在已有会话追加时广播新增消息，让当前打开的聊天页立刻显示客户端新增内容。
