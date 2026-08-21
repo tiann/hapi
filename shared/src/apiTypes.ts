@@ -809,6 +809,18 @@ export type OpencodeReasoningEffortResponse = {
     error?: string
 }
 
+export type SessionReasoningEffortOption = {
+    value: string
+    name?: string
+}
+
+export type SessionReasoningEffortResponse = {
+    success: boolean
+    options?: SessionReasoningEffortOption[]
+    currentValue?: string | null
+    error?: string
+}
+
 export type AgyModelSummary = {
     modelId: string
     name?: string

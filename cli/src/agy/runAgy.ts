@@ -125,12 +125,16 @@ export async function runAgy(opts: {
             rpcHandlerManager: session.rpcHandlerManager,
             flavor: 'agy',
             modelMode: 'nullable',
+            effortMode: 'nullable',
             onApply: async (config) => {
                 if (config.permissionMode !== undefined) {
                     currentPermissionMode = config.permissionMode;
                 }
                 if (config.model !== undefined) {
                     sessionModel = config.model;
+                }
+                if (config.effort !== undefined) {
+                    sessionEffort = config.effort ?? undefined;
                 }
             },
             onAfterApply: syncSessionMode

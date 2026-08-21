@@ -20,6 +20,7 @@ export async function runKimi(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    effort?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
     workingDirectory?: string;
@@ -56,7 +57,8 @@ export async function runKimi(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            model: persistedModel
+            model: persistedModel,
+            effort: opts.effort
         });
     const { api, session } = bootstrap;
 
@@ -67,12 +69,14 @@ export async function runKimi(opts: {
 
     const messageQueue = new MessageQueue2<KimiMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
-        model: mode.model
+        model: mode.model,
+        effort: mode.effort
     }));
 
     const sessionWrapperRef: { current: KimiSession | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = persistedModel ?? null;
+    let sessionEffort: string | null | undefined = opts.effort;
     let resolvedModel = sessionModel ?? machineDefault;
 
     const lifecycle = createRunnerLifecycle({
@@ -92,6 +96,11 @@ export async function runKimi(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+        if (sessionEffort === undefined) {
+            sessionEffort = sessionInstance.getEffort();
+        } else {
+            sessionInstance.setEffort(sessionEffort);
+        }
         sessionInstance.pushKeepAlive();
 
         logger.debug(`[kimi] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${resolvedModel}`);
@@ -101,7 +110,8 @@ export async function runKimi(opts: {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: KimiMode = {
             permissionMode: currentPermissionMode,
-            model: resolvedModel
+            model: resolvedModel,
+            effort: sessionEffort
         };
         messageQueue.push(formattedText, mode, localId);
     });
@@ -134,7 +144,7 @@ export async function runKimi(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
         const applied: Record<string, unknown> = {};
 
         if (config.permissionMode !== undefined) {
@@ -146,6 +156,21 @@ export async function runKimi(opts: {
             sessionModel = resolveModel(config.model);
             resolvedModel = sessionModel ?? machineDefault;
             applied.model = sessionModel;
+        }
+
+        if (config.effort !== undefined) {
+            if (sessionWrapperRef.current?.mode === 'local') {
+                throw new Error('Kimi effort can only be changed for remote sessions');
+            }
+            if (config.effort !== null && (typeof config.effort !== 'string' || config.effort.trim().length === 0)) {
+                throw new Error('Invalid effort');
+            }
+            const activeSession = sessionWrapperRef.current;
+            if (!activeSession) {
+                throw new Error('Kimi remote session is not ready for effort switching');
+            }
+            sessionEffort = await activeSession.applyRemoteEffort(config.effort === null ? null : config.effort.trim());
+            applied.effort = sessionEffort;
         }
 
         syncSessionMode();
@@ -164,11 +189,15 @@ export async function runKimi(opts: {
             api,
             permissionMode: currentPermissionMode,
             model: machineDefault,
+            effort: opts.effort,
             resumeSessionId: opts.resumeSessionId,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
+            },
+            onEffortChange: (effort) => {
+                sessionEffort = effort;
             }
         });
     } catch (error) {

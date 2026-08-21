@@ -65,6 +65,7 @@ function createApp(session: Session, opts?: {
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
+    listSessionReasoningEffortOptionsForSession?: SyncEngine['listSessionReasoningEffortOptionsForSession']
     forkConversation?: SyncEngine['forkConversation']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
@@ -116,6 +117,11 @@ function createApp(session: Session, opts?: {
         options: [{ value: 'low', name: 'Low' }],
         currentValue: 'low'
     })
+    const listSessionReasoningEffortOptionsForSession = opts?.listSessionReasoningEffortOptionsForSession ?? (async () => ({
+        success: true,
+        options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        currentValue: 'low'
+    }))
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const reopenSession = opts?.reopenSession ?? (async (sessionId: string) => ({
         type: 'success' as const,
@@ -138,6 +144,7 @@ function createApp(session: Session, opts?: {
         listOpencodeReasoningEffortOptionsForSession,
         listGrokModelsForSession,
         listGrokReasoningEffortOptionsForSession,
+        listSessionReasoningEffortOptionsForSession,
         resumeSession,
         reopenSession,
         getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
@@ -847,6 +854,39 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('applies effort changes for remote Antigravity sessions', async () => {
+        const appState = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+        const response = await appState.app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'medium' })
+        })
+        expect(response.status).toBe(200)
+        expect(appState.applySessionConfigCalls).toEqual([
+            ['session-1', { effort: 'medium' }]
+        ])
+    })
+
+    it('applies effort changes for remote Copilot and Kimi sessions', async () => {
+        for (const flavor of ['copilot', 'kimi'] as const) {
+            const session = createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor }
+            })
+            const appState = createApp(session)
+            const response = await appState.app.request('/api/sessions/session-1/effort', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ effort: 'high' })
+            })
+            expect(response.status).toBe(200)
+            expect(appState.applySessionConfigCalls).toEqual([
+                ['session-1', { effort: 'high' }]
+            ])
+        }
+    })
+
     it('applies effort changes for remote Grok sessions and rejects local control', async () => {
         const remote = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' }
@@ -893,6 +933,32 @@ describe('sessions routes', () => {
             ],
             currentValue: 'low'
         })
+    })
+
+    it('returns generic reasoning effort options for active Copilot and Kimi sessions', async () => {
+        for (const flavor of ['copilot', 'kimi'] as const) {
+            const session = createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor }
+            })
+            const { app } = createApp(session)
+            const response = await app.request('/api/sessions/session-1/reasoning-effort-options')
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({
+                success: true,
+                options: [
+                    { value: 'low', name: 'Low' },
+                    { value: 'high', name: 'High' }
+                ],
+                currentValue: 'low'
+            })
+        }
+    })
+
+    it('rejects generic reasoning effort options for unsupported sessions', async () => {
+        const { app } = createApp(createSession())
+        const response = await app.request('/api/sessions/session-1/reasoning-effort-options')
+        expect(response.status).toBe(400)
     })
 
     it('returns Grok model and effort catalogs for active Grok sessions', async () => {

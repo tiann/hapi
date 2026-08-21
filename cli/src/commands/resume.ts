@@ -147,7 +147,8 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as KimiPermissionMode | undefined,
             startingMode: 'local',
-            model: target.model ?? undefined
+            model: target.model ?? undefined,
+            effort: target.effort ?? undefined
         })
         return
     }
@@ -177,6 +178,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             permissionMode: base.permissionMode as CopilotPermissionMode | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
+            effort: target.effort ?? undefined,
             copilotAgentMode: target.copilotAgentMode
         })
         return

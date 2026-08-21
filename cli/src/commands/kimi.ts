@@ -16,6 +16,7 @@ export const kimiCommand: CommandDefinition = {
                 startingMode?: 'local' | 'remote'
                 permissionMode?: KimiPermissionMode
                 model?: string
+                effort?: string
                 resumeSessionId?: string
             } = {}
 
@@ -53,6 +54,12 @@ export const kimiCommand: CommandDefinition = {
                         throw new Error('Missing --model value')
                     }
                     options.model = model
+                } else if (arg === '--hapi-effort') {
+                    const effort = commandArgs[++i]
+                    if (!effort) {
+                        throw new Error('Missing --hapi-effort value')
+                    }
+                    options.effort = effort
                 }
             }
 

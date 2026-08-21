@@ -108,6 +108,7 @@ import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
+import { useSessionReasoningEffortOptions } from '@/hooks/queries/useSessionReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
@@ -919,6 +920,12 @@ function SessionChatInner(props: SessionChatProps) {
         api: props.api,
         sessionId: props.session.id,
         enabled: agentFlavor === 'grok' && props.session.active && !controlledByUser
+    })
+    const sessionEffortState = useSessionReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        model: props.session.model,
+        enabled: (agentFlavor === 'copilot' || agentFlavor === 'kimi') && props.session.active && !controlledByUser
     })
     const grokModelOptions = useMemo(() => (
         agentFlavor === 'grok'
@@ -1931,7 +1938,9 @@ function SessionChatInner(props: SessionChatProps) {
                         availableEffortOptions={
                             agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
-                                : undefined
+                                : (agentFlavor === 'copilot' || agentFlavor === 'kimi') && sessionEffortState.options.length > 0
+                                    ? sessionEffortState.options
+                                    : undefined
                         }
                         active={props.session.active}
                         allowSendWhenInactive
@@ -1944,6 +1953,7 @@ function SessionChatInner(props: SessionChatProps) {
                         contextWindow={reduced.latestUsage?.contextWindow ?? piContextWindow}
                         contextModel={reduced.latestUsage?.model ?? props.session.model}
                         controlledByUser={controlledByUser}
+                        allowConfigChangesWhileThinking={agentFlavor === 'pi'}
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser
                                 ? handleCollaborationModeChange
@@ -2029,7 +2039,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
                                     ? handleEffortChange
                                     : undefined)
-                                : handleEffortChange
+                                : agentFlavor === 'copilot' || agentFlavor === 'kimi'
+                                    ? (props.session.active && !controlledByUser && sessionEffortState.options.length > 0
+                                        ? handleEffortChange
+                                        : undefined)
+                                    : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
                         onServiceTierChange={

@@ -153,10 +153,90 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
     })
 
-    it('shows only the model button for flavors without effort support', () => {
-        renderComposer('codex')
+    it('shows Codex reasoning effort through the generic Effort button', () => {
+        renderComposer('codex', {
+            modelReasoningEffort: 'high',
+            availableModelReasoningEffortOptions: [
+                { value: 'low' },
+                { value: 'medium' },
+                { value: 'high' },
+            ],
+            onModelReasoningEffortChange: vi.fn(),
+        })
         expect(screen.getByRole('button', { name: 'Sonnet 4' })).toBeTruthy()
-        expect(screen.queryByRole('button', { name: 'High' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'High' })).toBeTruthy()
+    })
+
+    it('keeps the default AGY model and effort controls visible', () => {
+        renderComposer('agy', {
+            model: null,
+            effort: null,
+            availableModelOptions: [{ value: 'gemini-3.6-flash-low', label: 'Gemini 3.6 Flash (Low)' }],
+        })
+        expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Auto' })).toBeTruthy()
+    })
+
+    it('keeps the default ACP effort control visible and resettable', () => {
+        const effortChanges: Array<string | null> = []
+        renderComposer('copilot', {
+            model: 'gpt-5.6',
+            effort: null,
+            availableEffortOptions: [
+                { value: 'low', name: 'Low' },
+                { value: 'high', name: 'High' },
+            ],
+            onEffortChange: (effort) => effortChanges.push(effort),
+        })
+        const defaultButtons = screen.getAllByRole('button', { name: 'Default' })
+        expect(defaultButtons.length).toBeGreaterThan(0)
+        fireEvent.click(defaultButtons[0]!)
+        fireEvent.click(screen.getAllByRole('button', { name: 'Default' })[0]!)
+        expect(effortChanges).toEqual([null])
+    })
+
+    it('shows Antigravity effort through the generic Effort button', () => {
+        renderComposer('agy', { effort: 'medium' })
+        expect(screen.getByRole('button', { name: 'Medium' })).toBeTruthy()
+    })
+
+    it('shows ACP-discovered Copilot effort through the generic Effort button', () => {
+        renderComposer('copilot', {
+            effort: 'high',
+            availableEffortOptions: [
+                { value: 'low', name: 'Low' },
+                { value: 'high', name: 'High' },
+            ],
+        })
+        expect(screen.getByRole('button', { name: 'High' })).toBeTruthy()
+    })
+
+    it('shows ACP-discovered Kimi effort through the generic Effort button', () => {
+        renderComposer('kimi', {
+            effort: 'medium',
+            availableEffortOptions: [
+                { value: 'low', name: 'Low' },
+                { value: 'medium', name: 'Medium' },
+            ],
+        })
+        expect(screen.getByRole('button', { name: 'Medium' })).toBeTruthy()
+    })
+
+    it('shows Cursor model variants through the generic Effort button', () => {
+        renderComposer('cursor', {
+            model: 'composer-2.5-fast',
+            selectedModelBase: 'composer-2.5',
+            selectedModelVariant: 'composer-2.5-fast',
+            modelEffortOptions: [
+                { value: 'composer-2.5-fast', label: 'Fast' },
+                { value: 'composer-2.5-thinking', label: 'Thinking' },
+            ],
+            onModelEffortChange: vi.fn(),
+            availableModelOptions: [
+                { value: 'composer-2.5', label: 'Composer 2.5' },
+            ],
+        })
+        expect(screen.getByRole('button', { name: 'Fast' })).toBeTruthy()
     })
 
     it('hides value buttons on narrow viewports, keeping settings', () => {
@@ -193,22 +273,55 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByText('Model')).toBeNull()
     })
 
-    it('opens the full sheet from the gear with Model before Permission', () => {
+    it('omits externally visible Model and Effort sections from the gear sheet', () => {
         renderComposer('claude')
         fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-        const model = screen.getByText('Model')
-        const permission = screen.getByText('Permission Mode')
-        expect(model.compareDocumentPosition(permission) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+        expect(screen.queryByText('Effort')).toBeNull()
+        expect(screen.getByText('Permission Mode')).toBeTruthy()
     })
 
-    it('expands an anchored sheet to the full sheet when the gear is clicked', () => {
+    it('keeps hidden Model and Effort controls available from the gear sheet', () => {
+        runtime.toolbarLayout = {
+            mode: 'left',
+            left: ['attachment', 'settings', 'expand'],
+            right: [],
+            hidden: ['model', 'effort', 'terminal', 'switch', 'voiceMic', 'scratchlist', 'schedule', 'abort'],
+        }
+        renderComposer('claude')
+        expect(screen.queryByRole('button', { name: 'Sonnet 4' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'High' })).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        expect(screen.getByText('Model')).toBeTruthy()
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.getByText('Permission Mode')).toBeTruthy()
+    })
+
+    it('hides the gear when all available configuration sections have external buttons', () => {
+        renderComposer('claude', { onPermissionModeChange: undefined })
+        expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
+    })
+
+    it('applies the same de-duplication to Pi without a Pi-specific settings trigger', () => {
+        renderComposer('pi', {
+            onPermissionModeChange: undefined,
+            piModels: [
+                { provider: 'gemini', modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', reasoning: true },
+            ],
+            piSelectedModel: { provider: 'gemini', modelId: 'gemini-2.5-pro' },
+        })
+        expect(screen.getByRole('button', { name: 'Gemini 2.5 Pro' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'High' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
+    })
+
+    it('expands an anchored sheet to the full remaining settings when the gear is clicked', () => {
         renderComposer('claude')
         fireEvent.click(screen.getByRole('button', { name: 'Sonnet 4' }))
         expect(screen.queryByText('Effort')).toBeNull()
         fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-        expect(screen.getByText('Model')).toBeTruthy()
-        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+        expect(screen.queryByText('Effort')).toBeNull()
         expect(screen.getByText('Permission Mode')).toBeTruthy()
     })
 
@@ -223,7 +336,7 @@ describe('HappyComposer generic model/effort value buttons', () => {
         // Pi uses the same value buttons as every other flavor.
         expect(screen.getByRole('button', { name: 'Gemini 2.5 Pro' })).toBeTruthy()
         expect(screen.getByRole('button', { name: 'High' })).toBeTruthy()
-        expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
     })
 
     it('opens the settings sheet with provider-grouped model rows for Pi', () => {
@@ -266,6 +379,7 @@ describe('HappyComposer generic model/effort value buttons', () => {
                 { provider: 'gemini', modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', reasoning: true },
             ],
             piSelectedModel: { provider: 'gemini', modelId: 'gemini-2.5-pro' },
+            allowConfigChangesWhileThinking: true,
         })
         // Value buttons are collapsed on narrow; the gear is the only trigger and
         // must stay clickable while a Pi turn is running (#1442).

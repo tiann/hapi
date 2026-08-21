@@ -31,6 +31,7 @@ export const queryKeys = {
     sessionCopilotModels: (sessionId: string) => ['session-copilot-models', sessionId] as const,
     machineCopilotModelsForCwd: (machineId: string, cwd: string) => ['machine-copilot-models', machineId, cwd] as const,
     sessionGrokReasoningEffortOptions: (sessionId: string) => ['session-grok-reasoning-effort-options', sessionId] as const,
+    sessionReasoningEffortOptions: (sessionId: string, model?: string | null) => ['session-reasoning-effort-options', sessionId, model ?? null] as const,
     machineAgyModels: (machineId: string) => ['machine-agy-models', machineId] as const,
     machinePiModels: (machineId: string) => ['machine-pi-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,

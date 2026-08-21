@@ -18,7 +18,9 @@ import { buildCopilotModelsResponseFromBackend } from '@/modules/common/copilotM
 export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CopilotSession;
     private readonly model?: string;
+    private readonly effort?: string | null;
     private readonly onModelRollback?: (model: string | null) => void;
+    private readonly onEffortChange?: (effort: string | null) => void;
     private backend: ReturnType<typeof createCopilotBackend> | null = null;
     private permissionHandler: CopilotPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
@@ -28,6 +30,8 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private displayAgentMode: CopilotAgentMode | null = null;
     private currentAgentMode: CopilotAgentMode = 'interactive';
     private currentBackendModel: string | null = null;
+    private currentBackendEffort: string | null = null;
+    private defaultBackendEffort: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setModeSupported: boolean | undefined = undefined;
     private activeSessionId: string | null = null;
@@ -35,12 +39,16 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
 
     constructor(session: CopilotSession, opts: {
         model?: string;
+        effort?: string | null;
         onModelRollback?: (model: string | null) => void;
+        onEffortChange?: (effort: string | null) => void;
     }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.model = opts.model;
+        this.effort = opts.effort;
         this.onModelRollback = opts.onModelRollback;
+        this.onEffortChange = opts.onEffortChange;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -109,6 +117,15 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         session.onSessionFound(acpSessionId);
         this.activeSessionId = acpSessionId;
         session.setRemoteAgentModeApplier((agentMode) => this.applyAgentMode(agentMode));
+        session.setRemoteEffortApplier((effort) => this.applyEffort(effort));
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListSessionReasoningEffortOptions, async () => {
+            const option = backend.getThoughtLevelConfigOption(acpSessionId);
+            return {
+                success: true,
+                options: option?.options ?? [],
+                currentValue: option?.currentValue ?? null,
+            };
+        });
 
         this.permissionHandler = new CopilotPermissionHandler(
             session.client,
@@ -126,6 +143,26 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 ?? null;
         }
         this.currentBackendModel = effectiveModel;
+        const discoveredEffort = backend.getThoughtLevelConfigOption(acpSessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = discoveredEffort;
+        if (this.effort !== undefined && this.effort !== null) {
+            try {
+                await this.applyEffort(this.effort);
+            } catch (error) {
+                if (!isEffortUnavailableError(error)) {
+                    throw error;
+                }
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn('[copilot-remote] Startup effort is unavailable for the active model', error);
+                this.publishEffort(discoveredEffort);
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: `Copilot effort ${this.effort} is unavailable for the active model: ${message}. Using ${discoveredEffort ?? 'default'}.`
+                });
+            }
+        } else {
+            this.publishEffort(discoveredEffort);
+        }
         if (runtimeConfig.model && effectiveModel !== runtimeConfig.model) {
             this.rollbackModel();
         }
@@ -161,6 +198,23 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
 
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
+            }
+            if (batch.mode.effort !== undefined && batch.mode.effort !== this.currentBackendEffort) {
+                const requestedEffort = batch.mode.effort;
+                try {
+                    await this.applyEffort(requestedEffort);
+                } catch (error) {
+                    if (!isEffortUnavailableError(error)) {
+                        throw error;
+                    }
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.warn('[copilot-remote] Inline effort switch failed', error);
+                    this.rollbackEffort(batch, this.currentBackendEffort);
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: `Failed to switch Copilot effort to ${requestedEffort ?? 'default'}: ${message}. Continuing with ${this.currentBackendEffort ?? 'default'}.`
+                    });
+                }
             }
 
             const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
@@ -214,6 +268,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         this.session.setRemoteAgentModeApplier(null);
+        this.session.setRemoteEffortApplier(null);
         this.activeSessionId = null;
 
         if (this.permissionHandler) {
@@ -403,6 +458,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 await backend.setModel(sessionId, model);
                 this.currentBackendModel = model;
                 this.setModelSupported = true;
+                this.syncDiscoveredEffort(sessionId);
                 return model;
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -427,6 +483,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         try {
             await backend.setConfigOption(sessionId, option.id, model);
             this.currentBackendModel = model;
+            this.syncDiscoveredEffort(sessionId);
             return model;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -437,6 +494,53 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             });
             return this.rollbackModel();
         }
+    }
+
+    private syncDiscoveredEffort(sessionId: string): void {
+        const discoveredEffort = this.backend?.getThoughtLevelConfigOption?.(sessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = discoveredEffort;
+        this.publishEffort(discoveredEffort);
+    }
+
+    private publishEffort(effort: string | null): void {
+        this.currentBackendEffort = effort;
+        this.session.setEffort(effort);
+        this.session.pushKeepAlive();
+        this.onEffortChange?.(effort);
+    }
+
+    private rollbackEffort(batch: { mode: { effort?: string | null } }, effort: string | null): void {
+        batch.mode.effort = effort;
+        this.publishEffort(effort);
+    }
+
+    public async applyEffort(effort: string | null): Promise<string | null> {
+        const backend = this.backend;
+        const sessionId = this.activeSessionId;
+        if (!backend || !sessionId) {
+            throw new Error('Copilot effort switching is unavailable before the remote session is ready');
+        }
+
+        const option = backend.getThoughtLevelConfigOption(sessionId);
+        if (!option) {
+            throw new Error('Copilot effort switching is unavailable for this session');
+        }
+        const target = effort ?? option.options.find((candidate) => {
+            const value = candidate.value.toLowerCase();
+            const name = candidate.name?.toLowerCase() ?? '';
+            return value === 'default' || value === 'auto' || name === 'default' || name === 'auto';
+        })?.value ?? this.defaultBackendEffort;
+        if (!target) {
+            throw new Error('Copilot effort reset is unavailable for this session');
+        }
+        if (!option.options.some((candidate) => candidate.value === target)) {
+            throw new Error(`Unsupported Copilot effort: ${effort}`);
+        }
+
+        await backend.setConfigOption(sessionId, option.id, target);
+        const applied = effort === null ? null : target;
+        this.publishEffort(applied);
+        return applied;
     }
 
     private rollbackModel(): string | null {
@@ -474,6 +578,11 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     }
 }
 
+function isEffortUnavailableError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /unsupported .* effort|effort (?:reset|switching) is unavailable/i.test(message);
+}
+
 function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
     return Object.entries(config).map(([name, entry]) => ({
         name,
@@ -485,7 +594,12 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function copilotRemoteLauncher(
     session: CopilotSession,
-    opts: { model?: string; onModelRollback?: (model: string | null) => void }
+    opts: {
+        model?: string;
+        effort?: string | null;
+        onModelRollback?: (model: string | null) => void;
+        onEffortChange?: (effort: string | null) => void;
+    }
 ): Promise<'switch' | 'exit'> {
     const launcher = new CopilotRemoteLauncher(session, opts);
     return launcher.launch();

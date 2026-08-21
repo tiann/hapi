@@ -28,6 +28,7 @@ import type {
     OpencodeModelsResponse,
     OpencodeModelSummary,
     OpencodeReasoningEffortResponse,
+    SessionReasoningEffortResponse,
     PathExistsResponse,
     PiModelsResponse,
     SlashCommandsResponse,
@@ -88,6 +89,7 @@ export type RpcListGrokModelsResponse = GrokModelsResponse
 export type RpcListCopilotModelsResponse = CopilotModelsResponse
 export type RpcListGrokReasoningEffortOptionsResponse = GrokReasoningEffortResponse
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
+export type RpcListSessionReasoningEffortOptionsResponse = SessionReasoningEffortResponse
 export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
 
@@ -465,6 +467,10 @@ export class RpcGateway {
 
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListOpencodeReasoningEffortOptions, {}) as RpcListOpencodeReasoningEffortOptionsResponse
+    }
+
+    async listSessionReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListSessionReasoningEffortOptionsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListSessionReasoningEffortOptions, {}) as RpcListSessionReasoningEffortOptionsResponse
     }
 
     async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
