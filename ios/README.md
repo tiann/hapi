@@ -663,7 +663,9 @@ End-to-end encrypted APNs push, mirroring the Android FCM stack
   carries a ~60-line copy of the HapiKit `PushEnvelope` decrypt, kept honest
   by the shared test vector.
 - **Actions.** `permission-request` → Allow / Deny; `ready` and
-  `task-notification` → inline Reply. Handlers run in the notification
+  `task-notification` → inline Reply. `model-error` is tap-to-open only
+  (HIGH / heads-up channel on Android; event-specific coalescing tag).
+  Handlers run in the notification
   delegate's async completion and resolve the owning hub Android-style
   (active hub first, then the roster; 404 "Session not found" / 403 = try
   the next hub) — approve/deny post `{}`, reply posts `{text, localId}`.

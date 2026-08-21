@@ -159,7 +159,33 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    lastModelError: z.object({
+        /** Stable identity for this error event (not wall-clock order). */
+        eventId: z.string().min(1),
+        kind: z.string(),
+        transient: z.boolean(),
+        rawSnippet: z.string(),
+        /** Display / telemetry timestamp only — not used for notify/ack identity. */
+        atTs: z.number(),
+        priorAssistantClaimsDone: z.boolean(),
+        lastUserMessage: z.string().optional(),
+        bridgedForEventId: z.string().optional(),
+        retriedAndFailed: z.boolean().optional(),
+        /**
+         * Set when a non-bridge user turn starts after this error was recorded.
+         * Blocks Bridge so a later retry cannot replay work the newer turn already handled.
+         */
+        supersededByUserTurn: z.boolean().optional(),
+        /**
+         * Explicit false blocks Bridge (idle stderr after a successful turn).
+         * Omitted / true keeps the existing transient gate.
+         */
+        bridgeable: z.boolean().optional(),
+        acknowledgedAt: z.number().optional(),
+        /** Hub-owned: successful push/FCM/Telegram delivery watermark. */
+        notifiedAt: z.number().optional()
+    }).optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

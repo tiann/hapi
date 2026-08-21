@@ -74,6 +74,34 @@ struct PushPayloadTests {
         #expect(payload.displayTitle == "Permission needed")
     }
 
+    @Test func modelErrorIsKnownTypeAndPrefersHubTag() throws {
+        let eventTag = "model-error-sess-1-evt-1710000000000"
+        let payload = try #require(PushPayload.parse(dictionary: [
+            "type": "model-error",
+            "sessionId": "sess-1",
+            "title": "Rate limited",
+            "body": "status 429",
+            "severity": "error",
+            "contractVersion": "1",
+            "tag": eventTag,
+        ]))
+        #expect(payload.type == .modelError)
+        #expect(payload.rawType == "model-error")
+        #expect(payload.notificationTag == eventTag)
+        #expect(!payload.supportsActions)
+        #expect(payload.categoryIdentifier == nil)
+        #expect(payload.severity == .error)
+    }
+
+    @Test func modelErrorWithoutHubTagFallsBackToTypeSessionId() throws {
+        let payload = try #require(PushPayload.parse(dictionary: [
+            "type": "model-error",
+            "sessionId": "sess-1",
+            "contractVersion": "1",
+        ]))
+        #expect(payload.notificationTag == "model-error-sess-1")
+    }
+
     @Test func absentContractVersionCountsAsKnown() throws {
         var fields = fullFields
         fields["contractVersion"] = nil

@@ -165,6 +165,8 @@
     <!-- Push notifications (B-M4a) -->
     <string name="channel_permission_requests">Permission requests</string>
     <string name="channel_permission_requests_desc">An agent is waiting for you to allow or deny a tool call</string>
+    <string name="channel_model_errors">Model errors</string>
+    <string name="channel_model_errors_desc">An agent hit a model-side failure that needs attention</string>
     <string name="channel_ready">Agent ready</string>
     <string name="channel_ready_desc">An agent finished and is waiting for input</string>
     <string name="channel_task_notifications">Task notifications</string>

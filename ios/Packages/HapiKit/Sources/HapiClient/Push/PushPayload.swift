@@ -7,6 +7,7 @@ public enum PushType: String, Sendable {
     case ready
     case permissionRequest = "permission-request"
     case taskNotification = "task-notification"
+    case modelError = "model-error"
 }
 
 /// `severity` — visual urgency accent (`hub/src/fcm/fcmService.ts`).
@@ -71,6 +72,8 @@ public struct PushPayload: Equatable, Sendable {
     public var severity: PushSeverity?
     public var contractVersion: String?
     public var notifySummary: PushNotifySummary?
+    /// Hub coalescing tag (`FcmSendPayload.tag`), when present.
+    public var tag: String?
 
     /// The contract version this client implements.
     public static let contractVersion = "1"
@@ -91,7 +94,7 @@ public struct PushPayload: Equatable, Sendable {
         switch type {
         case .permissionRequest: return requestId != nil
         case .ready, .taskNotification: return true
-        case nil: return false
+        case .modelError, nil: return false
         }
     }
 
@@ -101,6 +104,13 @@ public struct PushPayload: Equatable, Sendable {
     /// Notification Service Extension stamps the same value.
     public var categoryIdentifier: String? {
         supportsActions ? rawType : nil
+    }
+
+    /// Coalescing identity: prefer the hub-supplied `tag` (event-specific
+    /// for `model-error`) before falling back to `type-<sessionId>`.
+    public var notificationTag: String {
+        if let tag, !tag.isPushBlank { return tag }
+        return "\(rawType.isEmpty ? "unknown" : rawType)-\(sessionId)"
     }
 
     /// Title to render; falls back to the session name, then a constant.
@@ -134,7 +144,8 @@ public struct PushPayload: Equatable, Sendable {
         requestId: String? = nil,
         severity: PushSeverity? = nil,
         contractVersion: String? = nil,
-        notifySummary: PushNotifySummary? = nil
+        notifySummary: PushNotifySummary? = nil,
+        tag: String? = nil
     ) {
         self.type = type
         self.rawType = rawType
@@ -147,6 +158,7 @@ public struct PushPayload: Equatable, Sendable {
         self.severity = severity
         self.contractVersion = contractVersion
         self.notifySummary = notifySummary
+        self.tag = tag
     }
 
     // MARK: - Parsing
@@ -170,7 +182,8 @@ public struct PushPayload: Equatable, Sendable {
             requestId: nonBlank(data["requestId"]),
             severity: data["severity"].flatMap(PushSeverity.init(rawValue:)),
             contractVersion: nonBlank(data["contractVersion"]),
-            notifySummary: data["notifySummary"].flatMap(parseNotifySummary)
+            notifySummary: data["notifySummary"].flatMap(parseNotifySummary),
+            tag: nonBlank(data["tag"])
         )
     }
 

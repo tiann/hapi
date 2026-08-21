@@ -1,4 +1,6 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from '@/lib/use-translation'
+import { useAppContext } from '@/lib/app-context'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
@@ -13,7 +15,10 @@ import {
     type ChatSurfaceColorPreset,
 } from '@/hooks/useChatSurfaceColors'
 import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
+import { getNamespaceFromToken } from '@/components/settings/SettingsNav'
 import { ComposerToolbarLayoutControl } from '@/components/settings/ComposerToolbarLayoutControl'
+import { queryKeys } from '@/lib/query-keys'
+import { writeAutoBridgeTransientModelErrors } from '@/lib/modelErrorBridgePrefs'
 
 function ChatSurfaceColorControl(props: {
     label: string
@@ -48,11 +53,43 @@ function ChatSurfaceColorControl(props: {
 
 export default function SettingsChatPage() {
     const { t } = useTranslation()
+    const { api, token } = useAppContext()
+    const isOwner = Boolean(token) && getNamespaceFromToken(token) === 'default'
+    const queryClient = useQueryClient()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { codexExplorationCollapsed, setCodexExplorationCollapsed } = useCodexExplorationCollapse()
     const { reasoningCollapsed, setReasoningCollapsed } = useReasoningCollapse()
     const { toolGroupBackground, userMessageBackground, setToolGroupBackground, setUserMessageBackground } = useChatSurfaceColors()
+
+    const hubSettingsQuery = useQuery({
+        queryKey: queryKeys.hubSettings,
+        queryFn: async () => {
+            if (!api) throw new Error('API unavailable')
+            return await api.getHubSettings()
+        },
+        enabled: Boolean(api) && isOwner,
+        staleTime: 30_000,
+        retry: false,
+    })
+
+    const autoBridgeMutation = useMutation({
+        mutationFn: async (enabled: boolean) => {
+            if (!api) throw new Error('API unavailable')
+            // Hub persists + fans out to active Cursor CLIs under one lock
+            // (and rolls back on fanout failure). Web only mirrors the result.
+            const next = await api.updateHubSettings({ autoBridgeTransientModelErrors: enabled })
+            writeAutoBridgeTransientModelErrors(enabled)
+            return next
+        },
+        onSuccess: (data) => {
+            queryClient.setQueryData(queryKeys.hubSettings, data)
+        },
+        onError: async () => {
+            await queryClient.invalidateQueries({ queryKey: queryKeys.hubSettings })
+        },
+    })
+
     return (
         <SettingsPageContent description={t('settings.chat.description')}>
             <SettingsSection title={t('settings.chat.input')}>
@@ -88,6 +125,28 @@ export default function SettingsChatPage() {
                 <ChatSurfaceColorControl label={t('settings.chat.groupedToolBackground')} preference={toolGroupBackground} onPresetChange={(preset) => setToolGroupBackground(toPresetChatSurfaceColorPreference(preset))} onCustomChange={(value) => setToolGroupBackground(toCustomChatSurfaceColorPreference(value))} />
                 <ChatSurfaceColorControl label={t('settings.chat.userMessageBackground')} preference={userMessageBackground} onPresetChange={(preset) => setUserMessageBackground(toPresetChatSurfaceColorPreference(preset))} onCustomChange={(value) => setUserMessageBackground(toCustomChatSurfaceColorPreference(value))} />
             </SettingsSection>
+            {isOwner ? (
+                <SettingsSection title={t('settings.chat.modelErrors')}>
+                    {hubSettingsQuery.data ? (
+                        <>
+                            <SettingsSwitch
+                                label={t('settings.chat.autoBridgeTransientModelErrors')}
+                                description={t('settings.chat.autoBridgeTransientModelErrors.description')}
+                                checked={hubSettingsQuery.data.autoBridgeTransientModelErrors}
+                                onChange={(next) => {
+                                    if (autoBridgeMutation.isPending) return
+                                    autoBridgeMutation.mutate(next)
+                                }}
+                            />
+                            {autoBridgeMutation.isError ? (
+                                <p className="px-3 pb-2 text-sm text-[var(--app-danger)]" role="alert">
+                                    {t('settings.chat.autoBridgeTransientModelErrors.syncFailed')}
+                                </p>
+                            ) : null}
+                        </>
+                    ) : null}
+                </SettingsSection>
+            ) : null}
         </SettingsPageContent>
     )
 }

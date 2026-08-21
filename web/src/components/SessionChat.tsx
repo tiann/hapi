@@ -80,6 +80,7 @@ import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutat
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
+import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, shouldKeepPendingBridge, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
@@ -1115,6 +1116,63 @@ function SessionChatInner(props: SessionChatProps) {
         codexCollaborationModeSupported
     )
 
+    const handleAcknowledgeModelError = useCallback(async () => {
+        const eventId = props.session.metadata?.lastModelError?.eventId
+        if (typeof eventId !== 'string' || eventId.length === 0) {
+            props.onRefresh()
+            return
+        }
+        await props.api.acknowledgeModelError(props.session.id, eventId).catch(() => {})
+        props.onRefresh()
+    }, [props.api, props.session.id, props.session.metadata?.lastModelError?.eventId, props.onRefresh])
+
+    const [isBridgingModelError, setIsBridgingModelError] = useState(false)
+    const [pendingBridgeEventId, setPendingBridgeEventId] = useState<string | null>(null)
+    const [bridgeFailure, setBridgeFailure] = useState<{ eventId: string; reason: string } | null>(null)
+    const currentModelError = props.session.metadata?.lastModelError
+    const bridgePending = isBridgeSettling(props.session.metadata, pendingBridgeEventId)
+
+    useEffect(() => {
+        if (pendingBridgeEventId && !shouldKeepPendingBridge(props.session.active, bridgePending)) {
+            setPendingBridgeEventId(null)
+        }
+    }, [props.session.active, pendingBridgeEventId, bridgePending])
+
+    const handleBridgeModelError = useCallback(async () => {
+        if (isBridgingModelError || bridgePending) {
+            return
+        }
+        const eventId = currentModelError?.eventId
+        if (typeof eventId !== 'string' || eventId.length === 0) {
+            props.onRefresh()
+            return
+        }
+        setIsBridgingModelError(true)
+        setBridgeFailure(null)
+        try {
+            const result = await props.api.bridgeModelError(props.session.id, eventId)
+            if (result.ok) {
+                setPendingBridgeEventId(eventId)
+            } else {
+                setBridgeFailure({ eventId, reason: result.reason ?? 'not_bridgeable' })
+            }
+            props.onRefresh()
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'bridge_failed'
+            setBridgeFailure({ eventId, reason: message })
+            console.warn('[SessionChat] model error bridge failed:', error)
+        } finally {
+            setIsBridgingModelError(false)
+        }
+    }, [
+        isBridgingModelError,
+        bridgePending,
+        currentModelError?.eventId,
+        props.api,
+        props.session.id,
+        props.onRefresh
+    ])
+
     // Voice assistant integration
     const voice = useVoiceOptional()
     const [voiceBackendReady, setVoiceBackendReady] = useState(false)
@@ -1514,6 +1572,10 @@ function SessionChatInner(props: SessionChatProps) {
     // Abort handler
     const handleAbort = useCallback(async () => {
         await abortSession()
+        // Abort cancels pending/in-flight Bridge without recovered/failed/superseded
+        // metadata, and the session stays active — drop the local latch so Bridge
+        // is not stuck as "Bridging…" until remount.
+        setPendingBridgeEventId(null)
         props.onRefresh()
     }, [abortSession, props.onRefresh])
 
@@ -1748,6 +1810,16 @@ function SessionChatInner(props: SessionChatProps) {
             <CursorMigrationBanner metadata={props.session.metadata} />
 
             {sessionStatus ? <SessionStatusPanel data={sessionStatus} /> : null}
+
+            <ModelErrorBanner
+                metadata={props.session.metadata}
+                onDismiss={handleAcknowledgeModelError}
+                onBridge={agentFlavor === 'cursor' && props.session.active
+                    ? handleBridgeModelError
+                    : undefined}
+                isBridging={isBridgingModelError || bridgePending}
+                bridgeErrorReason={visibleBridgeFailureReason(bridgeFailure, currentModelError?.eventId)}
+            />
 
             <div className="flex flex-col min-h-0 flex-1">
             {props.session.teamState && (

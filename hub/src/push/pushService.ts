@@ -38,23 +38,33 @@ export class PushService {
         webPush.setVapidDetails(this.subject, this.vapidKeys.publicKey, this.vapidKeys.privateKey)
     }
 
-    async sendToNamespace(namespace: string, payload: PushPayload): Promise<void> {
+    async sendToNamespace(namespace: string, payload: PushPayload): Promise<{ sent: number; failed: number; subscriptions: number }> {
         const subscriptions = this.store.push.getPushSubscriptionsByNamespace(namespace)
         if (subscriptions.length === 0) {
-            return
+            return { sent: 0, failed: 0, subscriptions: 0 }
         }
 
         const body = JSON.stringify(payload)
-        await Promise.all(subscriptions.map((subscription) => {
+        const results = await Promise.all(subscriptions.map((subscription) => {
             return this.sendToSubscription(namespace, subscription, body)
         }))
+        let sent = 0
+        let failed = 0
+        for (const result of results) {
+            if (result === 'sent') {
+                sent++
+            } else {
+                failed++
+            }
+        }
+        return { sent, failed, subscriptions: subscriptions.length }
     }
 
     private async sendToSubscription(
         namespace: string,
         subscription: StoredSubscription,
         body: string
-    ): Promise<void> {
+    ): Promise<'sent' | 'failed'> {
         const pushSubscription: PushSubscription = {
             endpoint: subscription.endpoint,
             keys: {
@@ -65,6 +75,7 @@ export class PushService {
 
         try {
             await webPush.sendNotification(pushSubscription, body)
+            return 'sent'
         } catch (error) {
             const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number'
                 ? (error as { statusCode: number }).statusCode
@@ -72,10 +83,11 @@ export class PushService {
 
             if (statusCode === 410) {
                 this.store.push.removePushSubscription(namespace, subscription.endpoint)
-                return
+                return 'failed'
             }
 
             console.error('[PushService] Failed to send notification:', error)
+            return 'failed'
         }
     }
 }

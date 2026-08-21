@@ -735,6 +735,39 @@ describe('AcpSdkBackend', () => {
         expect(turnCompleteIdx).toBeGreaterThan(lateIdx);
     });
 
+    it('skips session/prompt when shouldSend is false after pre-prompt drain', async () => {
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 1;
+
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        let sendCalls = 0;
+        backendInternal.transport = {
+            sendRequest: async () => {
+                sendCalls += 1;
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const sent = await backend.prompt(
+            'session-1',
+            [{ type: 'text', text: 'hi' }],
+            () => {},
+            { shouldSend: () => false }
+        );
+        expect(sent).toBe(false);
+        expect(sendCalls).toBe(0);
+    });
+
     it('attributes pre-prompt straggler chunks to the previous turn\'s onUpdate', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
