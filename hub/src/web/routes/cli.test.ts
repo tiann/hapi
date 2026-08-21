@@ -20,6 +20,7 @@ function authHeaders() {
 beforeAll(async () => {
     const config = await createConfiguration()
     config._setCliApiToken('test-token', 'env', false)
+    await config.setGithubPrAwareness(true)
 })
 
 describe('cli resume routes', () => {
@@ -238,6 +239,48 @@ describe('cli lazy session creation', () => {
         )
     })
 
+    it('rejects session create with invalid metadata.externalRefs when awareness is enabled', async () => {
+        const getOrCreateSession = mock(() => ({ id: sessionId }))
+        const app = createApp({
+            getOrCreateSession
+        } as never)
+
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'lazy-tag',
+                metadata: {
+                    path: '/tmp/project',
+                    externalRefs: [
+                        {
+                            kind: 'github_pr',
+                            repo: 'tiann/hapi',
+                            number: 1,
+                            url: 'https://github.com/tiann/hapi/pull/1',
+                            role: 'primary'
+                        },
+                        {
+                            kind: 'github_pr',
+                            repo: 'tiann/hapi',
+                            number: 2,
+                            url: 'https://github.com/tiann/hapi/pull/2',
+                            role: 'primary'
+                        }
+                    ]
+                }
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Invalid metadata.externalRefs' })
+        expect(getOrCreateSession).not.toHaveBeenCalled()
+    })
+
     it('rejects an embedded machine owned by another namespace', async () => {
         const getOrCreateMachine = mock(() => ({ id: 'machine-1' }))
         const getOrCreateSession = mock(() => ({ id: sessionId }))
@@ -287,5 +330,18 @@ describe('cli lazy session creation', () => {
         })
 
         expect(response.status).toBe(409)
+    })
+})
+
+describe('cli features and external-refs read', () => {
+    it('returns githubPrAwareness for CLI token auth', async () => {
+        const app = createApp({} as never)
+        const response = await app.request('/cli/features', { headers: authHeaders() })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { githubPrAwareness: { enabled: boolean; source: string } }
+        expect(body.githubPrAwareness).toMatchObject({
+            enabled: expect.any(Boolean),
+            source: expect.any(String)
+        })
     })
 })

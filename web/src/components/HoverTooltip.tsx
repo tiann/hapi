@@ -79,7 +79,7 @@ export function HoverTooltip(props: {
                     alignClasses,
                     'opacity-0 invisible',
                     isHelpGroup
-                        ? 'group-hover/help-tooltip:opacity-100 group-hover/help-tooltip:visible'
+                        ? 'group-hover/help-tooltip:opacity-100 group-hover/help-tooltip:visible group-focus-within/help-tooltip:opacity-100 group-focus-within/help-tooltip:visible'
                         : 'group-hover/hover-tooltip:opacity-100 group-hover/hover-tooltip:visible',
                     props.revealOnParentFocusClass,
                     props.open && 'opacity-100 visible',

@@ -1,9 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { FcmService, type FcmSendPayload } from './fcmService'
 
 mock.module('./fcmAuth', () => ({
+    FCM_REQUEST_TIMEOUT_MS: 10_000,
     getFcmAccessToken: async () => 'test-access-token',
-    loadServiceAccount: () => ({ client_email: 'x', private_key: 'y' })
+    // Read the real file so sibling fcmConfig tests still see project_id.
+    loadServiceAccount: (path: string) => {
+        const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+            client_email?: string
+            private_key?: string
+            project_id?: string
+        }
+        if (!parsed.client_email || !parsed.private_key) {
+            throw new Error('FCM service account JSON missing client_email or private_key')
+        }
+        return parsed
+    }
 }))
 
 type FakeStore = {

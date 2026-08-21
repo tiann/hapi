@@ -69,7 +69,11 @@ export class PermissionAdapter {
         });
         const input = deriveToolInput(request);
         const mode = this.getPermissionMode?.();
-        const autoDecision = resolveToolAutoApprovalDecision(mode, toolName, request.toolCallId);
+        const autoDecision = resolveToolAutoApprovalDecision(
+            mode,
+            toolName,
+            request.toolCallId
+        );
 
         if (autoDecision) {
             void this.autoApproveRequest(request, toolName, input, autoDecision);

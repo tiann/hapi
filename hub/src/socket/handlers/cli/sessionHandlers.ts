@@ -13,6 +13,18 @@ import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
+import { getConfiguration } from '../../../configuration'
+import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../../sync/externalRefsPolicy'
+
+function gateExternalRefs(metadata: unknown): unknown {
+    let awarenessEnabled = false
+    try {
+        awarenessEnabled = getConfiguration().githubPrAwareness
+    } catch {
+        awarenessEnabled = false
+    }
+    return stripExternalRefsWhenAwarenessDisabled(metadata, awarenessEnabled)
+}
 
 type SessionAlivePayload = {
     sid: string
@@ -246,9 +258,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const gatedMetadata = gateExternalRefs(metadata)
+        if (!externalRefsInMetadataValid(gatedMetadata)) {
+            cb({ result: 'error' })
+            return
+        }
+
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+            preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata),
             expectedVersion,
             sessionAccess.value.namespace
         )

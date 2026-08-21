@@ -23,6 +23,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    /** Opt-in GitHub PR awareness for sessions (tiann/hapi#1162). Default off. */
+    githubPrAwareness?: boolean
     // Push delivery (FCM + iOS/APNs) — persisted from env like the rest of
     // this section; interpreted by fcmConfig.ts / iosPushConfig.ts.
     fcmServiceAccountPath?: string
