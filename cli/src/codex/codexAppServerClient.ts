@@ -29,6 +29,8 @@ import type {
     TurnSteerResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
+    ConfigReadParams,
+    ConfigReadResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadGoalGetParams,
@@ -286,6 +288,11 @@ export class CodexAppServerClient extends JsonLineParser {
         this.sendNotification('initialized');
         this.initialized = true;
         return response as InitializeResponse;
+    }
+
+    async readConfig(params: ConfigReadParams): Promise<ConfigReadResponse> {
+        const response = await this.sendRequest('config/read', params, { timeoutMs: 30_000 });
+        return response as ConfigReadResponse;
     }
 
     async listModels(params?: ModelListParams): Promise<ModelListResponse> {

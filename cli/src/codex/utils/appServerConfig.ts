@@ -13,6 +13,11 @@ import type {
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
 
+export type CodexContextManagementConfig = {
+    modelContextWindow?: number;
+    modelAutoCompactTokenLimit?: number;
+};
+
 export const codexCollaborationSpawnAgentInstructions = [
     'Codex sub-agent spawning rules:',
     '- Treat omitted fork_context the same as fork_context: true: a full-history fork inherits the parent agent type, model, and reasoning effort.',
@@ -196,6 +201,7 @@ export function buildThreadStartParams(args: {
     cliOverrides?: CodexCliOverrides;
     baseInstructions?: string;
     developerInstructions?: string;
+    contextManagementConfig?: CodexContextManagementConfig;
 }): ThreadStartParams {
     const approvalPolicy = resolveApprovalPolicy(args.mode);
     const sandbox = resolveSandbox(args.mode);
@@ -212,7 +218,13 @@ export function buildThreadStartParams(args: {
     const configWithInstructions = {
         ...config,
         developer_instructions: resolvedDeveloperInstructions,
-        ...(args.mode.modelReasoningEffort ? { model_reasoning_effort: args.mode.modelReasoningEffort } : {})
+        ...(args.mode.modelReasoningEffort ? { model_reasoning_effort: args.mode.modelReasoningEffort } : {}),
+        ...(args.contextManagementConfig?.modelContextWindow !== undefined
+            ? { model_context_window: args.contextManagementConfig.modelContextWindow }
+            : {}),
+        ...(args.contextManagementConfig?.modelAutoCompactTokenLimit !== undefined
+            ? { model_auto_compact_token_limit: args.contextManagementConfig.modelAutoCompactTokenLimit }
+            : {})
     };
 
     const params: ThreadStartParams = {
