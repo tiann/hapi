@@ -103,7 +103,7 @@ import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineFilterBar, MachineFilterMenu } from '@/components/MachineFilterBar'
+import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
@@ -1543,6 +1543,10 @@ export function SessionList(props: {
         [machineFilters, machinesById]
     )
     const showMachineFilterBar = machineFilters.length >= 2
+    // With a single machine there is nothing to filter, but health and the
+    // session count still belong in the sidebar: render a compact summary
+    // row instead of the filter bar.
+    const singleMachineItem = machineFilters.length === 1 ? machineFilterItems[0] : null
     // A persisted filter whose machine no longer has sessions falls back to
     // "All"; with at most one machine the bar is hidden and never filters.
     const activeMachineFilter = showMachineFilterBar && machineFilter !== null
@@ -2373,6 +2377,8 @@ export function SessionList(props: {
                     value={activeMachineFilter}
                     onChange={setMachineFilter}
                 />
+            ) : singleMachineItem ? (
+                <MachineSummaryRow machine={singleMachineItem} />
             ) : null}
             </div>
 
