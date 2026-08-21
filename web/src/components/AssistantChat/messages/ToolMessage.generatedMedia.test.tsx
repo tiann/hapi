@@ -54,7 +54,7 @@ function renderCard(options: {
     return { getGeneratedImageBlob }
 }
 
-describe('GeneratedImageCard video fetch', () => {
+describe('GeneratedImageCard media fetch', () => {
     it('labels displayed images in English without implying AI generation', () => {
         renderCard({ mimeType: 'image/png', locale: 'en' })
 
@@ -93,6 +93,50 @@ describe('GeneratedImageCard video fetch', () => {
         await waitFor(() => {
             expect(getGeneratedImageBlob).toHaveBeenCalledWith('session-1', 'img-1')
         })
+    })
+
+    it('keeps tiny image previews sized to their content instead of stretching the frame', async () => {
+        renderCard({ mimeType: 'image/png' })
+
+        const image = await screen.findByRole('img', { name: 'clip.mp4' })
+        const frame = image.parentElement?.parentElement
+        if (!frame) throw new Error('Expected generated image frame')
+        const card = frame.parentElement
+        if (!card) throw new Error('Expected generated image card')
+
+        expect(frame).toHaveClass('w-fit', 'max-w-full')
+        expect(frame).not.toHaveClass('min-h-32', 'min-w-[12rem]')
+        expect(card).toHaveClass('w-fit', 'max-w-[92%]')
+    })
+
+    it('shows a friendly error and retries a failed image load', async () => {
+        const getGeneratedImageBlob = vi.fn()
+            .mockRejectedValueOnce(new Error('HTTP 404'))
+            .mockResolvedValueOnce(new Blob(['x'], { type: 'image/png' }))
+        renderCard({ mimeType: 'image/png', locale: 'en', getGeneratedImageBlob })
+
+        await waitFor(() => {
+            expect(screen.getByText('Displayed image is currently unavailable.')).toBeInTheDocument()
+        })
+        expect(screen.queryByText('HTTP 404')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: /Displayed image is currently unavailable\. Retry/ }))
+
+        await waitFor(() => {
+            expect(getGeneratedImageBlob).toHaveBeenCalledTimes(2)
+            expect(screen.getByRole('img', { name: 'clip.mp4' })).toBeInTheDocument()
+        })
+    })
+
+    it('localizes the failed image retry state in Simplified Chinese', async () => {
+        const getGeneratedImageBlob = vi.fn().mockRejectedValue(new Error('HTTP 404'))
+        renderCard({ mimeType: 'image/png', locale: 'zh-CN', getGeneratedImageBlob })
+
+        await waitFor(() => {
+            expect(screen.getByText('展示图片暂不可用。')).toBeInTheDocument()
+            expect(screen.getByText('重新加载')).toBeInTheDocument()
+        })
+        expect(screen.queryByText('HTTP 404')).not.toBeInTheDocument()
     })
 
     it('loads audio on demand and renders controls', async () => {

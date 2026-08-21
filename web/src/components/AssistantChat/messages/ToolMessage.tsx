@@ -68,9 +68,10 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     const ctx = useHappyChatContext()
     const { t } = useTranslation()
     const [objectUrl, setObjectUrl] = useState<string | null>(null)
-    const [error, setError] = useState<string | null>(null)
+    const [hasError, setHasError] = useState(false)
     const [imageStyle, setImageStyle] = useState<CSSProperties | undefined>(undefined)
     const [loadMedia, setLoadMedia] = useState(false)
+    const [loadRetryCount, setLoadRetryCount] = useState(0)
     const objectUrlRef = useRef<string | null>(null)
     const isVideo = isInlineVideoMimeType(props.block.mimeType)
     const isAudio = isInlineAudioMimeType(props.block.mimeType)
@@ -103,7 +104,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
         }
         setObjectUrl(null)
         setImageStyle(undefined)
-        setError(null)
+        setHasError(false)
 
         void ctx.api.getGeneratedImageBlob(ctx.sessionId, props.block.imageId)
             .then((blob) => {
@@ -125,18 +126,18 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                     probe.src = nextObjectUrl
                 }
             })
-            .catch((err: unknown) => {
+            .catch(() => {
                 if (disposed) return
-                setError(err instanceof Error ? err.message : 'Failed to load inline media')
+                setHasError(true)
             })
 
         return () => {
             disposed = true
         }
-    }, [ctx.api, ctx.sessionId, props.block.imageId, isImage, shouldFetch])
+    }, [ctx.api, ctx.sessionId, props.block.imageId, isImage, shouldFetch, loadRetryCount])
 
     return (
-        <div className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3">
+        <div className="w-fit max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3">
             <div className="mb-2 min-w-0 truncate text-xs font-medium text-[var(--app-hint)]">
                 {mediaHeader}
             </div>
@@ -167,7 +168,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                         <span className="min-w-0 truncate">Download {props.block.fileName}</span>
                     </a>
                 ) : (
-                    <div className="flex min-h-32 min-w-[12rem] items-center justify-center rounded-xl bg-[var(--app-subtle-bg)]">
+                    <div className="flex w-fit max-w-full items-center justify-center rounded-xl bg-[var(--app-subtle-bg)]">
                         <ImagePreview
                             src={objectUrl}
                             fileName={props.block.fileName}
@@ -178,10 +179,19 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                         />
                     </div>
                 )
-            ) : error ? (
-                <div className="text-sm text-[var(--app-hint)]">
-                    {t('media.displayed.unavailable', { label: mediaLabel, error })}
-                </div>
+            ) : hasError ? (
+                <button
+                    type="button"
+                    onClick={() => setLoadRetryCount((count) => count + 1)}
+                    className="flex min-h-32 w-72 max-w-full min-w-[12rem] items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-4 text-center text-sm text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                >
+                    <span className="flex flex-col gap-1">
+                        <span>{t('media.displayed.unavailable', { label: mediaLabel })}</span>
+                        <span className="text-xs font-medium text-[var(--app-fg)] underline underline-offset-2">
+                            {t('media.displayed.retry')}
+                        </span>
+                    </span>
+                </button>
             ) : !isImage && !loadMedia ? (
                 <button
                     type="button"

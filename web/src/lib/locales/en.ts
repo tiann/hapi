@@ -521,7 +521,8 @@ export default {
   'media.displayed.audio': 'Displayed audio',
   'media.displayed.file': 'Displayed file',
   'media.displayed.header': '{label}: {fileName}',
-  'media.displayed.unavailable': '{label} is unavailable. {error}',
+  'media.displayed.unavailable': '{label} is currently unavailable.',
+  'media.displayed.retry': 'Retry',
 
   // Tool card
   'tool.askQuestion': 'Other',

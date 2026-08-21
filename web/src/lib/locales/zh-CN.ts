@@ -520,7 +520,8 @@ export default {
   'media.displayed.audio': '展示音频',
   'media.displayed.file': '展示文件',
   'media.displayed.header': '{label}：{fileName}',
-  'media.displayed.unavailable': '{label}不可用：{error}',
+  'media.displayed.unavailable': '{label}暂不可用。',
+  'media.displayed.retry': '重新加载',
 
   // Tool card
   'tool.askQuestion': '其他',
