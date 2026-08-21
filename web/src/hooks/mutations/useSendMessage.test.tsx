@@ -62,11 +62,14 @@ describe('useSendMessage', () => {
         })
 
         await waitFor(() => {
-            expect(onSuccess).toHaveBeenCalledWith('session-A')
+            expect(onSuccess).toHaveBeenCalledWith('session-A', 'hello')
         })
         expect(result.current.sendSettlement).toEqual({
             attemptId: 'local-id-1',
+            sessionId: 'session-A',
+            text: 'hello',
             status: 'success',
+            source: 'send',
         })
     })
 
@@ -159,7 +162,7 @@ describe('useSendMessage', () => {
         })
 
         await waitFor(() => {
-            expect(onSuccess).toHaveBeenCalledWith('session-resolved')
+            expect(onSuccess).toHaveBeenCalledWith('session-resolved', 'hello')
         })
     })
 
@@ -308,7 +311,7 @@ describe('useSendMessage', () => {
             })
 
             await waitFor(() => {
-                expect(onSuccess).toHaveBeenCalledWith('session-A')
+                expect(onSuccess).toHaveBeenCalledWith('session-A', 'clean send')
             })
             expect(onError).not.toHaveBeenCalled()
         })
@@ -484,7 +487,10 @@ describe('useSendMessage', () => {
             })
             expect(result.current.sendSettlement).toEqual({
                 attemptId: 'local-id-1',
+                sessionId: 'session-A',
+                text: 'see this image',
                 status: 'error',
+                source: 'send',
             })
             // No composer-restore: onError is NOT fired and the optimistic
             // row is NOT removed -- both would destroy the attachment UX.
@@ -573,7 +579,7 @@ describe('useSendMessage', () => {
         act(() => {
             acceptedPromise = result.current.sendMessage('hello')
         })
-        await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1' })
+        await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1', sessionId: 'session-A' })
     })
 
     it('resolves false when blocked (no api) so the caller can preserve schedule state', async () => {
@@ -633,7 +639,7 @@ describe('useSendMessage', () => {
         act(() => {
             acceptedPromise = result.current.sendMessage('hello')
         })
-        await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1' })
+        await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1', sessionId: 'session-resolved' })
     })
 
     it('awaits onSessionResolved before starting the send mutation', async () => {
@@ -892,6 +898,15 @@ describe('useSendMessage', () => {
             scheduledAt,
             'queue',
         )
+        await waitFor(() => {
+            expect(result.current.sendSettlement).toEqual({
+                attemptId: 'local-retry-1',
+                sessionId: 'session-A',
+                text: 'hi later',
+                status: 'success',
+                source: 'retry',
+            })
+        })
     })
 
     it('downgrades a failed steer to queue when retrying the message', async () => {

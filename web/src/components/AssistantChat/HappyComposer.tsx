@@ -41,7 +41,7 @@ import type { PiThinkingLevel } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
-import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
+import { clearComposerDraftSnapshotIfText, persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
@@ -63,6 +63,7 @@ import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
+import type { SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
 
 export interface TextInputState {
     text: string
@@ -367,9 +368,17 @@ export function HappyComposer(props: {
     onClearSendError?: () => void
     onSuppressSendErrorRestore?: (id: number) => void
     /** Emitted by SessionChat after a send is accepted. Null attempt ids are settled scratchlist sends. */
-    sendAcceptance?: { attemptId: string | null } | null
+    sendAcceptance?: {
+        attemptId: string | null
+        sessionId?: string
+        programmaticEditRevision?: number
+    } | null
+    /** Monotonic programmatic Queued Edit revision owned outside this keyed composer. */
+    programmaticEditRevision?: number
     /** Terminal result for a chat mutation, including attachment-bearing failures. */
-    sendSettlement?: { attemptId: string; status: 'success' | 'error' } | null
+    sendSettlement?: SendMessageSettlement | null
+    /** Consume a terminal result after this composer makes its clear/preserve decision. */
+    onConsumeSendSettlement?: (attemptId: string) => void
     /**
      * Resume/handoff path for inactive drafts that only exist in IndexedDB
      * (no visible text/attachments for assistant-ui to append).
@@ -524,6 +533,13 @@ export function HappyComposer(props: {
     const [isExpanded, setIsExpanded] = useState(false)
     const lastSendAcceptanceRef = useRef(props.sendAcceptance)
     const pendingSendAttemptIdRef = useRef<string | null>(null)
+    const pendingSendEditGenerationRef = useRef<number | null>(null)
+    const acceptedSendEditGenerationRef = useRef<{
+        attemptId: string
+        generation: number
+        startedHere: boolean
+    } | null>(null)
+    const handledSuccessfulSendRef = useRef<string | null>(null)
     const [showSettings, setShowSettings] = useState(false)
     // Anchored settings sheet: the model/effort value buttons open only their
     // own section; the gear (null) opens the full sheet.
@@ -543,10 +559,19 @@ export function HappyComposer(props: {
         lastSendAcceptanceRef.current = acceptance
         if (acceptance.attemptId === null) {
             pendingSendAttemptIdRef.current = null
+            pendingSendEditGenerationRef.current = null
+            acceptedSendEditGenerationRef.current = null
             setIsExpanded(false)
             return
         }
         pendingSendAttemptIdRef.current = acceptance.attemptId
+        const pendingGeneration = pendingSendEditGenerationRef.current
+        acceptedSendEditGenerationRef.current = {
+            attemptId: acceptance.attemptId,
+            generation: pendingGeneration ?? userEditGenerationRef.current,
+            startedHere: pendingGeneration !== null,
+        }
+        pendingSendEditGenerationRef.current = null
         const settlement = props.sendSettlement
         if (!settlement || settlement.attemptId !== acceptance.attemptId) return
         pendingSendAttemptIdRef.current = null
@@ -693,6 +718,78 @@ export function HappyComposer(props: {
             console.warn('[composer-draft] inactive persistence failed', error)
         })
     }, [active, attachmentRevision, draftHydration.complete, draftHydration.sessionId, props.canRestoreAttachments, sessionId])
+
+    // A keyed session remount can hydrate the text that assistant-ui cleared
+    // before the POST settled. Once that exact send succeeds, clear only an
+    // untouched matching draft; a new user edit must win over settlement.
+    useEffect(() => {
+        const settlement = props.sendSettlement
+        if (
+            !settlement
+            || settlement.status !== 'success'
+            || settlement.sessionId !== sessionId
+            || !sessionId
+        ) return
+        const settlementKey = `${settlement.sessionId}:${settlement.attemptId}`
+        if (handledSuccessfulSendRef.current === settlementKey) return
+        const consumeSettlement = () => {
+            handledSuccessfulSendRef.current = settlementKey
+            props.onConsumeSendSettlement?.(settlement.attemptId)
+        }
+
+        // Retry settlements reuse the failed message's local id and do not
+        // represent a composer-accepted send. Consume them without touching a
+        // matching draft that belongs to the operator.
+        if (
+            settlement.source !== 'send'
+            || (
+                props.sendAcceptance?.sessionId !== undefined
+                && props.sendAcceptance.sessionId !== sessionId
+            )
+            || props.sendAcceptance?.attemptId !== settlement.attemptId
+        ) {
+            consumeSettlement()
+            return
+        }
+        if (draftHydration.sessionId !== sessionId || !draftHydration.complete) return
+
+        const acceptedSend = acceptedSendEditGenerationRef.current
+        const sendEditGeneration = acceptedSend?.attemptId === settlement.attemptId
+            ? acceptedSend.generation
+            : pendingSendEditGenerationRef.current
+        const userEditedAfterSend = sendEditGeneration !== null
+            ? userEditGenerationRef.current > sendEditGeneration
+            : userEditGenerationRef.current > 0
+        if (userEditedAfterSend) {
+            consumeSettlement()
+            return
+        }
+
+        if (composerText !== settlement.text && composerText !== '') {
+            consumeSettlement()
+            return
+        }
+
+        const editedProgrammaticallyAfterSend =
+            (props.programmaticEditRevision ?? 0)
+            > (props.sendAcceptance?.programmaticEditRevision ?? 0)
+
+        // Queued-message Edit restores text through the assistant-ui store and
+        // does not fire the composer input handlers. If the accepted send
+        // started in this composer, an exact-text replacement is still newer
+        // state and must survive the settlement. A keyed remount has no local
+        // accepted-send marker, so its hydrated stale draft remains clearable.
+        if (editedProgrammaticallyAfterSend || (composerText === settlement.text && acceptedSend?.startedHere)) {
+            consumeSettlement()
+            return
+        }
+
+        if (composerText === settlement.text) {
+            api.composer().setText('')
+        }
+        clearComposerDraftSnapshotIfText(sessionId, settlement.text)
+        consumeSettlement()
+    }, [api, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
 
     // assistant-ui clears `composer.text` synchronously the moment a send is
     // invoked AND `SessionChat.handleSend` clears `pendingSchedule` after the
@@ -1184,9 +1281,11 @@ export function HappyComposer(props: {
             // Must be adjacent to send(): useHappyRuntime consumes and resets
             // this ref synchronously from assistant-ui's onNew callback.
             if (pendingSendIntentRef) pendingSendIntentRef.current = effectiveIntent
+            pendingSendEditGenerationRef.current = userEditGenerationRef.current
             api.composer().send()
         } catch (error) {
             resetPendingSendIntent()
+            pendingSendEditGenerationRef.current = null
             throw error
         }
         // SessionChat owns clearing the schedule — it clears only after awaiting

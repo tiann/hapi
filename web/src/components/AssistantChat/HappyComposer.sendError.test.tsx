@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -142,10 +142,12 @@ type HarnessControls = {
     acceptAndClearSchedule: () => void
     remount: () => void
     programmaticSetText: (text: string) => void
+    queuedEditSetText: (text: string) => void
     acceptSend: () => void
     setSending: (sending: boolean) => void
     setThreadDisabled: (disabled: boolean) => void
     settleSend: (error?: ComposerSendError) => void
+    settleRetrySend: () => void
     settleAttachmentSendFailure: () => void
     getClearErrorCalls: () => number
 }
@@ -154,6 +156,7 @@ function ComposerHarness(props: {
     initialText: string
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
+    sessionId?: string
     controls: { current: HarnessControls | null }
 }) {
     const [snapshot, setSnapshot] = useState<FakeRuntimeState>(() => ({
@@ -164,11 +167,25 @@ function ComposerHarness(props: {
     const [sendError, setSendError] = useState<ComposerSendError | null>(null)
     const [isSending, setIsSending] = useState(false)
     const [composerKey, setComposerKey] = useState('composer-a')
-    const [sendAcceptance, setSendAcceptance] = useState<{ attemptId: string | null } | null>(null)
+    const [programmaticEditRevision, setProgrammaticEditRevision] = useState(0)
+    const [sendAcceptance, setSendAcceptance] = useState<{
+        attemptId: string | null
+        sessionId: string
+        programmaticEditRevision: number
+    } | null>(null)
     const [sendSettlement, setSendSettlement] = useState<{
         attemptId: string
+        sessionId: string
+        text: string
         status: 'success' | 'error'
+        source: 'send' | 'retry'
     } | null>(null)
+    const sessionId = props.sessionId ?? 'session-a'
+    const consumeSendSettlement = useCallback((attemptId: string) => {
+        setSendSettlement((current) =>
+            current?.attemptId === attemptId ? null : current
+        )
+    }, [])
     const clearErrorCallsRef = useRef(0)
     const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
 
@@ -194,10 +211,17 @@ function ComposerHarness(props: {
             ...current,
             composer: { ...current.composer, text },
         })),
+        queuedEditSetText: (text) => {
+            setProgrammaticEditRevision((revision) => revision + 1)
+            setSnapshot((current) => ({
+                ...current,
+                composer: { ...current.composer, text },
+            }))
+        },
         acceptSend: () => {
             setIsSending(true)
             setSendSettlement(null)
-            setSendAcceptance({ attemptId: 'attempt-1' })
+            setSendAcceptance({ attemptId: 'attempt-1', sessionId, programmaticEditRevision })
         },
         setSending: setIsSending,
         setThreadDisabled: (disabled) => setSnapshot((current) => ({
@@ -206,11 +230,33 @@ function ComposerHarness(props: {
         })),
         settleSend: (error) => {
             if (error) setSendError(error)
-            setSendSettlement({ attemptId: 'attempt-1', status: error ? 'error' : 'success' })
+            setSendSettlement({
+                attemptId: 'attempt-1',
+                sessionId,
+                text: props.initialText,
+                status: error ? 'error' : 'success',
+                source: 'send',
+            })
+            setIsSending(false)
+        },
+        settleRetrySend: () => {
+            setSendSettlement({
+                attemptId: 'retry-1',
+                sessionId,
+                text: props.initialText,
+                status: 'success',
+                source: 'retry',
+            })
             setIsSending(false)
         },
         settleAttachmentSendFailure: () => {
-            setSendSettlement({ attemptId: 'attempt-1', status: 'error' })
+            setSendSettlement({
+                attemptId: 'attempt-1',
+                sessionId,
+                text: props.initialText,
+                status: 'error',
+                source: 'send',
+            })
             setIsSending(false)
         },
         getClearErrorCalls: () => clearErrorCallsRef.current,
@@ -220,11 +266,13 @@ function ComposerHarness(props: {
         <I18nProvider>
             <HappyComposer
                 key={composerKey}
-                sessionId={composerKey}
+                sessionId={sessionId}
                 disabled={isSending}
                 pendingSchedule={schedule}
                 sendAcceptance={sendAcceptance}
+                programmaticEditRevision={programmaticEditRevision}
                 sendSettlement={sendSettlement}
+                onConsumeSendSettlement={consumeSendSettlement}
                 onSchedule={setSchedule}
                 onClearSchedule={() => setSchedule(null)}
                 sendError={sendError}
@@ -252,11 +300,12 @@ function renderComposer(
     initialText = 'failed text',
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
+    sessionId = 'session-a',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
     runtime.modelChanges = []
-    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
+    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} sessionId={sessionId} controls={controls} />)
     return controls
 }
 
@@ -390,6 +439,116 @@ describe('HappyComposer send-error atomic restore', () => {
 
         await waitFor(() => expect(input()).toHaveValue('failed text'))
         expect(screen.getByTestId('pending-schedule')).toHaveTextContent('{"type":"absolute","ms":1234}')
+    })
+
+    it('clears an untouched remounted send draft after a successful settlement', async () => {
+        const controls = renderComposer('submitted text', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('submitted text'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        fireEvent.change(input(), { target: { value: 'new draft after send' } })
+        expect(input()).toHaveValue('new draft after send')
+    })
+
+    it('clears a remounted draft from the original user submission after success', async () => {
+        const controls = renderComposer('submitted text', null)
+        fireEvent.change(input(), { target: { value: 'submitted text' } })
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('submitted text'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+    })
+
+    it('preserves a new user draft typed during a remounted send', async () => {
+        const controls = renderComposer('submitted text', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        fireEvent.change(input(), { target: { value: 'new draft while pending' } })
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('new draft while pending'))
+    })
+
+    it('preserves a different remounted draft after a successful settlement', async () => {
+        const controls = renderComposer('submitted text', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('replacement draft'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('replacement draft'))
+    })
+
+    it('preserves a same-text programmatic replacement during an accepted send', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.queuedEditSetText('foo'))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('preserves a same-text queued edit after the composer remounts', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.queuedEditSetText('foo'))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('preserves a matching draft when a retry settles without composer acceptance', async () => {
+        const controls = renderComposer('foo', null)
+
+        act(() => controls.current!.settleRetrySend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('clears the matching draft in the resolved target session after success', async () => {
+        // The target session id models an inactive-session resume that retargets
+        // the accepted send from its original route to this composer.
+        const controls = renderComposer('foo', null, false, 'session-resolved')
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+    })
+
+    it('preserves a later same-text draft after success and a session remount', async () => {
+        const controls = renderComposer('foo', null)
+        fireEvent.change(input(), { target: { value: 'foo' } })
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+
+        fireEvent.change(input(), { target: { value: 'foo' } })
+        act(() => controls.current!.remount())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
     })
 
     it('does not implicitly restore after a keyed remount receives a new draft interaction', async () => {
