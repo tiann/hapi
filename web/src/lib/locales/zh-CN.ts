@@ -520,6 +520,12 @@ export default {
   'media.displayed.audio': '展示音频',
   'media.displayed.file': '展示文件',
   'media.displayed.header': '{label}：{fileName}',
+  'media.displayed.loadVideo': '加载视频',
+  'media.displayed.loadAudio': '加载音频',
+  'media.displayed.prepareDownload': '加载文件',
+  'media.displayed.prepareDownloadWithSize': '加载文件（{size}）',
+  'media.displayed.download': '下载文件（{size}）',
+  'media.displayed.downloadFile': '下载文件 {fileName}（{size}）',
   'media.displayed.unavailable': '{label}不可用：{error}',
 
   // Tool card

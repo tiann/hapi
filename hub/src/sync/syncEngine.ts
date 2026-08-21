@@ -3860,8 +3860,8 @@ export class SyncEngine {
         return await this.rpcGateway.readSessionFile(sessionId, path)
     }
 
-    async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
-        return await this.rpcGateway.readGeneratedImage(sessionId, imageId)
+    async readGeneratedImage(sessionId: string, imageId: string, options?: { metadataOnly?: boolean }): Promise<RpcGeneratedImageResponse> {
+        return await this.rpcGateway.readGeneratedImage(sessionId, imageId, options)
     }
 
     async listDirectory(sessionId: string, path: string): Promise<RpcListDirectoryResponse> {

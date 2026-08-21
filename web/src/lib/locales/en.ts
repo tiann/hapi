@@ -521,6 +521,12 @@ export default {
   'media.displayed.audio': 'Displayed audio',
   'media.displayed.file': 'Displayed file',
   'media.displayed.header': '{label}: {fileName}',
+  'media.displayed.loadVideo': 'Load video',
+  'media.displayed.loadAudio': 'Load audio',
+  'media.displayed.prepareDownload': 'Prepare download',
+  'media.displayed.prepareDownloadWithSize': 'Prepare download ({size})',
+  'media.displayed.download': 'Download file ({size})',
+  'media.displayed.downloadFile': 'Download file {fileName} ({size})',
   'media.displayed.unavailable': '{label} is unavailable. {error}',
 
   // Tool card
