@@ -12,6 +12,11 @@
  * - SERVERCHAN_SENDKEY: Server酱 SendKey/AppKey for push notifications
  * - SERVERCHAN_NOTIFICATION: Enable/disable Server酱 notifications (default: true)
  * - SERVERCHAN_BACKGROUND_ONLY: Only send Server酱 notifications without visible HAPI clients (default: false)
+ * - WXPUSHER_APP_TOKEN: WxPusher App token for push notifications
+ * - WXPUSHER_UIDS: Comma-separated WxPusher recipient UIDs
+ * - WXPUSHER_TOPIC_IDS: Comma-separated WxPusher topic IDs
+ * - WXPUSHER_NOTIFICATION: Enable/disable WxPusher notifications (default: true)
+ * - WXPUSHER_BACKGROUND_ONLY: Only send WxPusher notifications without visible HAPI clients (default: false)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
@@ -46,6 +51,11 @@ export interface ConfigSources {
     serverChanSendKey: ConfigSource
     serverChanNotification: ConfigSource
     serverChanBackgroundOnly: ConfigSource
+    wxPusherAppToken: ConfigSource
+    wxPusherUids: ConfigSource
+    wxPusherTopicIds: ConfigSource
+    wxPusherNotification: ConfigSource
+    wxPusherBackgroundOnly: ConfigSource
     listenHost: ConfigSource
     listenPort: ConfigSource
     publicUrl: ConfigSource
@@ -79,6 +89,21 @@ class Configuration {
 
     /** Only send Server酱 notifications when no visible HAPI client exists */
     public readonly serverChanBackgroundOnly: boolean
+
+    /** WxPusher App token */
+    public readonly wxPusherAppToken: string | null
+
+    /** WxPusher recipient UIDs */
+    public readonly wxPusherUids: string[]
+
+    /** WxPusher recipient topic IDs */
+    public readonly wxPusherTopicIds: number[]
+
+    /** WxPusher notifications enabled */
+    public readonly wxPusherNotification: boolean
+
+    /** Only send WxPusher notifications when no visible HAPI client exists */
+    public readonly wxPusherBackgroundOnly: boolean
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -142,6 +167,11 @@ class Configuration {
         this.serverChanSendKey = serverSettings.serverChanSendKey
         this.serverChanNotification = serverSettings.serverChanNotification
         this.serverChanBackgroundOnly = serverSettings.serverChanBackgroundOnly
+        this.wxPusherAppToken = serverSettings.wxPusherAppToken
+        this.wxPusherUids = serverSettings.wxPusherUids
+        this.wxPusherTopicIds = serverSettings.wxPusherTopicIds
+        this.wxPusherNotification = serverSettings.wxPusherNotification
+        this.wxPusherBackgroundOnly = serverSettings.wxPusherBackgroundOnly
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl

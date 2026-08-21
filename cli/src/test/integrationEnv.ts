@@ -42,6 +42,7 @@ const SECRET_ENV_PATTERNS: RegExp[] = [
     /^DB_PATH$/,
     /^TELEGRAM_BOT_TOKEN$/,
     /^SERVERCHAN_/i,
+    /^WXPUSHER_/i,
     /^ELEVENLABS_/i,
 ]
 

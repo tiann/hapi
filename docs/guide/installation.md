@@ -189,6 +189,11 @@ On first run, HAPI:
 | `SERVERCHAN_SENDKEY` | - | `serverChanSendKey` | Server酱 (ServerChan) SendKey for push notifications |
 | `SERVERCHAN_NOTIFICATION` | `true` | `serverChanNotification` | Enable ServerChan notifications |
 | `SERVERCHAN_BACKGROUND_ONLY` | `false` | `serverChanBackgroundOnly` | Only send ServerChan notifications when no visible HAPI connection exists in the namespace |
+| `WXPUSHER_APP_TOKEN` | - | `wxPusherAppToken` | WxPusher application token for App/client notifications |
+| `WXPUSHER_UIDS` | - | `wxPusherUids` | Comma-separated WxPusher recipient UIDs |
+| `WXPUSHER_TOPIC_IDS` | - | `wxPusherTopicIds` | Comma-separated WxPusher topic IDs |
+| `WXPUSHER_NOTIFICATION` | `true` | `wxPusherNotification` | Enable WxPusher notifications |
+| `WXPUSHER_BACKGROUND_ONLY` | `false` | `wxPusherBackgroundOnly` | Only send WxPusher notifications when no visible HAPI connection exists in the namespace |
 | `HAPI_RELAY_API` | `relay.hapi.run` | - | Relay API domain for the public relay |
 | `HAPI_RELAY_AUTH` | Per-hub key issued by the relay | `relayAuthKey` | Relay auth key override (set only when an operator provides a key) |
 | `HAPI_RELAY_FORCE_TCP` | `false` | - | Force TCP mode for relay |

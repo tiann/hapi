@@ -59,7 +59,7 @@ export async function setup() {
     const bunExec = findBunExec()
 
     // Use a minimal env whitelist to prevent shell credentials (DB_PATH,
-    // TELEGRAM_BOT_TOKEN, ELEVENLABS_API_KEY, etc.) from leaking into the
+    // TELEGRAM_BOT_TOKEN, SERVERCHAN_*, WXPUSHER_*, ELEVENLABS_API_KEY, etc.) from leaking into the
     // test hub and triggering real notifications or opening a production DB.
     const hubEnv: NodeJS.ProcessEnv = {
         PATH: process.env.PATH,
