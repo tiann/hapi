@@ -38,23 +38,24 @@ export class PushService {
         webPush.setVapidDetails(this.subject, this.vapidKeys.publicKey, this.vapidKeys.privateKey)
     }
 
-    async sendToNamespace(namespace: string, payload: PushPayload): Promise<void> {
+    async sendToNamespace(namespace: string, payload: PushPayload): Promise<number> {
         const subscriptions = this.store.push.getPushSubscriptionsByNamespace(namespace)
         if (subscriptions.length === 0) {
-            return
+            return 0
         }
 
         const body = JSON.stringify(payload)
-        await Promise.all(subscriptions.map((subscription) => {
+        const delivered = await Promise.all(subscriptions.map((subscription) => {
             return this.sendToSubscription(namespace, subscription, body)
         }))
+        return delivered.filter(Boolean).length
     }
 
     private async sendToSubscription(
         namespace: string,
         subscription: StoredSubscription,
         body: string
-    ): Promise<void> {
+    ): Promise<boolean> {
         const pushSubscription: PushSubscription = {
             endpoint: subscription.endpoint,
             keys: {
@@ -65,6 +66,7 @@ export class PushService {
 
         try {
             await webPush.sendNotification(pushSubscription, body)
+            return true
         } catch (error) {
             const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number'
                 ? (error as { statusCode: number }).statusCode
@@ -72,10 +74,11 @@ export class PushService {
 
             if (statusCode === 410) {
                 this.store.push.removePushSubscription(namespace, subscription.endpoint)
-                return
+                return false
             }
 
             console.error('[PushService] Failed to send notification:', error)
+            return false
         }
     }
 }

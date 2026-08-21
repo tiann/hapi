@@ -7,9 +7,8 @@ function createSession(overrides: Partial<Session> = {}): Session {
     return {
         id: 'session-task-toast',
         namespace: 'default',
-        name: 'Demo task',
         active: true,
-        metadata: { flavor: 'codex' },
+        metadata: { name: 'Demo task', flavor: 'codex' },
         ...overrides
     } as Session
 }
@@ -151,6 +150,185 @@ describe('PushNotificationChannel', () => {
         await channel.sendReady(createSession())
 
         expect(pushed).toHaveLength(1)
+    })
+
+    it('applies custom copy from getCopyConfig', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            async () => ({
+                ready: { title: 'Yo {agentName}', body: '{sessionName} is ready at {url}' }
+            })
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0].payload.title).toBe('Yo Codex')
+        expect(pushed[0].payload.body).toBe('Demo task is ready at /sessions/session-task-toast')
+    })
+
+    it('keeps foreground toast copy at defaults while background push uses custom copy', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const toasts: Array<{
+            type: 'toast'
+            data: { title: string; body: string; sessionId: string; url: string }
+        }> = []
+        let visible = false
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async (_namespace: string, event: typeof toasts[number]) => {
+                    toasts.push(event)
+                    return 1
+                }
+            } as never,
+            {
+                hasVisibleConnection: () => visible
+            } as never,
+            '',
+            async () => ({
+                ready: { title: 'Custom push', body: 'Custom {sessionName}' }
+            })
+        )
+
+        await channel.sendReady(createSession())
+        visible = true
+        await channel.sendReady(createSession())
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0].payload).toMatchObject({
+            title: 'Custom push',
+            body: 'Custom Demo task'
+        })
+        expect(toasts).toHaveLength(1)
+        expect(toasts[0]?.data).toMatchObject({
+            title: 'Ready for input',
+            body: 'Codex is waiting in Demo task'
+        })
+    })
+
+    it('falls back to defaults for empty template fields', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            async () => ({
+                ready: { title: '', body: '  ' }
+            })
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(pushed[0].payload.title).toBe('Ready for input')
+        expect(pushed[0].payload.body).toBe('Codex is waiting in Demo task')
+    })
+
+    it('selects taskFailed vs taskCompleted copy by status', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            async () => ({
+                taskFailed: { title: 'Oops', body: '{summary}' },
+                taskCompleted: { title: 'Nice', body: '{summary}' }
+            })
+        )
+
+        await channel.sendTaskNotification(createSession(), { status: 'failed', summary: 'Broke' })
+        await channel.sendTaskNotification(createSession(), { status: 'completed', summary: 'Passed' })
+
+        expect(pushed[0].payload.title).toBe('Oops')
+        expect(pushed[1].payload.title).toBe('Nice')
+    })
+
+    it('delivers session completion via web push even when the session is inactive', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            async () => ({
+                sessionCompletion: { title: '{sessionName} done', body: '{agentName} finished' }
+            })
+        )
+
+        await channel.sendSessionCompletion(createSession({ active: false }), 'completed')
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0].payload.tag).toBe('session-completion-session-task-toast')
+        expect(pushed[0].payload.title).toBe('Demo task done')
+        expect(pushed[0].payload.body).toBe('Codex finished')
+    })
+
+    it('still delivers with defaults when getCopyConfig throws', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            async () => {
+                throw new Error('settings unreadable')
+            }
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0].payload.title).toBe('Ready for input')
     })
 
     it('also skips SSE in-page toast when native gate reports delivery', async () => {

@@ -5,6 +5,8 @@ export const queryKeys = {
     machines: ['machines'] as const,
     sqliteStorage: ['sqlite-storage'] as const,
     hubSettings: ['hub-settings'] as const,
+    notificationPreferences: (namespace: string) => ['notification-preferences', namespace] as const,
+    notificationCopy: ['notification-copy'] as const,
     usageSummary: (range: string, timeZone: string) => ['usage-summary', range, timeZone] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
     sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,

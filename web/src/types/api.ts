@@ -190,6 +190,41 @@ export type PushVapidPublicKeyResponse = {
     publicKey: string
 }
 
+export type NotificationPreferences = {
+    namespace: string
+    permissionRequests: number
+    sessionReady: number
+    taskNotifications: number
+    sessionCompletion: number
+    updatedAt: number
+}
+
+export type NotificationPreferencesUpdate = Partial<
+    Pick<NotificationPreferences, 'permissionRequests' | 'sessionReady' | 'taskNotifications' | 'sessionCompletion'>
+>
+
+export type TestPushResponse =
+    | { ok: true }
+    | { error: string }
+
+export type CopyTemplate = {
+    title: string
+    body: string
+}
+
+export type NotificationCopyConfig = Partial<{
+    permissionRequest: CopyTemplate
+    ready: CopyTemplate
+    taskCompleted: CopyTemplate
+    taskFailed: CopyTemplate
+    sessionCompletion: CopyTemplate
+}>
+
+export type NotificationCopyResponse = {
+    copy: NotificationCopyConfig
+    defaults: Record<string, CopyTemplate>
+}
+
 export type CodexDesktopScriptResponse = {
     success: boolean
     message?: string

@@ -34,6 +34,7 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
         display: `${t(`settings.display.appearance.${appearance}`)} · ${Math.round(fontScale * 100)}%`,
         chat: t(`settings.chat.enterBehavior.${composerEnterBehavior}`),
         voice: t('settings.hub.voice.summary'),
+        notifications: t('settings.notifications.summary'),
         machines: t('settings.hub.machines.summary'),
         storage: t('settings.storage.summary'),
         usage: t('settings.usage.summary'),
