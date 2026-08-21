@@ -1,31 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     persistScratchlist,
     readScratchlist,
     type ScratchlistEntry,
 } from '@/lib/scratchlist'
-import { ScratchlistPanel } from './ScratchlistPanel'
+import { ScratchlistDrawer, ScratchlistPanel } from './ScratchlistPanel'
 
 const SID = 'session-test'
 
 function renderPanel(props?: {
-    onPromoteToComposer?: (text: string) => void
-    onPromoteToQueue?: (text: string) => Promise<boolean>
     sessionId?: string
 }) {
-    const onPromoteToComposer = props?.onPromoteToComposer ?? vi.fn()
-    const onPromoteToQueue = props?.onPromoteToQueue ?? vi.fn(async () => true)
     return {
-        onPromoteToComposer,
-        onPromoteToQueue,
         ...render(
             <I18nProvider>
                 <ScratchlistPanel
                     sessionId={props?.sessionId ?? SID}
-                    onPromoteToComposer={onPromoteToComposer}
-                    onPromoteToQueue={onPromoteToQueue}
                 />
             </I18nProvider>
         ),
@@ -42,6 +34,34 @@ function makeEntry(overrides: Partial<ScratchlistEntry> & { id: string }): Scrat
 
 function expandPanel(): void {
     fireEvent.click(screen.getByRole('button', { name: /Scratchlist/ }))
+}
+
+function firePointerEvent(
+    element: Element,
+    type: 'pointerdown' | 'pointermove' | 'pointerup',
+    init: Record<string, number>,
+): void {
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    for (const [key, value] of Object.entries(init)) {
+        Object.defineProperty(event, key, { configurable: true, value })
+    }
+    fireEvent(element, event)
+}
+
+function fireTouchEvent(
+    element: Element,
+    type: 'touchstart' | 'touchmove' | 'touchend',
+    touches: Array<{ identifier: number; clientX: number; clientY: number }>,
+    changedTouches = touches,
+): void {
+    const init = { touches, changedTouches }
+    if (type === 'touchstart') {
+        fireEvent.touchStart(element, init)
+    } else if (type === 'touchmove') {
+        fireEvent.touchMove(element, init)
+    } else {
+        fireEvent.touchEnd(element, init)
+    }
 }
 
 afterEach(() => {
@@ -131,99 +151,209 @@ describe('ScratchlistPanel', () => {
         expect(screen.getByText('enter add')).toBeTruthy()
         expect(readScratchlist(SID).map((e) => e.text)).toEqual(['enter add'])
 
-        // Shift+Enter must not promote to a new entry (it falls through to
+        // Shift+Enter must not add a new entry (it falls through to
         // textarea default newline behavior); the stored list stays unchanged.
         fireEvent.change(input, { target: { value: 'with newline' } })
         fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
         expect(readScratchlist(SID).map((e) => e.text)).toEqual(['enter add'])
     })
 
-    it('deletes an entry without a confirm prompt for short entries', () => {
+    it('deletes short entries without a confirmation prompt', () => {
         persistScratchlist(SID, [makeEntry({ id: 'a', text: 'short' })])
-        const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+        const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
         renderPanel()
         expandPanel()
-        fireEvent.click(screen.getByRole('button', { name: 'Delete entry' }))
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete entry' }))
         expect(confirmSpy).not.toHaveBeenCalled()
         expect(screen.queryByText('short')).toBeNull()
         expect(readScratchlist(SID)).toEqual([])
         confirmSpy.mockRestore()
     })
 
-    it('asks for confirmation before deleting long entries (>100 chars)', () => {
+    it('deletes long entries without a confirmation prompt', () => {
         const longText = 'x'.repeat(150)
         persistScratchlist(SID, [makeEntry({ id: 'a', text: longText })])
         const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
 
         renderPanel()
         expandPanel()
-        fireEvent.click(screen.getByRole('button', { name: 'Delete entry' }))
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete entry' }))
 
-        expect(confirmSpy).toHaveBeenCalled()
-        // Confirm rejected — entry stays.
-        expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
-
-        confirmSpy.mockReturnValue(true)
-        fireEvent.click(screen.getByRole('button', { name: 'Delete entry' }))
+        expect(confirmSpy).not.toHaveBeenCalled()
         expect(readScratchlist(SID)).toEqual([])
         confirmSpy.mockRestore()
     })
 
-    it('reorders entries via the up / down arrow buttons', () => {
-        persistScratchlist(SID, [
-            makeEntry({ id: 'top', text: 'top entry' }),
-            makeEntry({ id: 'bot', text: 'bot entry' }),
-        ])
+    it('edits an entry by clicking its text block and removes the old row action buttons', async () => {
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'before' })])
         renderPanel()
         expandPanel()
 
-        // First entry is at index 0 — its up-button should be disabled.
-        const upButtons = screen.getAllByRole('button', { name: 'Move entry up' })
-        const downButtons = screen.getAllByRole('button', { name: 'Move entry down' })
-        expect(upButtons[0]?.hasAttribute('disabled')).toBe(true)
-        expect(downButtons[downButtons.length - 1]?.hasAttribute('disabled')).toBe(true)
+        expect(screen.queryByRole('button', { name: 'Move entry up' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Move entry down' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Copy into composer' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Send to queue' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Delete entry' })).toBeNull()
+        expect(screen.queryByTestId('scratchlist-entry-age')).toBeNull()
+        expect(screen.getByRole('button', { name: 'More actions' }).parentElement?.className).toContain('items-center')
 
-        // Move bottom row up -> swaps order.
-        fireEvent.click(upButtons[1] as HTMLButtonElement)
-        const stored = readScratchlist(SID)
-        expect(stored.map((e) => e.id)).toEqual(['bot', 'top'])
+        fireEvent.click(screen.getByTestId('scratchlist-entry-text'))
+        const editor = screen.getByRole('textbox', { name: 'Edit scratchlist entry' })
+        expect(editor.className).toContain('bg-transparent')
+        expect(editor.className).not.toContain('border-[var(--app-link)]')
+        expect(editor.className).toContain('overflow-hidden')
+        expect(editor.className).not.toContain('overflow-y-auto')
+        expect(editor).toHaveAttribute('rows', '1')
+        expect(editor).toHaveFocus()
+        expect((editor as HTMLTextAreaElement).selectionStart).toBe('before'.length)
+        expect((editor as HTMLTextAreaElement).selectionEnd).toBe('before'.length)
+        fireEvent.change(editor, { target: { value: 'after' } })
+        fireEvent.keyDown(editor, { key: 'Enter' })
+
+        await waitFor(() => expect(readScratchlist(SID).map((entry) => entry.text)).toEqual(['after']))
+        expect(screen.getByTestId('scratchlist-entry-text')).toHaveTextContent('after')
     })
 
-    it('promote-to-composer copies text via the callback and keeps the entry', () => {
-        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'compose me' })])
-        const onPromoteToComposer = vi.fn()
-        renderPanel({ onPromoteToComposer })
+    it('keeps a multiline editor in sync with its content height without a scrollbar', () => {
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'first line\nsecond line' })])
+        renderPanel()
         expandPanel()
-        fireEvent.click(screen.getByRole('button', { name: 'Copy into composer' }))
-        expect(onPromoteToComposer).toHaveBeenCalledWith('compose me')
-        // Entry remains: promote-to-composer is a copy, not a move.
-        expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
+
+        fireEvent.click(screen.getByTestId('scratchlist-entry-text'))
+        const editor = screen.getByRole('textbox', { name: 'Edit scratchlist entry' }) as HTMLTextAreaElement
+        Object.defineProperty(editor, 'scrollHeight', { configurable: true, value: 48 })
+        fireEvent.change(editor, { target: { value: 'first line\nsecond line\nthird line' } })
+
+        expect(editor.style.height).toBe('48px')
+        expect(editor.className).toContain('overflow-hidden')
     })
 
-    it('promote-to-queue calls onSend and removes the entry on accepted send', async () => {
-        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'queue me' })])
-        const onPromoteToQueue = vi.fn(async () => true)
-        renderPanel({ onPromoteToQueue })
+    it('applies the pointer hover surface to the whole entry block', () => {
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'hover me' })])
+        renderPanel()
         expandPanel()
-        fireEvent.click(screen.getByRole('button', { name: 'Send to queue' }))
-        await waitFor(() => expect(onPromoteToQueue).toHaveBeenCalledWith('queue me'))
-        await waitFor(() => expect(screen.queryByText('queue me')).toBeNull())
-        expect(readScratchlist(SID)).toEqual([])
+
+        const row = screen.getByTestId('scratchlist-entry')
+        const text = screen.getByTestId('scratchlist-entry-text')
+        expect(row.className).toContain('hover:bg-[var(--app-subtle-bg)]')
+        expect(text.className).not.toContain('hover:bg-[var(--app-subtle-bg)]')
     })
 
-    it('promote-to-queue keeps the entry when the send is rejected', async () => {
-        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'queue me' })])
-        const onPromoteToQueue = vi.fn(async () => false)
-        renderPanel({ onPromoteToQueue })
+    it('reorders entries after a long press and drag', () => {
+        vi.useFakeTimers()
+        persistScratchlist(SID, [
+            makeEntry({ id: 'top', text: 'top entry' }),
+            makeEntry({ id: 'middle', text: 'middle entry' }),
+            makeEntry({ id: 'bot', text: 'bot entry' }),
+        ])
+        try {
+            renderPanel()
+            expandPanel()
+
+            const rows = screen.getAllByTestId('scratchlist-entry')
+            const destination = rows[2]!
+            const originalElementFromPoint = document.elementFromPoint
+            const elementFromPoint = vi.fn().mockReturnValue(destination)
+            Object.defineProperty(document, 'elementFromPoint', {
+                configurable: true,
+                value: elementFromPoint,
+            })
+
+            try {
+                firePointerEvent(rows[0]!, 'pointerdown', {
+                    button: 0,
+                    pointerId: 1,
+                    clientX: 10,
+                    clientY: 10,
+                })
+                act(() => {
+                    vi.advanceTimersByTime(450)
+                })
+                expect(rows[0]).toHaveAttribute('data-dragging', '')
+                firePointerEvent(rows[0]!, 'pointermove', {
+                    pointerId: 1,
+                    clientX: 10,
+                    clientY: 100,
+                })
+                firePointerEvent(rows[0]!, 'pointerup', { pointerId: 1, clientX: 10, clientY: 100 })
+
+                expect(readScratchlist(SID).map((entry) => entry.id)).toEqual(['middle', 'bot', 'top'])
+            } finally {
+                Object.defineProperty(document, 'elementFromPoint', {
+                    configurable: true,
+                    value: originalElementFromPoint,
+                })
+            }
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('reorders entries after a touch long press and drag', () => {
+        vi.useFakeTimers()
+        persistScratchlist(SID, [
+            makeEntry({ id: 'top', text: 'top entry' }),
+            makeEntry({ id: 'middle', text: 'middle entry' }),
+            makeEntry({ id: 'bot', text: 'bot entry' }),
+        ])
+        try {
+            renderPanel()
+            expandPanel()
+
+            const rows = screen.getAllByTestId('scratchlist-entry')
+            const destination = rows[2]!
+            const originalElementFromPoint = document.elementFromPoint
+            Object.defineProperty(document, 'elementFromPoint', {
+                configurable: true,
+                value: vi.fn().mockReturnValue(destination),
+            })
+
+            try {
+                fireTouchEvent(rows[0]!, 'touchstart', [
+                    { identifier: 1, clientX: 10, clientY: 10 },
+                ])
+                act(() => {
+                    vi.advanceTimersByTime(450)
+                })
+                expect(rows[0]).toHaveAttribute('data-dragging', '')
+                fireEvent.contextMenu(rows[0]!, { clientX: 10, clientY: 100 })
+                expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull()
+                fireTouchEvent(rows[0]!, 'touchmove', [
+                    { identifier: 1, clientX: 10, clientY: 100 },
+                ])
+                fireTouchEvent(rows[0]!, 'touchend', [], [
+                    { identifier: 1, clientX: 10, clientY: 100 },
+                ])
+
+                expect(readScratchlist(SID).map((entry) => entry.id)).toEqual(['middle', 'bot', 'top'])
+            } finally {
+                Object.defineProperty(document, 'elementFromPoint', {
+                    configurable: true,
+                    value: originalElementFromPoint,
+                })
+            }
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('keeps editing on Escape without changing the entry', () => {
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'keep me' })])
+        renderPanel()
         expandPanel()
-        fireEvent.click(screen.getByRole('button', { name: 'Send to queue' }))
-        await waitFor(() => expect(onPromoteToQueue).toHaveBeenCalledWith('queue me'))
-        // Entry remains because the queue rejected the promotion.
-        expect(screen.getByText('queue me')).toBeTruthy()
-        expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
+
+        fireEvent.click(screen.getByTestId('scratchlist-entry-text'))
+        const editor = screen.getByRole('textbox', { name: 'Edit scratchlist entry' })
+        fireEvent.change(editor, { target: { value: 'discard me' } })
+        fireEvent.keyDown(editor, { key: 'Escape' })
+
+        expect(readScratchlist(SID).map((entry) => entry.text)).toEqual(['keep me'])
+        expect(screen.getByTestId('scratchlist-entry-text')).toHaveTextContent('keep me')
     })
 
-    it('copy button writes the entry text to clipboard and shows briefly the "Copied" tooltip', async () => {
+    it('copy button writes the entry text to clipboard and closes the action menu', async () => {
         // Clipboard API isn't implemented in jsdom; install a mock that
         // captures the writeText call. (web/src/lib/clipboard.ts already
         // tries navigator.clipboard first, then falls back to execCommand.)
@@ -237,21 +367,23 @@ describe('ScratchlistPanel', () => {
         renderPanel()
         expandPanel()
 
-        const copyBtn = screen.getByRole('button', { name: 'Copy text to clipboard (not images)' })
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        const copyBtn = screen.getByRole('menuitem', { name: 'Copy text' })
         fireEvent.click(copyBtn)
 
         await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy me'))
 
-        // After the async copy resolves, the same button (it stays in the
-        // DOM, only its label/icon flip) should advertise the success.
+        // Copy follows the same close-after-action behavior as the other menu items.
+        await waitFor(() => expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull())
         await waitFor(() =>
-            expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy(),
+            expect(screen.getByRole('button', { name: 'More actions' }))
+                .toHaveAttribute('data-scratchlist-copy-success', ''),
         )
         // Entry is preserved — copy is non-destructive.
         expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
     })
 
-    it('clipboard write failure leaves the icon in the default state (no false success)', async () => {
+    it('clipboard write failure still closes the action menu without false success', async () => {
         // Force navigator.clipboard.writeText to reject AND make the
         // execCommand fallback fail too, so safeCopyToClipboard throws.
         const writeText = vi.fn().mockRejectedValue(new Error('denied'))
@@ -272,12 +404,90 @@ describe('ScratchlistPanel', () => {
         renderPanel()
         expandPanel()
 
-        fireEvent.click(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' }))
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Copy text' }))
 
         await waitFor(() => expect(writeText).toHaveBeenCalled())
-        // Should NOT flip to "Copied!" because the copy failed.
-        expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull()
-        expect(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' })).toBeTruthy()
+        // The menu closes immediately, with no success feedback shown.
+        expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull()
+        expect(screen.getByRole('button', { name: 'More actions' }))
+            .not.toHaveAttribute('data-scratchlist-copy-success')
+    })
+
+    it('opens the compact action menu from a PC context menu and dispatches send and schedule actions', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const entry = makeEntry({ id: 'menu-entry', text: 'send this note' })
+        const onSend = vi.fn().mockResolvedValue(true)
+        const onSchedule = vi.fn().mockResolvedValue(true)
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[entry]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                    onSend={onSend}
+                    onSchedule={onSchedule}
+                />
+            </I18nProvider>,
+        )
+
+        const row = screen.getByTestId('scratchlist-entry')
+        fireEvent.contextMenu(row, { clientX: 120, clientY: 80 })
+        expect(screen.getByRole('menu')).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: 'Send now' })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: 'Schedule send' })).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Send now' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith(entry))
+        await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+
+        fireEvent.contextMenu(row, { clientX: 120, clientY: 80 })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Schedule send' }))
+        expect(screen.getByRole('dialog', { name: 'Schedule send' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: '+5m' }))
+
+        await waitFor(() => expect(onSchedule).toHaveBeenCalledWith(
+            entry,
+            { type: 'preset', preset: '+5m' },
+        ))
+    })
+
+    it('allows scheduling entries that contain attachments', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const entry = makeEntry({
+            id: 'attachment-menu-entry',
+            text: 'send with an image',
+            attachments: [{
+                id: 'attachment-1',
+                filename: 'photo.png',
+                mimeType: 'image/png',
+                size: 4,
+                path: 'hapi-hub:scratchlist/default/session-test/attachment-1.png',
+            }],
+        })
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[entry]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                    onSend={vi.fn().mockResolvedValue(true)}
+                    onSchedule={vi.fn().mockResolvedValue(true)}
+                />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        expect(screen.getByRole('menuitem', { name: 'Send now' })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: 'Schedule send' })).toBeInTheDocument()
     })
 
     it('persists collapse state across mounts for the same session', () => {
@@ -307,83 +517,398 @@ describe('ScratchlistPanel', () => {
         expect(b.queryByText('A note')).toBeNull()
     })
 
-    it('renders the per-entry age indicator with a tooltip showing the smart-relative time', () => {
-        // 5 minutes ago, deterministic via fake timers below.
-        vi.useFakeTimers()
-        const now = new Date('2026-06-13T17:00:00Z').getTime()
-        vi.setSystemTime(new Date(now))
-        try {
-            persistScratchlist(SID, [
-                makeEntry({
-                    id: 'aged',
-                    text: 'aged note',
-                    createdAt: now - 10 * 60_000,
-                    updatedAt: now - 5 * 60_000,
-                }),
-            ])
-            renderPanel()
-            expandPanel()
-            const indicator = screen.getByTestId('scratchlist-entry-age')
-            // Tooltip carries the smart-relative time + an absolute
-            // timestamp; aria-label carries the relative time only.
-            const title = indicator.getAttribute('title') ?? ''
-            expect(title).toContain('5m ago')
-            expect(title).toContain('Saved')
-            const aria = indicator.getAttribute('aria-label') ?? ''
-            expect(aria).toContain('5m ago')
-            // data-entry-age mirrors the relative bucket so a future
-            // assertion can target it without scraping the title.
-            expect(indicator.getAttribute('data-entry-age')).toBe('5m ago')
-        } finally {
-            vi.useRealTimers()
-        }
-    })
-
-    it('falls back to createdAt when updatedAt is absent (legacy v1 row)', () => {
-        vi.useFakeTimers()
-        const now = new Date('2026-06-13T17:00:00Z').getTime()
-        vi.setSystemTime(new Date(now))
-        try {
-            persistScratchlist(SID, [
-                makeEntry({
-                    id: 'legacy',
-                    text: 'legacy v1 note',
-                    createdAt: now - 2 * 60 * 60_000,
-                    // updatedAt deliberately omitted - simulates a
-                    // localStorage row written by v1 before the v2 hub
-                    // sync work added the column.
-                }),
-            ])
-            renderPanel()
-            expandPanel()
-            const indicator = screen.getByTestId('scratchlist-entry-age')
-            expect(indicator.getAttribute('data-entry-age')).toBe('2h ago')
-        } finally {
-            vi.useRealTimers()
-        }
-    })
-
-    it('renders no age indicator when both timestamps are unusable', () => {
-        // The schema validator (`isEntry`) rejects rows with a
-        // non-finite `createdAt`, so the only realistic path to a
-        // missing-stamp entry is rendering an in-memory entry directly.
-        // We simulate that by writing a row with a sentinel `0`
-        // createdAt - the indicator returns null per its guard.
-        persistScratchlist(SID, [makeEntry({ id: 'no-stamp', text: 'note', createdAt: 0 })])
-        renderPanel()
-        expandPanel()
-        expect(screen.queryByTestId('scratchlist-entry-age')).toBeNull()
-    })
 })
 
 describe('ScratchlistDrawer disabled operations', () => {
-    it('disables and synchronously ignores move, delete, and promote actions while the parent send is pending', async () => {
+    it('allows clearing text while keeping an attachment on the draft', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const entry = makeEntry({
+            id: 'clear-text-with-attachment',
+            text: 'remove this text',
+            attachments: [{
+                id: 'clear-text-attachment',
+                filename: 'photo.png',
+                mimeType: 'image/png',
+                size: 4,
+                path: 'hapi-hub:scratchlist/default/session-test/clear-text-attachment.png',
+                previewUrl: 'data:image/png;base64,cGhvdG8=',
+            }],
+        })
+        const onUpdate = vi.fn()
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[entry]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={onUpdate}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByTestId('scratchlist-entry-text'))
+        const editor = screen.getByRole('textbox', { name: 'Edit scratchlist entry' })
+        fireEvent.change(editor, { target: { value: '' } })
+        fireEvent.blur(editor)
+
+        expect(onUpdate).toHaveBeenCalledWith(entry.id, '')
+        expect(onUpdate).not.toHaveBeenCalledWith(entry.id, 'remove this text')
+    })
+
+    it('removes one attachment without confirmation while keeping the rest of the draft', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const attachment = {
+            id: 'partial-remove-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-hub:scratchlist/default/session-test/partial-remove-1.png',
+            previewUrl: 'data:image/png;base64,cGhvdG8=',
+        }
+        const entry = makeEntry({
+            id: 'partial-remove-entry',
+            text: 'keep this text',
+            attachments: [attachment],
+        })
+        const onUpdate = vi.fn()
+        const onDelete = vi.fn()
+        const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+        try {
+            render(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[entry]}
+                        sessionId={SID}
+                        api={{} as never}
+                        onUpdate={onUpdate}
+                        onReorder={vi.fn()}
+                        onDelete={onDelete}
+                    />
+                </I18nProvider>,
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: 'Remove attachment photo.png' }))
+            expect(confirmSpy).not.toHaveBeenCalled()
+            expect(onUpdate).toHaveBeenCalledWith('partial-remove-entry', 'keep this text', [])
+            expect(onDelete).not.toHaveBeenCalled()
+        } finally {
+            confirmSpy.mockRestore()
+        }
+    })
+
+    it('renders non-image attachment-only rows with a filename and remove affordance', () => {
+        const attachment = {
+            id: 'document-1',
+            filename: 'brief.pdf',
+            mimeType: 'application/pdf',
+            size: 4,
+            path: 'hapi-hub:scratchlist/default/session-test/document-1.pdf',
+        }
+        const onDelete = vi.fn()
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[makeEntry({ id: 'document-entry', text: '', attachments: [attachment] })]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={onDelete}
+                />
+            </I18nProvider>,
+        )
+
+        expect(screen.getByTestId('scratchlist-attachment-files')).toBeInTheDocument()
+        expect(screen.getByText('brief.pdf')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Remove attachment brief.pdf' }))
+        expect(onDelete).toHaveBeenCalledWith('document-entry')
+    })
+
+    it('renders composer-style image chips with a filename, remove button, and fullscreen preview', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const attachment = {
+            id: 'photo-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-hub:scratchlist/default/session-test/photo-1.png',
+        }
+        const fetchScratchlistAttachmentBlob = vi.fn().mockResolvedValue(new Blob(['data'], { type: 'image/png' }))
+        const api = { fetchScratchlistAttachmentBlob } as never
+        const onUpdate = vi.fn()
+        const onDelete = vi.fn()
+        const originalCreateObjectURL = URL.createObjectURL
+        const originalRevokeObjectURL = URL.revokeObjectURL
+        Object.defineProperty(URL, 'createObjectURL', {
+            configurable: true,
+            value: vi.fn().mockReturnValue('blob:photo-1'),
+        })
+        Object.defineProperty(URL, 'revokeObjectURL', {
+            configurable: true,
+            value: vi.fn(),
+        })
+
+        try {
+            const rendered = render(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[makeEntry({ id: 'entry-1', text: '', attachments: [attachment] })]}
+                        sessionId={SID}
+                        api={api}
+                        onUpdate={onUpdate}
+                        onReorder={vi.fn()}
+                        onDelete={onDelete}
+                    />
+                </I18nProvider>,
+            )
+
+            await waitFor(() => expect(screen.getByTestId('scratchlist-attachment-thumb')).toBeInTheDocument())
+            const thumb = screen.getByTestId('scratchlist-attachment-thumb')
+            expect(thumb.className).toContain('h-16')
+            expect(thumb.className).toContain('w-24')
+            const thumbnails = screen.getByTestId('scratchlist-attachment-thumbs')
+            expect(thumbnails.className).toContain('mt-0.5')
+            expect(thumbnails.className).toContain('mb-1')
+            expect(thumbnails.className).not.toContain('my-1')
+            expect(screen.getByRole('img', { name: 'photo.png' })).toHaveAttribute('src', 'blob:photo-1')
+            expect(screen.getAllByText('photo.png')).not.toHaveLength(0)
+            expect(screen.queryByText('(attachment)')).toBeNull()
+            expect(fetchScratchlistAttachmentBlob).toHaveBeenCalledTimes(1)
+
+            fetchScratchlistAttachmentBlob.mockClear()
+            rendered.rerender(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[makeEntry({ id: 'entry-1', text: '', attachments: [{ ...attachment }] })]}
+                        sessionId={SID}
+                        api={api}
+                        onUpdate={onUpdate}
+                        onReorder={vi.fn()}
+                        onDelete={onDelete}
+                    />
+                </I18nProvider>,
+            )
+            await act(async () => {
+                await Promise.resolve()
+            })
+            expect(fetchScratchlistAttachmentBlob).not.toHaveBeenCalled()
+            expect(screen.getByRole('img', { name: 'photo.png' })).toHaveAttribute('src', 'blob:photo-1')
+
+            fireEvent.click(screen.getByTitle('Click to zoom'))
+            expect(screen.getByRole('dialog', { name: 'photo.png' })).toBeInTheDocument()
+
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+            fireEvent.click(screen.getByRole('button', { name: 'Remove attachment photo.png' }))
+            expect(confirmSpy).not.toHaveBeenCalled()
+            expect(onDelete).toHaveBeenCalledWith('entry-1')
+            confirmSpy.mockRestore()
+            rendered.unmount()
+        } finally {
+            cleanup()
+            Object.defineProperty(URL, 'createObjectURL', {
+                configurable: true,
+                value: originalCreateObjectURL,
+            })
+            Object.defineProperty(URL, 'revokeObjectURL', {
+                configurable: true,
+                value: originalRevokeObjectURL,
+            })
+        }
+    })
+
+    it('reuses a loaded thumbnail after reopening and uses the composer preview directly', async () => {
+        const fetchScratchlistAttachmentBlob = vi.fn().mockResolvedValue(new Blob(['data'], { type: 'image/png' }))
+        const api = { fetchScratchlistAttachmentBlob } as never
+        const attachment = {
+            id: 'photo-reopen',
+            filename: 'reopen.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-hub:scratchlist/default/session-test/photo-reopen.png',
+        }
+        const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:photo-reopen')
+
+        try {
+            const first = render(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[makeEntry({ id: 'entry-reopen', text: '', attachments: [attachment] })]}
+                        sessionId={SID}
+                        api={api}
+                        onUpdate={vi.fn()}
+                        onReorder={vi.fn()}
+                        onDelete={vi.fn()}
+                    />
+                </I18nProvider>,
+            )
+            await waitFor(() => expect(screen.getByRole('img', { name: 'reopen.png' })).toHaveAttribute('src', 'blob:photo-reopen'))
+            expect(fetchScratchlistAttachmentBlob).toHaveBeenCalledTimes(1)
+            first.unmount()
+
+            fetchScratchlistAttachmentBlob.mockClear()
+            render(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[makeEntry({ id: 'entry-reopen', text: '', attachments: [{ ...attachment }] })]}
+                        sessionId={SID}
+                        api={api}
+                        onUpdate={vi.fn()}
+                        onReorder={vi.fn()}
+                        onDelete={vi.fn()}
+                    />
+                </I18nProvider>,
+            )
+            expect(screen.getByRole('img', { name: 'reopen.png' })).toHaveAttribute('src', 'blob:photo-reopen')
+            expect(fetchScratchlistAttachmentBlob).not.toHaveBeenCalled()
+            cleanup()
+
+            const composerPreview = 'data:image/png;base64,Y29tcG9zZXI='
+            render(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[makeEntry({
+                            id: 'entry-composer-preview',
+                            text: '',
+                            attachments: [{ ...attachment, id: 'photo-composer-preview', previewUrl: composerPreview }],
+                        })]}
+                        sessionId={SID}
+                        api={api}
+                        onUpdate={vi.fn()}
+                        onReorder={vi.fn()}
+                        onDelete={vi.fn()}
+                    />
+                </I18nProvider>,
+            )
+            expect(screen.getByRole('img', { name: 'reopen.png' })).toHaveAttribute('src', composerPreview)
+            expect(fetchScratchlistAttachmentBlob).not.toHaveBeenCalled()
+        } finally {
+            cleanup()
+            createObjectURL.mockRestore()
+        }
+    })
+
+    it('keeps wrapped text inside an attachment row while the row grows with its content', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const attachment = {
+            id: 'photo-multiline',
+            filename: 'multiline.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-hub:scratchlist/default/session-test/photo-multiline.png',
+        }
+        const api = {
+            fetchScratchlistAttachmentBlob: vi.fn().mockResolvedValue(new Blob(['data'], { type: 'image/png' })),
+        } as never
+        const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:photo-multiline')
+
+        try {
+            render(
+                <I18nProvider>
+                    <ScratchlistDrawer
+                        entries={[makeEntry({
+                            id: 'entry-multiline',
+                            text: '第一行很长的草稿内容\n第二行很长的草稿内容\n第三行很长的草稿内容',
+                            attachments: [attachment],
+                        })]}
+                        sessionId={SID}
+                        api={api}
+                        onUpdate={vi.fn()}
+                        onReorder={vi.fn()}
+                        onDelete={vi.fn()}
+                    />
+                </I18nProvider>,
+            )
+
+            await waitFor(() => expect(screen.getByTestId('scratchlist-attachment-thumb')).toBeInTheDocument())
+            expect(screen.getByRole('list').className).toContain('min-h-0')
+            expect(screen.getByTestId('scratchlist-entry').className).toContain('shrink-0')
+            const content = screen.getByTestId('scratchlist-entry-content')
+            const text = screen.getByTestId('scratchlist-entry-text')
+            expect(content.className).toContain('flex-1')
+            expect(content.className).not.toContain('overflow-hidden')
+            expect(text.className).toContain('line-clamp-4')
+            expect(text.className).not.toContain('items-center')
+            expect(text.className).not.toContain('flex')
+        } finally {
+            cleanup()
+            createObjectURL.mockRestore()
+        }
+    })
+
+    it('shows the drawer instructions from a clickable help question mark', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                />
+            </I18nProvider>,
+        )
+
+        const help = screen.getByRole('button', { name: 'Show scratchlist usage tips' })
+        const tooltip = screen.getByRole('tooltip', { hidden: true })
+        expect(screen.queryByText('held — not sent')).toBeNull()
+        expect(help).toHaveAttribute('aria-expanded', 'false')
+        expect(tooltip).toHaveTextContent('Use the composer below to add a draft.')
+
+        fireEvent.click(help)
+        expect(help).toHaveAttribute('aria-expanded', 'true')
+        expect(tooltip.className).toContain('visible')
+
+        fireEvent.click(help)
+        expect(help).toHaveAttribute('aria-expanded', 'false')
+    })
+
+    it('shows the draft count beside the help question mark with matching header styling', () => {
+        const entry = makeEntry({ id: 'count-entry' })
+        const renderDrawer = (entries: ScratchlistEntry[]) => (
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={entries}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                />
+            </I18nProvider>
+        )
+
+        const { rerender } = render(renderDrawer([]))
+        const drawer = screen.getByTestId('scratchlist-drawer')
+        expect(screen.queryByTestId('scratchlist-count')).toBeNull()
+        const helpIcon = drawer.querySelector('[aria-label="Show scratchlist usage tips"] svg')
+        expect(helpIcon?.getAttribute('class')).toContain('h-[0.8125rem]')
+        expect(helpIcon?.getAttribute('class')).toContain('max-sm:-top-[0.0625rem]')
+        expect(drawer.querySelector('[aria-label="Show scratchlist usage tips"]'))
+            .not.toBeNull()
+
+        rerender(renderDrawer([entry]))
+        const oneCount = screen.getByTestId('scratchlist-count')
+        expect(oneCount).toHaveTextContent('1 item')
+        expect(oneCount.className).toContain('mr-[0.09375rem]')
+
+        rerender(renderDrawer([entry, makeEntry({ id: 'count-entry-2' })]))
+        expect(screen.getByTestId('scratchlist-count')).toHaveTextContent('2 items')
+    })
+
+    it('disables editing, dragging, and deletion while the parent send is pending', async () => {
         const { ScratchlistDrawer } = await import('./ScratchlistPanel')
         const entry = makeEntry({ id: 'pending-entry', text: 'held message' })
-        const onMove = vi.fn()
+        const onUpdate = vi.fn()
+        const onReorder = vi.fn()
         const onDelete = vi.fn()
-        const onPromoteToComposer = vi.fn()
-        const onPromoteToQueue = vi.fn(async () => true)
 
         render(
             <I18nProvider>
@@ -392,32 +917,30 @@ describe('ScratchlistDrawer disabled operations', () => {
                     sessionId={SID}
                     api={{} as never}
                     disabled
-                    onMove={onMove}
+                    onUpdate={onUpdate}
+                    onReorder={onReorder}
                     onDelete={onDelete}
-                    onPromoteToComposer={onPromoteToComposer}
-                    onPromoteToQueue={onPromoteToQueue}
                 />
             </I18nProvider>,
         )
 
         const mutationButtons = [
-            ...screen.getAllByRole('button', { name: 'Move entry up' }),
-            ...screen.getAllByRole('button', { name: 'Move entry down' }),
-            screen.getByRole('button', { name: 'Copy into composer' }),
-            screen.getByRole('button', { name: 'Send to queue' }),
-            screen.getByRole('button', { name: 'Delete entry' }),
+            screen.getByTestId('scratchlist-entry-text'),
         ]
         for (const button of mutationButtons) {
             expect(button).toBeDisabled()
             fireEvent.click(button)
         }
         // Copy is read-only and remains available while a chat send is pending.
-        expect(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' })).not.toBeDisabled()
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        expect(screen.getByRole('menuitem', { name: 'Copy text' })).not.toBeDisabled()
+        const deleteButton = screen.getByRole('menuitem', { name: 'Delete entry' })
+        expect(deleteButton).toBeDisabled()
+        fireEvent.click(deleteButton)
 
         await Promise.resolve()
-        expect(onMove).not.toHaveBeenCalled()
+        expect(onUpdate).not.toHaveBeenCalled()
+        expect(onReorder).not.toHaveBeenCalled()
         expect(onDelete).not.toHaveBeenCalled()
-        expect(onPromoteToComposer).not.toHaveBeenCalled()
-        expect(onPromoteToQueue).not.toHaveBeenCalled()
     })
 })

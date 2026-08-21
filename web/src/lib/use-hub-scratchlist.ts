@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
+import { stripPreviewUrls } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { ApiError } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import { extractScratchlistAttachmentMetadata } from '@/lib/scratchlistAttachmentAdapter'
 import {
+    getScratchlistAttachmentPreview,
+    type ScratchlistAttachmentWithPreview,
+} from '@/lib/scratchlistAttachmentPreview'
+import {
     moveScratchlistEntry,
     persistScratchlist,
     readScratchlist,
+    reorderScratchlistEntry,
     SCRATCHLIST_MAX_ENTRIES,
     SCRATCHLIST_MAX_TEXT_LENGTH,
     type ScratchlistEntry,
@@ -37,18 +42,15 @@ import {
  *
  * Reorder (move)
  * --------------
- * Reorder is local-only in v2.0: the hub stores entries with stable
- * `createdAt` (used by future overseer queries per operator decision),
- * and adding a `position` column / cross-device order semantics is a
- * v2.1 concern. The move is applied to the cached array client-side; a
- * subsequent invalidation refetch will reset the order. This is a
- * documented limitation, not a bug - see `tiann/hapi#893` body.
+ * Reorder is persisted as a complete ordered id list on the hub. The
+ * optimistic cache update keeps the panel responsive while the atomic hub
+ * mutation and SSE invalidation make the order visible on other devices.
  *
  * Migration on first v2-load
  * --------------------------
  * When the hook mounts on a session that has localStorage entries from
- * v1 AND the hub returns no entries AND the per-session migration flag
- * has not been set, we push the localStorage entries up via POST,
+ * v1 and the per-session migration flag has not been set, we push the
+ * localStorage entries up via POST,
  * preserving their original `id` and `createdAt`. The flag
  * `hapi.scratchlist.v2.migrated.${sessionId}` then prevents repeated
  * migrations across reloads. The per-session banner status reflects
@@ -73,7 +75,8 @@ type HubEntry = {
     text: string
     createdAt: number
     updatedAt: number
-    attachments: ScratchlistAttachmentMetadata[]
+    position?: number
+    attachments: ScratchlistAttachmentWithPreview[]
 }
 
 type ScratchlistResponse = { entries: HubEntry[] }
@@ -119,10 +122,8 @@ function writeBannerDismissed(sessionId: string): void {
 /**
  * Convert hub entries into the in-memory shape the panel components
  * expect (`ScratchlistEntry` from `lib/scratchlist.ts`). Hub `entryId`
- * maps to local `id`. `updatedAt` is forwarded so the per-entry age
- * indicator (clock icon + tooltip) can render the smart-relative time
- * the operator asked for; v1 callers that don't render it just ignore
- * the field.
+ * maps to local `id`; the timestamps remain available for cache and sync
+ * reconciliation even though the row does not render a time indicator.
  */
 function toLocalEntry(hub: HubEntry): ScratchlistEntry {
     return {
@@ -130,7 +131,11 @@ function toLocalEntry(hub: HubEntry): ScratchlistEntry {
         text: hub.text,
         createdAt: hub.createdAt,
         updatedAt: hub.updatedAt,
-        attachments: hub.attachments ?? []
+        position: hub.position,
+        attachments: (hub.attachments ?? []).map((attachment) => {
+            const previewUrl = getScratchlistAttachmentPreview(attachment)
+            return previewUrl ? { ...attachment, previewUrl } : attachment
+        })
     }
 }
 
@@ -147,6 +152,7 @@ function makeOptimisticHubEntry(text: string, now: number): HubEntry {
         text,
         createdAt: now,
         updatedAt: now,
+        position: 0,
         attachments: []
     }
 }
@@ -157,10 +163,12 @@ export function useHubScratchlist(
 ): {
     entries: ScratchlistEntry[]
     isLoading: boolean
+    isUpdating: boolean
     add: (text: string, attachments?: import('@/types/api').AttachmentMetadata[]) => Promise<boolean>
     remove: (id: string) => Promise<void>
-    update: (id: string, text: string) => Promise<void>
+    update: (id: string, text: string, attachments?: ScratchlistAttachmentWithPreview[]) => Promise<void>
     move: (id: string, direction: 'up' | 'down') => void
+    reorder: (id: string, targetIndex: number) => void
     migrationStatus: ScratchlistMigrationStatus
     dismissMigrationBanner: () => void
 } {
@@ -271,28 +279,28 @@ export function useHubScratchlist(
             // every local entry is reconciled.
             const failedEntries: ScratchlistEntry[] = []
             try {
-                // Preserve creation order by POSTing in the order
-                // localStorage holds them. The hub orders by createdAt
-                // DESC at read time, so source order doesn't actually
-                // matter for visual layout - but we keep it deterministic
-                // for the migration retry path.
-                for (const entry of localEntries) {
+                // Preserve the localStorage order by sending each entry's
+                // insertion index. The hub persists this as position.
+                for (const [position, entry] of localEntries.entries()) {
                     const text = entry.text.length > SCRATCHLIST_MAX_TEXT_LENGTH
                         ? entry.text.slice(0, SCRATCHLIST_MAX_TEXT_LENGTH)
                         : entry.text
-                    if (text.trim().length === 0) continue
+                    const attachments = stripPreviewUrls(entry.attachments ?? [])
+                    if (text.trim().length === 0 && attachments.length === 0) continue
                     try {
                         await api.createScratchlistEntry(sessionId, {
                             text,
                             entryId: entry.id,
-                            createdAt: entry.createdAt
+                            createdAt: entry.createdAt,
+                            position: entry.position ?? position,
+                            attachments
                         })
                     } catch {
                         // Genuine rejection (cap, network, 5xx...). The
                         // hub-side route returns 200 for duplicate
                         // entryId so an idempotent retry doesn't land
                         // here; only "really did not stick" failures do.
-                        failedEntries.push(entry)
+                        failedEntries.push({ ...entry, position: entry.position ?? position })
                     }
                 }
                 if (failedEntries.length > 0) {
@@ -330,12 +338,15 @@ export function useHubScratchlist(
     const addMutation = useMutation<
         { entry: HubEntry },
         Error,
-        { text: string; attachments: ScratchlistAttachmentMetadata[] },
+        { text: string; attachments: ScratchlistAttachmentWithPreview[] },
         { previousData: ScratchlistResponse | undefined; optimisticEntryId: string }
     >({
         mutationFn: async ({ text, attachments }) => {
             if (!api || !sessionId) throw new Error('Scratchlist unavailable')
-            return await api.createScratchlistEntry(sessionId, { text, attachments })
+            return await api.createScratchlistEntry(sessionId, {
+                text,
+                attachments: stripPreviewUrls(attachments),
+            })
         },
         onMutate: async ({ text, attachments }) => {
             await queryClient.cancelQueries({ queryKey })
@@ -381,14 +392,19 @@ export function useHubScratchlist(
     const updateMutation = useMutation<
         { entry: HubEntry },
         Error,
-        { entryId: string; text: string },
+        { entryId: string; text: string; attachments?: ScratchlistAttachmentWithPreview[] },
         { previousData: ScratchlistResponse | undefined }
     >({
-        mutationFn: async ({ entryId, text }) => {
+        mutationFn: async ({ entryId, text, attachments }) => {
             if (!api || !sessionId) throw new Error('Scratchlist unavailable')
-            return await api.updateScratchlistEntry(sessionId, entryId, text)
+            return await api.updateScratchlistEntry(
+                sessionId,
+                entryId,
+                text,
+                attachments ? stripPreviewUrls(attachments) : undefined,
+            )
         },
-        onMutate: async ({ entryId, text }) => {
+        onMutate: async ({ entryId, text, attachments }) => {
             await queryClient.cancelQueries({ queryKey })
             const previousData = queryClient.getQueryData<ScratchlistResponse>(queryKey)
             const now = Date.now()
@@ -396,7 +412,9 @@ export function useHubScratchlist(
                 if (!prev) return prev
                 return {
                     entries: prev.entries.map((e) =>
-                        e.entryId === entryId ? { ...e, text, updatedAt: now } : e
+                        e.entryId === entryId
+                            ? { ...e, text, ...(attachments !== undefined ? { attachments } : {}), updatedAt: now }
+                            : e
                     )
                 }
             })
@@ -414,6 +432,19 @@ export function useHubScratchlist(
             if (context?.previousData !== undefined) {
                 queryClient.setQueryData(queryKey, context.previousData)
             }
+        },
+        onSuccess: (data) => {
+            // The optimistic edit uses the browser clock, while the Hub's
+            // monotonic updatedAt is the revision token used by send cleanup.
+            // Reconcile it before the row can be sent again.
+            queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => {
+                if (!prev) return prev
+                return {
+                    entries: prev.entries.map((entry) =>
+                        entry.entryId === data.entry.entryId ? data.entry : entry
+                    )
+                }
+            })
         }
     })
 
@@ -451,6 +482,39 @@ export function useHubScratchlist(
         }
     })
 
+    const reorderMutation = useMutation<
+        ScratchlistResponse,
+        Error,
+        HubEntry[],
+        { previousData: ScratchlistResponse | undefined }
+    >({
+        scope: { id: `scratchlist-reorder:${sessionId}` },
+        mutationFn: async (entries) => {
+            if (!api || !sessionId) throw new Error('Scratchlist unavailable')
+            return await api.reorderScratchlistEntries(
+                sessionId,
+                entries.map((entry) => entry.entryId)
+            )
+        },
+        onMutate: async (entries) => {
+            await queryClient.cancelQueries({ queryKey })
+            const previousData = queryClient.getQueryData<ScratchlistResponse>(queryKey)
+            queryClient.setQueryData<ScratchlistResponse>(queryKey, {
+                entries: entries.map((entry, index) => ({ ...entry, position: index }))
+            })
+            return { previousData }
+        },
+        onError: (_error, _entries, context) => {
+            if (context?.previousData !== undefined) {
+                queryClient.setQueryData(queryKey, context.previousData)
+            }
+            void queryClient.invalidateQueries({ queryKey })
+        },
+        onSuccess: (data) => {
+            queryClient.setQueryData(queryKey, data)
+        }
+    })
+
     const add = useCallback(async (
         rawText: string,
         composerAttachments?: import('@/types/api').AttachmentMetadata[]
@@ -484,42 +548,48 @@ export function useHubScratchlist(
         }
     }, [deleteMutation])
 
-    const updateEntry = useCallback(async (id: string, rawText: string) => {
+    const updateEntry = useCallback(async (
+        id: string,
+        rawText: string,
+        attachments?: ScratchlistAttachmentWithPreview[],
+    ) => {
         const text = rawText.trim()
-        if (text.length === 0) return
+        if (text.length === 0 && (!attachments || attachments.length === 0)) return
         const truncated = text.length > SCRATCHLIST_MAX_TEXT_LENGTH
             ? text.slice(0, SCRATCHLIST_MAX_TEXT_LENGTH)
             : text
         try {
-            await updateMutation.mutateAsync({ entryId: id, text: truncated })
+            await updateMutation.mutateAsync({ entryId: id, text: truncated, attachments })
         } catch {
             // see `remove` rationale.
         }
     }, [updateMutation])
 
-    /**
-     * Local-only reorder. Mutates the cached array so the UI updates
-     * immediately; no hub call. The next invalidation refetch will reset
-     * the order to `createdAt DESC` - documented limitation per
-     * `tiann/hapi#893`. (v2.1 may add a `position` column.)
-     */
     const move = useCallback((id: string, direction: 'up' | 'down') => {
-        queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => {
-            if (!prev) return prev
-            const local = prev.entries.map(toLocalEntry)
-            const reordered = moveScratchlistEntry(local, id, direction)
-            // Rebuild the hub-shaped list using the reordered ids while
-            // preserving each entry's hub-stamped fields. Map by id for
-            // O(1) lookup.
-            const byId = new Map(prev.entries.map((e) => [e.entryId, e] as const))
-            const next: HubEntry[] = []
-            for (const r of reordered) {
-                const hub = byId.get(r.id)
-                if (hub) next.push(hub)
-            }
-            return { entries: next }
-        })
-    }, [queryClient, queryKey])
+        const current = queryClient.getQueryData<ScratchlistResponse>(queryKey)
+        if (!current) return
+        const reordered = moveScratchlistEntry(current.entries.map(toLocalEntry), id, direction)
+        const byId = new Map(current.entries.map((entry) => [entry.entryId, entry] as const))
+        const next = reordered
+            .map((entry) => byId.get(entry.id))
+            .filter((entry): entry is HubEntry => Boolean(entry))
+        if (next.length !== current.entries.length) return
+        if (next.every((entry, index) => entry.entryId === current.entries[index]?.entryId)) return
+        reorderMutation.mutate(next)
+    }, [queryClient, queryKey, reorderMutation])
+
+    const reorder = useCallback((id: string, targetIndex: number) => {
+        const current = queryClient.getQueryData<ScratchlistResponse>(queryKey)
+        if (!current) return
+        const reordered = reorderScratchlistEntry(current.entries.map(toLocalEntry), id, targetIndex)
+        const byId = new Map(current.entries.map((entry) => [entry.entryId, entry] as const))
+        const next = reordered
+            .map((entry) => byId.get(entry.id))
+            .filter((entry): entry is HubEntry => Boolean(entry))
+        if (next.length !== current.entries.length) return
+        if (next.every((entry, index) => entry.entryId === current.entries[index]?.entryId)) return
+        reorderMutation.mutate(next)
+    }, [queryClient, queryKey, reorderMutation])
 
     // Mirror entries into localStorage as an offline cache. Keeps the v1
     // surface (e.g. the standalone `ScratchlistPanel` used by tests)
@@ -543,7 +613,9 @@ export function useHubScratchlist(
                 id: e.entryId,
                 text: e.text,
                 createdAt: e.createdAt,
-                updatedAt: e.updatedAt
+                updatedAt: e.updatedAt,
+                position: e.position,
+                attachments: e.attachments?.map(({ previewUrl: _preview, ...attachment }) => attachment) ?? []
             }))
             window.localStorage.setItem(
                 `hapi.scratchlist.v1.${sessionId}`,
@@ -559,10 +631,12 @@ export function useHubScratchlist(
     return {
         entries,
         isLoading: query.isLoading,
+        isUpdating: updateMutation.isPending,
         add,
         remove,
         update: updateEntry,
         move,
+        reorder,
         migrationStatus,
         dismissMigrationBanner
     }

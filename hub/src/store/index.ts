@@ -42,7 +42,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 25
+const SCHEMA_VERSION: number = 26
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -235,6 +235,31 @@ export class Store {
         })()
     }
 
+    /** Look up a local-id retry in the same clear-redirect target as insertion. */
+    getMessageForCurrentSession(sessionId: string, localId: string): StoredMessage | null {
+        const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?')
+            .get(sessionId) as { namespace: string; metadata: string | null } | undefined
+        if (!row) throw new Error('Message source session not found')
+        let targetSessionId = sessionId
+        if (row.metadata) {
+            const metadata = JSON.parse(row.metadata) as {
+                opencodeClearOperation?: { replacementSessionId?: string; state?: string }
+                supersededBySessionId?: string
+            }
+            targetSessionId = metadata.supersededBySessionId
+                ?? (metadata.opencodeClearOperation?.state !== 'aborted'
+                    ? metadata.opencodeClearOperation?.replacementSessionId
+                    : undefined)
+                ?? sessionId
+        }
+        if (targetSessionId !== sessionId) {
+            const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
+                .get(targetSessionId, row.namespace)
+            if (!target) throw new Error('OpenCode clear redirect target is unavailable in the source namespace')
+        }
+        return this.messages.getMessagesByLocalIds(targetSessionId, [localId])[0] ?? null
+    }
+
     /** Durable delivery gate for a preallocated replacement owned by an unfinished clear. */
     isOpenCodeClearDeliveryGated(sessionId: string): boolean {
         const target = this.db.prepare('SELECT namespace FROM sessions WHERE id = ?')
@@ -347,6 +372,7 @@ export class Store {
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
         })
 
         if (currentVersion === 0) {
@@ -505,12 +531,15 @@ export class Store {
                 text TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
                 attachments TEXT DEFAULT NULL,
                 PRIMARY KEY (session_id, entry_id),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_created
                 ON session_scratchlist(session_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
+                ON session_scratchlist(session_id, position);
 
             CREATE TABLE IF NOT EXISTS usage_events (
                 session_id TEXT NOT NULL,
@@ -975,6 +1004,36 @@ export class Store {
         if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
             this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
         }
+    }
+
+    /** v25→v26: persist scratchlist display order. */
+    private migrateFromV25ToV26(): void {
+        const columns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
+        if (columns.length === 0) return
+        if (!columns.some((column) => column.name === 'position')) {
+            this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
+        }
+
+        const sessionRows = this.db.prepare(
+            'SELECT DISTINCT session_id FROM session_scratchlist'
+        ).all() as Array<{ session_id: string }>
+        const rowsForSession = this.db.prepare(
+            `SELECT entry_id FROM session_scratchlist
+             WHERE session_id = ?
+             ORDER BY created_at DESC, entry_id DESC`
+        )
+        const updatePosition = this.db.prepare(
+            'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+        )
+        for (const { session_id } of sessionRows) {
+            const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
+            rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+        }
+
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
+                ON session_scratchlist(session_id, position)
+        `)
     }
 
     /**

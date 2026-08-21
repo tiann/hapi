@@ -380,7 +380,10 @@ export const SCRATCHLIST_MAX_TEXT_LENGTH = 10_000
  */
 export const SCRATCHLIST_MAX_ENTRY_ID_LENGTH = 128
 
-import { ScratchlistAttachmentsArraySchema } from './scratchlistAttachments'
+import {
+    isHubScratchlistAttachmentPath,
+    ScratchlistAttachmentsArraySchema,
+} from './scratchlistAttachments'
 
 export const ScratchlistEntryCreateRequestSchema = z.object({
     /**
@@ -398,13 +401,25 @@ export const ScratchlistEntryCreateRequestSchema = z.object({
      * preserve the original timestamps from localStorage. New entries
      * omit this and let the hub stamp `Date.now()`.
      */
-    createdAt: z.number().int().nonnegative().optional()
+    createdAt: z.number().int().nonnegative().optional(),
+    /** Optional insertion index, used to preserve v1 localStorage order during migration. */
+    position: z.number().int().nonnegative().max(SCRATCHLIST_MAX_ENTRIES).optional()
 }).refine(
     (data) => data.text.trim().length > 0 || data.attachments.length > 0,
     { message: 'Scratchlist entry requires text or attachments', path: ['text'] }
 )
 
 export type ScratchlistEntryCreateRequest = z.infer<typeof ScratchlistEntryCreateRequestSchema>
+
+export const ScratchlistReorderRequestSchema = z.object({
+    entryIds: z.array(z.string().min(1).max(SCRATCHLIST_MAX_ENTRY_ID_LENGTH))
+        .max(SCRATCHLIST_MAX_ENTRIES)
+}).refine(
+    (data) => new Set(data.entryIds).size === data.entryIds.length,
+    { message: 'Entry ids must be unique', path: ['entryIds'] }
+)
+
+export type ScratchlistReorderRequest = z.infer<typeof ScratchlistReorderRequestSchema>
 
 export const ScratchlistEntryUpdateRequestSchema = z.object({
     text: z.string().max(SCRATCHLIST_MAX_TEXT_LENGTH).optional(),
@@ -534,8 +549,13 @@ export const SendMessageRequestSchema = z.object({
     (data) => data.scheduledAt == null || data.scheduledAt <= Date.now() + 7 * 24 * 60 * 60 * 1000,
     { message: 'scheduledAt must be within 7 days from now', path: ['scheduledAt'] }
 ).refine(
-    (data) => data.scheduledAt == null || !data.attachments?.length,
-    { message: 'scheduled messages with attachments are not supported', path: ['attachments'] }
+    (data) => data.scheduledAt == null
+        || !data.attachments?.length
+        || data.attachments.every((attachment) => isHubScratchlistAttachmentPath(attachment.path)),
+    {
+        message: 'scheduled messages may only use scratchlist attachments',
+        path: ['attachments']
+    }
 ).refine(
     (data) => data.scheduledAt == null || data.deliveryMode !== 'steer',
     { message: 'scheduled messages cannot use steer delivery', path: ['deliveryMode'] }

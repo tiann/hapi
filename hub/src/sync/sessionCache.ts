@@ -5,6 +5,7 @@ import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
+import { rehomeMessageAttachments } from './messageAttachmentTransfer'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
@@ -13,6 +14,11 @@ const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+type SessionAttachmentLock = <T>(
+    namespace: string,
+    sessionIds: readonly string[],
+    fn: () => Promise<T>,
+) => Promise<T>
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -25,7 +31,8 @@ export class SessionCache {
 
     constructor(
         private readonly store: Store,
-        private readonly publisher: EventPublisher
+        private readonly publisher: EventPublisher,
+        private readonly withAttachmentLocks: SessionAttachmentLock = async (_namespace, _sessionIds, fn) => fn(),
     ) {
     }
 
@@ -1111,13 +1118,33 @@ export class SessionCache {
             return
         }
 
+        await this.withAttachmentLocks(namespace, [oldSessionId, newSessionId], () => (
+            this.mergeSessionDataLocked(oldSessionId, newSessionId, namespace, options)
+        ))
+    }
+
+    private async mergeSessionDataLocked(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { deleteOldSession: boolean; mergeAgentState?: boolean }
+    ): Promise<void> {
+
         const oldStored = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
         const newStored = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
         if (!oldStored || !newStored) {
             throw new Error('Session not found for merge')
         }
 
+        const sourceMessages = this.store.messages.getAllMessages(oldSessionId)
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        await rehomeMessageAttachments(
+            this.store,
+            namespace,
+            oldSessionId,
+            newSessionId,
+            sourceMessages,
+        )
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
         // with the original socket, so its notify chain must stay on that id.
         if (options.deleteOldSession) {

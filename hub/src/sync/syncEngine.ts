@@ -14,7 +14,7 @@ import {
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
-import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { AgentFlavor, AttachmentMetadata, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
@@ -60,9 +60,28 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { rehomeMessageAttachments } from './messageAttachmentTransfer'
+import { ScheduledAttachmentValidationError } from './scheduledAttachmentValidation'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
+
+function messageReferencesScratchlistAttachment(
+    content: unknown,
+    attachment: Pick<AttachmentMetadata, 'id'> & Partial<Pick<AttachmentMetadata, 'path'>>,
+): boolean {
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) return false
+    const nested = (content as { content?: unknown }).content
+    if (nested === null || typeof nested !== 'object' || Array.isArray(nested)) return false
+    const attachments = (nested as { attachments?: unknown }).attachments
+    if (!Array.isArray(attachments)) return false
+    return attachments.some((candidate) => {
+        if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) return false
+        const value = candidate as { id?: unknown; path?: unknown }
+        return value.id === attachment.id
+            || (attachment.path !== undefined && value.path === attachment.path)
+    })
+}
 
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
@@ -180,6 +199,8 @@ export class SyncEngine {
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
+    /** Stable CLI client identity per session; transport reconnects reuse it. */
+    private readonly sessionClientInstanceIds = new Map<string, string>()
     /** Same-ID PTY rows with a resume currently in flight. */
     private readonly ptyResumeInFlightIds = new Set<string>()
     /** PTY rows kept fail-closed after a metadata write/clear failure. */
@@ -190,8 +211,12 @@ export class SyncEngine {
     private readonly piResumeQuarantinedIds = new Set<string>()
     /** Unexpected version-skew temp child -> original row whose retry is blocked until child ends. */
     private readonly piUnexpectedTempOriginalIds = new Map<string, string>()
-    /** Serialize scratchlist uploads per session so disk-byte caps cannot race. */
+    /** Serialize scratchlist attachment ownership changes per session or session pair. */
     private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
+    /** Prevent overlapping startup/retry scheduled-attachment reconciliation scans. */
+    private consumedAttachmentReconciliationInFlight = false
+    /** Sessions whose consumed scheduled-attachment cleanup failed and needs retry. */
+    private readonly consumedAttachmentCleanupRetries = new Set<string>()
     /** Coalesce duplicate clear requests so retries cannot spawn two fresh sessions. */
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
@@ -209,17 +234,71 @@ export class SyncEngine {
         sseManager: SSEManager,
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
-        this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.sessionCache = new SessionCache(
+            store,
+            this.eventPublisher,
+            (namespace, sessionIds, fn) => this.withScratchlistAttachmentLocks(namespace, sessionIds, fn),
+        )
         this.machineCache = new MachineCache(store, this.eventPublisher)
+        this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.messageService = new MessageService(
             store,
             io,
             this.eventPublisher,
-            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
+            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt),
+            {
+                validateScheduledAttachments: (sessionId, attachments) =>
+                    this.validateScheduledAttachments(sessionId, attachments),
+                withScheduledAttachmentLocks: (sessionIds, fn) => {
+                    const namespace = this.store.sessions.getSession(sessionIds[0] ?? '')?.namespace ?? 'default'
+                    return this.withScratchlistAttachmentLocks(namespace, sessionIds, fn)
+                },
+                materializeScheduledAttachments: (sessionId, attachments) =>
+                    this.materializeScheduledAttachments(sessionId, attachments),
+                deleteScheduledAttachments: async (sessionId, attachments) => {
+                    const { deleteScratchlistAttachmentFile, getHapiHomeDir } =
+                        await import('../scratchlistAttachments/storage')
+                    await Promise.all(attachments.map(async (attachment) => {
+                        const deleted = await deleteScratchlistAttachmentFile(getHapiHomeDir(), attachment.path)
+                        if (!deleted) {
+                            throw new Error(`Failed to delete scheduled attachment ${attachment.path}`)
+                        }
+                    }))
+                },
+                deleteMaterializedScheduledAttachments: async (sessionId, attachments) => {
+                    const namespace = this.store.sessions.getSession(sessionId)?.namespace ?? 'default'
+                    await this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
+                        await Promise.allSettled(attachments.map(async (attachment) => {
+                            try {
+                                const deleted = await this.rpcGateway.deleteUploadFile(sessionId, attachment.path)
+                                if (!deleted.success) {
+                                    console.error(`[Scratchlist] failed to clean cancelled upload ${attachment.path}: ${deleted.error ?? 'unknown error'}`)
+                                }
+                            } catch (error) {
+                                console.error(`[Scratchlist] failed to clean cancelled upload ${attachment.path}`, error)
+                            }
+                        }))
+                    })
+                },
+                rehomeScheduledMessageAttachments: async (sourceSessionId, targetSessionId, message) => {
+                    const sourceSession = this.store.sessions.getSession(sourceSessionId)
+                    if (!sourceSession) throw new Error('Session not found while re-homing scheduled attachments')
+                    await rehomeMessageAttachments(
+                        this.store,
+                        sourceSession.namespace,
+                        sourceSessionId,
+                        targetSessionId,
+                        [message],
+                    )
+                    return this.store.messages.getAllMessages(targetSessionId)
+                        .find((candidate) => candidate.id === message.id) ?? message
+                },
+            }
         )
         this.titleSuggestionService = createTitleSuggestionService(store)
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
+        this.reconcileConsumedScheduledAttachments()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
     }
 
@@ -416,6 +495,14 @@ export class SyncEngine {
     }
 
     handleRealtimeEvent(event: SyncEvent): void {
+        if (event.type === 'messages-consumed') {
+            void this.messageService
+                .releaseConsumedScheduledAttachments(event.sessionId, event.localIds)
+                .catch((error) => {
+                    this.consumedAttachmentCleanupRetries.add(event.sessionId)
+                    console.error('[Scratchlist] failed to release scheduled attachments', error)
+                })
+        }
         if (event.type === 'session-updated' && event.sessionId) {
             // Closes the second half of #884: when a CLI handler emits a
             // structured patch (todos / teamState / metadata / agentState),
@@ -523,8 +610,31 @@ export class SyncEngine {
         collaborationMode?: CodexCollaborationMode
     }): void {
         this.sessionCache.handleSessionAlive(payload)
+        // The CLI registers its RPC handlers during socket connect before
+        // sending session-alive. Clean uploads invalidated by that reconnect
+        // only after the delete-upload target is available.
+        void this.messageService.flushScheduledAttachmentDeliveryCleanup(payload.sid)
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    handleSessionConnected(sessionId: string, clientInstanceId?: string): void {
+        const previousClientInstanceId = this.sessionClientInstanceIds.get(sessionId)
+        if (clientInstanceId && previousClientInstanceId === clientInstanceId) {
+            // Socket.IO may reconnect the same ApiSessionClient while its
+            // IncomingMessageFilter and agent queue still retain materialized
+            // attachment paths. Do not invalidate those paths in that case.
+            return
+        }
+        if (clientInstanceId) {
+            this.sessionClientInstanceIds.set(sessionId, clientInstanceId)
+        }
+        // Materialized attachment paths belong to the previous CLI process.
+        // A different client instance is the generation boundary for every
+        // agent, including ordinary sessions that do not emit session-ready.
+        // Legacy clients without an instance id retain the old invalidate-on-
+        // connect behavior until they upgrade.
+        this.messageService.clearScheduledAttachmentDeliveryCache(sessionId)
     }
 
     handleSessionReady(payload: { sid: string; time: number }): void {
@@ -546,11 +656,14 @@ export class SyncEngine {
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
+        this.messageService.clearScheduledAttachmentDeliveryCache(payload.sid)
+        this.sessionClientInstanceIds.delete(payload.sid)
+        void this.messageService.flushScheduledAttachmentDeliveryCleanup(payload.sid)
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
-                this.abortOpenCodeClearSession(payload.sid, before.namespace, operation.replacementSessionId, 'abort-needed')
+                void this.abortOpenCodeClearSession(payload.sid, before.namespace, operation.replacementSessionId, 'abort-needed')
             }
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
@@ -616,6 +729,7 @@ export class SyncEngine {
         text: string
         createdAt: number
         updatedAt: number
+        position: number
         attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
     }> {
         return this.store.scratchlist.list(sessionId).map((row) => ({
@@ -623,6 +737,7 @@ export class SyncEngine {
             text: row.text,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
+            position: row.position,
             attachments: row.attachments,
         }))
     }
@@ -650,6 +765,7 @@ export class SyncEngine {
         text: string
         createdAt: number
         updatedAt: number
+        position: number
         attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
     } | null {
         const row = this.store.scratchlist.get(sessionId, entryId)
@@ -659,6 +775,7 @@ export class SyncEngine {
             text: row.text,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
+            position: row.position,
             attachments: row.attachments,
         }
     }
@@ -681,6 +798,7 @@ export class SyncEngine {
         options?: {
             entryId?: string
             createdAt?: number
+            position?: number
             attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
         }
     ): {
@@ -690,6 +808,7 @@ export class SyncEngine {
             text: string
             createdAt: number
             updatedAt: number
+            position: number
             attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
         }
     } | { outcome: 'session-not-found' } {
@@ -707,80 +826,338 @@ export class SyncEngine {
                 text: result.entry.text,
                 createdAt: result.entry.createdAt,
                 updatedAt: result.entry.updatedAt,
+                position: result.entry.position,
                 attachments: result.entry.attachments,
             }
         }
     }
 
-    updateScratchlistEntry(
+    async updateScratchlistEntry(
         sessionId: string,
         entryId: string,
         patch: {
             text?: string
             attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
-        }
-    ): {
+        },
+        namespace = this.store.sessions.getSession(sessionId)?.namespace ?? 'default',
+    ): Promise<{
         entryId: string
         text: string
         createdAt: number
         updatedAt: number
+        position: number
         attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
-    } | null {
-        const updated = this.store.scratchlist.update(sessionId, entryId, patch)
-        if (!updated) return null
-        this.sessionCache.emitScratchlistChanged(sessionId, updated.updatedAt)
-        return {
-            entryId: updated.entryId,
-            text: updated.text,
-            createdAt: updated.createdAt,
-            updatedAt: updated.updatedAt,
-            attachments: updated.attachments,
-        }
-    }
-
-    deleteScratchlistEntry(sessionId: string, entryId: string): boolean {
-        const existing = this.store.scratchlist.get(sessionId, entryId)
-        const removed = this.store.scratchlist.delete(sessionId, entryId)
-        if (removed && existing) {
-            // Attachment ids may be shared across entries (direct REST).
-            // Only delete blobs that no remaining entry still references.
-            const remainingIds = new Set(
-                this.store.scratchlist
-                    .list(sessionId)
-                    .flatMap((entry) => entry.attachments.map((att) => att.id))
-            )
-            const orphaned = existing.attachments.filter((att) => !remainingIds.has(att.id))
-            if (orphaned.length > 0) {
-                void import('../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
-                    deleteScratchlistAttachmentFiles(getHapiHomeDir(), orphaned)
+    } | null> {
+        return this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
+            const existing = this.store.scratchlist.get(sessionId, entryId)
+            const updated = this.store.scratchlist.update(sessionId, entryId, patch)
+            if (!updated) return null
+            if (patch.attachments !== undefined && existing) {
+                const removedAttachments = existing.attachments.filter(
+                    (old) => !updated.attachments.some((next) => next.id === old.id)
                 )
+                await this.deleteOrphanedScratchlistAttachmentsLocked(sessionId, removedAttachments)
             }
-            this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
-        }
-        return removed
+            this.sessionCache.emitScratchlistChanged(sessionId, updated.updatedAt)
+            return {
+                entryId: updated.entryId,
+                text: updated.text,
+                createdAt: updated.createdAt,
+                updatedAt: updated.updatedAt,
+                position: updated.position,
+                attachments: updated.attachments,
+            }
+        })
     }
 
-    private async withScratchlistUploadLock<T>(
+    /**
+     * Validate and update a scratchlist row while holding the attachment lock.
+     * The route must not validate against a snapshot and acquire the lock only
+     * for the subsequent write: a concurrent cleanup could remove a validated
+     * blob in between those two operations.
+     */
+    async updateScratchlistEntryAtomic(
+        sessionId: string,
+        entryId: string,
+        patch: {
+            text?: string
+            attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        },
+        namespace = this.store.sessions.getSession(sessionId)?.namespace ?? 'default',
+    ): Promise<
+        | {
+            outcome: 'updated'
+            entry: {
+                entryId: string
+                text: string
+                createdAt: number
+                updatedAt: number
+                position: number
+                attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+            }
+        }
+        | { outcome: 'not-found' }
+        | { outcome: 'invalid'; error: string; code: string }
+    > {
+        return this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
+            const existing = this.store.scratchlist.get(sessionId, entryId)
+            if (!existing) return { outcome: 'not-found' }
+
+            const nextText = patch.text !== undefined ? patch.text.trim() : existing.text
+            let nextAttachments = existing.attachments
+            if (patch.attachments !== undefined) {
+                const checked = await this.resolveScratchlistAttachmentsForSession(
+                    sessionId,
+                    namespace,
+                    patch.attachments,
+                )
+                if (!checked.ok) {
+                    return {
+                        outcome: 'invalid',
+                        error: checked.error,
+                        code: 'scratchlist_attachment_invalid',
+                    }
+                }
+                nextAttachments = checked.attachments
+            }
+
+            if (nextText.length === 0 && nextAttachments.length === 0) {
+                return {
+                    outcome: 'invalid',
+                    error: 'Scratchlist entry requires text or attachments',
+                    code: 'scratchlist_entry_empty',
+                }
+            }
+
+            const { loadScratchlistAttachmentLimitsFromEnv } = await import('../config/scratchlistAttachmentLimits')
+            const { scratchlistSessionBytesBeforeForPut, validateScratchlistAttachmentsForWrite } =
+                await import('../scratchlistAttachments/validate')
+            const diskBytes = await this.sumScratchlistAttachmentBytesOnDisk(sessionId, namespace)
+            const removedAttachments = existing.attachments.filter(
+                (old) => !nextAttachments.some((next) => next.id === old.id)
+            )
+            const sessionBytesBefore = scratchlistSessionBytesBeforeForPut(
+                diskBytes,
+                nextAttachments,
+                removedAttachments,
+            )
+            const attachmentValidation = validateScratchlistAttachmentsForWrite(
+                nextAttachments,
+                loadScratchlistAttachmentLimitsFromEnv(),
+                sessionBytesBefore,
+            )
+            if (!attachmentValidation.ok) {
+                return {
+                    outcome: 'invalid',
+                    error: attachmentValidation.error,
+                    code: attachmentValidation.code,
+                }
+            }
+
+            const updated = this.store.scratchlist.update(sessionId, entryId, {
+                text: nextText,
+                attachments: nextAttachments,
+            })
+            if (!updated) return { outcome: 'not-found' }
+
+            const removed = patch.attachments !== undefined
+                ? existing.attachments.filter(
+                    (old) => !updated.attachments.some((next) => next.id === old.id)
+                )
+                : []
+            await this.deleteOrphanedScratchlistAttachmentsLocked(sessionId, removed)
+            this.sessionCache.emitScratchlistChanged(sessionId, updated.updatedAt)
+            return {
+                outcome: 'updated',
+                entry: {
+                    entryId: updated.entryId,
+                    text: updated.text,
+                    createdAt: updated.createdAt,
+                    updatedAt: updated.updatedAt,
+                    position: updated.position,
+                    attachments: updated.attachments,
+                },
+            }
+        })
+    }
+
+    reorderScratchlistEntries(
+        sessionId: string,
+        entryIds: string[]
+    ): Array<{
+        entryId: string
+        text: string
+        createdAt: number
+        updatedAt: number
+        position: number
+        attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+    }> | null {
+        const rows = this.store.scratchlist.reorder(sessionId, entryIds)
+        if (!rows) return null
+        this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
+        return rows.map((row) => ({
+            entryId: row.entryId,
+            text: row.text,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            position: row.position,
+            attachments: row.attachments,
+        }))
+    }
+
+    canDeleteScratchlistAttachment(
+        sessionId: string,
+        attachment: Pick<AttachmentMetadata, 'id'> & Partial<Pick<AttachmentMetadata, 'path'>>,
+    ): boolean {
+        const stillInScratchlist = this.store.scratchlist.list(sessionId).some((entry) =>
+            entry.attachments.some((candidate) =>
+                candidate.id === attachment.id || candidate.path === attachment.path
+            )
+        )
+        if (stillInScratchlist) return false
+        if (attachment.path !== undefined) {
+            return !this.store.messages.hasUninvokedAttachmentReference(sessionId, attachment.path)
+        }
+        return !this.store.messages.getAllMessages(sessionId).some((message) => (
+            message.invokedAt === null
+            && messageReferencesScratchlistAttachment(message.content, attachment)
+        ))
+    }
+
+    private async deleteOrphanedScratchlistAttachmentsLocked(
+        sessionId: string,
+        attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[],
+    ): Promise<void> {
+        if (attachments.length === 0) return
+        const remaining = this.store.scratchlist.list(sessionId)
+        const orphaned = attachments.filter((attachment) => !remaining.some((entry) =>
+            entry.attachments.some((candidate) =>
+                candidate.id === attachment.id || candidate.path === attachment.path
+            )
+        ))
+        const deletable = orphaned.filter((attachment) =>
+            this.canDeleteScratchlistAttachment(sessionId, attachment)
+        )
+        if (deletable.length === 0) return
+        const { deleteScratchlistAttachmentFiles, getHapiHomeDir } =
+            await import('../scratchlistAttachments/storage')
+        await deleteScratchlistAttachmentFiles(getHapiHomeDir(), deletable)
+    }
+
+    async deleteScratchlistEntry(
+        sessionId: string,
+        entryId: string,
+        namespace = this.store.sessions.getSession(sessionId)?.namespace ?? 'default',
+    ): Promise<boolean> {
+        return this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
+            const existing = this.store.scratchlist.get(sessionId, entryId)
+            const removed = this.store.scratchlist.delete(sessionId, entryId)
+            if (removed && existing) {
+                await this.deleteOrphanedScratchlistAttachmentsLocked(sessionId, existing.attachments)
+                this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
+            }
+            return removed
+        })
+    }
+
+    /**
+     * Delete a scratchlist entry only if it has not changed since a send began.
+     * The conditional SQL delete keeps a late send settlement from deleting
+     * an edited draft, including edits made by another web client.
+     */
+    async deleteScratchlistEntryIfUnchanged(
+        sessionId: string,
+        entryId: string,
+        expectedUpdatedAt: number,
+        namespace = this.store.sessions.getSession(sessionId)?.namespace ?? 'default',
+    ): Promise<'deleted' | 'revision-mismatch' | 'not-found'> {
+        return this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
+            const existing = this.store.scratchlist.get(sessionId, entryId)
+            if (!existing) return 'not-found'
+            if (existing.updatedAt !== expectedUpdatedAt) return 'revision-mismatch'
+
+            const removed = this.store.scratchlist.deleteIfUpdatedAt(
+                sessionId,
+                entryId,
+                expectedUpdatedAt,
+            )
+            if (!removed) return 'revision-mismatch'
+            await this.deleteOrphanedScratchlistAttachmentsLocked(sessionId, existing.attachments)
+            this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
+            return 'deleted'
+        })
+    }
+
+    /**
+     * Serialize attachment validation and scratchlist mutations per session.
+     * Route-layer creates use this same gate as uploads and cleanup so a
+     * cleanup cannot remove a validated file before the new row references it.
+     */
+    async withScratchlistAttachmentLock<T>(
         namespace: string,
         sessionId: string,
         fn: () => Promise<T>
     ): Promise<T> {
-        const key = `${namespace}:${sessionId}`
-        const previous = this.scratchlistUploadTails.get(key) ?? Promise.resolve()
-        let release!: () => void
-        const gate = new Promise<void>((resolve) => {
-            release = resolve
+        return this.withScratchlistAttachmentLocks(namespace, [sessionId], fn)
+    }
+
+    /**
+     * Serialize attachment ownership changes for an ordered set of sessions.
+     * Session merges move database rows before re-keying files, so the source
+     * and destination must share one lock with draft cleanup and attachment
+     * writes. Sorting keys gives overlapping multi-session operations a stable
+     * acquisition order and prevents deadlocks.
+     */
+    async withScratchlistAttachmentLocks<T>(
+        namespace: string,
+        sessionIds: readonly string[],
+        fn: () => Promise<T>,
+    ): Promise<T> {
+        const keys = [...new Set(sessionIds)]
+            .map((sessionId) => `${namespace}:${sessionId}`)
+            .sort()
+        if (keys.length === 0) return fn()
+
+        const previous = keys.map((key) => this.scratchlistUploadTails.get(key))
+        const releases: Array<() => void> = []
+        const tails = keys.map((key, index) => {
+            let release!: () => void
+            const gate = new Promise<void>((resolve) => {
+                release = resolve
+            })
+            releases[index] = release
+            const tail = (previous[index]?.catch(() => undefined) ?? Promise.resolve()).then(() => gate)
+            this.scratchlistUploadTails.set(key, tail)
+            return tail
         })
-        const tail = previous.catch(() => undefined).then(() => gate)
-        this.scratchlistUploadTails.set(key, tail)
-        await previous.catch(() => undefined)
+
+        const releaseLocks = () => {
+            for (const release of releases) release()
+            for (const [index, key] of keys.entries()) {
+                if (this.scratchlistUploadTails.get(key) === tails[index]) {
+                    this.scratchlistUploadTails.delete(key)
+                }
+            }
+        }
+
+        // Preserve the synchronous prefix of the original single-session lock
+        // when no operation is queued. Some session lifecycle paths perform a
+        // database move before their first await, and another callback can
+        // legitimately observe that move in the same event-loop turn.
+        if (previous.every((tail) => tail === undefined)) {
+            try {
+                return await fn().finally(releaseLocks)
+            } catch (error) {
+                releaseLocks()
+                throw error
+            }
+        }
+
+        await Promise.all(previous.map((tail) => tail?.catch(() => undefined)))
         try {
             return await fn()
         } finally {
-            release()
-            if (this.scratchlistUploadTails.get(key) === tail) {
-                this.scratchlistUploadTails.delete(key)
-            }
+            releaseLocks()
         }
     }
 
@@ -811,7 +1188,7 @@ export class SyncEngine {
 
         const hapiHome = getHapiHomeDir()
         const buffer = Buffer.from(contentBase64, 'base64')
-        return await this.withScratchlistUploadLock(namespace, sessionId, async () => {
+        return await this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
             const sessionBytes = await sumScratchlistAttachmentBytesOnDisk(hapiHome, namespace, sessionId)
             const provisional = {
                 id: 'pending',
@@ -865,11 +1242,14 @@ export class SyncEngine {
         namespace: string,
         attachmentId: string
     ): Promise<boolean> {
-        const {
-            deleteScratchlistAttachmentById: deleteById,
-            getHapiHomeDir,
-        } = await import('../scratchlistAttachments/storage')
-        return deleteById(getHapiHomeDir(), namespace, sessionId, attachmentId)
+        return this.withScratchlistAttachmentLock(namespace, sessionId, async () => {
+            if (!this.canDeleteScratchlistAttachment(sessionId, { id: attachmentId })) return false
+            const {
+                deleteScratchlistAttachmentById: deleteById,
+                getHapiHomeDir,
+            } = await import('../scratchlistAttachments/storage')
+            return deleteById(getHapiHomeDir(), namespace, sessionId, attachmentId)
+        })
     }
 
     async readScratchlistAttachment(
@@ -879,6 +1259,100 @@ export class SyncEngine {
         const read = await readScratchlistAttachmentFile(getHapiHomeDir(), hubPath)
         if (!read) return null
         return { buffer: read.buffer, mimeType: 'application/octet-stream', filename: 'attachment' }
+    }
+
+    private async validateScheduledAttachments(
+        sessionId: string,
+        attachments: AttachmentMetadata[],
+    ): Promise<void> {
+        const session = this.store.sessions.getSession(sessionId)
+        if (!session) throw new Error('Session not found')
+        const checked = await this.resolveScratchlistAttachmentsForSession(
+            sessionId,
+            session.namespace,
+            attachments,
+        )
+        if (!checked.ok) {
+            throw new ScheduledAttachmentValidationError(`Invalid scheduled attachment: ${checked.error}`)
+        }
+        await this.assertScheduledAttachmentsWithinLimits(checked.attachments)
+    }
+
+    private async assertScheduledAttachmentsWithinLimits(
+        attachments: AttachmentMetadata[],
+    ): Promise<void> {
+        const uniquePaths = new Set(attachments.map((attachment) => attachment.path))
+        if (uniquePaths.size !== attachments.length) {
+            throw new ScheduledAttachmentValidationError('Duplicate scheduled attachment')
+        }
+
+        const { loadScratchlistAttachmentLimitsFromEnv } = await import('../config/scratchlistAttachmentLimits')
+        const { validateScratchlistAttachmentsForWrite } = await import('../scratchlistAttachments/validate')
+        const validation = validateScratchlistAttachmentsForWrite(
+            attachments,
+            loadScratchlistAttachmentLimitsFromEnv(),
+            0,
+        )
+        if (!validation.ok) {
+            throw new ScheduledAttachmentValidationError(`Invalid scheduled attachment: ${validation.error}`)
+        }
+    }
+
+    /**
+     * Scheduled scratchlist files live on the hub, while the agent reads its
+     * normal upload directory on the CLI host.  Copy each file across the RPC
+     * boundary only when the scheduled row matures, so a disconnected CLI or
+     * session cleanup cannot delete the source before delivery.
+     */
+    private async materializeScheduledAttachments(
+        sessionId: string,
+        attachments: AttachmentMetadata[],
+    ): Promise<AttachmentMetadata[]> {
+        const session = this.store.sessions.getSession(sessionId)
+        if (!session) throw new Error('Session not found')
+        const checked = await this.resolveScratchlistAttachmentsForSession(
+            sessionId,
+            session.namespace,
+            attachments,
+        )
+        if (!checked.ok) {
+            throw new ScheduledAttachmentValidationError(`Invalid scheduled attachment: ${checked.error}`)
+        }
+        await this.assertScheduledAttachmentsWithinLimits(checked.attachments)
+
+        const { getHapiHomeDir, readScratchlistAttachmentFile } = await import('../scratchlistAttachments/storage')
+        const materialized: AttachmentMetadata[] = []
+        const stagedPaths: string[] = []
+        try {
+            for (const attachment of checked.attachments) {
+                const read = await readScratchlistAttachmentFile(getHapiHomeDir(), attachment.path)
+                if (!read) throw new Error(`Scheduled attachment file missing: ${attachment.filename}`)
+                const uploaded = await this.rpcGateway.uploadFile(
+                    sessionId,
+                    attachment.filename,
+                    read.buffer.toString('base64'),
+                    attachment.mimeType,
+                )
+                if (!uploaded.success || !uploaded.path) {
+                    throw new Error(uploaded.error ?? `Failed to stage scheduled attachment: ${attachment.filename}`)
+                }
+                stagedPaths.push(uploaded.path)
+                materialized.push({ ...attachment, path: uploaded.path })
+            }
+            return materialized
+        } catch (error) {
+            await Promise.allSettled(stagedPaths.map(async (path) => {
+                try {
+                    const deleted = await this.rpcGateway.deleteUploadFile(sessionId, path)
+                    if (!deleted.success) {
+                        console.error(`[Scratchlist] failed to clean staged attachment ${path}: ${deleted.error ?? 'unknown error'}`)
+                    }
+                } catch (cleanupError) {
+                    console.error(`[Scratchlist] failed to clean staged attachment ${path}`, cleanupError)
+                }
+            }))
+            throw error
+        }
     }
 
     handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
@@ -935,8 +1409,43 @@ export class SyncEngine {
         this.machineCache.expireInactive?.()
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
-        this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
+        void this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
+        this.retryConsumedScheduledAttachmentCleanup()
         void this.reconcileOpenCodeClears()
+    }
+
+    private reconcileConsumedScheduledAttachments(): void {
+        this.startConsumedScheduledAttachmentReconciliation(
+            this.store.sessions.getSessions().map((session) => session.id),
+        )
+    }
+
+    private retryConsumedScheduledAttachmentCleanup(): void {
+        this.startConsumedScheduledAttachmentReconciliation([...this.consumedAttachmentCleanupRetries])
+    }
+
+    private startConsumedScheduledAttachmentReconciliation(sessionIds: string[]): void {
+        if (sessionIds.length === 0) return
+        if (this.consumedAttachmentReconciliationInFlight) return
+        this.consumedAttachmentReconciliationInFlight = true
+        void (async () => {
+            try {
+                for (const sessionId of new Set(sessionIds)) {
+                    try {
+                        await this.messageService.reconcileConsumedScheduledAttachments(sessionId)
+                        this.consumedAttachmentCleanupRetries.delete(sessionId)
+                    } catch (error) {
+                        this.consumedAttachmentCleanupRetries.add(sessionId)
+                        console.error(
+                            `[Scratchlist] failed to reconcile consumed scheduled attachments for ${sessionId}`,
+                            error,
+                        )
+                    }
+                }
+            } finally {
+                this.consumedAttachmentReconciliationInFlight = false
+            }
+        })()
     }
 
     private async reconcileOpenCodeClears(): Promise<void> {
@@ -945,7 +1454,7 @@ export class SyncEngine {
             if (session.active || !operation) continue
             if (operation.state === 'reserved') continue
             if (operation.state === 'abort-needed') {
-                this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
+                await this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
                 continue
             }
             if (!['cleanup-confirmed', 'finalizing', 'pending', 'failed'].includes(operation.state)) continue
@@ -2022,21 +2531,39 @@ export class SyncEngine {
         return { type: 'success', sessionId: operation.replacementSessionId }
     }
 
-    abortOpenCodeClearSession(
+    async abortOpenCodeClearSession(
         sessionId: string,
         namespace: string,
         replacementSessionId: string,
         expectedState: 'reserved' | 'abort-needed' = 'reserved',
         requireInactive: boolean = false
-    ): ClearOpencodeSessionResult {
+    ): Promise<ClearOpencodeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (operation.state === 'aborted') {
-            return replacementSessionId === operation.replacementSessionId
-                ? { type: 'success', sessionId }
-                : { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            if (replacementSessionId !== operation.replacementSessionId) {
+                return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            }
+            try {
+                // A previous attempt may have committed the database move
+                // before the filesystem re-home failed. Retry that re-home
+                // even though the durable operation is already aborted.
+                await this.withScratchlistAttachmentLocks(
+                    namespace,
+                    [operation.replacementSessionId, sessionId],
+                    () => rehomeMessageAttachments(
+                        this.store,
+                        namespace,
+                        operation.replacementSessionId,
+                        sessionId,
+                    ),
+                )
+                return { type: 'success', sessionId }
+            } catch {
+                return { type: 'error', message: 'Could not restore clear attachments', code: 'replacement_link_failed' }
+            }
         }
         const required = { replacementSessionId, state: expectedState, requireInactive }
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -2045,17 +2572,53 @@ export class SyncEngine {
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
             if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
-                return { type: 'success', sessionId }
+                try {
+                    await this.withScratchlistAttachmentLocks(
+                        namespace,
+                        [current.replacementSessionId, sessionId],
+                        () => rehomeMessageAttachments(
+                            this.store,
+                            namespace,
+                            current.replacementSessionId,
+                            sessionId,
+                        ),
+                    )
+                    return { type: 'success', sessionId }
+                } catch {
+                    return { type: 'error', message: 'Could not restore clear attachments', code: 'replacement_link_failed' }
+                }
             }
             if ((required.requireInactive && latest.active)
                 || current.replacementSessionId !== required.replacementSessionId
                 || current.state !== required.state) break
-            const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
-                ...latest.metadata,
-                opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
-            }, latest.metadataVersion, namespace, required)
+            let result: ReturnType<Store['abortOpenCodeClearOperation']>
+            try {
+                result = await this.withScratchlistAttachmentLocks(
+                    namespace,
+                    [current.replacementSessionId, sessionId],
+                    async () => {
+                        const sourceMessages = this.store.messages.getAllMessages(current.replacementSessionId)
+                        const abortResult = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
+                            ...latest.metadata,
+                            opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
+                        }, latest.metadataVersion, namespace, required)
+                        if (abortResult.result === 'success') {
+                            this.sessionCache.refreshSession(sessionId)
+                            await rehomeMessageAttachments(
+                                this.store,
+                                namespace,
+                                current.replacementSessionId,
+                                sessionId,
+                                sourceMessages,
+                            )
+                        }
+                        return abortResult
+                    },
+                )
+            } catch {
+                return { type: 'error', message: 'Could not restore clear attachments', code: 'replacement_link_failed' }
+            }
             if (result.result === 'success') {
-                this.sessionCache.refreshSession(sessionId)
                 return { type: 'success', sessionId }
             }
             if (result.result !== 'version-mismatch') break
@@ -2227,12 +2790,12 @@ export class SyncEngine {
         return this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
     }
 
-    private finishOpenCodeClear(
+    private async finishOpenCodeClear(
         sessionId: string,
         namespace: string,
         replacementSessionId: string,
         operation: NonNullable<Session['metadata']>['opencodeClearOperation']
-    ): ClearOpencodeSessionResult {
+    ): Promise<ClearOpencodeSessionResult> {
         if (!operation) {
             return {
                 type: 'error',
@@ -2241,7 +2804,18 @@ export class SyncEngine {
             }
         }
         try {
-            const moved = this.store.messages.moveUninvokedMessages(sessionId, replacementSessionId)
+            let moved = 0
+            await this.withScratchlistAttachmentLocks(namespace, [sessionId, replacementSessionId], async () => {
+                const sourceMessages = this.store.messages.getAllMessages(sessionId)
+                moved = this.store.messages.moveUninvokedMessages(sessionId, replacementSessionId)
+                await rehomeMessageAttachments(
+                    this.store,
+                    namespace,
+                    sessionId,
+                    replacementSessionId,
+                    sourceMessages,
+                )
+            })
             if (moved > 0) {
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementSessionId })
@@ -2260,7 +2834,7 @@ export class SyncEngine {
                 code: 'replacement_link_failed'
             }
         }
-        this.messageService.releaseDeliverableQueuedMessages(replacementSessionId)
+        await this.messageService.releaseDeliverableQueuedMessages(replacementSessionId)
         return { type: 'success', sessionId: replacementSessionId }
     }
 
@@ -2772,9 +3346,9 @@ export class SyncEngine {
         try {
             const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
             if (status === 'still_alive') return false
-            return this.abortOpenCodeClearSession(
+            return (await this.abortOpenCodeClearSession(
                 session.id, namespace, operation.replacementSessionId, 'reserved', true
-            ).type === 'success'
+            )).type === 'success'
         } catch {
             return false
         }

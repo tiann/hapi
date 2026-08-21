@@ -423,6 +423,8 @@ export const ScratchlistEntrySchema = z.object({
     text: z.string(),
     createdAt: z.number(),
     updatedAt: z.number(),
+    // Optional so older exported sessions remain importable.
+    position: z.number().int().nonnegative().optional(),
     attachments: z.array(z.object({
         id: z.string(),
         filename: z.string(),

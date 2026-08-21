@@ -40,6 +40,7 @@ type DbScratchlistRow = {
     text: string
     created_at: number
     updated_at: number
+    position: number
     attachments: string | null
 }
 
@@ -50,11 +51,12 @@ function toStoredEntry(row: DbScratchlistRow): StoredScratchlistEntry {
         text: row.text,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        position: row.position,
         attachments: parseScratchlistAttachmentsJson(row.attachments),
     }
 }
 
-const SCRATCHLIST_ENTRY_COLUMNS = `session_id, entry_id, text, created_at, updated_at, attachments`
+const SCRATCHLIST_ENTRY_COLUMNS = `session_id, entry_id, text, created_at, updated_at, position, attachments`
 
 export function listScratchlistEntries(
     db: Database,
@@ -64,7 +66,7 @@ export function listScratchlistEntries(
         `SELECT ${SCRATCHLIST_ENTRY_COLUMNS}
          FROM session_scratchlist
          WHERE session_id = ?
-         ORDER BY created_at DESC, entry_id DESC`
+         ORDER BY position ASC, created_at DESC, entry_id DESC`
     ).all(sessionId) as DbScratchlistRow[]
     return rows.map(toStoredEntry)
 }
@@ -122,6 +124,7 @@ export function createScratchlistEntry(
     options?: {
         entryId?: string
         createdAt?: number
+        position?: number
         attachments?: ScratchlistAttachmentMetadata[]
     }
 ): CreateScratchlistResult {
@@ -147,18 +150,36 @@ export function createScratchlistEntry(
 
     const attachmentsJson = serializeScratchlistAttachments(options?.attachments ?? [])
 
-    db.prepare(
-        `INSERT INTO session_scratchlist
-            (session_id, entry_id, text, created_at, updated_at, attachments)
-         VALUES (@session_id, @entry_id, @text, @created_at, @updated_at, @attachments)`
-    ).run({
-        session_id: sessionId,
-        entry_id: entryId,
-        text,
-        created_at: createdAt,
-        updated_at: updatedAt,
-        attachments: attachmentsJson,
-    })
+    const requestedPosition = options?.position
+    const position = requestedPosition === undefined
+        ? 0
+        : Math.max(0, Math.min(Math.trunc(requestedPosition), countScratchlistEntries(db, sessionId)))
+
+    db.exec('BEGIN')
+    try {
+        db.prepare(
+            `UPDATE session_scratchlist
+                SET position = position + 1
+              WHERE session_id = ? AND position >= ?`
+        ).run(sessionId, position)
+        db.prepare(
+            `INSERT INTO session_scratchlist
+                (session_id, entry_id, text, created_at, updated_at, position, attachments)
+             VALUES (@session_id, @entry_id, @text, @created_at, @updated_at, @position, @attachments)`
+        ).run({
+            session_id: sessionId,
+            entry_id: entryId,
+            text,
+            created_at: createdAt,
+            updated_at: updatedAt,
+            position,
+            attachments: attachmentsJson,
+        })
+        db.exec('COMMIT')
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
 
     const created = getScratchlistEntry(db, sessionId, entryId)
     if (!created) {
@@ -169,7 +190,8 @@ export function createScratchlistEntry(
 }
 
 /**
- * Update an existing entry's `text`. Bumps `updated_at` to `Date.now()`.
+ * Update an existing entry's `text`. Bumps `updated_at` to a monotonic
+ * timestamp based on `Date.now()`.
  * Returns `null` when the entry does not exist (route layer turns into a
  * 404). Note: `created_at` is intentionally NOT updated.
  */
@@ -182,7 +204,9 @@ export function updateScratchlistEntry(
     const existing = getScratchlistEntry(db, sessionId, entryId)
     if (!existing) return null
 
-    const now = Date.now()
+    // Keep the timestamp a true revision token even when two edits land in
+    // the same millisecond; conditional send cleanup relies on this changing.
+    const now = Math.max(Date.now(), existing.updatedAt + 1)
     const text = patch.text ?? existing.text
     const attachments = patch.attachments ?? existing.attachments
     const attachmentsJson = serializeScratchlistAttachments(attachments)
@@ -216,7 +240,68 @@ export function deleteScratchlistEntry(
         `DELETE FROM session_scratchlist
           WHERE session_id = ? AND entry_id = ?`
     ).run(sessionId, entryId)
-    return result.changes > 0
+    if (result.changes === 0) return false
+    normalizeScratchlistPositions(db, sessionId)
+    return true
+}
+
+/** Delete an entry only when it still has the expected revision timestamp. */
+export function deleteScratchlistEntryIfUpdatedAt(
+    db: Database,
+    sessionId: string,
+    entryId: string,
+    expectedUpdatedAt: number,
+): boolean {
+    const result = db.prepare(
+        `DELETE FROM session_scratchlist
+          WHERE session_id = ? AND entry_id = ? AND updated_at = ?`
+    ).run(sessionId, entryId, expectedUpdatedAt)
+    if (result.changes === 0) return false
+    normalizeScratchlistPositions(db, sessionId)
+    return true
+}
+
+function normalizeScratchlistPositions(db: Database, sessionId: string): void {
+    const rows = db.prepare(
+        `SELECT entry_id FROM session_scratchlist
+         WHERE session_id = ?
+         ORDER BY position ASC, created_at DESC, entry_id DESC`
+    ).all(sessionId) as Array<{ entry_id: string }>
+    const updatePosition = db.prepare(
+        'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+    )
+    rows.forEach((row, index) => updatePosition.run(-(index + 1), sessionId, row.entry_id))
+    rows.forEach((row, index) => updatePosition.run(index, sessionId, row.entry_id))
+}
+
+/** Replace the complete order atomically and return the canonical rows. */
+export function reorderScratchlistEntries(
+    db: Database,
+    sessionId: string,
+    entryIds: string[]
+): StoredScratchlistEntry[] | null {
+    const existing = listScratchlistEntries(db, sessionId)
+    if (
+        entryIds.length !== existing.length
+        || new Set(entryIds).size !== entryIds.length
+        || entryIds.some((entryId) => !existing.some((entry) => entry.entryId === entryId))
+    ) {
+        return null
+    }
+
+    const updatePosition = db.prepare(
+        'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+    )
+    db.exec('BEGIN')
+    try {
+        entryIds.forEach((entryId, index) => updatePosition.run(-(index + 1), sessionId, entryId))
+        entryIds.forEach((entryId, index) => updatePosition.run(index, sessionId, entryId))
+        db.exec('COMMIT')
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
+    return listScratchlistEntries(db, sessionId)
 }
 
 /**
@@ -270,6 +355,7 @@ export function transferScratchlistEntries(
                 'DELETE FROM session_scratchlist WHERE session_id = ?'
             ).run(fromSessionId)
         }
+        normalizeScratchlistPositions(db, toSessionId)
         db.exec('COMMIT')
         return { moved, collided }
     } catch (error) {

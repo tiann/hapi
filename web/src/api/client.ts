@@ -1009,6 +1009,7 @@ export class ApiClient {
             text: string
             createdAt: number
             updatedAt: number
+            position: number
             attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
         }>
     }> {
@@ -1069,6 +1070,7 @@ export class ApiClient {
             text: string
             entryId?: string
             createdAt?: number
+            position?: number
             attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
         }
     ): Promise<{
@@ -1077,6 +1079,7 @@ export class ApiClient {
             text: string
             createdAt: number
             updatedAt: number
+            position: number
             attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
         }
     }> {
@@ -1092,13 +1095,15 @@ export class ApiClient {
     async updateScratchlistEntry(
         sessionId: string,
         entryId: string,
-        text: string
+        text: string,
+        attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[],
     ): Promise<{
         entry: {
             entryId: string
             text: string
             createdAt: number
             updatedAt: number
+            position: number
             attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
         }
     }> {
@@ -1106,7 +1111,29 @@ export class ApiClient {
             `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/${encodeURIComponent(entryId)}`,
             {
                 method: 'PUT',
-                body: JSON.stringify({ text })
+                body: JSON.stringify({
+                    text,
+                    ...(attachments !== undefined ? { attachments } : {})
+                })
+            }
+        )
+    }
+
+    async reorderScratchlistEntries(sessionId: string, entryIds: string[]): Promise<{
+        entries: Array<{
+            entryId: string
+            text: string
+            createdAt: number
+            updatedAt: number
+            position: number
+            attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        }>
+    }> {
+        return await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/reorder`,
+            {
+                method: 'PUT',
+                body: JSON.stringify({ entryIds })
             }
         )
     }
@@ -1115,6 +1142,17 @@ export class ApiClient {
         await this.request(
             `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/${encodeURIComponent(entryId)}`,
             { method: 'DELETE' }
+        )
+    }
+
+    async deleteScratchlistEntryIfUnchanged(
+        sessionId: string,
+        entryId: string,
+        expectedUpdatedAt: number,
+    ): Promise<{ deleted: boolean }> {
+        return await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/${encodeURIComponent(entryId)}?expectedUpdatedAt=${encodeURIComponent(String(expectedUpdatedAt))}`,
+            { method: 'DELETE' },
         )
     }
 

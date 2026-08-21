@@ -18,7 +18,7 @@ import { queryKeys } from './query-keys'
  *   - banner dismissal persistence
  *   - per-session migration flag prevents re-migration
  *   - cap enforcement returns false from add()
- *   - local-only reorder via move()
+ *   - hub-backed reorder via move()
  *
  * Per-test session id: each test calls `makeSid()` to get a fresh
  * session-scoped localStorage namespace. The hook's offline-cache
@@ -28,7 +28,7 @@ import { queryKeys } from './query-keys'
  * path. Unique session ids sidestep the race.
  */
 
-type HubEntry = { entryId: string; text: string; createdAt: number; updatedAt: number }
+type HubEntry = { entryId: string; text: string; createdAt: number; updatedAt: number; position?: number }
 
 function createWrapper() {
     const queryClient = new QueryClient({
@@ -46,6 +46,7 @@ function createMockApi(overrides: Partial<{
     getScratchlist: (sessionId: string) => Promise<{ entries: HubEntry[] }>
     createScratchlistEntry: (sessionId: string, body: { text: string; entryId?: string; createdAt?: number }) => Promise<{ entry: HubEntry }>
     updateScratchlistEntry: (sessionId: string, entryId: string, text: string) => Promise<{ entry: HubEntry }>
+    reorderScratchlistEntries: (sessionId: string, entryIds: string[]) => Promise<{ entries: HubEntry[] }>
     deleteScratchlistEntry: (sessionId: string, entryId: string) => Promise<void>
 }> = {}): ApiClient {
     return {
@@ -63,6 +64,15 @@ function createMockApi(overrides: Partial<{
             ?? (async (_sessionId, entryId, text) => ({
                 entry: { entryId, text, createdAt: 1000, updatedAt: 5000 }
             })),
+        reorderScratchlistEntries: overrides.reorderScratchlistEntries ?? (async (_sessionId, entryIds) => ({
+            entries: entryIds.map((entryId, position) => ({
+                entryId,
+                text: entryId,
+                createdAt: position,
+                updatedAt: position,
+                position
+            }))
+        })),
         deleteScratchlistEntry: overrides.deleteScratchlistEntry ?? (async () => undefined)
     } as unknown as ApiClient
 }
@@ -359,6 +369,7 @@ describe('useHubScratchlist - update', () => {
             await result.current.update('a', 'after')
         })
         await waitFor(() => expect(result.current.entries[0]?.text).toBe('after'))
+        expect(result.current.entries[0]?.updatedAt).toBe(5)
     })
 
     it('drops entry when update returns 404 (deleted elsewhere) (HAPI Bot, PR #896)', async () => {
@@ -432,7 +443,63 @@ describe('useHubScratchlist - localStorage migration', () => {
         expect(create).toHaveBeenCalledTimes(2)
         const entryIds = create.mock.calls.map((c) => (c[1] as { entryId?: string }).entryId)
         expect(entryIds.sort()).toEqual(['old-1', 'old-2'])
+        const positions = create.mock.calls.map((c) => (c[1] as { position?: number }).position)
+        expect(positions).toEqual([0, 1])
         expect(localStorage.getItem(`hapi.scratchlist.v2.migrated.${sid}`)).toBe('1')
+    })
+
+    it('migrates attachment-only localStorage entries', async () => {
+        const sid = makeSid()
+        localStorage.setItem(
+            `hapi.scratchlist.v1.${sid}`,
+            JSON.stringify([{
+                id: 'photo-only',
+                text: '',
+                createdAt: 100,
+                attachments: [{
+                    id: 'photo-1',
+                    filename: 'photo.png',
+                    mimeType: 'image/png',
+                    size: 12,
+                    path: 'hapi-hub:scratchlist/default/session/photo-1-photo.png',
+                    previewUrl: 'blob:stale-preview',
+                }]
+            }])
+        )
+        const create = vi.fn(async (_s: string, body: {
+            text: string
+            entryId?: string
+            createdAt?: number
+            attachments?: Array<Record<string, unknown>>
+        }) => ({
+            entry: {
+                entryId: body.entryId ?? 'photo-only',
+                text: body.text,
+                createdAt: body.createdAt ?? 100,
+                updatedAt: 100,
+                attachments: body.attachments ?? [],
+            }
+        }))
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] }),
+            createScratchlistEntry: create,
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+
+        await waitFor(() => expect(result.current.migrationStatus).toBe('completed'))
+        expect(create).toHaveBeenCalledTimes(1)
+        const body = create.mock.calls[0]?.[1] as {
+            text: string
+            attachments: Array<Record<string, unknown>>
+        }
+        expect(body.text).toBe('')
+        expect(body.attachments).toEqual([{
+            id: 'photo-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 12,
+            path: 'hapi-hub:scratchlist/default/session/photo-1-photo.png',
+        }])
     })
 
     it('does not re-migrate on a mount where the migrated flag is already set', async () => {
@@ -648,10 +715,18 @@ describe('useHubScratchlist - localStorage migration', () => {
     })
 })
 
-describe('useHubScratchlist - reorder (local-only)', () => {
-    it('move() reorders entries in-place without calling the hub', async () => {
+describe('useHubScratchlist - reorder', () => {
+    it('move() optimistically reorders entries and persists the ordered ids', async () => {
         const sid = makeSid()
-        const updateMock = vi.fn()
+        const reorderMock = vi.fn(async (_sessionId: string, entryIds: string[]) => ({
+            entries: entryIds.map((entryId, position) => ({
+                entryId,
+                text: entryId,
+                createdAt: position,
+                updatedAt: position,
+                position
+            }))
+        }))
         const api = createMockApi({
             getScratchlist: async () => ({
                 entries: [
@@ -659,7 +734,7 @@ describe('useHubScratchlist - reorder (local-only)', () => {
                     { entryId: 'bot', text: 'bot', createdAt: 50, updatedAt: 50 }
                 ]
             }),
-            updateScratchlistEntry: updateMock as never
+            reorderScratchlistEntries: reorderMock
         })
         const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
         await waitFor(() => expect(result.current.entries.length).toBe(2))
@@ -671,6 +746,6 @@ describe('useHubScratchlist - reorder (local-only)', () => {
         await waitFor(() => {
             expect(result.current.entries.map((e) => e.id)).toEqual(['bot', 'top'])
         })
-        expect(updateMock).not.toHaveBeenCalled()
+        expect(reorderMock).toHaveBeenCalledWith(sid, ['bot', 'top'])
     })
 })
