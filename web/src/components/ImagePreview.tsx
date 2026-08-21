@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
-import { CloseIcon } from '@/components/icons'
+import { ArrowLeftIcon, ArrowRightIcon, CloseIcon, MinusIcon, PlusIcon } from '@/components/icons'
+import { formatFileSize } from '@/lib/file-metadata'
 
 const MIN_IMAGE_SCALE = 0.25
 const MAX_IMAGE_SCALE = 8
@@ -16,6 +17,13 @@ type PreviewImage = {
     src: string
     fileName: string
     label: string
+    fileSize?: number
+}
+
+type ImageDimensions = {
+    src: string
+    width: number
+    height: number
 }
 
 function getPointDistance(a: ImagePoint, b: ImagePoint): number {
@@ -29,6 +37,12 @@ function getPointCenter(a: ImagePoint, b: ImagePoint): ImagePoint {
     }
 }
 
+function parseFileSize(value: string | undefined): number | undefined {
+    if (value === undefined) return undefined
+    const fileSize = Number(value)
+    return Number.isFinite(fileSize) && fileSize >= 0 ? fileSize : undefined
+}
+
 export function ImagePreview(props: {
     src: string
     fileName: string
@@ -38,10 +52,12 @@ export function ImagePreview(props: {
     imageStyle?: CSSProperties
     caption?: ReactNode
     galleryId?: string
+    fileSize?: number
 }) {
     const [viewerOpen, setViewerOpen] = useState(false)
     const [previewImages, setPreviewImages] = useState<PreviewImage[]>([])
     const [previewIndex, setPreviewIndex] = useState(0)
+    const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null)
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
     const scaleRef = useRef(scale)
@@ -67,7 +83,8 @@ export function ImagePreview(props: {
             return [{
                 src: image.getAttribute('src') ?? image.src,
                 fileName: trigger.dataset.imagePreviewFileName ?? image.alt,
-                label: trigger.dataset.imagePreviewLabel ?? image.alt
+                label: trigger.dataset.imagePreviewLabel ?? image.alt,
+                fileSize: parseFileSize(trigger.dataset.imagePreviewFileSize)
             }]
         })
         const index = triggers.indexOf(event.currentTarget)
@@ -251,8 +268,15 @@ export function ImagePreview(props: {
     const activePreview = previewImages[previewIndex] ?? {
         src: props.src,
         fileName: props.fileName,
-        label: props.label
+        label: props.label,
+        fileSize: props.fileSize
     }
+    const activeImageDimensions = imageDimensions?.src === activePreview.src ? imageDimensions : null
+    const activeImageFileSize = formatFileSize(activePreview.fileSize)
+    const imageMetadata = [
+        activeImageDimensions ? `${activeImageDimensions.width} × ${activeImageDimensions.height} px` : null,
+        activeImageFileSize
+    ].filter(Boolean).join(' · ')
     const hasMultiplePreviews = previewImages.length > 1
 
     return (
@@ -267,6 +291,7 @@ export function ImagePreview(props: {
                 data-image-preview-file-name={props.fileName}
                 data-image-preview-label={props.label}
                 data-image-preview-gallery={props.galleryId ?? ''}
+                data-image-preview-file-size={props.fileSize !== undefined ? String(props.fileSize) : undefined}
                 className={props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}
                 title="Click to zoom"
             >
@@ -288,69 +313,84 @@ export function ImagePreview(props: {
                     aria-modal="true"
                     aria-label={activePreview.label}
                 >
-                    <div className="flex items-center gap-2 border-b border-white/10 bg-black/50 px-3 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)]">
-                        <div className="min-w-0 flex-1 truncate text-sm font-medium">{activePreview.fileName}</div>
-                        {hasMultiplePreviews ? (
-                            <>
-                                <button
-                                    type="button"
-                                    onClick={() => showPreview(previewIndex - 1)}
-                                    className="flex h-8 w-8 items-center justify-center rounded bg-white/10 text-lg hover:bg-white/20 disabled:opacity-40"
-                                    disabled={previewIndex === 0}
-                                    title="Previous image"
-                                    aria-label="Previous image"
-                                >
-                                    ←
-                                </button>
-                                <span className="min-w-10 text-center text-xs tabular-nums text-white/70">
-                                    {previewIndex + 1} / {previewImages.length}
-                                </span>
-                                <button
-                                    type="button"
-                                    onClick={() => showPreview(previewIndex + 1)}
-                                    className="flex h-8 w-8 items-center justify-center rounded bg-white/10 text-lg hover:bg-white/20 disabled:opacity-40"
-                                    disabled={previewIndex === previewImages.length - 1}
-                                    title="Next image"
-                                    aria-label="Next image"
-                                >
-                                    →
-                                </button>
-                            </>
-                        ) : null}
-                        <button
-                            type="button"
-                            onClick={() => zoomBy(-IMAGE_SCALE_STEP)}
-                            className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
-                            disabled={scale <= MIN_IMAGE_SCALE}
-                            title="Zoom out"
-                        >
-                            −
-                        </button>
-                        <button
-                            type="button"
-                            onClick={resetView}
-                            className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
-                            title="Reset zoom"
-                        >
-                            {Math.round(scale * 100)}%
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => zoomBy(IMAGE_SCALE_STEP)}
-                            className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
-                            disabled={scale >= MAX_IMAGE_SCALE}
-                            title="Zoom in"
-                        >
-                            +
-                        </button>
+                    <div className="flex shrink-0 items-center gap-2 border-b border-white/10 bg-black/50 px-3 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] max-sm:gap-1">
                         <button
                             type="button"
                             onClick={closeViewer}
-                            className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20"
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-white/10 hover:bg-white/20 max-sm:order-1"
                             title="Close"
                         >
                             <CloseIcon className="h-4 w-4" />
                         </button>
+                        <div
+                            data-image-preview-info="desktop"
+                            className="flex min-w-0 flex-1 items-center gap-2 text-sm max-sm:hidden"
+                        >
+                            <span className="min-w-0 truncate font-medium">{activePreview.fileName}</span>
+                            {imageMetadata ? (
+                                <span className="shrink-0 whitespace-nowrap text-sm text-white/60">
+                                    {imageMetadata}
+                                </span>
+                            ) : null}
+                        </div>
+                        <div
+                            data-image-preview-controls=""
+                            className="order-0 ml-auto flex shrink-0 items-center gap-2 max-sm:order-2 max-sm:gap-1"
+                        >
+                            <button
+                                type="button"
+                                onClick={() => zoomBy(-IMAGE_SCALE_STEP)}
+                                className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20 disabled:opacity-40"
+                                disabled={scale <= MIN_IMAGE_SCALE}
+                                title="Zoom out"
+                            >
+                                <MinusIcon className="h-4 w-4" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={resetView}
+                                className="flex h-8 items-center justify-center rounded bg-white/10 px-3 text-sm hover:bg-white/20"
+                                title="Reset zoom"
+                            >
+                                {Math.round(scale * 100)}%
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => zoomBy(IMAGE_SCALE_STEP)}
+                                className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20 disabled:opacity-40"
+                                disabled={scale >= MAX_IMAGE_SCALE}
+                                title="Zoom in"
+                            >
+                                <PlusIcon className="h-4 w-4" />
+                            </button>
+                            {hasMultiplePreviews ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => showPreview(previewIndex - 1)}
+                                        className="flex h-8 w-8 items-center justify-center rounded bg-white/10 text-lg hover:bg-white/20 disabled:opacity-40"
+                                        disabled={previewIndex === 0}
+                                        title="Previous image"
+                                        aria-label="Previous image"
+                                    >
+                                        <ArrowLeftIcon className="h-4 w-4" />
+                                    </button>
+                                    <span className="min-w-10 text-center text-xs tabular-nums text-white/70">
+                                        {previewIndex + 1} / {previewImages.length}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => showPreview(previewIndex + 1)}
+                                        className="flex h-8 w-8 items-center justify-center rounded bg-white/10 text-lg hover:bg-white/20 disabled:opacity-40"
+                                        disabled={previewIndex === previewImages.length - 1}
+                                        title="Next image"
+                                        aria-label="Next image"
+                                    >
+                                        <ArrowRightIcon className="h-4 w-4" />
+                                    </button>
+                                </>
+                            ) : null}
+                        </div>
                     </div>
                     <div
                         className="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
@@ -365,12 +405,33 @@ export function ImagePreview(props: {
                             src={activePreview.src}
                             alt={activePreview.label}
                             draggable={false}
+                            onLoad={(event) => {
+                                const { naturalWidth, naturalHeight } = event.currentTarget
+                                if (naturalWidth > 0 && naturalHeight > 0) {
+                                    setImageDimensions({
+                                        src: activePreview.src,
+                                        width: naturalWidth,
+                                        height: naturalHeight
+                                    })
+                                }
+                            }}
                             className="absolute left-1/2 top-1/2 max-h-[90vh] max-w-[90vw] select-none object-contain"
                             style={{
                                 transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px)) scale(${scale})`,
                                 transformOrigin: 'center center'
                             }}
                         />
+                    </div>
+                    <div
+                        data-image-preview-info="mobile"
+                        className="hidden min-w-0 shrink-0 items-center gap-2 border-t border-white/10 bg-black/50 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 text-sm max-sm:flex max-sm:gap-1"
+                    >
+                        <span className="min-w-0 flex-1 truncate font-medium">{activePreview.fileName}</span>
+                        {imageMetadata ? (
+                            <span className="shrink-0 whitespace-nowrap text-sm text-white/60">
+                                {imageMetadata}
+                            </span>
+                        ) : null}
                     </div>
                 </div>
             ) : null}
