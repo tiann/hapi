@@ -1229,6 +1229,17 @@ export function HappyComposer(props: {
             return
         }
 
+        // Alt+S is an explicit send shortcut, independent of the Enter setting.
+        // Use the physical key code so macOS Option/dead-key layouts still match.
+        if (e.code === 'KeyS' && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            e.preventDefault()
+            if (canSend) {
+                flushAndSend()
+                setShowContinueHint(false)
+            }
+            return
+        }
+
         // Shift+Enter inserts a newline (textarea default; rich path inserts <br>).
         if (key === 'Enter' && e.shiftKey) {
             return
