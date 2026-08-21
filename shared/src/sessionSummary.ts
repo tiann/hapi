@@ -161,7 +161,7 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR = {
     pi: 'piSessionId'
 } as const satisfies Record<AgentFlavor, keyof Metadata>
 
-function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
+export function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
     const flavor = metadata.flavor
     if (isKnownFlavor(flavor)) {
         const flavorField = AGENT_SESSION_ID_FIELD_BY_FLAVOR[flavor]

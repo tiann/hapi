@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
@@ -6,6 +6,9 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { isCodexSubagentSource } from '@/codex/utils/codexSessionMetadata'
 
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
+/** Head/tail window for summary listing — enough for session_meta + recent title/user events. */
+const CODEX_SUMMARY_HEAD_BYTES = 256 * 1024
+const CODEX_SUMMARY_TAIL_BYTES = CODEX_SUMMARY_HEAD_BYTES
 
 type CodexSessionIndexTitle = {
     threadName: string
@@ -80,7 +83,9 @@ function shouldIgnoreSyntheticUserMessage(text: string): boolean {
 }
 
 function inferSessionIdFromFileName(filePath: string): string | null {
-    return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(filePath)?.[1] ?? null
+    // Basename only: parent dirs (e.g. CODEX_HOME) may contain unrelated UUIDs.
+    return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/
+        .exec(basename(filePath))?.[1] ?? null
 }
 
 function collectJsonlFiles(root: string, files: string[]): void {
@@ -94,6 +99,22 @@ function collectJsonlFiles(root: string, files: string[]): void {
         const fullPath = join(root, entry.name)
         if (entry.isDirectory()) collectJsonlFiles(fullPath, files)
         else if (entry.isFile() && fullPath.toLowerCase().endsWith('.jsonl')) files.push(fullPath)
+    }
+}
+
+function readFileHead(filePath: string, maxBytes: number): string | null {
+    let fd: number | undefined
+    try {
+        fd = openSync(filePath, 'r')
+        const buffer = Buffer.alloc(Math.max(1, maxBytes))
+        const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+        return buffer.subarray(0, bytesRead).toString('utf-8')
+    } catch {
+        return null
+    } finally {
+        if (fd !== undefined) {
+            try { closeSync(fd) } catch { /* ignore */ }
+        }
     }
 }
 
@@ -189,6 +210,96 @@ function getLatestCodexUserMessage(lines: string[]): string | null {
     return null
 }
 
+function noteCodexSummaryFieldsFromLine(
+    line: string,
+    state: { changedTitle: string | null; lastUserMessage: string | null }
+): void {
+    if (!line.trim()) return
+    try {
+        const record = asRecord(JSON.parse(line))
+        if (!record) return
+        if (state.changedTitle === null) {
+            const title = extractCodexChangedTitle(record)
+            if (title) state.changedTitle = title
+        }
+        if (state.lastUserMessage === null && record.type === 'response_item') {
+            const payload = asRecord(record.payload)
+            if (payload?.type === 'message' && payload.role === 'user') {
+                const text = extractCodexText(payload.content)
+                if (text && !shouldIgnoreSyntheticUserMessage(text)) {
+                    state.lastUserMessage = truncateText(text, 140)
+                }
+            }
+        }
+    } catch {
+        // ignore malformed transcript lines
+    }
+}
+
+/** Walk the last `chunkBytes` of the transcript from EOF toward the scan start. */
+function scanCodexSummaryFieldsBackward(
+    filePath: string,
+    chunkBytes: number
+): { changedTitle: string | null; lastUserMessage: string | null } {
+    const state = { changedTitle: null as string | null, lastUserMessage: null as string | null }
+    let fd: number | undefined
+    try {
+        const size = statSync(filePath).size
+        if (size <= 0) return state
+
+        fd = openSync(filePath, 'r')
+        let position = size
+        // Total scan budget is `chunkBytes` from EOF; read in smaller chunks inside it.
+        const scanStart = Math.max(0, size - Math.max(1, chunkBytes))
+        const readChunkBytes = Math.min(64 * 1024, Math.max(1, chunkBytes))
+        // Keep the unfinished leading line as raw bytes so UTF-8 code points can
+        // straddle chunk boundaries without being decoded to replacement chars.
+        let incompletePrefix = Buffer.alloc(0)
+
+        while (position > scanStart && (state.changedTitle === null || state.lastUserMessage === null)) {
+            const length = Math.min(position - scanStart, readChunkBytes)
+            position -= length
+            const buffer = Buffer.alloc(length)
+            const bytesRead = readSync(fd, buffer, 0, length, position)
+            const combined = Buffer.concat([buffer.subarray(0, bytesRead), incompletePrefix])
+
+            let complete = combined
+            if (position > scanStart) {
+                const firstNewline = combined.indexOf(0x0a)
+                if (firstNewline < 0) {
+                    incompletePrefix = combined
+                    continue
+                }
+                incompletePrefix = combined.subarray(0, firstNewline)
+                complete = combined.subarray(firstNewline + 1)
+            } else {
+                incompletePrefix = Buffer.alloc(0)
+            }
+
+            const lines = complete.toString('utf8').split(/\r?\n/)
+            for (let index = lines.length - 1; index >= 0; index -= 1) {
+                noteCodexSummaryFieldsFromLine(lines[index] ?? '', state)
+                if (state.changedTitle !== null && state.lastUserMessage !== null) break
+            }
+        }
+
+        if (
+            scanStart === 0
+            && incompletePrefix.length > 0
+            && (state.changedTitle === null || state.lastUserMessage === null)
+        ) {
+            noteCodexSummaryFieldsFromLine(incompletePrefix.toString('utf8'), state)
+        }
+        return state
+    } catch {
+        return { changedTitle: null, lastUserMessage: null }
+    } finally {
+        if (fd !== undefined) {
+            try { closeSync(fd) } catch { /* ignore */ }
+        }
+    }
+}
+
 function getCodexSessionTitle(cwd: string | null | undefined, sessionId: string, sessionIndexTitle: string | null, changedTitle: string | null, firstUserMessage: string | null): string {
     if (sessionIndexTitle) return truncateText(sessionIndexTitle, 80)
     if (changedTitle) return changedTitle
@@ -220,7 +331,10 @@ function buildImportedAgentMessage(data: unknown): CodexImportedMessageContent {
     return { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data }, meta: { sentFrom: 'cli' } }
 }
 
-function convertCodexRecordToImportedMessage(record: Record<string, unknown>): CodexImportedMessageContent | null {
+function convertCodexRecordToImportedMessage(
+    record: Record<string, unknown>,
+    parentSessionId: string | null = null
+): CodexImportedMessageContent | null {
     const type = asString(record.type)
     const payload = asRecord(record.payload)
     if (!type || !payload) return null
@@ -235,8 +349,26 @@ function convertCodexRecordToImportedMessage(record: Record<string, unknown>): C
             return message ? buildImportedAgentMessage({ type: 'message', message, id: randomUUID() }) : null
         }
         if (eventType === 'token_count') {
-            const info = asRecord(payload.info)
-            return info ? buildImportedAgentMessage({ type: 'token_count', info, id: randomUUID() }) : null
+            const rawInfo = asRecord(payload.info)
+            const info = rawInfo ? { ...rawInfo } : null
+            if (!info) return null
+            if (info.rate_limits === undefined && info.rateLimits === undefined) {
+                const rateLimits = payload.rate_limits ?? payload.rateLimits
+                if (rateLimits !== undefined) info.rate_limits = rateLimits
+            }
+            const threadId = asString(record.thread_id ?? record.threadId)
+                ?? asString(payload.thread_id ?? payload.threadId)
+            const explicitScopeRole = asString(payload.scope_role ?? payload.scopeRole)
+                ?? asString(asRecord(payload.scope)?.role)
+            const scopeRole = explicitScopeRole
+                ?? (threadId && parentSessionId && threadId !== parentSessionId ? 'child' : null)
+            return buildImportedAgentMessage({
+                type: 'token_count',
+                info,
+                id: randomUUID(),
+                ...(threadId ? { thread_id: threadId, threadId } : {}),
+                ...(scopeRole ? { scope_role: scopeRole, scopeRole } : {})
+            })
         }
         return null
     }
@@ -302,10 +434,15 @@ function deduplicateAdjacentImportedMessages(messages: CodexImportedMessageConte
 function parseCodexLocalSession(
     filePath: string,
     includeMessages: boolean,
-    sessionIndexTitles = new Map<string, CodexSessionIndexTitle>()
+    sessionIndexTitles = new Map<string, CodexSessionIndexTitle>(),
+    scanSummaryFields = true
 ): LocalCodexSessionWithMessages | LocalCodexSessionSummary | null {
-    let content: string
-    try { content = readFileSync(filePath, 'utf-8') } catch { return null }
+    // Summary listing must not load entire transcripts into memory — only a head window.
+    // Full-file reads are reserved for explicit import (includeMessages=true).
+    const content = includeMessages
+        ? (() => { try { return readFileSync(filePath, 'utf-8') } catch { return null } })()
+        : readFileHead(filePath, CODEX_SUMMARY_HEAD_BYTES)
+    if (content === null) return null
     const lines = content.split(/\r?\n/).filter(Boolean)
     const headLines = lines.slice(0, 200)
     let sessionId: string | null = null
@@ -319,11 +456,24 @@ function parseCodexLocalSession(
     const messages: CodexImportedMessageContent[] = []
 
     if (includeMessages) {
+        let parentSessionId: string | null = null
+        for (const line of lines) {
+            let record: Record<string, unknown> | null = null
+            try { record = asRecord(JSON.parse(line)) } catch { continue }
+            if (!record || record.type !== 'session_meta') continue
+            const payload = asRecord(record.payload)
+            if (typeof payload?.id === 'string') {
+                parentSessionId = payload.id
+                break
+            }
+        }
+        parentSessionId = parentSessionId ?? inferSessionIdFromFileName(filePath)
+
         for (const line of lines) {
             let record: Record<string, unknown> | null = null
             try { record = asRecord(JSON.parse(line)) } catch { continue }
             if (!record) continue
-            const message = convertCodexRecordToImportedMessage(record)
+            const message = convertCodexRecordToImportedMessage(record, parentSessionId)
             if (message) messages.push(message)
         }
     }
@@ -356,8 +506,16 @@ function parseCodexLocalSession(
     sessionId = sessionId ?? inferSessionIdFromFileName(filePath)
     if (!sessionId) return null
     const sessionIndexTitle = sessionIndexTitles.get(sessionId)?.threadName ?? null
-    const changedTitle = getLatestCodexChangedTitle(lines)
-    const lastUserMessage = getLatestCodexUserMessage(lines)
+    // Title/last-user: full lines when importing; reverse-chunk for listing; skip for id/path lookup.
+    const summaryFields = includeMessages
+        ? {
+            changedTitle: getLatestCodexChangedTitle(lines),
+            lastUserMessage: getLatestCodexUserMessage(lines)
+        }
+        : scanSummaryFields
+            ? scanCodexSummaryFieldsBackward(filePath, CODEX_SUMMARY_TAIL_BYTES)
+            : { changedTitle: null, lastUserMessage: null }
+    const { changedTitle, lastUserMessage } = summaryFields
     let modifiedAt = Date.now()
     try { modifiedAt = statSync(filePath).mtimeMs } catch {}
     const summary = {
@@ -403,10 +561,78 @@ export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION
 export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): LocalCodexSessionWithMessages[] {
     if (ids.size === 0) return []
     const sessionIndexTitles = readCodexSessionIndexTitles()
-    return listLocalCodexSessionSummaries(Number.MAX_SAFE_INTEGER)
-        .filter((session) => ids.has(session.id))
-        .map((session) => parseCodexLocalSession(session.file, true, sessionIndexTitles))
-        .filter((session): session is LocalCodexSessionWithMessages => Boolean(session))
+    const files: string[] = []
+    for (const root of getCodexSessionRoots()) {
+        collectJsonlFiles(root, files)
+    }
+
+    const resultsById = new Map<string, LocalCodexSessionWithMessages>()
+    const addResult = (session: LocalCodexSessionWithMessages) => {
+        const previous = resultsById.get(session.id)
+        if (!previous || previous.modifiedAt < session.modifiedAt) {
+            resultsById.set(session.id, session)
+        }
+    }
+
+    for (const file of files) {
+        const idFromName = inferSessionIdFromFileName(file)
+        // Skip unrelated transcripts without reading message bodies.
+        if (idFromName && !ids.has(idFromName)) continue
+
+        if (idFromName && ids.has(idFromName)) {
+            const session = parseCodexLocalSession(file, true, sessionIndexTitles)
+            if (
+                session
+                && ids.has(session.id)
+                && Array.isArray((session as LocalCodexSessionWithMessages).messages)
+            ) {
+                addResult(session as LocalCodexSessionWithMessages)
+            }
+            continue
+        }
+
+        // Filename lacked a UUID — head-parse for id, then full-load only on match.
+        const summary = parseCodexLocalSession(file, false, sessionIndexTitles)
+        if (!summary || !ids.has(summary.id)) continue
+        const session = parseCodexLocalSession(file, true, sessionIndexTitles)
+        if (session && Array.isArray((session as LocalCodexSessionWithMessages).messages)) {
+            addResult(session as LocalCodexSessionWithMessages)
+        }
+    }
+    return Array.from(resultsById.values())
+}
+
+/** Resolve a Codex thread's workspace cwd without loading the full transcript body. */
+export function findCodexSessionPath(sessionId: string): string | null {
+    return findCodexSessionSummary(sessionId)?.cwd ?? null
+}
+
+/** Resolve the on-disk transcript path for a Codex thread id (head-parse only). */
+export function findCodexSessionFile(sessionId: string): string | null {
+    return findCodexSessionSummary(sessionId)?.file ?? null
+}
+
+function findCodexSessionSummary(sessionId: string): LocalCodexSessionSummary | null {
+    const normalized = sessionId.trim()
+    if (!normalized) return null
+
+    const files: string[] = []
+    for (const root of getCodexSessionRoots()) {
+        collectJsonlFiles(root, files)
+    }
+
+    let best: LocalCodexSessionSummary | null = null
+    for (const file of files) {
+        const idFromName = inferSessionIdFromFileName(file)
+        if (idFromName && idFromName !== normalized) continue
+        // Head-only: path/cwd lookup must not reverse-scan titles (blocks the event loop).
+        const summary = parseCodexLocalSession(file, false, new Map(), false)
+        if (!summary || summary.id !== normalized) continue
+        if (!best || best.modifiedAt < summary.modifiedAt) {
+            best = summary
+        }
+    }
+    return best
 }
 
 
