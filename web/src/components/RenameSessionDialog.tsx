@@ -6,6 +6,7 @@ import {
     DialogTitle
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { ApiError } from '@/api/client'
 import { useTranslation } from '@/lib/use-translation'
 
 type RenameSessionDialogProps = {
@@ -14,7 +15,7 @@ type RenameSessionDialogProps = {
     currentName: string
     onRename: (newName: string) => Promise<void>
     onSuggestTitle?: () => Promise<string>
-    onUpdateSummary?: (text: string) => Promise<void>
+    onUpdateSummary?: (text: string, clearName?: boolean) => Promise<void>
     isPending: boolean
 }
 
@@ -68,9 +69,13 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             if (!suggested) throw new Error('Empty title suggestion')
             setName(suggested)
             setDraftSource('generated')
-        } catch {
+        } catch (error) {
             if (generation === generationRef.current) {
-                setError(t('dialog.rename.generateError'))
+                setError(
+                    error instanceof ApiError && error.code === 'unavailable'
+                        ? t('dialog.rename.generateUnavailable')
+                        : t('dialog.rename.generateError')
+                )
             }
         } finally {
             if (generation === generationRef.current) {
@@ -89,7 +94,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
         setError(null)
         try {
             if (draftSource === 'generated' && onUpdateSummary) {
-                await onUpdateSummary(trimmed)
+                await onUpdateSummary(trimmed, true)
             } else {
                 await onRename(trimmed)
             }
@@ -136,31 +141,31 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                         </div>
                     ) : null}
 
-                    <div className="flex items-center justify-between gap-2">
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            onClick={handleClose}
-                            disabled={busy}
-                        >
-                            {t('button.cancel')}
-                        </Button>
-                        <div className="flex gap-2">
-                            {onSuggestTitle ? (
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={() => void handleGenerate()}
-                                    disabled={busy}
-                                >
-                                    {isGenerating ? t('dialog.rename.generating') : t('dialog.rename.generate')}
-                                </Button>
-                            ) : null}
+                    <div className="flex items-center gap-2">
+                        {onSuggestTitle ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleGenerate()}
+                                disabled={busy}
+                            >
+                                {isGenerating ? t('dialog.rename.generating') : t('dialog.rename.generate')}
+                            </Button>
+                        ) : null}
+                        <div className="ml-auto flex gap-2">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                onClick={handleClose}
+                                disabled={busy}
+                            >
+                                {t('button.cancel')}
+                            </Button>
                             <Button
                                 type="submit"
                                 disabled={busy || !name.trim()}
                             >
-                                {isPending ? t('dialog.rename.saving') : t('button.save')}
+                                {isGenerating ? t('button.save') : isPending ? t('dialog.rename.saving') : t('button.save')}
                             </Button>
                         </div>
                     </div>

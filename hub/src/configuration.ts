@@ -37,6 +37,7 @@ import { getOrCreateCliApiToken } from './config/cliApiToken'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
 import { getSettingsFile } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
+import { readTitleProviderConfig, type OpenAICompatibleTitleProviderConfig } from './sync/titleSuggestion'
 
 export type ConfigSource = 'env' | 'file' | 'default'
 
@@ -110,6 +111,8 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
+    /** Effective on-demand session title provider configuration. */
+    public readonly titleProviderConfig: OpenAICompatibleTitleProviderConfig | null
     // Push delivery (FCM + iOS/APNs) — nullable strings interpreted by
     // fcm/fcmConfig.ts and push-ios/iosPushConfig.ts.
     public readonly fcmServiceAccountPath: string | null
@@ -146,6 +149,7 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.titleProviderConfig = readTitleProviderConfig(process.env, serverSettings.titleProvider)
         this.fcmServiceAccountPath = serverSettings.fcmServiceAccountPath
         this.iosPushMode = serverSettings.iosPushMode
         this.iosPushRelayUrl = serverSettings.iosPushRelayUrl

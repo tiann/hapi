@@ -1094,8 +1094,8 @@ function SessionItem(props: {
                     onClose={() => setRenameOpen(false)}
                     currentName={sessionName}
                     onRename={renameSession}
-                    onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
-                    onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
+                    onSuggestTitle={api ? suggestSessionTitle : undefined}
+                    onUpdateSummary={api ? updateSessionSummary : undefined}
                     isPending={isPending}
                 />
             ) : null}

@@ -975,10 +975,10 @@ export class ApiClient {
         )
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
+    async updateSessionSummary(sessionId: string, text: string, clearName = false): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
             method: 'PATCH',
-            body: JSON.stringify({ text })
+            body: JSON.stringify({ text, ...(clearName ? { clearName: true } : {}) })
         })
     }
 

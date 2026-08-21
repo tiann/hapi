@@ -73,6 +73,26 @@ describe('loadServerSettings', () => {
         expect(result.sources.serverChanBackgroundOnly).toBe('env')
     })
 
+    it('loads the title provider block from settings.json without persisting environment values', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            titleProvider: {
+                baseUrl: 'https://settings.example/v1',
+                apiKey: 'settings-secret',
+                model: 'settings-model'
+            }
+        }))
+
+        const result = await loadServerSettings(dir)
+
+        expect(result.settings.titleProvider).toEqual({
+            baseUrl: 'https://settings.example/v1',
+            apiKey: 'settings-secret',
+            model: 'settings-model'
+        })
+        expect(result.savedToFile).toBe(false)
+    })
+
     it('rejects a non-boolean ServerChan background-only setting', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({

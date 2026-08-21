@@ -93,8 +93,32 @@ describe('OpenAI-compatible title provider', () => {
         expect(await request.json()).toMatchObject({ model: 'small-model' })
     })
 
+    it('falls back to settings.json values and lets environment values override them per field', () => {
+        const settings = {
+            baseUrl: 'https://settings.example/v1',
+            apiKey: 'settings-secret',
+            model: 'settings-model'
+        }
+
+        expect(readTitleProviderConfig({}, settings)).toEqual({
+            baseUrl: 'https://settings.example/v1',
+            apiKey: 'settings-secret',
+            model: 'settings-model'
+        })
+        expect(readTitleProviderConfig({
+            HAPI_TITLE_PROVIDER_BASE_URL: 'https://env.example/v1',
+            HAPI_TITLE_PROVIDER_MODEL: 'env-model'
+        }, settings)).toEqual({
+            baseUrl: 'https://env.example/v1',
+            apiKey: 'settings-secret',
+            model: 'env-model'
+        })
+        expect(readTitleProviderConfig({}, { ...settings, apiKey: '   ' })).toBeNull()
+    })
+
     it('normalizes a one-line title and caps it for the metadata field', () => {
         expect(normalizeTitleSuggestion('Title: "A useful title"\nExtra text')).toBe('A useful title')
+        expect(normalizeTitleSuggestion('  Generated title with trailing spaces   ')).toBe('Generated title with trailing spaces')
         expect(normalizeTitleSuggestion('   ')).toBeNull()
         expect(normalizeTitleSuggestion('x'.repeat(100))).toHaveLength(80)
     })
@@ -164,7 +188,7 @@ describe('TitleSuggestionService', () => {
 
     it('reports unavailable configuration and enforces the per-session request limit', async () => {
         const { store, sessionId } = makeStore()
-        const unavailable = createTitleSuggestionService(store)
+        const unavailable = createTitleSuggestionService(store, null)
         await expect(unavailable.suggestTitle(sessionId)).rejects.toMatchObject({
             code: 'unavailable',
             status: 503

@@ -104,6 +104,26 @@
         "type": "string"
       },
       "description": "Hub-managed voice and dictation provider credentials; process environment variables win over settings-backed values."
+    },
+    "titleProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "OpenAI-compatible Chat Completions base URL for generated session titles. ENV: HAPI_TITLE_PROVIDER_BASE_URL"
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "Server-only API key for generated session titles. ENV: HAPI_TITLE_PROVIDER_API_KEY"
+        },
+        "model": {
+          "type": "string",
+          "description": "Lightweight model used for generated session titles. ENV: HAPI_TITLE_PROVIDER_MODEL"
+        }
+      },
+      "description": "Server-only OpenAI-compatible provider for on-demand session title suggestions. Environment variables override these fields per key."
     }
   },
   "additionalProperties": false

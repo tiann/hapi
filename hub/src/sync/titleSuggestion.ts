@@ -5,6 +5,7 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
+import type { TitleProviderSettings } from '../config/settings'
 import type { Store, StoredMessage } from '../store'
 
 export const TITLE_SUGGESTION_MESSAGE_LIMIT = 200
@@ -15,6 +16,8 @@ export const TITLE_SUGGESTION_RATE_WINDOW_MS = 10 * 60 * 1000
 export const TITLE_SUGGESTION_TIMEOUT_MS = 10_000
 const TITLE_SUGGESTION_RATE_LIMIT_ENV = 'HAPI_TITLE_SUGGESTION_RATE_LIMIT'
 const TITLE_SUGGESTION_RATE_WINDOW_ENV = 'HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS'
+export const TITLE_SUGGESTION_UNAVAILABLE_MESSAGE =
+    'Title suggestions are not configured on this Hub. Configure titleProvider.baseUrl, titleProvider.apiKey, and titleProvider.model in $HAPI_HOME/settings.json (default ~/.hapi/settings.json), or set HAPI_TITLE_PROVIDER_BASE_URL, HAPI_TITLE_PROVIDER_API_KEY, and HAPI_TITLE_PROVIDER_MODEL in the Hub environment, then restart the Hub.'
 
 type TitleSuggestionErrorCode = 'unavailable' | 'empty' | 'rate-limited' | 'provider'
 
@@ -44,11 +47,18 @@ type TitleProviderFetch = (
 ) => Promise<Response>
 
 export function readTitleProviderConfig(
-    env: TitleProviderEnvironment = process.env
+    env: TitleProviderEnvironment = process.env,
+    settings?: TitleProviderSettings | null
 ): OpenAICompatibleTitleProviderConfig | null {
-    const baseUrl = env.HAPI_TITLE_PROVIDER_BASE_URL?.trim()
-    const apiKey = env.HAPI_TITLE_PROVIDER_API_KEY?.trim()
-    const model = env.HAPI_TITLE_PROVIDER_MODEL?.trim()
+    const readValue = (envValue: string | undefined, fileValue: unknown): string | undefined => {
+        const fromEnv = envValue?.trim()
+        if (fromEnv) return fromEnv
+        return typeof fileValue === 'string' && fileValue.trim() ? fileValue.trim() : undefined
+    }
+
+    const baseUrl = readValue(env.HAPI_TITLE_PROVIDER_BASE_URL, settings?.baseUrl)
+    const apiKey = readValue(env.HAPI_TITLE_PROVIDER_API_KEY, settings?.apiKey)
+    const model = readValue(env.HAPI_TITLE_PROVIDER_MODEL, settings?.model)
     if (!baseUrl || !apiKey || !model) return null
 
     try {
@@ -298,7 +308,7 @@ export class TitleSuggestionService {
         if (!this.provider) {
             throw new TitleSuggestionError(
                 'unavailable',
-                'Title suggestions are not configured on this Hub',
+                TITLE_SUGGESTION_UNAVAILABLE_MESSAGE,
                 503
             )
         }
@@ -347,8 +357,10 @@ export class TitleSuggestionService {
     }
 }
 
-export function createTitleSuggestionService(store: Store): TitleSuggestionService {
-    const config = readTitleProviderConfig()
+export function createTitleSuggestionService(
+    store: Store,
+    config: OpenAICompatibleTitleProviderConfig | null = readTitleProviderConfig()
+): TitleSuggestionService {
     const limits = readTitleSuggestionLimits()
     return new TitleSuggestionService(
         store,
