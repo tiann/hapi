@@ -301,6 +301,8 @@ function createHapiMcpServer(
             const result = await pingPeer({
                 sessionIdPrefix: args.sessionIdPrefix,
                 message: args.message,
+                // Soft nametag via /cli/.../peer-messages using this session id (#1203).
+                authenticatedSourceSessionId: client.sessionId,
             });
             return {
                 content: [

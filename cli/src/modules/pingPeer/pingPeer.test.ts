@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE
+} from '@hapi/protocol'
+import {
     PingPeerError,
     exitCodeForPingPeerError,
     pingPeer,
@@ -13,15 +17,23 @@ type MockResponse = {
 }
 
 function createHttpMock(handlers: {
-    post?: (url: string, body?: unknown) => MockResponse | Promise<MockResponse>
+    post?: (
+        url: string,
+        body?: unknown,
+        config?: { headers?: Record<string, string> }
+    ) => MockResponse | Promise<MockResponse>
     get?: (url: string, config?: { params?: Record<string, unknown> }) => MockResponse | Promise<MockResponse>
 }) {
     return {
-        post: vi.fn(async (url: string, body?: unknown) => {
+        post: vi.fn(async (
+            url: string,
+            body?: unknown,
+            config?: { headers?: Record<string, string> }
+        ) => {
             if (!handlers.post) {
                 throw new Error(`unexpected POST ${url}`)
             }
-            return handlers.post(url, body)
+            return handlers.post(url, body, config)
         }),
         get: vi.fn(async (url: string, config?: { params?: Record<string, unknown> }) => {
             if (!handlers.get) {
@@ -74,13 +86,16 @@ describe('pingPeer', () => {
     it('sends to an already-active session without resume', async () => {
         const sessionId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const http = createHttpMock({
-            post: (url, body) => {
+            post: (url, body, config) => {
                 if (url.endsWith('/api/auth')) {
                     expect(body).toEqual({ accessToken: 'tok' })
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    // Bare CLI: unattributed peer header, no body source claim.
                     expect(body).toEqual({ text: 'hello peer' })
+                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER])
+                        .toBe(HAPI_PEER_DELIVERY_HEADER_VALUE)
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -670,5 +685,64 @@ describe('listSessions query params', () => {
         })
         expect(result.sessionId).toBe(sessionId)
         expect(pingParams[0]).toBeUndefined()
+    })
+
+    it('attributes via CLI peer-messages when authenticatedSourceSessionId is set', async () => {
+        const targetId = '05d9f0f2-9273-4137-933c-07459a1146a2'
+        const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+
+        const http = createHttpMock({
+            post: (url, body, config) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/cli/sessions/${sourceId}/peer-messages`)) {
+                    expect(body).toEqual({
+                        targetSessionId: targetId,
+                        text: 'handoff'
+                    })
+                    expect(config?.headers?.Authorization).toBe('Bearer tok')
+                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER]).toBeUndefined()
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions')) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: targetId,
+                                active: true,
+                                metadata: { name: 'Target' }
+                            }]
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${targetId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: targetId,
+                                active: true,
+                                metadata: { name: 'Target' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        await pingPeer({
+            sessionIdPrefix: '05d9f0f2',
+            message: 'handoff',
+            accessToken: 'tok',
+            authenticatedSourceSessionId: sourceId,
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
     })
 })

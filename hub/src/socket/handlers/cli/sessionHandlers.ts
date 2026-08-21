@@ -133,6 +133,28 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        // Soft peer nametag rows (#1203) are stamped only via
+        // POST /cli/sessions/:id/peer-messages. Generic CLI `message` must not
+        // set meta.sentFrom === 'peer' (UX wire shape, not a crypto boundary).
+        if (
+            content
+            && typeof content === 'object'
+            && !Array.isArray(content)
+            && (content as { role?: unknown }).role === 'user'
+            && (content as { meta?: unknown }).meta
+            && typeof (content as { meta?: unknown }).meta === 'object'
+            && !Array.isArray((content as { meta: unknown }).meta)
+            && (content as { meta: { sentFrom?: unknown } }).meta.sentFrom === 'peer'
+        ) {
+            socket.emit('error', {
+                message: 'Peer nametag delivery requires POST /cli/sessions/:id/peer-messages',
+                code: 'access-denied',
+                scope: 'session',
+                id: sid,
+            })
+            return
+        }
+
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
 
         // A reasoning stream arrives as a series of growing snapshots under one

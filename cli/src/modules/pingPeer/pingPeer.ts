@@ -9,7 +9,13 @@
  */
 
 import axios, { type AxiosInstance } from 'axios'
-import { extractAssistantPlainText, isObject } from '@hapi/protocol'
+import {
+    extractAssistantPlainText,
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE,
+    isObject,
+    isSessionId
+} from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
@@ -55,6 +61,13 @@ export type PingPeerOptions = {
     waitActiveSecs?: number
     apiUrl?: string
     accessToken?: string
+    /**
+     * Calling session id (MCP / HAPI_SESSION_ID). When set, uses
+     * `POST /cli/sessions/:source/peer-messages` for a soft nametag chip/From
+     * line (#1203). Same namespace-token trust as other CLI session routes —
+     * not a proof. Bare `hapi ping-peer` omits this → unattributed peer rows.
+     */
+    authenticatedSourceSessionId?: string
     http?: AxiosInstance
     sleep?: (ms: number) => Promise<void>
     now?: () => number
@@ -340,18 +353,57 @@ async function waitForPiReady(
     )
 }
 
-async function sendMessage(
+/** Unattributed peer send (bare CLI / no session client). Web JWT + peer header. */
+async function sendUnattributedPeerMessage(
     apiUrl: string,
     jwt: string,
-    sessionId: string,
+    targetSessionId: string,
     message: string,
     http: AxiosInstance
 ): Promise<void> {
     const response = await http.post(
-        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+        `${apiUrl}/api/sessions/${encodeURIComponent(targetSessionId)}/messages`,
         { text: message },
         {
-            headers: authHeaders(jwt),
+            headers: {
+                ...authHeaders(jwt),
+                [HAPI_PEER_DELIVERY_HEADER]: HAPI_PEER_DELIVERY_HEADER_VALUE
+            },
+            timeout: 30_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        return
+    }
+    const detail = typeof response.data?.error === 'string'
+        ? response.data.error
+        : typeof response.data?.code === 'string'
+            ? response.data.code
+            : `HTTP ${response.status}`
+    throw new PingPeerError('send_failed', `send failed: ${detail}`)
+}
+
+/**
+ * Attributed peer send: CLI token + path source id. Hub ignores any body
+ * sourceSessionId and fills sourceName from the store.
+ */
+async function sendAttributedPeerMessage(
+    apiUrl: string,
+    cliToken: string,
+    sourceSessionId: string,
+    targetSessionId: string,
+    message: string,
+    http: AxiosInstance
+): Promise<void> {
+    const response = await http.post(
+        `${apiUrl}/cli/sessions/${encodeURIComponent(sourceSessionId)}/peer-messages`,
+        { targetSessionId, text: message },
+        {
+            headers: buildHubRequestHeaders({
+                Authorization: `Bearer ${cliToken}`,
+                'Content-Type': 'application/json'
+            }),
             timeout: 30_000,
             validateStatus: () => true
         }
@@ -515,8 +567,22 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         }
     }
 
-    onProgress?.(`sending message (${message.length} chars)...`)
-    await sendMessage(apiUrl, jwt, matched.id, message, http)
+    const sourceId = options.authenticatedSourceSessionId?.trim() ?? ''
+    const attributed = Boolean(sourceId && isSessionId(sourceId))
+    onProgress?.(`sending message (${message.length} chars${attributed ? ', attributed' : ', unattributed'})...`)
+    if (attributed) {
+        // CLI token (same credential as ApiSessionClient), not the web JWT.
+        await sendAttributedPeerMessage(
+            apiUrl,
+            accessToken,
+            sourceId,
+            matched.id,
+            message,
+            http
+        )
+    } else {
+        await sendUnattributedPeerMessage(apiUrl, jwt, matched.id, message, http)
+    }
 
     return {
         sessionId: matched.id,

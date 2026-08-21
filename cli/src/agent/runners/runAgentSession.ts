@@ -10,7 +10,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { bootstrapSession } from '@/agent/sessionFactory';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
@@ -52,7 +52,11 @@ export async function runAgentSession(opts: {
     const messageQueue = new MessageQueue2<Record<string, never>>(() => hashObject({}));
 
     session.onUserMessage((message, localId) => {
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+        const formattedText = formatUserMessageForAgent(
+            message.content.text,
+            message.content.attachments,
+            message.meta
+        );
         messageQueue.push(formattedText, {}, localId);
     });
 
