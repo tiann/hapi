@@ -6,7 +6,7 @@ import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
+import { Children, isValidElement, useEffect, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
@@ -474,9 +474,10 @@ export function UnifiedButton(props: {
     canSend: boolean
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
+    dictationEnabled?: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
-    onVoiceToggle: () => void
+    onVoiceToggle: () => void | boolean | Promise<void | boolean>
     voiceLabel?: string
     /**
      * When true, the send button repaints amber and the aria-label
@@ -492,12 +493,21 @@ export function UnifiedButton(props: {
     routesToScratchlist?: boolean
 }) {
     const { t } = useTranslation()
+    const voiceSendPendingRef = useRef(false)
+    const [voiceSendRequested, setVoiceSendRequested] = useState(false)
+
+    useEffect(() => {
+        if (!voiceSendRequested) return
+        setVoiceSendRequested(false)
+        props.onSend('default')
+    }, [voiceSendRequested, props.onSend])
 
     const isConnecting = props.voiceStatus === 'connecting'
     const isConnected = props.voiceStatus === 'connected'
     const isVoiceActive = isConnecting || isConnected
     const hasText = props.canSend
     const routesToScratchlist = props.routesToScratchlist ?? false
+    const isDictation = props.dictationEnabled ?? false
 
     const handleClick = () => {
         if (isVoiceActive) {
@@ -552,6 +562,53 @@ export function UnifiedButton(props: {
             ? !hasText
             : !hasText && !props.voiceEnabled && !isVoiceActive
     )
+
+    if (isVoiceActive) {
+        const sendAriaLabel = routesToScratchlist ? t('scratchlist.sendToScratchlist') : t('composer.send')
+        const sendClassName = routesToScratchlist
+            ? 'bg-amber-500 text-white hover:bg-amber-600'
+            : 'bg-black text-white'
+
+        const handleVoiceSendClick = async () => {
+            if (voiceSendPendingRef.current) return
+            voiceSendPendingRef.current = true
+            try {
+                const committed = await props.onVoiceToggle()
+                if (committed === true) {
+                    setVoiceSendRequested(true)
+                }
+            } finally {
+                voiceSendPendingRef.current = false
+            }
+        }
+
+        return (
+            <div className="flex items-center gap-1">
+                <button
+                    type="button"
+                    onClick={handleClick}
+                    disabled={props.controlsDisabled}
+                    aria-label={ariaLabel}
+                    title={ariaLabel}
+                    className={`ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+                >
+                    {icon}
+                </button>
+                {isDictation && isConnected ? (
+                    <button
+                        type="button"
+                        onClick={handleVoiceSendClick}
+                        disabled={props.controlsDisabled}
+                        aria-label={sendAriaLabel}
+                        title={sendAriaLabel}
+                        className={`ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sendClassName}`}
+                    >
+                        <SendIcon />
+                    </button>
+                ) : null}
+            </div>
+        )
+    }
 
     return (
         <button
@@ -901,6 +958,7 @@ export function ComposerButtons(props: {
                 canSend={props.canSend}
                 voiceStatus={props.voiceStatus}
                 voiceEnabled={props.voiceEnabled}
+                dictationEnabled={props.dictationEnabled}
                 controlsDisabled={props.controlsDisabled}
                 onSend={props.onSend}
                 onVoiceToggle={props.onVoiceToggle}
