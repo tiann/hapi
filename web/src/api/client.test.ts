@@ -296,3 +296,57 @@ describe('ApiClient error mapping', () => {
         expect(init?.body).toBe(JSON.stringify({ openai: 'sk-test' }))
     })
 })
+
+describe('ApiClient session content search', () => {
+    it('uses the opt-in content-search endpoint with encoded query, limit, and session scope', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify({ results: [] }), { status: 200 })
+        )
+        try {
+            const api = new ApiClient('test-token')
+            await api.searchSessionContent(' cache search ', 12, undefined, ['session /?#', 'session /?#', 'other'])
+            const request = fetchMock.mock.calls[0]?.[0]
+            const init = fetchMock.mock.calls[0]?.[1]
+            expect(String(request)).toBe('/api/sessions/content-search')
+            expect(init?.method).toBe('POST')
+            expect(init?.body).toBe(JSON.stringify({
+                query: 'cache search',
+                limit: 12,
+                sessionIds: ['session /?#', 'other']
+            }))
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    it('requests an encoded message context endpoint', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify(null), { status: 200 })
+        )
+        try {
+            const api = new ApiClient('test-token')
+            await expect(api.getMessageContext('session /?#', 'message /?#')).resolves.toBeNull()
+            expect(fetchMock.mock.calls[0]?.[0]).toBe(
+                '/api/sessions/session%20%2F%3F%23/messages/message%20%2F%3F%23/context'
+            )
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    it('loads all matching messages for an opened session', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify({ matches: [], total: 0 }), { status: 200 })
+        )
+        try {
+            const api = new ApiClient('test-token')
+            await api.searchSessionContentMatches('session /?#', ' cache search ', 42)
+            const request = fetchMock.mock.calls[0]?.[0]
+            expect(String(request)).toContain(
+                '/api/sessions/session%20%2F%3F%23/content-search?query=cache+search&limit=42'
+            )
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+})

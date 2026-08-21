@@ -25,7 +25,6 @@ data class MessagesPage(
     val snapshotHeadAt: Long? = null,
     val hasMore: Boolean,
 )
-
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */
 @Serializable
 data class MessagesResponse(
@@ -296,4 +295,3 @@ data class TranscriptionProviderInfo(
     /** Subset of `standard` / `realtime`; native dictation uses `standard`. */
     val modes: List<String>,
 )
-

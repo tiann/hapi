@@ -35,6 +35,7 @@ export type {
     MachinePathsExistsResponse,
     AuthResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
@@ -45,8 +46,11 @@ export type {
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,
+    SessionContentMatch,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
     SessionsResponse,
+    SessionContentSearchResponse,
     SpawnResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'

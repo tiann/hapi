@@ -12,7 +12,12 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
-import type { MessageDeliveryMode, MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
+import type {
+    MessageContextResponse,
+    MessageDeliveryMode,
+    MessagesResponse,
+    QueuedStateResponse
+} from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -20,6 +25,13 @@ import { EventPublisher } from './eventPublisher'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
+
+// Search jumps only need a compact render window around the hit. Keeping this
+// bounded to 41 rows avoids transferring large historical attachments and
+// tool payloads that are unrelated to the selected message; normal scrolling
+// can request older pages when the user needs more context.
+const MESSAGE_CONTEXT_BEFORE_LIMIT = 20
+const MESSAGE_CONTEXT_AFTER_LIMIT = 20
 
 function messagePosition(message: StoredMessageForDelivery): MessagePosition {
     return {
@@ -190,6 +202,43 @@ export class MessageService {
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
+    }
+
+    getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {
+        const target = this.store.messages.getMessageById(sessionId, messageId)
+        if (!target) {
+            return null
+        }
+
+        const targetPosition = messagePosition(target)
+        const before = this.store.messages.getMessagesByPosition(
+            sessionId,
+            MESSAGE_CONTEXT_BEFORE_LIMIT,
+            targetPosition
+        )
+        const snapshotHead = this.store.messages.getNewestMessagePosition(sessionId)
+        const after = this.store.messages.getMessagesAfterPosition(
+            sessionId,
+            MESSAGE_CONTEXT_AFTER_LIMIT,
+            targetPosition,
+            snapshotHead ?? undefined
+        )
+        const contextRows = [...before, target, ...after]
+        const oldest = before[0] ?? target
+        const oldestPosition = messagePosition(oldest)
+
+        return {
+            messages: toVisibleDecryptedMessages(contextRows),
+            targetMessageId: messageId,
+            page: {
+                epoch: this.store.messages.getMessageEpoch(sessionId),
+                nextBeforeSeq: oldestPosition.seq,
+                nextBeforeAt: oldestPosition.at,
+                snapshotHeadSeq: snapshotHead?.seq ?? null,
+                snapshotHeadAt: snapshotHead?.at ?? null,
+                hasMore: this.store.messages.getMessagesByPosition(sessionId, 1, oldestPosition).length > 0
+            }
+        }
     }
 
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {

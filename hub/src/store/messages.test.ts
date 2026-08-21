@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import type { Database } from 'bun:sqlite'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { getReasoningStreamId } from '@hapi/protocol/messages'
 import { Store } from './index'
@@ -9,6 +10,17 @@ function makeStore(): Store {
 
 function makeSession(store: Store, tag: string) {
     return store.sessions.getOrCreateSession(tag, { path: `/tmp/${tag}` }, null, 'default')
+}
+
+function failMessageContentSearchIndex(store: Store): void {
+    const db = (store as unknown as { db: Database }).db
+    db.exec(`
+        CREATE TRIGGER fail_message_content_search_index
+        BEFORE INSERT ON message_content_search_lookup
+        BEGIN
+            SELECT RAISE(ABORT, 'forced message content search index failure');
+        END
+    `)
 }
 
 describe('cancelQueuedMessage', () => {
@@ -189,6 +201,53 @@ describe('recordMessagesConsumed', () => {
         expect(store.messages.getLocalMessageStates(session.id, ['local-rollback']))
             .toEqual([{ localId: 'local-rollback', invokedAt: null }])
         expect(store.sessions.getSession(session.id)?.updatedAt).toBe(originalUpdatedAt)
+    })
+})
+
+describe('message content search index transaction boundaries', () => {
+    it('rolls back copied messages when indexing fails', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'copy-index-rollback')
+        failMessageContentSearchIndex(store)
+
+        expect(() => store.messages.copyMessageToSession(session.id, {
+            content: { role: 'user', content: { type: 'text', text: 'copy rollback phrase' } },
+            createdAt: 1,
+            localId: null,
+            invokedAt: 1,
+            scheduledAt: null
+        })).toThrow('forced message content search index failure')
+        expect(store.messages.getAllMessages(session.id)).toEqual([])
+    })
+
+    it('rolls back invocation state when indexing fails', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'invoke-index-rollback')
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'invoke rollback phrase' }
+        }, 'invoke-rollback')
+        failMessageContentSearchIndex(store)
+
+        expect(() => store.messages.markMessagesInvoked(session.id, ['invoke-rollback'], 123))
+            .toThrow('forced message content search index failure')
+        expect(store.messages.getLocalMessageStates(session.id, ['invoke-rollback']))
+            .toEqual([{ localId: 'invoke-rollback', invokedAt: null }])
+    })
+
+    it('rolls back immediate settlement when indexing fails', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'immediate-index-rollback')
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'immediate rollback phrase' }
+        }, 'immediate-rollback')
+        failMessageContentSearchIndex(store)
+
+        expect(() => store.messages.markUninvokedImmediateMessages(session.id, 456))
+            .toThrow('forced message content search index failure')
+        expect(store.messages.getLocalMessageStates(session.id, ['immediate-rollback']))
+            .toEqual([{ localId: 'immediate-rollback', invokedAt: null }])
     })
 })
 

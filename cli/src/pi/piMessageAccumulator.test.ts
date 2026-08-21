@@ -60,6 +60,22 @@ describe('PiMessageAccumulator', () => {
         expect(accumulator.flush()).toEqual([]);
     });
 
+    it('emits a terminal text snapshot when the live snapshot already has the final text', () => {
+        const accumulator = new PiMessageAccumulator({ now: () => 0, streamNonceFactory: () => 'nonce' });
+        accumulator.handleEvent(event('message_start'));
+        expect(accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: 'complete already' },
+        }))).toEqual([{
+            type: 'text', text: 'complete already', id: 'pi-nonce-turn-0-message-1-text-0',
+            streamSnapshot: true, live: true,
+        }]);
+
+        expect(accumulator.handleEvent(event('message_end'))).toEqual([{
+            type: 'text', text: 'complete already', id: 'pi-nonce-turn-0-message-1-text-0',
+            streamSnapshot: true,
+        }]);
+    });
+
     it('keeps multiple content indexes separate instead of concatenating blocks', () => {
         let now = 0;
         const accumulator = new PiMessageAccumulator({ now: () => now, streamNonceFactory: () => 'nonce' });
