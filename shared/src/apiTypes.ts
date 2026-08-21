@@ -570,6 +570,12 @@ export type ForkConversationRpcResult = {
     forkSession?: boolean
 }
 
+/** Raw RPC response, including generic serialized handler failures. */
+export type ForkConversationRpcResponse = ForkConversationRpcResult | {
+    /** Serialized CLI handler failure returned through the generic RPC layer. */
+    error: string
+}
+
 export type RewindConversationRpcResult = {
     success: true
     /** Truncate HAPI transcript at/after this localId, then accept rehydrated history. */

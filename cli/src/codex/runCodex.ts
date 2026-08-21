@@ -49,7 +49,13 @@ export async function runCodex(opts: {
             sessionId: opts.existingSessionId,
             flavor: 'codex',
             startedBy,
-            workingDirectory
+            workingDirectory,
+            metadataOverrides: {
+                capabilities: {
+                    terminal: true,
+                    conversationHistory: undefined
+                }
+            }
         })
         : await (useLazyBootstrap ? bootstrapLazySession : bootstrapSession)({
             flavor: 'codex',

@@ -442,13 +442,13 @@ export class RpcGateway {
     async forkConversation(
         sessionId: string,
         params: { messageLocalId?: string }
-    ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResult> {
+    ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResponse> {
         return await this.sessionRpc(
             sessionId,
             RPC_METHODS.ForkConversation,
             params,
             120_000
-        ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResult
+        ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResponse
     }
 
     async rewindConversation(
