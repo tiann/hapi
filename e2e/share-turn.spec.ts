@@ -124,6 +124,36 @@ test('keeps a stripped tool-only assistant snapshot out of the export', async ({
     expect(size.height).toBeGreaterThan(1_000)
 })
 
+test('keeps long inline code aligned when exporting a wrapped message', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 900, height: 844 })
+    await page.goto('/e2e-fixtures/share-turn-fixture.html?inlineWrap=1')
+
+    const sourceCode = page.getByTestId('source-turn').locator('.aui-md-code').filter({ hasText: 'useClientLookup: Index 0 out of bounds' }).first()
+    await expect(sourceCode).toBeVisible()
+    await expect(sourceCode).toHaveCSS('display', 'inline')
+    await page.getByTestId('source-turn').screenshot({ path: testInfo.outputPath('inline-source.png') })
+
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+    const dialog = page.getByRole('dialog')
+    const previewCode = dialog.locator('.aui-md-code').filter({ hasText: 'useClientLookup: Index 0 out of bounds' }).first()
+    await expect(previewCode).toBeVisible()
+    await expect(previewCode).toHaveCSS('display', 'inline')
+    await dialog.screenshot({ path: testInfo.outputPath('inline-preview.png') })
+
+    const downloadPromise = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: 'Download' }).click()
+    const download = await downloadPromise
+    const path = testInfo.outputPath('inline-export.png')
+    await download.saveAs(path)
+    const bytes = await readFile(path)
+    const size = pngSize(bytes)
+    expect(size.width).toBe(1730)
+    expect(size.height).toBeGreaterThan(1_000)
+    expect(bytes).toMatchSnapshot('wrapped-inline-code-export.png', {
+        maxDiffPixelRatio: 0.005,
+    })
+})
+
 test('localizes the share dialog actions in Chinese', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('hapi-lang', 'zh-CN'))
     await page.goto('/e2e-fixtures/share-turn-fixture.html')

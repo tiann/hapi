@@ -26,11 +26,16 @@ const portraitFixtureImage = 'data:image/svg+xml;charset=utf-8,' + encodeURIComp
     </svg>
 `)
 
+const longInlineError =
+    'useClientLookup: Index 0 out of bounds (length: 0); messageStore.getMessagesPage -> useSessionMessageWindow -> SessionChat render -> message epoch mismatch after rewind; requestId=rewind-20260812-162035; source=codex-session-history-replay; retry=0; snapshotHeadSeq=4; nextBeforeSeq=null; invariant=visible-message-window-consistency'
+
 const markdown = `## Complex response fixture
 
 ## ✅ AList 的 frp 和 Caddy 配置已彻底移除
 
 This paragraph contains **bold text**, *emphasis*, ~~strikethrough~~, inline \`code\`, a [safe link](https://example.com), 中文内容，以及一段足够长的文字，用于验证换行、行高和宽屏导出效果是否与原始 HAPI 页面保持一致。
+
+已复现：/rewind 返回 200，但随后前端进入错误页。错误为 \`${longInlineError}\`，Console 也有完整堆栈；我正在整理脱敏后的证据文件和截图。
 
 > A multi-line blockquote used to verify borders, indentation, colors, and wrapping.  \n> 第二行引用包含中文。
 
@@ -74,7 +79,9 @@ function App() {
     const sourceRef = useRef<HTMLDivElement>(null)
     const [snapshots, setSnapshots] = useState<Snapshot[]>([])
     const [open, setOpen] = useState(false)
-    const wideSource = new URLSearchParams(window.location.search).get('wide') === '1'
+    const searchParams = new URLSearchParams(window.location.search)
+    const wideSource = searchParams.get('wide') === '1'
+    const narrowInlineSource = searchParams.get('inlineWrap') === '1'
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
     const metadataItems = selectShareTurnMetadata(headerMetadata, {
         agent: { text: 'codex', flavor: 'codex' },
@@ -112,7 +119,7 @@ function App() {
 
     return (
         <I18nProvider>
-            <main className={`mx-auto max-w-full bg-[var(--app-bg)] p-5 text-[var(--app-fg)] ${wideSource ? 'w-[1120px]' : 'w-[960px]'}`}>
+            <main className={`mx-auto max-w-full bg-[var(--app-bg)] p-5 text-[var(--app-fg)] ${narrowInlineSource ? 'w-[865px]' : wideSource ? 'w-[1120px]' : 'w-[960px]'}`}>
                 <div ref={sourceRef} data-testid="source-turn" className="flex flex-col gap-3">
                     <div data-hapi-message-role="user" className="happy-message flex flex-col items-end">
                         <div className={getUserBubbleClassName()}>

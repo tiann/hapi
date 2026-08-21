@@ -461,7 +461,10 @@ async function elementToPngBlob(
         const { default: html2canvas } = await import('html2canvas-pro')
         canvas = await html2canvas(captureElement, {
             backgroundColor,
-            foreignObjectRendering: false,
+            // Let the browser paint inline fragments so a wrapped <code>
+            // element keeps its per-line background instead of becoming one
+            // bounding rectangle in html2canvas-pro's canvas renderer.
+            foreignObjectRendering: true,
             imageTimeout: 15000,
             logging: false,
             removeContainer: true,
