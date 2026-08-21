@@ -218,6 +218,8 @@ export default {
   'session.title': '文件',
   'session.view.returnToChat': '返回会话',
   'session.more': '更多操作',
+  'session.sidebar.hide': '隐藏会话列表',
+  'session.sidebar.show': '显示会话列表',
   'session.outline.open': '会话大纲',
   'session.outline.close': '关闭大纲',
   'session.outline.title': '大纲',
