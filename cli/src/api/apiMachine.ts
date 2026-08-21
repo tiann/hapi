@@ -12,10 +12,16 @@ import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineB
 import {
     ArchiveCodexSessionRpcRequestSchema,
     ListCodexSessionsRpcRequestSchema,
+    ListClaudeSessionsRpcRequestSchema,
+    ListCursorImportableSessionsRpcRequestSchema,
     ListPiSessionsRpcRequestSchema,
+    PrepareCursorImportRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
     type ListCodexSessionsRpcResponse,
+    type ListClaudeSessionsRpcResponse,
+    type ListCursorImportableSessionsRpcResponse,
     type ListPiSessionsRpcResponse,
+    type PrepareCursorImportRpcResponse,
     type MachineDirectoryEntry,
     type MachineListDirectoryResponse,
     type PathExistsResponse
@@ -47,6 +53,7 @@ import {
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
+import { listLocalClaudeSessionSummaries, listLocalClaudeSessionsWithMessagesByIds } from '../modules/common/claudeSessions'
 import { listLocalPiSessionSummaries, listLocalPiSessionsWithMessagesByIds } from '../modules/common/piSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
@@ -315,7 +322,7 @@ export class ApiMachineClient {
                     : listLocalCodexSessionSummaries()
                 const sessions = []
                 for (const session of allSessions) {
-                    if (await this.isLocalSessionWithinWorkspaceRoots(session)) {
+                    if (await this.isCodexSessionWithinWorkspaceRoots(session)) {
                         sessions.push(session)
                     }
                 }
@@ -323,15 +330,31 @@ export class ApiMachineClient {
             }
         )
 
-        this.rpcHandlerManager.registerHandler<unknown, ArchiveCodexSessionRpcResponse>(
-            RPC_METHODS.ArchiveCodexSession,
+        this.rpcHandlerManager.registerHandler<unknown, ListClaudeSessionsRpcResponse>(
+            RPC_METHODS.ListClaudeSessions,
             async (params) => {
-                const parsed = ArchiveCodexSessionRpcRequestSchema.safeParse(params)
-                if (!parsed.success) return { success: false, error: 'Invalid Codex archive request' }
-                const sessionId = parsed.data.sessionId.trim()
-                return await archiveLocalCodexSession(sessionId, {
-                    canArchive: (session) => this.isLocalSessionWithinWorkspaceRoots(session)
-                })
+                const parsed = ListClaudeSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Claude sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
+                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = parsed.data.sessionIds
+                    ? new Set(parsed.data.sessionIds)
+                    : null
+                const allSessions = requestedIds
+                    ? listLocalClaudeSessionsWithMessagesByIds(requestedIds)
+                    : listLocalClaudeSessionSummaries()
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isSessionCwdWithinWorkspaceRoots(session.cwd)) {
+                        sessions.push(session)
+                    }
+                }
+                return { success: true, sessions }
             }
         )
 
@@ -353,19 +376,96 @@ export class ApiMachineClient {
                     : listLocalPiSessionSummaries()
                 const sessions = []
                 for (const session of allSessions) {
-                    if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)
+                    if (await this.isSessionCwdWithinWorkspaceRoots(session.cwd)) sessions.push(session)
                 }
                 return { success: true, sessions }
             }
         )
+
+        this.rpcHandlerManager.registerHandler<unknown, ListCursorImportableSessionsRpcResponse>(
+            RPC_METHODS.ListCursorImportableSessions,
+            async (params) => {
+                const parsed = ListCursorImportableSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Cursor importable sessions request' }
+                // Dynamic import: cursorImportSessions pulls bun:sqlite, which Vitest/Node
+                // cannot resolve at module-graph time. Keep that off the apiMachine hot path.
+                const { listCursorImportableSessionsOnDisk } = await import('../modules/common/cursorImportSessions')
+                const allSessions = listCursorImportableSessionsOnDisk({
+                    home: homedir(),
+                    candidateWorkspacePaths: parsed.data.candidateWorkspacePaths,
+                    limit: parsed.data.limit
+                })
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isSessionCwdWithinWorkspaceRoots(session.workspacePath)) {
+                        sessions.push(session)
+                    }
+                }
+                return { success: true, sessions }
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<unknown, PrepareCursorImportRpcResponse>(
+            RPC_METHODS.PrepareCursorImport,
+            async (params) => {
+                const parsed = PrepareCursorImportRpcRequestSchema.safeParse(params)
+                if (!parsed.success) {
+                    const rawUuid = typeof (params as Record<string, unknown> | null)?.uuid === 'string'
+                        ? String((params as Record<string, unknown>).uuid).trim() || 'invalid'
+                        : 'invalid'
+                    return {
+                        success: false,
+                        uuid: rawUuid,
+                        reason: 'internal_error',
+                        message: 'Invalid Cursor import prepare request',
+                        durationMs: 0
+                    }
+                }
+                const workspacePath = typeof parsed.data.workspacePath === 'string' ? parsed.data.workspacePath.trim() : ''
+                if (workspacePath) {
+                    const resolvedCwd = await this.resolveForWorkspaceCheck(workspacePath)
+                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                        return {
+                            success: false,
+                            uuid: parsed.data.uuid,
+                            reason: 'internal_error',
+                            message: 'Path is outside workspace roots',
+                            durationMs: 0
+                        }
+                    }
+                }
+                const { prepareCursorImportOnDisk } = await import('../modules/common/cursorImportSessions')
+                return await prepareCursorImportOnDisk({
+                    uuid: parsed.data.uuid.trim(),
+                    workspacePath: parsed.data.workspacePath ?? null,
+                    home: homedir()
+                })
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<unknown, ArchiveCodexSessionRpcResponse>(
+            RPC_METHODS.ArchiveCodexSession,
+            async (params) => {
+                const parsed = ArchiveCodexSessionRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Codex archive request' }
+                const sessionId = parsed.data.sessionId.trim()
+                return await archiveLocalCodexSession(sessionId, {
+                    canArchive: (session) => this.isCodexSessionWithinWorkspaceRoots(session)
+                })
+            }
+        )
     }
 
-    private async isLocalSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
+    private async isSessionCwdWithinWorkspaceRoots(cwd?: string | null): Promise<boolean> {
         if (!this.normalizedWorkspaceRoots?.length) return true
-        const cwd = session.cwd?.trim()
-        if (!cwd) return false
-        const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
+        const trimmed = cwd?.trim()
+        if (!trimmed) return false
+        const resolvedCwd = await this.resolveForWorkspaceCheck(trimmed)
         return this.isWithinWorkspaceRoots(resolvedCwd)
+    }
+
+    private async isCodexSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
+        return this.isSessionCwdWithinWorkspaceRoots(session.cwd)
     }
 
     private isWithinWorkspaceRoots(absolutePath: string): boolean {
