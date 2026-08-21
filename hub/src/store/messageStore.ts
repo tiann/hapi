@@ -35,6 +35,7 @@ import {
     copyMessageToSession as copyStoredMessageToSession,
     copyMessagesToSession as copyStoredMessagesToSession,
     getAllMessages,
+    getMessagesBeforeSeq,
     getMessagesAfterSeq,
     getMessageSeqById,
     truncateMessagesFromLocalId,
@@ -80,6 +81,10 @@ export class MessageStore {
 
     getAllMessages(sessionId: string): StoredMessage[] {
         return getAllMessages(this.db, sessionId)
+    }
+
+    getMessagesBeforeSeq(sessionId: string, beforeSeq?: number, limit: number = 200): StoredMessage[] {
+        return getMessagesBeforeSeq(this.db, sessionId, beforeSeq, limit)
     }
 
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
