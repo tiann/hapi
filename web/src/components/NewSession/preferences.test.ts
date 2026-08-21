@@ -47,19 +47,31 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
+            grokPermissionMode: 'default',
+            sessionType: 'worktree',
             permissionMode: 'safe-yolo'
         })
         savePreferredLaunchSettings('machine-1', 'claude', {
             model: 'opus',
             cursorSelectedBase: 'auto',
             effort: 'high',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
         savePreferredLaunchSettings('machine-2', 'codex', {
             model: 'gpt-5.6-terra',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'max'
+            modelReasoningEffort: 'max',
+            serviceTier: 'fast',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
 
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toEqual({
@@ -67,19 +79,31 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
+            grokPermissionMode: 'default',
+            sessionType: 'worktree',
             permissionMode: 'safe-yolo'
         })
         expect(loadPreferredLaunchSettings('machine-1', 'claude')).toEqual({
             model: 'opus',
             cursorSelectedBase: 'auto',
             effort: 'high',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
         expect(loadPreferredLaunchSettings('machine-2', 'codex')).toEqual({
             model: 'gpt-5.6-terra',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'max'
+            modelReasoningEffort: 'max',
+            serviceTier: 'fast',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
     })
 
@@ -105,7 +129,11 @@ describe('NewSession preferences', () => {
             model: 'gpt-5.6-sol',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
     })
 
@@ -128,12 +156,20 @@ describe('NewSession preferences', () => {
             model: 'retired-model',
             cursorSelectedBase: 'auto',
             effort: 'ultra',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })).toEqual({
             model: 'auto',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })
     })
 
@@ -143,12 +179,20 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
+            grokPermissionMode: 'default',
+            sessionType: 'worktree',
             permissionMode: 'read-only'
         })).toEqual({
             model: 'gpt-5.6-sol',
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
+            grokPermissionMode: 'default',
+            sessionType: 'worktree',
             permissionMode: 'read-only'
         })
     })
@@ -165,6 +209,10 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
             permissionMode: 'default'
         })
     })
@@ -198,12 +246,20 @@ describe('NewSession preferences', () => {
             model: 'provider/model',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'xhigh'
+            modelReasoningEffort: 'xhigh',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple'
         })).toEqual({
             model: 'provider/model',
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
             permissionMode: 'default'
         })
     })
