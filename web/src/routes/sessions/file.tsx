@@ -14,6 +14,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { decodeBase64 } from '@/lib/utils'
 import { ImagePreview } from '@/components/ImagePreview'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { ExpandableErrorMessage } from '@/components/ExpandableErrorMessage'
 import { formatFileMetadata } from '@/lib/file-metadata'
 import {
     getInitialMarkdownPreviewMode,
@@ -441,20 +442,33 @@ export default function FilePage() {
             <div ref={fileScrollRef} data-hapi-file-scroll="true" className="app-scroll-y flex-1 min-h-0">
                 <div className="mx-auto w-full max-w-content p-4">
                     {diffErrorMessage ? (
-                        <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs text-[var(--app-hint)]">
-                            {diffErrorMessage}
-                        </div>
+                        <ExpandableErrorMessage
+                            message={diffErrorMessage}
+                            expandLabel={t('file.page.expandError')}
+                            collapseLabel={t('file.page.collapseError')}
+                            className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs text-[var(--app-hint)]"
+                        />
                     ) : null}
                     {missingPath ? (
                         <div className="text-sm text-[var(--app-hint)]">{t('file.page.missingPath')}</div>
                     ) : loading ? (
                         <FileContentSkeleton label={t('loading.file')} />
                     ) : fileErrorMessage ? (
-                        <div className="text-sm text-[var(--app-hint)]">{fileErrorMessage}</div>
+                        <ExpandableErrorMessage
+                            message={fileErrorMessage}
+                            expandLabel={t('file.page.expandError')}
+                            collapseLabel={t('file.page.collapseError')}
+                            className="text-sm text-[var(--app-hint)]"
+                        />
                     ) : displayMode === 'diff' && diffContent ? (
                         <DiffDisplay diffContent={diffContent} />
                     ) : displayMode === 'diff' && diffError ? (
-                        <div className="text-sm text-[var(--app-hint)]">{diffErrorMessage}</div>
+                        <ExpandableErrorMessage
+                            message={diffErrorMessage ?? ''}
+                            expandLabel={t('file.page.expandError')}
+                            collapseLabel={t('file.page.collapseError')}
+                            className="text-sm text-[var(--app-hint)]"
+                        />
                     ) : displayMode === 'file' ? (
                         imagePreviewUrl ? (
                             <ImagePreview

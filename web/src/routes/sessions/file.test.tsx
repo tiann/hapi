@@ -8,6 +8,8 @@ import FilePage from './file'
 
 const goBackMock = vi.fn()
 const copyMock = vi.hoisted(() => vi.fn())
+const getGitDiffFileMock = vi.hoisted(() => vi.fn())
+const readSessionFileMock = vi.hoisted(() => vi.fn())
 
 const sampleMarkdown = '# Heading\n\n| Col A | Col B |\n| --- | --- |\n| one | two |'
 const filePath = 'docs/README.md'
@@ -27,13 +29,8 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
         api: {
-            getGitDiffFile: vi.fn(async () => ({ success: true, stdout: '' })),
-            readSessionFile: vi.fn(async () => ({
-                success: true,
-                content: encodedContent,
-                size: fileSize,
-                modified: fileModified,
-            })),
+            getGitDiffFile: getGitDiffFileMock,
+            readSessionFile: readSessionFileMock,
         },
     }),
 }))
@@ -78,6 +75,13 @@ function renderWithProviders() {
 describe('FilePage markdown preview', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        getGitDiffFileMock.mockResolvedValue({ success: true, stdout: '' })
+        readSessionFileMock.mockResolvedValue({
+            success: true,
+            content: encodedContent,
+            size: fileSize,
+            modified: fileModified,
+        })
         window.localStorage.clear()
         window.sessionStorage.clear()
     })
@@ -114,6 +118,27 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
         })
+    })
+
+    it('collapses long preview errors until clicked', async () => {
+        const tail = 'FULL ERROR TAIL'
+        const longError = `Command failed: git diff --no-ext-diff -- TASKS.md ${'diagnostic '.repeat(30)}${tail}`
+        getGitDiffFileMock.mockResolvedValue({ success: false, error: longError })
+
+        renderWithProviders()
+
+        const errorToggle = await screen.findByRole('button', { name: /Show full error/ })
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).toHaveTextContent('…')
+        expect(errorToggle).not.toHaveTextContent(tail)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'true')
+        expect(errorToggle).toHaveTextContent(longError)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).not.toHaveTextContent(tail)
     })
 
     it('preserves the file preview scroll position across route remounts', async () => {
