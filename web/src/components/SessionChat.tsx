@@ -112,6 +112,7 @@ import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+import { buildComposerMessageHistory } from '@/lib/composerMessageHistory'
 
 type SessionModelSelection = { provider: string; modelId: string } | string | null
 
@@ -1259,6 +1260,11 @@ function SessionChatInner(props: SessionChatProps) {
         return normalized
     }, [visibleMessages])
 
+    const messageHistory = useMemo(
+        () => buildComposerMessageHistory(normalizedMessages),
+        [normalizedMessages]
+    )
+
     const goalStateSourceMessages = useMemo(
         () => buildGoalStateMessages(props.messages),
         [props.messages]
@@ -2045,6 +2051,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onTerminal={props.session.active && terminalSupported ? handleViewTerminal : undefined}
                         terminalUnsupported={props.session.active && !terminalSupported}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        messageHistory={messageHistory}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
