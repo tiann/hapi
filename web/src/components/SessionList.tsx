@@ -183,6 +183,83 @@ function getGroupDisplayName(directory: string): string {
     return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
 }
 
+function usesWindowsSeparators(path: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path)
+}
+
+function stripTrailingSeparators(path: string): string {
+    if (!usesWindowsSeparators(path)) {
+        if (/^\/+$/.test(path)) return '/'
+        return path.replace(/\/+$/, '')
+    }
+    if (/^[A-Za-z]:[\\/]+$/.test(path)) return path.slice(0, 3)
+    return path.replace(/[\\/]+$/, '')
+}
+
+function normalizePathForCompare(path: string): string {
+    const stripped = stripTrailingSeparators(path)
+    return usesWindowsSeparators(path) ? stripped.replace(/\\/g, '/') : stripped
+}
+
+function pathIsUnder(parent: string, child: string): boolean {
+    const parentNorm = normalizePathForCompare(parent)
+    const childNorm = normalizePathForCompare(child)
+    return childNorm === parentNorm || childNorm.startsWith(`${parentNorm}/`)
+}
+
+export type SessionGroupDirectorySource = {
+    path?: string | null
+    worktree?: { basePath?: string | null; worktreePath?: string | null } | null
+}
+
+/**
+ * Directory used as the sidebar project-group key.
+ *
+ * Prefer worktree.basePath when the session path lives under it. When basePath
+ * is a realpath of a symlink prefix (CLI realpaths worktreePath/basePath while
+ * metadata.path may still use the logical spelling), require worktreePath to
+ * sit under basePath before rewriting the group root from path — display-name
+ * collision alone is not alias evidence.
+ */
+export function resolveSessionGroupDirectory(source: SessionGroupDirectorySource): string {
+    // Do not trim(): trailing/leading spaces are valid POSIX path characters and
+    // group.directory feeds Copy Path / New Session.
+    const path = source.path ?? ''
+    const basePath = source.worktree?.basePath ?? ''
+    const worktreePath = source.worktree?.worktreePath ?? ''
+    if (!basePath && !path) return 'Other'
+    if (!basePath) return stripTrailingSeparators(path)
+    if (!path) return stripTrailingSeparators(basePath)
+
+    const normBase = stripTrailingSeparators(basePath)
+    if (pathIsUnder(normBase, path)) {
+        return normBase
+    }
+
+    // Alias evidence: realpathed worktreePath under realpathed basePath, while
+    // path still uses a logical spelling of the same checkout.
+    if (!worktreePath || !pathIsUnder(normBase, worktreePath)) {
+        return normBase
+    }
+
+    const baseNorm = normalizePathForCompare(normBase)
+    const worktreeNorm = normalizePathForCompare(worktreePath)
+    const pathNorm = normalizePathForCompare(path)
+    const suffix = worktreeNorm.slice(baseNorm.length)
+    if (!suffix) return normBase
+
+    const suffixIndex = pathNorm.lastIndexOf(`${suffix}/`)
+    if (suffixIndex !== -1) {
+        const logicalRoot = pathNorm.slice(0, suffixIndex)
+        return usesWindowsSeparators(path) ? logicalRoot.replace(/\//g, '\\') : logicalRoot
+    }
+    if (pathNorm.endsWith(suffix)) {
+        const logicalRoot = pathNorm.slice(0, -suffix.length) || normBase
+        return usesWindowsSeparators(path) ? logicalRoot.replace(/\//g, '\\') : logicalRoot
+    }
+    return normBase
+}
+
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
@@ -281,11 +358,11 @@ export function getPreviousSessionVisibleCount(current: number, step: number): n
     return Math.max(normalizedStep, current - normalizedStep)
 }
 
-function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
+export function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+        const path = resolveSessionGroupDirectory(session.metadata ?? {})
         const machineId = session.metadata?.machineId ?? null
         const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
         if (!groups.has(key)) {
@@ -1534,7 +1611,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getGroupDisplayName(resolveSessionGroupDirectory(s.metadata ?? {}))}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />
@@ -2027,7 +2104,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getGroupDisplayName(resolveSessionGroupDirectory(s.metadata ?? {}))}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />
