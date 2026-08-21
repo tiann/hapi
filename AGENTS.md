@@ -162,6 +162,7 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 | Modify message handling | `hub/src/sync/messageService.ts` |
 | Add notification type | `hub/src/notifications/` |
 | Add shared type | `shared/src/types.ts`, `shared/src/schemas.ts` |
+| Attach outliving job | `cli/src/commands/job.ts`, `docs/guide/session-jobs.md` |
 
 ## Important patterns
 
@@ -170,6 +171,20 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 - **Session modes**: `local` (terminal) vs `remote` (web-controlled); switchable mid-session
 - **Permission modes**: `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`
 - **Namespaces**: Multi-user isolation via `CLI_API_TOKEN:<namespace>` suffix
+
+## Session-attached jobs (outliving work)
+
+When an agent starts process-shaped work that will keep running after the agent goes idle (`nohup`, batch imports, long scripts, external daemons), attach it so the session list stays truthful while `active: false`. This is **not** thinking progress / todos / in-agent background tools. It is also **not** an A2A Layer 1 `work_ad` ([#1332](https://github.com/tiann/hapi/discussions/1332)) — jobs enrich Layer 0 `SessionSummary`; leave collaboration claims / handoffs to the work-graph ledger.
+
+Agent contract (idle agents cannot heartbeat — bare set + nohup freezes the bar):
+
+1. **Required for process-shaped work:** Shell `hapi job run <session-id> <key> --label … -- <cmd>` (auto-heartbeat + exit status). Use `"$HAPI_SESSION_ID"` only when it matches the operator chat row (`/sessions/<id>` in the web URL); for remote Cursor runner, pass that URL UUID explicitly (shell env can point at a worker row — see `docs/guide/session-jobs.md`).
+2. MCP `session_job` **refuses `action=set`**. Use it only for `update` / `clear` / `list` on a job the supervisor already created
+3. Manual CLI `set` only with a self-heartbeating wrapper (`update` ≥~10m); never MCP set + nohup
+4. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent
+5. Elapsed wall clock is always shown from `startedAt` (not an ETA); correct late attach with CLI `set --started-at` (or clear+set)
+
+Full guide: `docs/guide/session-jobs.md`. CLI: `hapi job --help`.
 
 ## Adding new web features — consider an FUE
 

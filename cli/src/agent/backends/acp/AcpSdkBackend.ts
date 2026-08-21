@@ -5,6 +5,15 @@ import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
+
+/** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
+export type AgentActivitySource =
+    | 'state_update_running'
+    | 'state_update_idle'
+    | 'state_update_requires_action'
+    | 'permission';
+
+export type AgentActivityListener = (thinking: boolean, source: AgentActivitySource) => void;
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
 import packageJson from '../../../../package.json';
@@ -93,7 +102,7 @@ export class AcpSdkBackend implements AgentBackend {
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
-    private agentActivityListener: ((thinking: boolean) => void) | null = null;
+    private agentActivityListener: AgentActivityListener | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
@@ -484,7 +493,7 @@ export class AcpSdkBackend implements AgentBackend {
      * `false` = `state_update` idle (skipped while a HAPI prompt turn is still draining).
      * Launchers should ignore no-ops when session.thinking already matches.
      */
-    setAgentActivityListener(listener: ((thinking: boolean) => void) | null): void {
+    setAgentActivityListener(listener: AgentActivityListener | null): void {
         this.agentActivityListener = listener;
     }
 
@@ -948,7 +957,7 @@ export class AcpSdkBackend implements AgentBackend {
             if (this.isProcessingMessage) {
                 return;
             }
-            this.agentActivityListener(false);
+            this.agentActivityListener(false, 'state_update_idle');
             return;
         }
 
@@ -959,13 +968,17 @@ export class AcpSdkBackend implements AgentBackend {
             }
             this.runningThinkingTimer = setTimeout(() => {
                 this.runningThinkingTimer = null;
-                this.agentActivityListener?.(true);
+                this.agentActivityListener?.(true, 'state_update_running');
             }, AcpSdkBackend.RUNNING_THINKING_DEBOUNCE_MS);
             return;
         }
 
         this.clearRunningThinkingTimer();
-        this.agentActivityListener(true);
+        const source: AgentActivitySource = update.sessionUpdate === 'state_update'
+            && update.state === 'requires_action'
+            ? 'state_update_requires_action'
+            : 'state_update_running';
+        this.agentActivityListener(true, source);
     }
 
     private clearRunningThinkingTimer(): void {
@@ -1151,7 +1164,7 @@ export class AcpSdkBackend implements AgentBackend {
         if (this.permissionHandler) {
             try {
                 // Permission prompts imply the agent is awake (#1470).
-                this.agentActivityListener?.(true);
+                this.agentActivityListener?.(true, 'permission');
                 this.permissionHandler(request);
             } catch (error) {
                 this.pendingPermissions.delete(toolCallId);

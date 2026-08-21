@@ -135,6 +135,41 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('exports the requested existing session id for Cursor runner resume (#1404)', async () => {
+        // Runner passes --existing-session-id (buildCliArgs); child bootstrap must
+        // publish that same hub row into HAPI_SESSION_ID for shell `hapi job run`.
+        const session = createSession()
+        session.metadata = {
+            ...session.metadata!,
+            flavor: 'cursor',
+            cursorSessionId: 'cursor-csid-1',
+            cursorSessionProtocol: 'acp'
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'cursor',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(getSessionMock).toHaveBeenCalledWith('hapi-session-1')
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hapi-session-1')
+        expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
+            'hapi-session-1',
+            expect.objectContaining({
+                flavor: 'cursor',
+                startedBy: 'runner',
+                startedFromRunner: true
+            })
+        )
+    })
+
     it('preserves existing native resume metadata when reactivating a session', async () => {
         const session = createSession()
         const existingMetadata = session.metadata
