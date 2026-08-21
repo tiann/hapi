@@ -37,6 +37,7 @@ import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { buildSessionReferenceText, matchSessionsForMention } from '@/lib/sessionReference'
+import { isSkillAutocompleteQuery, normalizeSkillAutocompleteQuery } from '@/lib/autocomplete'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
@@ -725,8 +726,8 @@ function SessionPage() {
 
             return [...sessionHits, ...fileHits]
         }
-        if (query.startsWith('$')) {
-            return await getSkillSuggestions(query)
+        if (isSkillAutocompleteQuery(query)) {
+            return await getSkillSuggestions(normalizeSkillAutocompleteQuery(query))
         }
         return await getSlashSuggestions(query)
     }, [
