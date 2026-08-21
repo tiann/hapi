@@ -7,6 +7,7 @@ import {
     computeTodoProgress,
     getPendingRequestKinds,
     getPendingRequests,
+    getSessionListSortTimestamp,
     toSessionSummary,
     toSessionSummaryMetadata
 } from './sessionSummary'
@@ -68,7 +69,27 @@ describe('getPendingRequestKinds', () => {
     })
 })
 
+describe('getSessionListSortTimestamp', () => {
+    it('prefers the latest visible assistant reply over activity time', () => {
+        expect(getSessionListSortTimestamp({ updatedAt: 5_000, lastAssistantMessageAt: 9_000 })).toBe(9_000)
+    })
+
+    it('falls back to activity time when no assistant reply exists', () => {
+        expect(getSessionListSortTimestamp({ updatedAt: 5_000, lastAssistantMessageAt: null })).toBe(5_000)
+        expect(getSessionListSortTimestamp({ updatedAt: 5_000 })).toBe(5_000)
+    })
+})
+
 describe('toSessionSummary', () => {
+    it('carries the independent assistant reply timestamp', () => {
+        const summary = toSessionSummary(makeSession({
+            updatedAt: 5_000,
+            lastAssistantMessageAt: 4_000
+        }))
+        expect(summary.updatedAt).toBe(5_000)
+        expect(summary.lastAssistantMessageAt).toBe(4_000)
+    })
+
     it('includes the pinned state', () => {
         expect(toSessionSummary(makeSession({ pinned: true })).pinned).toBe(true)
         expect(toSessionSummary(makeSession({ globalPinned: true })).globalPinned).toBe(true)

@@ -172,6 +172,8 @@ public enum SummaryPatching {
             thinking: session.thinking,
             activeAt: session.activeAt,
             updatedAt: session.updatedAt,
+            lastAssistantMessageAt: session.lastAssistantMessageAt,
+            lastAssistantMessageVersion: session.seq,
             pinned: session.pinned ?? false,
             globalPinned: session.globalPinned ?? false,
             metadata: toSessionSummaryMetadata(session.metadata),
@@ -219,10 +221,24 @@ public enum SummaryPatching {
         _ patch: SessionPatch
     ) -> SessionSummary {
         var next = current
+        let replyVersion = patch.lastAssistantMessageVersion
+        let canApplyReplyClock = replyVersion.map {
+            $0 >= (current.lastAssistantMessageVersion ?? 0)
+        } ?? true
         next.active = patch.active ?? current.active
         next.thinking = patch.thinking ?? current.thinking
         next.activeAt = patch.activeAt ?? current.activeAt
         next.updatedAt = patch.updatedAt.map { max(current.updatedAt, $0) } ?? current.updatedAt
+        if let field = patch.lastAssistantMessageAt, canApplyReplyClock {
+            if replyVersion != nil {
+                next.lastAssistantMessageAt = field.wireValue
+            } else if let value = field.wireValue {
+                next.lastAssistantMessageAt = max(current.lastAssistantMessageAt ?? Int.min, value)
+            }
+        }
+        if let replyVersion {
+            next.lastAssistantMessageVersion = max(current.lastAssistantMessageVersion ?? 0, replyVersion)
+        }
         next.backgroundTaskCount = patch.backgroundTaskCount ?? current.backgroundTaskCount
         if let field = patch.model { next.model = field.wireValue }
         if let field = patch.modelReasoningEffort { next.modelReasoningEffort = field.wireValue }
@@ -291,6 +307,7 @@ public enum SummaryPatching {
         if current.active != next.active { return false }
         if current.thinking != next.thinking { return false }
         if current.updatedAt != next.updatedAt { return false }
+        if current.lastAssistantMessageAt != next.lastAssistantMessageAt { return false }
         if current.backgroundTaskCount != next.backgroundTaskCount { return false }
         if current.model != next.model { return false }
         if current.modelReasoningEffort != next.modelReasoningEffort { return false }

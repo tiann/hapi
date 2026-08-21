@@ -40,7 +40,7 @@ interface SessionListStore {
     /** Sorted with `sortSessionSummaries` (globalPinned > pinned > active > pending > recency). */
     val sessions: StateFlow<List<SessionSummary>>
 
-    /** `GET /api/sessions` — replaces the list wholesale. Throws on failure. */
+    /** `GET /api/sessions` — refreshes membership and merges reply-clock versions. Throws on failure. */
     suspend fun refresh()
 
     /** Coalesced fire-and-forget [refresh] (the web's 16 ms invalidation batch). */
@@ -166,9 +166,28 @@ class SessionStore(
     override fun currentDetail(sessionId: String): Session? = _details.value[sessionId]
 
     override suspend fun loadSessionDetail(sessionId: String): Session {
-        val session = api.getSession(sessionId).session
-        _details.update { it + (sessionId to session) }
-        return session
+        var session = api.getSession(sessionId).session
+        var attempt = 0
+        while (true) {
+            var stale = false
+            var accepted = session
+            _details.update { current ->
+                val cached = current[sessionId]
+                stale = cached != null && session.seq < cached.seq
+                if (stale) {
+                    accepted = cached!!
+                    current
+                } else {
+                    current + (sessionId to session)
+                }
+            }
+            if (!stale || attempt == 1) return accepted
+            attempt += 1
+            // The rejected snapshot may still contain unrelated fields that
+            // arrived before the newer SSE reply-clock patch. Retry once to
+            // recover that complete server state without creating a loop.
+            session = api.getSession(sessionId).session
+        }
     }
 
     override fun releaseDetail(sessionId: String) {
@@ -189,8 +208,33 @@ class SessionStore(
 
     override suspend fun refresh() {
         refreshMutex.withLock {
-            val response = api.getSessions()
-            updateSummaries { sortSessionSummaries(response.sessions) }
+            var response = api.getSessions()
+            val cachedById = _sessions.value.associateBy { it.id }
+            if (response.sessions.any { incoming ->
+                    val cached = cachedById[incoming.id]
+                    cached != null && (incoming.lastAssistantMessageVersion ?: 0) < (cached.lastAssistantMessageVersion ?: 0)
+                }) {
+                // The rejected snapshot may omit unrelated fields that were
+                // present at its older sequence. Retry once, then merge the
+                // result against the latest cache.
+                response = api.getSessions()
+            }
+            updateSummaries { list ->
+                val latestById = list.associateBy { it.id }
+                sortSessionSummaries(
+                    response.sessions.map { incoming ->
+                        val cached = latestById[incoming.id]
+                        if (cached != null
+                            && (incoming.lastAssistantMessageVersion ?: 0)
+                                < (cached.lastAssistantMessageVersion ?: 0)
+                        ) {
+                            cached
+                        } else {
+                            incoming
+                        }
+                    }
+                )
+            }
         }
     }
 
@@ -362,7 +406,17 @@ class SessionStore(
         // parse, then the REST fallback.
         val full = parseFullSession(data)?.takeIf { it.id == sessionId }
         if (full != null) {
-            _details.update { it + (sessionId to full) }
+            // The global and per-session SSE pipes are delivered on separate
+            // coroutines. Keep the sequence check inside the atomic update so
+            // an older full record cannot pass a stale pre-read and write last.
+            _details.update { current ->
+                val cached = current[sessionId]
+                if (cached != null && full.seq < cached.seq) {
+                    current
+                } else {
+                    current + (sessionId to full)
+                }
+            }
             upsertSummary(full)
             return
         }
@@ -409,6 +463,9 @@ class SessionStore(
         updateSummaries { list ->
             val index = list.indexOfFirst { it.id == session.id }
             val existing = if (index >= 0) list[index] else null
+            if (existing != null && session.seq < (existing.lastAssistantMessageVersion ?: 0)) {
+                return@updateSummaries list
+            }
             // The projection cannot derive the hub-computed scheduled-message
             // fields — carry them over from the previous row (web
             // `upsertSessionSummary`).
@@ -446,7 +503,12 @@ class SessionStore(
             val next = SummaryPatching.applySessionSummaryPatch(current, patch)
             // Keep-alive noise: activeAt-only movement keeps the previous
             // list identity (no emission, no re-sort, no snapshot write).
-            if (SummaryPatching.isRenderIrrelevantPatch(current, next)) return@updateSummaries list
+            if (
+                SummaryPatching.isRenderIrrelevantPatch(current, next)
+                && current.lastAssistantMessageVersion == next.lastAssistantMessageVersion
+            ) {
+                return@updateSummaries list
+            }
             sortSessionSummaries(list.toMutableList().also { it[index] = next })
         }
         return present

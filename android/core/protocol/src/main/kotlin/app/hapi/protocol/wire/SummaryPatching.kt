@@ -167,6 +167,8 @@ object SummaryPatching {
         thinking = session.thinking,
         activeAt = session.activeAt,
         updatedAt = session.updatedAt,
+        lastAssistantMessageAt = session.lastAssistantMessageAt,
+        lastAssistantMessageVersion = session.seq,
         pinned = session.pinned ?: false,
         globalPinned = session.globalPinned ?: false,
         metadata = toSessionSummaryMetadata(session.metadata),
@@ -209,11 +211,32 @@ object SummaryPatching {
      *   summary counterpart — ignored, like the reference.
      */
     fun applySessionSummaryPatch(current: SessionSummary, patch: SessionPatch): SessionSummary {
+        val replyVersion = patch.lastAssistantMessageVersion
+        val canApplyReplyClock = replyVersion == null
+            || replyVersion >= (current.lastAssistantMessageVersion ?: 0)
+        val nextReplyAt = if (patch.lastAssistantMessageAt is OptionalField.Present && canApplyReplyClock) {
+            val replyAt = patch.lastAssistantMessageAt.value
+            if (replyVersion != null) {
+                replyAt
+            } else {
+                replyAt?.let { max(current.lastAssistantMessageAt ?: Long.MIN_VALUE, it) }
+                    ?: current.lastAssistantMessageAt
+            }
+        } else {
+            current.lastAssistantMessageAt
+        }
+        val nextReplyVersion = if (replyVersion != null) {
+            max(current.lastAssistantMessageVersion ?: 0, replyVersion)
+        } else {
+            current.lastAssistantMessageVersion
+        }
         var next = current.copy(
             active = patch.active ?: current.active,
             thinking = patch.thinking ?: current.thinking,
             activeAt = patch.activeAt ?: current.activeAt,
             updatedAt = patch.updatedAt?.let { max(current.updatedAt, it) } ?: current.updatedAt,
+            lastAssistantMessageAt = nextReplyAt,
+            lastAssistantMessageVersion = nextReplyVersion,
             backgroundTaskCount = patch.backgroundTaskCount ?: current.backgroundTaskCount,
             model = when (val model = patch.model) {
                 is OptionalField.Present -> model.value
@@ -308,6 +331,7 @@ object SummaryPatching {
         return current.active == next.active
             && current.thinking == next.thinking
             && current.updatedAt == next.updatedAt
+            && current.lastAssistantMessageAt == next.lastAssistantMessageAt
             && current.backgroundTaskCount == next.backgroundTaskCount
             && current.model == next.model
             && current.modelReasoningEffort == next.modelReasoningEffort

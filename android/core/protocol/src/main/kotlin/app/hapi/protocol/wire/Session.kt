@@ -33,6 +33,8 @@ data class Session(
     val seq: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    /** Latest visible assistant prose; null when the session has no reply. */
+    val lastAssistantMessageAt: Long? = null,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val active: Boolean,

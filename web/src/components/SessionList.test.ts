@@ -124,6 +124,25 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(result[0].id).toBe('b') // more recent wins
     })
 
+    it('uses the latest assistant reply when choosing an inactive duplicate', () => {
+        const sessions = [
+            makeSession({
+                id: 'activity-newer',
+                metadata: { path: '/p', agentSessionId: 'thread-1' },
+                updatedAt: 300,
+                lastAssistantMessageAt: 100
+            }),
+            makeSession({
+                id: 'reply-newer',
+                metadata: { path: '/p', agentSessionId: 'thread-1' },
+                updatedAt: 200,
+                lastAssistantMessageAt: 400
+            })
+        ]
+
+        expect(deduplicateSessionsByAgentId(sessions)[0]?.id).toBe('reply-newer')
+    })
+
     it('keeps active session over inactive duplicate', () => {
         const sessions = [
             makeSession({ id: 'a', active: true, metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 100 }),

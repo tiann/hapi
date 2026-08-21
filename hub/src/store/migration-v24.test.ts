@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v23 to v25', () => {
+describe('schema migration v23 to v26', () => {
     it('adds fcm_devices.push_key to a V23 database and keeps existing rows', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-'))
         tempDirs.push(dir)
@@ -37,7 +37,7 @@ describe('schema migration v23 to v25', () => {
         expect(columns.some((col) => col.name === 'push_key')).toBe(true)
         const messageColumns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-        expect(version.user_version).toBe(25)
+        expect(version.user_version).toBe(26)
 
         // Existing Android rows survive with a NULL push key.
         const devices = migrated.fcm.getDevicesByNamespace('default')
@@ -74,7 +74,48 @@ describe('schema migration v23 to v25', () => {
         const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
         expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-        expect(version.user_version).toBe(25)
+        expect(version.user_version).toBe(26)
+        migrated.close()
+    })
+})
+
+describe('schema migration v24 to v26', () => {
+    it('adds the assistant reply clock and preserves activity time', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-reply-clock-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+
+        const initial = new Store(dbPath)
+        const session = initial.sessions.getOrCreateSession(
+            'migration-reply-clock',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const activityAt = session.updatedAt
+        initial.close()
+
+        const legacy = new Database(dbPath)
+        legacy.exec('ALTER TABLE sessions DROP COLUMN assistant_reply_clock_backfilled')
+        legacy.exec('ALTER TABLE sessions DROP COLUMN last_assistant_message_at')
+        legacy.exec('PRAGMA user_version = 24')
+        legacy.close()
+
+        const migrated = new Store(dbPath)
+        const internalDb = (migrated as unknown as { db: Database }).db
+        const columns = internalDb
+            .prepare('PRAGMA table_info(sessions)')
+            .all() as Array<{ name: string }>
+
+        expect(columns.some((column) => column.name === 'last_assistant_message_at')).toBe(true)
+        expect(columns.some((column) => column.name === 'assistant_reply_clock_backfilled')).toBe(true)
+        expect(internalDb.prepare('PRAGMA user_version').get() as { user_version: number })
+            .toEqual({ user_version: 26 })
+
+        const reloaded = migrated.sessions.getSession(session.id)
+        expect(reloaded?.lastAssistantMessageAt).toBeNull()
+        expect(reloaded?.assistantReplyClockBackfilled).toBe(false)
+        expect(reloaded?.updatedAt).toBe(activityAt)
         migrated.close()
     })
 })

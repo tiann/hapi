@@ -29,6 +29,8 @@ class SessionPatchingTest {
     private fun makeSession(
         updatedAt: Long = 2_000,
         activeAt: Long = 1_000,
+        seq: Long = 1,
+        lastAssistantMessageAt: Long? = null,
         metadataVersion: Long = 1,
         agentStateVersion: Long = 1,
         todosUpdatedAt: Long? = 0,
@@ -41,11 +43,12 @@ class SessionPatchingTest {
     ): Session = Session(
         id = "session-1",
         namespace = "default",
-        seq = 1,
+        seq = seq,
         createdAt = 1_000,
         updatedAt = updatedAt,
         active = true,
         activeAt = activeAt,
+        lastAssistantMessageAt = lastAssistantMessageAt,
         metadata = metadata,
         metadataVersion = metadataVersion,
         agentState = agentState,
@@ -183,6 +186,66 @@ class SessionPatchingTest {
         val session = makeSession(updatedAt = 2_000)
         val next = assertNotNull(applySessionDetailPatch(session, SessionPatch(updatedAt = 3_000)))
         assertEquals(3_000, next.updatedAt)
+    }
+
+    @Test
+    fun `reply clock uses sequence gate for backward and null updates`() {
+        val current = makeSession(seq = 10, lastAssistantMessageAt = 9_000)
+        val backward = assertNotNull(
+            applySessionDetailPatch(
+                current,
+                SessionPatch(
+                    lastAssistantMessageAt = OptionalField.Present(1_000),
+                    lastAssistantMessageVersion = 11,
+                ),
+            )
+        )
+        assertEquals(1_000L, backward.lastAssistantMessageAt)
+        assertEquals(11L, backward.seq)
+
+        val staleClear = applySessionDetailPatch(
+            backward,
+            SessionPatch(
+                lastAssistantMessageAt = OptionalField.Present(null),
+                lastAssistantMessageVersion = 10,
+            ),
+        )
+        assertNull(staleClear)
+        val cleared = assertNotNull(
+            applySessionDetailPatch(
+                backward,
+                SessionPatch(
+                    lastAssistantMessageAt = OptionalField.Present(null),
+                    lastAssistantMessageVersion = 12,
+                ),
+            )
+        )
+        assertNull(cleared.lastAssistantMessageAt)
+        assertEquals(12L, cleared.seq)
+    }
+
+    @Test
+    fun `unversioned reply timestamp is monotonic`() {
+        val current = makeSession(lastAssistantMessageAt = 9_000)
+        assertNull(
+            applySessionDetailPatch(
+                current,
+                SessionPatch(lastAssistantMessageAt = OptionalField.Present(1_000)),
+            )
+        )
+        assertNull(
+            applySessionDetailPatch(
+                current,
+                SessionPatch(lastAssistantMessageAt = OptionalField.Present(null)),
+            )
+        )
+        val next = assertNotNull(
+            applySessionDetailPatch(
+                current,
+                SessionPatch(lastAssistantMessageAt = OptionalField.Present(10_000)),
+            )
+        )
+        assertEquals(10_000L, next.lastAssistantMessageAt)
     }
 
     @Test

@@ -15,6 +15,10 @@ data class SessionSummary(
     val thinking: Boolean = false,
     val activeAt: Long = 0,
     val updatedAt: Long = 0,
+    /** Latest visible assistant prose; list sorting falls back to updatedAt. */
+    val lastAssistantMessageAt: Long? = null,
+    /** Session sequence that supplied lastAssistantMessageAt. */
+    val lastAssistantMessageVersion: Long? = null,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val metadata: SessionSummaryMetadata? = null,

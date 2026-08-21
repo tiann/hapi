@@ -11,7 +11,10 @@ import {
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
     isRenderIrrelevantSessionPatch,
+    shouldAcceptSessionRecord,
+    shouldAcceptSessionSummaryRecord,
     shouldInvalidateSessionListForEvent,
+    sortSessionSummaries,
     useSSE
 } from './useSSE'
 
@@ -185,6 +188,47 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     } as SessionSummary
 }
 
+describe('sortSessionSummaries', () => {
+    it('keeps pin and activity priorities, then sorts inactive sessions by assistant reply', () => {
+        const sessions = [
+            makeSummary({ id: 'reply-newer', active: false, updatedAt: 500, lastAssistantMessageAt: 900 }),
+            makeSummary({ id: 'activity-newer', active: false, updatedAt: 800, lastAssistantMessageAt: 100 }),
+            makeSummary({ id: 'pinned-old', active: false, pinned: true, updatedAt: 1, lastAssistantMessageAt: 1 }),
+            makeSummary({ id: 'quiet-active', active: true, updatedAt: 2, lastAssistantMessageAt: 2 }),
+            makeSummary({ id: 'pending-active', active: true, pendingRequestsCount: 1, updatedAt: 3, lastAssistantMessageAt: 3 })
+        ]
+
+        sessions.sort(sortSessionSummaries)
+
+        expect(sessions.map(session => session.id)).toEqual([
+            'pinned-old',
+            'pending-active',
+            'quiet-active',
+            'reply-newer',
+            'activity-newer'
+        ])
+    })
+})
+
+describe('reply-clock SSE ordering', () => {
+    it('rejects a pre-backfill full record after the corrected record', () => {
+        const corrected = { id: 'session-1', seq: 12 } as Session
+        const stale = { id: 'session-1', seq: 11 } as Session
+
+        expect(shouldAcceptSessionRecord(corrected, stale)).toBe(false)
+        expect(shouldAcceptSessionRecord(corrected, corrected)).toBe(true)
+        expect(shouldAcceptSessionRecord(undefined, stale)).toBe(true)
+    })
+
+    it('uses the carried watermark for list summaries', () => {
+        const current = makeSummary({ lastAssistantMessageVersion: 12 })
+
+        expect(shouldAcceptSessionSummaryRecord(current, { seq: 11 })).toBe(false)
+        expect(shouldAcceptSessionSummaryRecord(current, { seq: 12 })).toBe(true)
+        expect(shouldAcceptSessionSummaryRecord(current, { seq: 13 })).toBe(true)
+    })
+})
+
 describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Major)', () => {
     it('allows non-versioned patches without a detail cache', () => {
         expect(canApplyVersionedSummaryPatch({}, false)).toBe(true)
@@ -300,6 +344,7 @@ describe('isRenderIrrelevantPatch', () => {
         ['active', { active: false }],
         ['thinking', { thinking: true }],
         ['updatedAt', { updatedAt: 9_999 }],
+        ['lastAssistantMessageAt', { lastAssistantMessageAt: 9_999 }],
         ['backgroundTaskCount', { backgroundTaskCount: 3 }],
         ['model', { model: 'opus' }],
         ['modelReasoningEffort', { modelReasoningEffort: 'high' }],
@@ -429,6 +474,41 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
             thinking: false,
             activeAt: 11_000,
             copilotAgentMode: 'interactive'
+        })).toBeNull()
+    })
+
+    it('does not rewind the reply clock from a stale detail patch', () => {
+        const next = applySessionDetailPatch({
+            ...session,
+            seq: 5,
+            lastAssistantMessageAt: 2_000
+        }, { activeAt: 2_000, lastAssistantMessageAt: 1_000 })
+
+        expect(next?.lastAssistantMessageAt).toBe(2_000)
+    })
+
+    it('accepts versioned backward/null reply-clock updates and rejects older versions', () => {
+        const corrected = applySessionDetailPatch({
+            ...session,
+            seq: 5,
+            lastAssistantMessageAt: 2_000
+        }, {
+            lastAssistantMessageAt: 1_000,
+            lastAssistantMessageVersion: 6
+        })
+        expect(corrected?.lastAssistantMessageAt).toBe(1_000)
+        expect(corrected?.seq).toBe(6)
+
+        const cleared = corrected && applySessionDetailPatch(corrected, {
+            lastAssistantMessageAt: null,
+            lastAssistantMessageVersion: 7
+        })
+        expect(cleared?.lastAssistantMessageAt).toBeNull()
+        expect(cleared?.seq).toBe(7)
+
+        expect(cleared && applySessionDetailPatch(cleared, {
+            lastAssistantMessageAt: 2_000,
+            lastAssistantMessageVersion: 6
         })).toBeNull()
     })
 })

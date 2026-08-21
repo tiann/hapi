@@ -22,6 +22,8 @@ class SummaryPatchingTest {
         thinking: Boolean = false,
         activeAt: Long = 1_000,
         updatedAt: Long = 2_000,
+        lastAssistantMessageAt: Long? = null,
+        lastAssistantMessageVersion: Long? = null,
         pinned: Boolean? = null,
         globalPinned: Boolean? = null,
         metadata: SessionSummaryMetadata? = null,
@@ -42,6 +44,8 @@ class SummaryPatchingTest {
         thinking = thinking,
         activeAt = activeAt,
         updatedAt = updatedAt,
+        lastAssistantMessageAt = lastAssistantMessageAt,
+        lastAssistantMessageVersion = lastAssistantMessageVersion,
         pinned = pinned,
         globalPinned = globalPinned,
         metadata = metadata,
@@ -129,12 +133,14 @@ class SummaryPatchingTest {
         metadata: SessionMetadata? = null,
         agentState: AgentState? = null,
         todos: List<TodoItem>? = null,
+        lastAssistantMessageAt: Long? = null,
     ): Session = Session(
         id = "session-1",
         namespace = "default",
         seq = 1,
         createdAt = 1_000,
         updatedAt = 2_000,
+        lastAssistantMessageAt = lastAssistantMessageAt,
         active = true,
         activeAt = 1_000,
         metadata = metadata,
@@ -163,6 +169,7 @@ class SummaryPatchingTest {
             ),
             agentState = AgentState(requests = mapOf("r1" to request("Bash", createdAt = 50))),
             todos = listOf(TodoItem(content = "a", status = "completed")),
+            lastAssistantMessageAt = 2_000,
         )
         val summary = SummaryPatching.toSessionSummary(session)
         assertEquals("session-1", summary.id)
@@ -181,6 +188,8 @@ class SummaryPatchingTest {
         assertEquals(2, summary.backgroundTaskCount)
         assertEquals(0, summary.futureScheduledMessageCount)
         assertNull(summary.nextScheduledAt)
+        assertEquals(2_000L, summary.lastAssistantMessageAt)
+        assertEquals(1L, summary.lastAssistantMessageVersion)
     }
 
     @Test
@@ -237,6 +246,49 @@ class SummaryPatchingTest {
         assertEquals("opus", next.model)
         assertEquals("high", next.modelReasoningEffort)
         assertEquals("medium", next.effort)
+    }
+
+    @Test
+    fun `reply clock accepts newer authoritative backward and null updates`() {
+        val current = makeSummary(
+            lastAssistantMessageAt = 9_000,
+            lastAssistantMessageVersion = 4,
+        )
+        val backward = SummaryPatching.applySessionSummaryPatch(
+            current,
+            SessionPatch(
+                lastAssistantMessageAt = OptionalField.Present(1_000),
+                lastAssistantMessageVersion = 5,
+            ),
+        )
+        assertEquals(1_000L, backward.lastAssistantMessageAt)
+        assertEquals(5L, backward.lastAssistantMessageVersion)
+
+        val cleared = SummaryPatching.applySessionSummaryPatch(
+            backward,
+            SessionPatch(
+                lastAssistantMessageAt = OptionalField.Present(null),
+                lastAssistantMessageVersion = 6,
+            ),
+        )
+        assertNull(cleared.lastAssistantMessageAt)
+        assertEquals(6L, cleared.lastAssistantMessageVersion)
+    }
+
+    @Test
+    fun `unversioned reply clock remains monotonic and cannot clear a known value`() {
+        val current = makeSummary(lastAssistantMessageAt = 9_000, lastAssistantMessageVersion = 4)
+        val next = SummaryPatching.applySessionSummaryPatch(
+            current,
+            SessionPatch(lastAssistantMessageAt = OptionalField.Present(1_000)),
+        )
+        assertEquals(9_000L, next.lastAssistantMessageAt)
+        assertEquals(4L, next.lastAssistantMessageVersion)
+        val cleared = SummaryPatching.applySessionSummaryPatch(
+            next,
+            SessionPatch(lastAssistantMessageAt = OptionalField.Present(null)),
+        )
+        assertEquals(9_000L, cleared.lastAssistantMessageAt)
     }
 
     @Test

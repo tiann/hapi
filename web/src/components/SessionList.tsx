@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
-import { isWildcardSearch, matchesSearchQuery } from '@hapi/protocol'
+import {
+    getSessionListSortTimestamp,
+    isWildcardSearch,
+    matchesSearchQuery,
+} from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -59,7 +63,7 @@ type SessionGroup = {
     displayName: string
     machineId: string | null
     sessions: SessionSummary[]
-    latestUpdatedAt: number
+    latestSortAt: number
     hasActiveSession: boolean
     hasPinnedSession: boolean
 }
@@ -172,7 +176,7 @@ type MachineGroup = {
     totalSessions: number
     hasActiveSession: boolean
     hasPinnedSession: boolean
-    latestUpdatedAt: number
+    latestSortAt: number
 }
 
 function getGroupDisplayName(directory: string): string {
@@ -222,7 +226,7 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
             // Preserve an explicit pin when otherwise choosing by recency
             if (Boolean(a.globalPinned) !== Boolean(b.globalPinned)) return a.globalPinned ? -1 : 1
             if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
-            return b.updatedAt - a.updatedAt
+            return getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
         })
         result.push(group[0])
     }
@@ -305,10 +309,13 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
                 const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
                 if (rankA !== rankB) return rankA - rankB
-                return b.updatedAt - a.updatedAt
+                return getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
             })
-            const latestUpdatedAt = group.sessions.reduce(
-                (max, s) => (s.updatedAt > max ? s.updatedAt : max),
+            const latestSortAt = group.sessions.reduce(
+                (max, s) => {
+                    const sortAt = getSessionListSortTimestamp(s)
+                    return sortAt > max ? sortAt : max
+                },
                 -Infinity
             )
             const hasActiveSession = group.sessions.some(s => s.active)
@@ -321,7 +328,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 displayName,
                 machineId: group.machineId,
                 sessions: sortedSessions,
-                latestUpdatedAt,
+                latestSortAt,
                 hasActiveSession,
                 hasPinnedSession
             }
@@ -333,7 +340,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
             if (a.hasActiveSession !== b.hasActiveSession) {
                 return a.hasActiveSession ? -1 : 1
             }
-            return b.latestUpdatedAt - a.latestUpdatedAt
+            return b.latestSortAt - a.latestSortAt
         })
 }
 
@@ -369,7 +376,7 @@ function groupByMachine(
                 totalSessions: 0,
                 hasActiveSession: false,
                 hasPinnedSession: false,
-                latestUpdatedAt: 0,
+                latestSortAt: 0,
             }
             map.set(key, mg)
         }
@@ -377,12 +384,12 @@ function groupByMachine(
         mg.totalSessions += g.sessions.length
         if (g.hasActiveSession) mg.hasActiveSession = true
         if (g.hasPinnedSession) mg.hasPinnedSession = true
-        if (g.latestUpdatedAt > mg.latestUpdatedAt) mg.latestUpdatedAt = g.latestUpdatedAt
+        if (g.latestSortAt > mg.latestSortAt) mg.latestSortAt = g.latestSortAt
     }
     return [...map.values()].sort((a, b) => {
         if (a.hasPinnedSession !== b.hasPinnedSession) return a.hasPinnedSession ? -1 : 1
         if (a.hasActiveSession !== b.hasActiveSession) return a.hasActiveSession ? -1 : 1
-        return b.latestUpdatedAt - a.latestUpdatedAt
+        return b.latestSortAt - a.latestSortAt
     })
 }
 
@@ -1315,7 +1322,7 @@ export function SessionList(props: {
     const globalPinnedSessions = useMemo(() => {
         return machineFilteredSessions
             .filter((session) => Boolean(session.globalPinned))
-            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .sort((a, b) => getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a))
     }, [machineFilteredSessions])
     const runningSessions = useMemo(() => {
         const buckets: Record<RunningBucketKey, SessionSummary[]> = {
@@ -1342,7 +1349,8 @@ export function SessionList(props: {
                 buckets.active.push(session)
             }
         }
-        const byRecent = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt
+        const byRecent = (a: SessionSummary, b: SessionSummary) =>
+            getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
         for (const key of Object.keys(buckets) as RunningBucketKey[]) {
             buckets[key].sort(byRecent)
         }

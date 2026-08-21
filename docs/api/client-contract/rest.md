@@ -30,7 +30,9 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 
-Default list order: globalPinned → pinned → active → pending-request count → `updatedAt` desc; `order=updatedAt` gives pure recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
+Default list order: globalPinned → pinned → active → pending-request count → `lastAssistantMessageAt ?? updatedAt` desc; `order=updatedAt` gives pure activity recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
+
+REST hydration is race-safe with SSE: a detail response replaces a cached `Session` only when its `seq` is at least the cached sequence; a list response keeps a cached row when its `lastAssistantMessageVersion` is newer, while the response remains authoritative for list membership.
 
 ### Sessions — lifecycle
 

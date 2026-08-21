@@ -98,6 +98,10 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var thinking: Bool
     public var activeAt: Int
     public var updatedAt: Int
+    /// Latest visible assistant prose; list sorting falls back to updatedAt.
+    public var lastAssistantMessageAt: Int?
+    /// Session sequence that supplied lastAssistantMessageAt.
+    public var lastAssistantMessageVersion: Int?
     public var pinned: Bool?
     public var globalPinned: Bool?
     public var metadata: SessionSummaryMetadata?
@@ -124,6 +128,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         thinking: Bool,
         activeAt: Int,
         updatedAt: Int,
+        lastAssistantMessageAt: Int? = nil,
+        lastAssistantMessageVersion: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         metadata: SessionSummaryMetadata? = nil,
@@ -146,6 +152,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         self.thinking = thinking
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastAssistantMessageAt = lastAssistantMessageAt
+        self.lastAssistantMessageVersion = lastAssistantMessageVersion
         self.pinned = pinned
         self.globalPinned = globalPinned
         self.metadata = metadata

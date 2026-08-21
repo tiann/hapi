@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { RpcRegistry } from '../../socket/rpcRegistry'
 import { Store } from '../../store'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
+import { SyncEngine as SyncEngineClass } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions } from './codexDesktop'
 
@@ -428,6 +430,46 @@ describe('Codex Desktop import routes', () => {
                 }
             })
         } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('refreshes the live session cache after creating a direct import', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-cache-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '10101010-1010-4010-8010-101010101010'
+        const engine = new SyncEngineClass(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            expect(result.success).toBe(true)
+            const importedSessionId = result.success ? result.hapiSessionIds?.[0] : undefined
+            expect(importedSessionId).toBeDefined()
+            if (!importedSessionId) {
+                throw new Error('Imported session id missing')
+            }
+
+            const persisted = store.sessions.getSession(importedSessionId)
+            const cached = engine.getSession(importedSessionId)
+            expect(persisted?.lastAssistantMessageAt).toBeTypeOf('number')
+            expect(cached?.lastAssistantMessageAt).toBe(persisted?.lastAssistantMessageAt)
+        } finally {
+            engine.stop()
             store.close()
             rmSync(codexHome, { recursive: true, force: true })
         }

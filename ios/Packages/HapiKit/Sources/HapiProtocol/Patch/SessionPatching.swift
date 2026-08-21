@@ -35,6 +35,11 @@ public func isNewerVersionedPatch(patchVersion: Int, cachedVersion: Int) -> Bool
 /// boundaries, so a sub-minute `activeAt` delta is treated as invisible;
 /// an `activeAt` move of ≥ 60 s stays render-relevant.
 public func isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch) -> Bool {
+    // The version is a sequence gate, not a rendered field. A newer version
+    // remains relevant even when the timestamp is unchanged.
+    if let version = patch.lastAssistantMessageVersion, version > session.seq {
+        return false
+    }
     if let value = patch.active, value != session.active { return false }
     if let value = patch.thinking, value != session.thinking { return false }
     if let field = patch.activeTurnStartedAt, field.wireValue != session.activeTurnStartedAt { return false }
@@ -46,6 +51,9 @@ public func isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch
         }
     }
     if let value = patch.updatedAt, value != session.updatedAt { return false }
+    if let field = patch.lastAssistantMessageAt, field.wireValue != session.lastAssistantMessageAt {
+        return false
+    }
     // Versioned wrappers never equal the session's plain fields in the TS
     // reference (object identity), so their presence is always relevant.
     if patch.metadata != nil { return false }
@@ -92,6 +100,19 @@ public func applySessionDetailPatch(session: Session, patch: SessionPatch) -> Se
     // Monotonic with the hub's applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.
     if let value = patch.updatedAt { assign(\.updatedAt, max(next.updatedAt, value)) }
+    let currentReplyVersion = session.seq
+    let replyVersion = patch.lastAssistantMessageVersion
+    let canApplyReplyClock = replyVersion.map { $0 >= currentReplyVersion } ?? true
+    if let replyVersion, replyVersion > currentReplyVersion {
+        assign(\.seq, replyVersion)
+    }
+    if let field = patch.lastAssistantMessageAt, canApplyReplyClock {
+        if replyVersion != nil {
+            assign(\.lastAssistantMessageAt, field.wireValue)
+        } else if let value = field.wireValue {
+            assign(\.lastAssistantMessageAt, max(next.lastAssistantMessageAt ?? Int.min, value))
+        }
+    }
     if let field = patch.model { assign(\.model, field.wireValue) }
     if let field = patch.modelReasoningEffort { assign(\.modelReasoningEffort, field.wireValue) }
     if let field = patch.effort { assign(\.effort, field.wireValue) }
