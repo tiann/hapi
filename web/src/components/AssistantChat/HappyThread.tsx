@@ -17,7 +17,7 @@ import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessag
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
-import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
 import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
@@ -544,7 +544,8 @@ export function HappyThread(props: {
             } : undefined,
         })
     }, [headerMetadata, locale, machineLabelsById, props.serviceTier, props.session, shareDialogOpen, shareRelativeTimeTick, t])
-    const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { terminalToolDisplayMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const hubSettingsQuery = useQuery({
         queryKey: queryKeys.hubSettings,
         queryFn: async () => props.api.getHubSettings(),
