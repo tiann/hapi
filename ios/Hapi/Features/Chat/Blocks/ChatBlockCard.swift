@@ -138,6 +138,8 @@ struct ChatSubBlockView: View {
             CliOutputBlockView(block: value)
         case .generatedImage(let value):
             GeneratedImageBlockView(block: value)
+        case .displayLinks(let value):
+            DisplayLinksBlockView(block: value)
         case .codexReview(let value):
             CodexReviewBlockView(block: value)
         case .toolCall(let value):

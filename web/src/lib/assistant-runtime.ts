@@ -522,6 +522,28 @@ function toThreadMessageLike(
         }
     }
 
+    if (block.kind === 'display-links') {
+        return {
+            role: 'assistant',
+            id: threadMessageId,
+            createdAt: new Date(timestamp),
+            content: [{
+                type: 'tool-call',
+                toolCallId: block.id,
+                toolName: 'DisplayLinks',
+                argsText: '',
+                artifact: block
+            }],
+            metadata: {
+                custom: {
+                    kind: 'tool',
+                    toolCallId: block.id,
+                    invokedAt: block.invokedAt ?? null
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
     if (block.kind === 'agent-reasoning') {
         return {
             role: 'assistant',

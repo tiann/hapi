@@ -1170,4 +1170,11 @@ export default {
   'session.summary.status.needsDecision': '需要决策',
   'session.summary.status.failed': '失败',
   'session.summary.status.stalled': '已停滞',
+  'displayLinks.heading.links': '链接',
+  'displayLinks.heading.texts': '精确复制',
+  'displayLinks.heading.both': '链接和精确复制',
+  'displayLinks.tapToCopy': '点按复制',
+  'displayLinks.copied': '已复制',
+  'displayLinks.exactString': '精确字符串',
+  'displayLinks.copyAria': '复制 {label}',
 } as const

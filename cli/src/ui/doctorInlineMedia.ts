@@ -1,5 +1,5 @@
 /**
- * Inline media bridge diagnostics (display_image / display_video / display_media + helper script).
+ * Inline media bridge diagnostics (display_image / display_video / display_media / display_links + helper script).
  */
 
 import chalk from 'chalk'
@@ -10,6 +10,7 @@ import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
 import { readSettings } from '@/persistence'
 import { projectPath } from '@/projectPath'
 import { cursorHapiMcpServerId } from '@/cursor/utils/cursorMcpOverlay'
+import { buildDisplayLinksToolName } from '@hapi/protocol'
 
 export type InlineMediaDoctorCheck = {
     ok: boolean
@@ -225,14 +226,16 @@ export async function runDoctorInlineMedia(): Promise<number> {
         console.log(chalk.bold('\nCursor ACP'))
         console.log(chalk.gray('  Cursor ignores session/new mcpServers. Remote sessions use ~/.cursor/mcp.json + `agent mcp enable hapi-<sessionId>`.'))
         console.log(chalk.gray('  Tool names are bare: display_image, display_video, display_media, change_title (not hapi_display_image).'))
+        console.log(chalk.gray('  display_links is Cursor-only and per-session: hapi_<sessionId>_display_links (requires sessionId).'))
         for (const session of cursorSessions) {
             const serverId = cursorHapiMcpServerId(session.id)
             console.log(chalk.gray(`  Verify (${session.prefix}): agent mcp list-tools ${serverId}`))
+            console.log(chalk.gray(`  Display links tool (${session.prefix}): ${buildDisplayLinksToolName(session.id)}`))
         }
     }
 
     console.log(chalk.bold('\nAgent inline path'))
-    console.log(chalk.gray('  1. MCP tool display_image / display_video / display_media in the running session (ACP flavors via hapi bridge)'))
+        console.log(chalk.gray('  1. MCP tool display_image / display_video / display_media in the running session (ACP flavors via hapi bridge); display_links is Cursor-only as hapi_<sessionId>_display_links'))
     if (shellFallbackAvailable) {
         console.log(chalk.gray('  2. Shell fallback (HAPI session id prefix, not cursorSessionId):'))
         if (withBridge.length > 0) {

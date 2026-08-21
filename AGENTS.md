@@ -162,6 +162,7 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 | Modify message handling | `hub/src/sync/messageService.ts` |
 | Add notification type | `hub/src/notifications/` |
 | Add shared type | `shared/src/types.ts`, `shared/src/schemas.ts` |
+| Paint tappable URLs / exact-copy strings (Cursor only) | MCP `display_links` (Cursor sessions) or `hapi display-links` / `scripts/tooling/hapi-display-links.mjs` — pass `sessionId` = this chat; construct hrefs and secrets by concatenation (`"tia"+"nn"`, `"VK"+"K"`), never type landmine hosts or tokens in prose; never echo secrets after painting the card |
 
 ## Important patterns
 

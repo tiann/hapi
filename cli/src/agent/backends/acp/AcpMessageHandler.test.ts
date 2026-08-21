@@ -72,6 +72,33 @@ describe('AcpMessageHandler', () => {
         expect(result.output).toEqual({ stdout: 'ok\n' });
     });
 
+    it('redacts display_links exact-copy values before emitting tool_call', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const secret = 'SENTINEL_SECRET_VK' + 'K';
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-links',
+            title: 'Display Links',
+            rawInput: {
+                urls: [{ href: 'https://example.com/public', title: 'Public' }],
+                texts: [{ value: secret, title: 'gate' }],
+                sessionId: 'abc',
+            },
+            status: 'in_progress',
+        });
+
+        const call = messages.find((message): message is Extract<AgentMessage, { type: 'tool_call' }> =>
+            message.type === 'tool_call' && message.id === 'tool-links'
+        );
+        expect(call).toBeDefined();
+        expect(JSON.stringify(call)).not.toContain(secret);
+        expect(call?.input).toMatchObject({
+            texts: [{ value: '[omitted]', title: 'gate' }],
+        });
+    });
+
     it('preserves intra-turn interleave order: text → tool_call → tool_result', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

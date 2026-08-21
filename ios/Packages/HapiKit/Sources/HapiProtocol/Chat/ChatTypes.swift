@@ -463,6 +463,48 @@ public struct GeneratedImageContent: Equatable, Sendable {
     }
 }
 
+/// Port of web `DisplayLinkItem` / shared `DisplayLink`.
+public struct DisplayLinkItem: Equatable, Sendable {
+    public var href: String
+    public var title: String?
+
+    public init(href: String, title: String? = nil) {
+        self.href = href
+        self.title = title
+    }
+}
+
+/// Port of web `DisplayTextItem` / shared `DisplayText`.
+public struct DisplayTextItem: Equatable, Sendable {
+    public var value: String
+    public var title: String?
+
+    public init(value: String, title: String? = nil) {
+        self.value = value
+        self.title = title
+    }
+}
+
+/// Port of `DisplayLinksContent` (normalizeAgent display-links agent content).
+public struct DisplayLinksContent: Equatable, Sendable {
+    public var urls: [DisplayLinkItem]
+    public var texts: [DisplayTextItem]
+    public var uuid: String
+    public var parentUUID: String?
+
+    public init(
+        urls: [DisplayLinkItem],
+        texts: [DisplayTextItem] = [],
+        uuid: String,
+        parentUUID: String? = nil
+    ) {
+        self.urls = urls
+        self.texts = texts
+        self.uuid = uuid
+        self.parentUUID = parentUUID
+    }
+}
+
 /// Port of `InlineMediaSource` (web/src/chat/inlineMediaSource.ts).
 public struct InlineMediaSource: Equatable, Sendable {
     public enum Ingress: String, Equatable, Sendable {
@@ -580,6 +622,7 @@ public enum NormalizedAgentContent: Equatable, Sendable {
     case toolCall(ToolUseContent)
     case toolResult(ToolResultContent)
     case generatedImage(GeneratedImageContent)
+    case displayLinks(DisplayLinksContent)
     case codexReview(review: CodexReview, uuid: String, parentUUID: String?)
     case summary(String)
     case sidechain(SidechainContent)
@@ -617,6 +660,7 @@ public enum NormalizedAgentContent: Equatable, Sendable {
         case .toolCall(let value): return value.uuid
         case .toolResult(let value): return value.uuid
         case .generatedImage(let value): return value.uuid
+        case .displayLinks(let value): return value.uuid
         case .codexReview(_, let uuid, _): return uuid
         case .summary: return nil
         case .sidechain(let value): return value.uuid
@@ -629,6 +673,7 @@ public enum NormalizedAgentContent: Equatable, Sendable {
         case .toolCall(let value): return value.parentUUID
         case .toolResult(let value): return value.parentUUID
         case .generatedImage(let value): return value.parentUUID
+        case .displayLinks(let value): return value.parentUUID
         case .codexReview(_, _, let parentUUID): return parentUUID
         case .summary: return nil
         case .sidechain(let value): return value.parentUUID
@@ -854,6 +899,16 @@ public struct GeneratedImageBlock: Equatable, Sendable {
     public var meta: JSONValue?
 }
 
+public struct DisplayLinksBlock: Equatable, Sendable {
+    public var id: String
+    public var localId: String?
+    public var createdAt: Int
+    public var invokedAt: Int?
+    public var urls: [DisplayLinkItem]
+    public var texts: [DisplayTextItem]
+    public var meta: JSONValue?
+}
+
 public struct AgentEventBlock: Equatable, Sendable {
     public var id: String
     public var createdAt: Int
@@ -885,6 +940,7 @@ public enum ChatBlock: Equatable, Sendable {
     case cliOutput(CliOutputBlock)
     case toolCall(ToolCallBlock)
     case generatedImage(GeneratedImageBlock)
+    case displayLinks(DisplayLinksBlock)
     case agentEvent(AgentEventBlock)
 
     /// The TS `kind` discriminator string.
@@ -897,6 +953,7 @@ public enum ChatBlock: Equatable, Sendable {
         case .cliOutput: return "cli-output"
         case .toolCall: return "tool-call"
         case .generatedImage: return "generated-image"
+        case .displayLinks: return "display-links"
         case .agentEvent: return "agent-event"
         }
     }
@@ -910,6 +967,7 @@ public enum ChatBlock: Equatable, Sendable {
         case .cliOutput(let block): return block.id
         case .toolCall(let block): return block.id
         case .generatedImage(let block): return block.id
+        case .displayLinks(let block): return block.id
         case .agentEvent(let block): return block.id
         }
     }
@@ -923,6 +981,7 @@ public enum ChatBlock: Equatable, Sendable {
         case .cliOutput(let block): return block.createdAt
         case .toolCall(let block): return block.createdAt
         case .generatedImage(let block): return block.createdAt
+        case .displayLinks(let block): return block.createdAt
         case .agentEvent(let block): return block.createdAt
         }
     }
@@ -936,6 +995,7 @@ public enum ChatBlock: Equatable, Sendable {
         case .cliOutput(let block): return block.invokedAt
         case .toolCall(let block): return block.invokedAt
         case .generatedImage(let block): return block.invokedAt
+        case .displayLinks(let block): return block.invokedAt
         case .agentEvent(let block): return block.invokedAt
         }
     }
