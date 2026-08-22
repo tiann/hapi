@@ -22,9 +22,22 @@ type AcpPromptUsage = {
     cacheCreationTokens?: number;
 };
 
+type AcpUsageCost = {
+    amount: number;
+    currency: string;
+};
+
+function sameCost(a: AcpUsageCost | null | undefined, b: AcpUsageCost | null | undefined): boolean {
+    return a === b || (a !== null && a !== undefined && b !== null && b !== undefined
+        && a.amount === b.amount && a.currency === b.currency)
+}
+
 type AcpUsageUpdate = {
     contextTokens: number | undefined;
     contextWindow: number | undefined;
+    tokenUsage: AcpPromptUsage | null;
+    /** Cumulative session cost reported by ACP `usage_update.cost`. */
+    cost: AcpUsageCost | null;
 };
 
 export type AcpModelDescriptor = {
@@ -609,35 +622,44 @@ export class AcpSdkBackend implements AgentBackend {
             this.messageHandler?.drainBuffers();
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
-                if (promptUsage) {
+                const finalPromptUsage = promptUsage ?? latestUsageUpdate?.tokenUsage ?? null;
+                if (finalPromptUsage) {
                     onUpdate({
                         type: 'usage',
-                        inputTokens: promptUsage.inputTokens,
-                        outputTokens: promptUsage.outputTokens,
-                        totalTokens: promptUsage.totalTokens,
-                        thoughtTokens: promptUsage.thoughtTokens,
-                        cacheReadTokens: promptUsage.cacheReadTokens,
-                        ...(promptUsage.cacheCreationTokens !== undefined
-                            ? { cacheCreationTokens: promptUsage.cacheCreationTokens }
+                        inputTokens: finalPromptUsage.inputTokens,
+                        outputTokens: finalPromptUsage.outputTokens,
+                        totalTokens: finalPromptUsage.totalTokens,
+                        thoughtTokens: finalPromptUsage.thoughtTokens,
+                        cacheReadTokens: finalPromptUsage.cacheReadTokens,
+                        ...(finalPromptUsage.cacheCreationTokens !== undefined
+                            ? { cacheCreationTokens: finalPromptUsage.cacheCreationTokens }
                             : {}),
                         contextTokens: latestUsageUpdate ? latestUsageUpdate.contextTokens : undefined,
-                        contextWindow: latestUsageUpdate ? latestUsageUpdate.contextWindow : undefined
+                        contextWindow: latestUsageUpdate ? latestUsageUpdate.contextWindow : undefined,
+                        ...(latestUsageUpdate?.cost
+                            ? { cost: latestUsageUpdate.cost.amount, costCurrency: latestUsageUpdate.cost.currency }
+                            : {})
                     });
                 } else if (
                     latestUsageUpdate
-                    && (latestUsageUpdate.contextTokens !== undefined || latestUsageUpdate.contextWindow !== undefined)
+                    && (latestUsageUpdate.contextTokens !== undefined
+                        || latestUsageUpdate.contextWindow !== undefined
+                        || latestUsageUpdate.cost !== null)
                     && !this.hasForwardedUsage(latestUsageUpdate)
                 ) {
                     // Agent did not return prompt usage (slash-handled turns,
                     // errored turns), but we did see ACP usage updates during
                     // the turn. Emit a context-only usage so the status bar
-                    // reflects the current context size.
+                    // reflects the current context size and cumulative cost.
                     onUpdate({
                         type: 'usage',
                         inputTokens: 0,
                         outputTokens: 0,
                         contextTokens: latestUsageUpdate.contextTokens,
-                        contextWindow: latestUsageUpdate.contextWindow
+                        contextWindow: latestUsageUpdate.contextWindow,
+                        ...(latestUsageUpdate.cost
+                            ? { cost: latestUsageUpdate.cost.amount, costCurrency: latestUsageUpdate.cost.currency }
+                            : {})
                     });
                 }
                 if (stopReason) {
@@ -991,10 +1013,15 @@ export class AcpSdkBackend implements AgentBackend {
         const sessionUpdate = asString(update.sessionUpdate);
         let contextTokens: number | null = null;
         let contextWindow: number | null = null;
+        let cost: AcpUsageCost | null = null;
+        const tokenUsage = sessionUpdate === ACP_SESSION_UPDATE_TYPES.stateUpdate
+            ? this.extractUsage(update.usage)
+            : null;
 
         if (sessionUpdate === ACP_SESSION_UPDATE_TYPES.usageUpdate) {
             contextTokens = this.asFiniteNumber(update.used);
             contextWindow = this.asFiniteNumber(update.size);
+            cost = this.extractCost(update.cost);
         } else if (sessionUpdate === ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate) {
             contextTokens = this.asFiniteNumber(
                 update.used
@@ -1008,13 +1035,16 @@ export class AcpSdkBackend implements AgentBackend {
                 ?? update.context_window
                 ?? update.contextLimit
             );
-        } else {
+        } else if (sessionUpdate !== ACP_SESSION_UPDATE_TYPES.stateUpdate) {
             return;
         }
 
+        const previous = this.latestUsageUpdate
         this.latestUsageUpdate = {
-            contextTokens: contextTokens ?? undefined,
-            contextWindow: contextWindow ?? undefined
+            contextTokens: contextTokens ?? previous?.contextTokens,
+            contextWindow: contextWindow ?? previous?.contextWindow,
+            tokenUsage: tokenUsage ?? previous?.tokenUsage ?? null,
+            cost: cost ?? previous?.cost ?? null
         };
         this.forwardUsageUpdate();
     }
@@ -1022,14 +1052,15 @@ export class AcpSdkBackend implements AgentBackend {
     private hasForwardedUsage(update: AcpUsageUpdate): boolean {
         return this.lastForwardedUsageUpdate !== null
             && this.lastForwardedUsageUpdate.contextTokens === update.contextTokens
-            && this.lastForwardedUsageUpdate.contextWindow === update.contextWindow;
+            && this.lastForwardedUsageUpdate.contextWindow === update.contextWindow
+            && sameCost(this.lastForwardedUsageUpdate.cost, update.cost);
     }
 
     private forwardUsageUpdate(): void {
         const update = this.latestUsageUpdate;
         if (
             !update
-            || (update.contextTokens === undefined && update.contextWindow === undefined)
+            || (update.contextTokens === undefined && update.contextWindow === undefined && update.cost === null)
         ) {
             return;
         }
@@ -1038,6 +1069,7 @@ export class AcpSdkBackend implements AgentBackend {
             this.lastForwardedUsageUpdate
             && this.lastForwardedUsageUpdate.contextTokens === update.contextTokens
             && this.lastForwardedUsageUpdate.contextWindow === update.contextWindow
+            && sameCost(this.lastForwardedUsageUpdate.cost, update.cost)
         ) {
             return;
         }
@@ -1048,7 +1080,8 @@ export class AcpSdkBackend implements AgentBackend {
             inputTokens: 0,
             outputTokens: 0,
             contextTokens: update.contextTokens,
-            contextWindow: update.contextWindow
+            contextWindow: update.contextWindow,
+            ...(update.cost ? { cost: update.cost.amount, costCurrency: update.cost.currency } : {})
         };
 
         if (this.promptUsageCallback) {
@@ -1240,8 +1273,22 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     private extractPromptUsage(response: unknown): AcpPromptUsage | null {
-        if (!isObject(response) || !isObject(response.usage)) return null;
-        const usage = response.usage;
+        return isObject(response) ? this.extractUsage(response.usage) : null;
+    }
+
+    private extractCost(value: unknown): AcpUsageCost | null {
+        if (!isObject(value)) return null;
+        const amount = this.asFiniteNumber(value.amount);
+        const currency = typeof value.currency === 'string' && value.currency.trim()
+            ? value.currency.trim()
+            : null;
+        if (amount === null || currency === null) return null;
+        return { amount, currency };
+    }
+
+    private extractUsage(value: unknown): AcpPromptUsage | null {
+        if (!isObject(value)) return null;
+        const usage = value;
         const inputTokens = this.asFiniteNumber(usage.inputTokens ?? usage.input_tokens);
         const outputTokens = this.asFiniteNumber(usage.outputTokens ?? usage.output_tokens);
         if (inputTokens === null || outputTokens === null) return null;

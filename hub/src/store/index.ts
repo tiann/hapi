@@ -42,7 +42,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 25
+const SCHEMA_VERSION: number = 26
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -347,6 +347,7 @@ export class Store {
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
         })
 
         if (currentVersion === 0) {
@@ -528,6 +529,9 @@ export class Store {
                 last_output_tokens INTEGER,
                 last_cache_read_tokens INTEGER,
                 last_cache_creation_tokens INTEGER,
+                context_only INTEGER NOT NULL DEFAULT 0,
+                cost REAL,
+                cost_currency TEXT,
                 PRIMARY KEY (session_id, source_key),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
@@ -877,6 +881,13 @@ export class Store {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                last_input_tokens INTEGER,
+                last_output_tokens INTEGER,
+                last_cache_read_tokens INTEGER,
+                last_cache_creation_tokens INTEGER,
+                context_only INTEGER NOT NULL DEFAULT 0,
+                cost REAL,
+                cost_currency TEXT,
                 PRIMARY KEY (session_id, source_key),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
@@ -969,12 +980,45 @@ export class Store {
         }
     }
 
-    /** v24→v25: add durable unknown-delivery state for steers. */
+    /** v24→v25: complete the merged v24 schema and add durable steer state. */
     private migrateFromV24ToV25(): void {
+        // v24 was produced by parallel upstream/PR branches; complete either
+        // shape before recording v25.
+        this.addUsageCostColumnsAndRebuildIndex()
+
+        const fcmColumns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
+        if (fcmColumns.length > 0 && !fcmColumns.some((column) => column.name === 'push_key')) {
+            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
+        }
         const messageColumns = this.getMessageColumnNames()
         if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
             this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
         }
+    }
+
+    /** v25→v26: add ACP usage fields to the released v25 schema. */
+    private migrateFromV25ToV26(): void {
+        this.addUsageCostColumnsAndRebuildIndex()
+    }
+
+    private addUsageCostColumnsAndRebuildIndex(): void {
+        const usageColumns = new Set(
+            (this.db.prepare('PRAGMA table_info(usage_events)').all() as Array<{ name: string }>)
+                .map((column) => column.name)
+        )
+        if (!usageColumns.has('context_only')) {
+            this.db.exec('ALTER TABLE usage_events ADD COLUMN context_only INTEGER NOT NULL DEFAULT 0')
+        }
+        if (!usageColumns.has('cost')) {
+            this.db.exec('ALTER TABLE usage_events ADD COLUMN cost REAL')
+        }
+        if (!usageColumns.has('cost_currency')) {
+            this.db.exec('ALTER TABLE usage_events ADD COLUMN cost_currency TEXT')
+        }
+        this.db.exec(`
+            DELETE FROM usage_events;
+            DELETE FROM usage_scan_state;
+        `)
     }
 
     /**

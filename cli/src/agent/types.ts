@@ -53,6 +53,9 @@ export type AgentMessage =
         cacheCreationTokens?: number;
         contextTokens?: number;
         contextWindow?: number;
+        /** Cumulative session cost from ACP `usage_update.cost` (amount + ISO 4217 currency). */
+        cost?: number;
+        costCurrency?: string;
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
