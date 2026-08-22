@@ -40,6 +40,7 @@ import { formatReopenError } from '@/lib/reopenError'
 import { resolveCursorReopenGate } from '@/lib/sessionResume'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
@@ -175,14 +176,6 @@ type MachineGroup = {
     latestUpdatedAt: number
 }
 
-function getGroupDisplayName(directory: string): string {
-    if (directory === 'Other') return directory
-    const parts = directory.split(/[\\/]+/).filter(Boolean)
-    if (parts.length === 0) return directory
-    if (parts.length === 1) return parts[0]
-    return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
-}
-
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
@@ -285,7 +278,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+        const path = getSessionProjectPath(session.metadata) ?? 'Other'
         const machineId = session.metadata?.machineId ?? null
         const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
         if (!groups.has(key)) {
@@ -313,7 +306,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
             )
             const hasActiveSession = group.sessions.some(s => s.active)
             const hasPinnedSession = group.sessions.some(s => s.pinned)
-            const displayName = getGroupDisplayName(group.directory)
+            const displayName = getSessionProjectLabel(group.directory)
 
             return {
                 key,
@@ -1534,7 +1527,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getSessionProjectLabel(getSessionProjectPath(s.metadata) ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />
@@ -2027,7 +2020,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getSessionProjectLabel(getSessionProjectPath(s.metadata) ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />

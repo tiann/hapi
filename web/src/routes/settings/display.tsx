@@ -142,6 +142,7 @@ export default function SettingsDisplayPage() {
     const sessionHeaderOptions: ReadonlyArray<{ key: SessionHeaderMetadataKey; labelKey: string }> = [
         { key: 'showLabels', labelKey: 'settings.display.sessionHeader.showLabels' },
         { key: 'agent', labelKey: 'settings.display.sessionHeader.agent' },
+        { key: 'project', labelKey: 'settings.display.sessionHeader.project' },
         { key: 'machine', labelKey: 'settings.display.sessionHeader.machine' },
         { key: 'lastActive', labelKey: 'settings.display.sessionHeader.lastActive' },
         { key: 'model', labelKey: 'settings.display.sessionHeader.model' },

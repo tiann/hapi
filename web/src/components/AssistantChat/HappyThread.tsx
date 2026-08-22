@@ -29,6 +29,7 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { resolveSessionHeaderMachineLabel } from '@/components/SessionHeader'
+import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
@@ -507,6 +508,8 @@ export function HappyThread(props: {
         const agentFlavor = props.session.metadata?.flavor ?? null
         const agentLabel = agentFlavor?.trim() || null
         const machineLabel = resolveSessionHeaderMachineLabel(props.session, machineLabelsById)
+        const projectPath = getSessionProjectPath(props.session.metadata)
+        const projectLabel = projectPath ? getSessionProjectLabel(projectPath) : null
         const modelLabel = getSessionModelLabel(props.session)
         const reasoningLabel = getShareTurnReasoningLabel(
             agentFlavor,
@@ -524,6 +527,9 @@ export function HappyThread(props: {
 
         return selectShareTurnMetadata(headerMetadata, {
             agent: agentLabel ? { text: agentLabel, flavor: agentFlavor } : undefined,
+            project: projectLabel ? {
+                text: `${headerMetadata.showLabels ? `${t('session.item.project')}: ` : ''}${projectLabel}`,
+            } : undefined,
             machine: machineLabel ? {
                 text: `${headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}${machineLabel}`,
             } : undefined,
