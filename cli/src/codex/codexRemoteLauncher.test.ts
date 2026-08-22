@@ -2,12 +2,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
 
+type MockAppServerClientState = {
+    connectCalls: number;
+    connected: boolean;
+    connectImplementation: (() => Promise<void>) | null;
+    disconnectCalls: number;
+    disconnectImplementation: (() => Promise<void>) | null;
+    interruptImplementation: (() => Promise<void>) | null;
+    initializeImplementation: (() => Promise<void>) | null;
+    rollbackImplementation: (() => Promise<void>) | null;
+    isConnectedError: Error | null;
+    lifecycleGeneration: number;
+};
+
 const harness = vi.hoisted(() => ({
+    appServerClients: [] as MockAppServerClientState[],
+    happyServerStopCalls: 0,
     notifications: [] as Array<{ method: string; params: unknown }>,
     dispatchNotification: null as ((method: string, params: unknown) => void) | null,
     registerRequestCalls: [] as string[],
     requestHandlers: new Map<string, (params: unknown) => Promise<unknown> | unknown>(),
     initializeCalls: [] as unknown[],
+    initializeImplementations: [] as Array<(() => Promise<void>) | null>,
+    supportsMethodCalls: [] as string[],
+    supportsMethodImplementation: null as ((method: string) => Promise<boolean>) | null,
     setFeatureEnablementCalls: [] as unknown[],
     failSetFeatureEnablement: false,
     listCollaborationModeCalls: 0,
@@ -52,6 +70,7 @@ const harness = vi.hoisted(() => ({
     safetyBufferingFasterModel: null as string | null,
     emitModelSafetyNotices: false,
     startTurnMessages: [] as string[],
+    forkThreadParams: [] as Array<Record<string, unknown>>,
     failResumeThreadIds: [] as string[],
     nextThreadSystemErrorMessage: null as string | null,
     failNextCompact: false,
@@ -100,20 +119,55 @@ vi.mock('./codexAppServerClient', () => {
     class MockCodexAppServerClient {
         private notificationHandler: ((method: string, params: unknown) => void) | null = null;
         private stderrHandler: ((text: string) => void) | null = null;
+        private readonly state: MockAppServerClientState;
 
-        async connect(): Promise<void> {}
+        constructor() {
+            const clientIndex = harness.appServerClients.length;
+            this.state = {
+                connectCalls: 0,
+                connected: false,
+                connectImplementation: null,
+                disconnectCalls: 0,
+                disconnectImplementation: null,
+                interruptImplementation: null,
+                initializeImplementation: harness.initializeImplementations[clientIndex] ?? null,
+                rollbackImplementation: null,
+                isConnectedError: null,
+                lifecycleGeneration: 0
+            };
+            harness.appServerClients.push(this.state);
+        }
+
+        async connect(): Promise<void> {
+            const lifecycleGeneration = this.state.lifecycleGeneration;
+            this.state.connectCalls += 1;
+            await this.state.connectImplementation?.();
+            if (lifecycleGeneration !== this.state.lifecycleGeneration) {
+                throw new Error('Codex app-server connection was superseded by disconnect');
+            }
+            this.state.connected = true;
+        }
 
         isConnected(): boolean {
-            return true;
+            if (this.state.isConnectedError) {
+                throw this.state.isConnectedError;
+            }
+            return this.state.connected;
         }
 
         isInitialized(): boolean {
-            return true;
+            return this.state.connected;
         }
 
         async initialize(params: unknown): Promise<{ protocolVersion: number }> {
             harness.initializeCalls.push(params);
+            await this.state.initializeImplementation?.();
             return { protocolVersion: 1 };
+        }
+
+        async supportsMethod(method: string): Promise<boolean> {
+            harness.supportsMethodCalls.push(method);
+            return await (harness.supportsMethodImplementation?.(method) ?? Promise.resolve(true));
         }
 
         setNotificationHandler(handler: ((method: string, params: unknown) => void) | null): void {
@@ -168,6 +222,11 @@ vi.mock('./codexAppServerClient', () => {
                 throw new Error('resume failed');
             }
             return { thread: { id }, model: 'gpt-5.4' };
+        }
+
+        async forkThread(params?: Record<string, unknown>): Promise<{ thread: { id: string }; model: string }> {
+            harness.forkThreadParams.push(params ?? {});
+            return { thread: { id: 'forked-thread' }, model: 'gpt-5.4' };
         }
 
         async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
@@ -1042,6 +1101,7 @@ vi.mock('./codexAppServerClient', () => {
             const threadId = params?.threadId ?? 'thread-unknown';
             const turnId = params?.turnId ?? 'turn-unknown';
             harness.interruptedTurns.push({ threadId, turnId });
+            await this.state.interruptImplementation?.();
             const error = harness.interruptErrors.shift();
             if (error) {
                 throw error;
@@ -1062,6 +1122,7 @@ vi.mock('./codexAppServerClient', () => {
         async rollbackThread(params?: { threadId?: string; numTurns?: number }): Promise<{ thread: { id: string } }> {
             const threadId = params?.threadId ?? 'thread-unknown';
             harness.rollbackCalls.push({ threadId, numTurns: params?.numTurns ?? 0 });
+            await this.state.rollbackImplementation?.();
             const error = harness.rollbackErrors.shift();
             if (error) {
                 throw error;
@@ -1069,7 +1130,12 @@ vi.mock('./codexAppServerClient', () => {
             return { thread: { id: threadId } };
         }
 
-        async disconnect(): Promise<void> {}
+        async disconnect(): Promise<void> {
+            this.state.lifecycleGeneration += 1;
+            this.state.disconnectCalls += 1;
+            this.state.connected = false;
+            await this.state.disconnectImplementation?.();
+        }
     }
 
     return {
@@ -1086,16 +1152,42 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
         harness.bridgeOptions.push(options);
         return {
         server: {
-            stop: () => {}
+            stop: () => {
+                harness.happyServerStopCalls += 1;
+            }
         },
         mcpServers: {}
         };
     }
 }));
 
-import { codexRemoteLauncher, isCurrentSteerHandler } from './codexRemoteLauncher';
+import {
+    codexRemoteLauncher,
+    isCurrentSteerHandler,
+    waitForSourceLeaseAcquisition
+} from './codexRemoteLauncher';
 import { INDETERMINATE_SYMBOL } from './codexAppServerClient';
+import { CodexConversationHistory } from './conversationHistory';
+import { logger } from '@/ui/logger';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
+function getSourceClientState(): MockAppServerClientState {
+    const state = harness.appServerClients[0];
+    if (!state) {
+        throw new Error('Expected the source Codex app-server client to exist');
+    }
+    return state;
+}
 
 type FakeAgentState = {
     requests: Record<string, unknown>;
@@ -1245,7 +1337,490 @@ function createSessionStub(
     };
 }
 
+async function finishActiveLauncher(
+    session: ReturnType<typeof createSessionStub>['session'],
+    running: Promise<'switch' | 'exit'>
+): Promise<void> {
+    harness.dispatchNotification?.('turn/completed', {
+        status: 'Completed',
+        turn: { id: 'turn-1' }
+    });
+    session.queue.close();
+    await expect(running).resolves.toBe('exit');
+}
+
+describe('waitForSourceLeaseAcquisition', () => {
+    it('aborts a signaled waiter without delaying an earlier no-signal waiter', async () => {
+        const acquisition = createDeferred<void>();
+        const abortController = new AbortController();
+        const noSignalWaiter = waitForSourceLeaseAcquisition(acquisition.promise);
+        const signaledWaiter = waitForSourceLeaseAcquisition(
+            acquisition.promise,
+            abortController.signal
+        );
+
+        abortController.abort(new Error('waiter aborted'));
+
+        await expect(signaledWaiter).rejects.toThrow('waiter aborted');
+        let noSignalSettled = false;
+        void noSignalWaiter.finally(() => {
+            noSignalSettled = true;
+        });
+        await Promise.resolve();
+        expect(noSignalSettled).toBe(false);
+
+        acquisition.resolve();
+        await expect(noSignalWaiter).resolves.toBeUndefined();
+    });
+
+    it('does not cross-cancel a no-signal waiter when an earlier signaled waiter aborts', async () => {
+        const acquisition = createDeferred<void>();
+        const abortController = new AbortController();
+        const signaledWaiter = waitForSourceLeaseAcquisition(
+            acquisition.promise,
+            abortController.signal
+        );
+        const noSignalWaiter = waitForSourceLeaseAcquisition(acquisition.promise);
+
+        abortController.abort(new Error('waiter aborted'));
+
+        await expect(signaledWaiter).rejects.toThrow('waiter aborted');
+        acquisition.resolve();
+        await expect(noSignalWaiter).resolves.toBeUndefined();
+    });
+});
+
 describe('codexRemoteLauncher', () => {
+    it('keeps history mutations blocked until the source capability probe settles', async () => {
+        const probeGate = createDeferred<boolean>();
+        harness.supportsMethodImplementation = () => probeGate.promise;
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.supportsMethodCalls).toEqual(['thread/fork']));
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        await expect(
+            rpcHandlers.get(RPC_METHODS.ForkConversation)!({})
+        ).rejects.toThrow('Session is busy');
+        expect(harness.appServerClients).toHaveLength(1);
+
+        probeGate.resolve(true);
+        await vi.waitFor(() => expect(harness.supportsMethodCalls).toEqual([
+            'thread/fork',
+            'thread/rollback'
+        ]));
+        await expect(
+            rpcHandlers.get(RPC_METHODS.ForkConversation)!({})
+        ).resolves.toEqual({ nativeSessionId: 'forked-thread' });
+        expect(harness.appServerClients).toHaveLength(2);
+
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('waits for temporary fork initialization and cleanup before starting queued source work', async () => {
+        const initializeGate = createDeferred<void>();
+        const disconnectGate = createDeferred<void>();
+        harness.initializeImplementations = [null, () => initializeGate.promise];
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
+
+        const fork = Promise.resolve(rpcHandlers.get(RPC_METHODS.ForkConversation)!({}));
+        await vi.waitFor(() => expect(harness.appServerClients).toHaveLength(2));
+        const temporaryClient = harness.appServerClients[1]!;
+        temporaryClient.disconnectImplementation = () => disconnectGate.promise;
+
+        session.queue.push('second', createMode());
+        await vi.waitFor(() => expect(session.queue.size()).toBe(0));
+        expect(harness.startTurnMessages).toEqual(['first']);
+
+        initializeGate.resolve();
+        await vi.waitFor(() => expect(temporaryClient.disconnectCalls).toBe(1));
+        expect(harness.startTurnMessages).toEqual(['first']);
+
+        disconnectGate.resolve();
+        await expect(fork).resolves.toEqual({ nativeSessionId: 'forked-thread' });
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first', 'second']));
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('waits for temporary fork cleanup before compacting the source thread', async () => {
+        const initializeGate = createDeferred<void>();
+        const disconnectGate = createDeferred<void>();
+        harness.initializeImplementations = [null, () => initializeGate.promise];
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
+
+        const fork = Promise.resolve(rpcHandlers.get(RPC_METHODS.ForkConversation)!({}));
+        await vi.waitFor(() => expect(harness.appServerClients).toHaveLength(2));
+        const temporaryClient = harness.appServerClients[1]!;
+        temporaryClient.disconnectImplementation = () => disconnectGate.promise;
+
+        session.queue.push('/compact', createMode());
+        await vi.waitFor(() => expect(session.queue.size()).toBe(0));
+        expect(harness.compactThreadIds).toEqual([]);
+
+        initializeGate.resolve();
+        await vi.waitFor(() => expect(temporaryClient.disconnectCalls).toBe(1));
+        expect(harness.compactThreadIds).toEqual([]);
+
+        disconnectGate.resolve();
+        await expect(fork).resolves.toEqual({ nativeSessionId: 'forked-thread' });
+        await vi.waitFor(() => expect(harness.compactThreadIds).toEqual(['thread-1']));
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('keeps the source lease while an active turn is interrupted for compaction', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.deferCompactCompletion = true;
+        const { session, rpcHandlers } = createSessionStub(
+            ['first', '/compact'],
+            createMode(),
+            true
+        );
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.compactThreadIds).toEqual(['thread-1']));
+
+        await expect(
+            rpcHandlers.get(RPC_METHODS.ForkConversation)!({})
+        ).rejects.toThrow('Session is busy');
+        expect(harness.appServerClients).toHaveLength(1);
+
+        harness.dispatchNotification?.('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'compact-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'compact-1', status: 'completed' }
+        });
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('keeps the source lease until an abort interrupt request settles', async () => {
+        harness.suppressTurnCompletion = true;
+        const interruptGate = createDeferred<void>();
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        await vi.waitFor(() => expect(harness.startTurnThreadIds).toEqual(['thread-1']));
+        sourceClient.interruptImplementation = () => interruptGate.promise;
+
+        const abort = Promise.resolve(rpcHandlers.get('abort')!({}));
+        await vi.waitFor(() => expect(harness.interruptedTurns).toEqual([
+            { threadId: 'thread-1', turnId: 'turn-1' }
+        ]));
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            turn: { id: 'turn-1', status: 'interrupted' }
+        });
+
+        await expect(
+            rpcHandlers.get(RPC_METHODS.ForkConversation)!({})
+        ).rejects.toThrow('Session is busy');
+        expect(harness.appServerClients).toHaveLength(1);
+
+        interruptGate.resolve();
+        await abort;
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('retries retained fork cleanup before starting queued source work', async () => {
+        const initializeGate = createDeferred<void>();
+        const retryCleanupGate = createDeferred<void>();
+        const cleanupError = new Error('temporary app-server teardown failed');
+        harness.initializeImplementations = [null, () => initializeGate.promise];
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
+
+        const fork = Promise.resolve(rpcHandlers.get(RPC_METHODS.ForkConversation)!({}));
+        await vi.waitFor(() => expect(harness.appServerClients).toHaveLength(2));
+        const temporaryClient = harness.appServerClients[1]!;
+        temporaryClient.disconnectImplementation = async () => {
+            if (temporaryClient.disconnectCalls === 1) throw cleanupError;
+            await retryCleanupGate.promise;
+        };
+        initializeGate.resolve();
+        await expect(fork).rejects.toBe(cleanupError);
+
+        session.queue.push('second', createMode());
+        await vi.waitFor(() => expect(session.queue.size()).toBe(0));
+        await vi.waitFor(() => expect(temporaryClient.disconnectCalls).toBe(2));
+        expect(harness.startTurnMessages).toEqual(['first']);
+
+        retryCleanupGate.resolve();
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first', 'second']));
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('does not start queued source work when aborted during retained fork cleanup', async () => {
+        const initializeGate = createDeferred<void>();
+        const retryCleanupGate = createDeferred<void>();
+        const cleanupError = new Error('temporary app-server teardown failed');
+        harness.initializeImplementations = [null, () => initializeGate.promise];
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
+
+        const fork = Promise.resolve(rpcHandlers.get(RPC_METHODS.ForkConversation)!({}));
+        await vi.waitFor(() => expect(harness.appServerClients).toHaveLength(2));
+        const temporaryClient = harness.appServerClients[1]!;
+        temporaryClient.disconnectImplementation = async () => {
+            if (temporaryClient.disconnectCalls === 1) throw cleanupError;
+            await retryCleanupGate.promise;
+        };
+        initializeGate.resolve();
+        await expect(fork).rejects.toBe(cleanupError);
+
+        session.queue.push('second', createMode());
+        await vi.waitFor(() => expect(session.queue.size()).toBe(0));
+        await vi.waitFor(() => expect(temporaryClient.disconnectCalls).toBe(2));
+
+        await rpcHandlers.get('abort')?.({});
+        retryCleanupGate.resolve();
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+
+        expect(harness.startTurnMessages).toEqual(['first']);
+    });
+
+    it('waits for a temporary fork before reconnecting to reconcile an indeterminate steer', async () => {
+        harness.suppressTurnCompletion = true;
+        const initializeGate = createDeferred<void>();
+        harness.initializeImplementations = [null, () => initializeGate.promise];
+        const indeterminate = new Error('Codex app-server disconnected');
+        Object.defineProperty(indeterminate, INDETERMINATE_SYMBOL, { value: true });
+        harness.steerCompletionError = indeterminate;
+        harness.readThreadError = new Error('thread temporarily unreadable');
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        await vi.waitFor(() => expect(harness.startTurnThreadIds).toEqual(['thread-1']));
+
+        session.queue.push('steer me', createMode(), 'local-1');
+        await expect(rpcHandlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'local-1' })).resolves.toEqual({
+            steered: false,
+            error: 'Steer outcome is being reconciled'
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            turn: { id: 'turn-1', status: 'completed' }
+        });
+        await vi.waitFor(() => expect(harness.readThreadParams).toHaveLength(1), { timeout: 5_000 });
+
+        const fork = Promise.resolve(rpcHandlers.get(RPC_METHODS.ForkConversation)!({}));
+        await vi.waitFor(() => expect(harness.appServerClients).toHaveLength(2));
+        harness.readThreadError = null;
+        harness.readThreadResponse = {
+            thread: {
+                turns: [{
+                    items: [{ type: 'userMessage', clientId: 'local-1', text: 'steer me' }]
+                }]
+            }
+        };
+        sourceClient.connected = false;
+
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        expect(sourceClient.connectCalls).toBe(1);
+        expect(harness.readThreadParams).toHaveLength(1);
+
+        initializeGate.resolve();
+        await expect(fork).resolves.toEqual({ nativeSessionId: 'forked-thread' });
+        await vi.waitFor(() => {
+            expect(sourceClient.connectCalls).toBe(2);
+            expect(harness.readThreadParams).toHaveLength(2);
+        }, { timeout: 5_000 });
+
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+    }, 10_000);
+
+    it('starts history cleanup and source disconnect before awaiting either', async () => {
+        const historyGate = createDeferred<void>();
+        const disconnectGate = createDeferred<void>();
+        const originalHistoryCleanup = CodexConversationHistory.prototype.cleanup;
+        const historyCleanupStarted = vi.fn();
+        vi.spyOn(CodexConversationHistory.prototype, 'cleanup').mockImplementation(async function (this: CodexConversationHistory) {
+            historyCleanupStarted();
+            await originalHistoryCleanup.call(this);
+            await historyGate.promise;
+        });
+        const { session } = createSessionStub();
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        sourceClient.disconnectImplementation = () => disconnectGate.promise;
+        let settled = false;
+        void running.then(() => {
+            settled = true;
+        }, () => {
+            settled = true;
+        });
+
+        await vi.waitFor(() => {
+            expect(historyCleanupStarted).toHaveBeenCalledOnce();
+            expect(sourceClient.disconnectCalls).toBe(1);
+        });
+        expect(settled).toBe(false);
+
+        historyGate.resolve();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        disconnectGate.resolve();
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('disconnects the source before awaiting pending reconciliation on a normal switch exit', async () => {
+        harness.suppressTurnCompletion = true;
+        const indeterminate = new Error('Codex app-server disconnected');
+        Object.defineProperty(indeterminate, INDETERMINATE_SYMBOL, { value: true });
+        harness.steerCompletionError = indeterminate;
+        const reconnectGate = createDeferred<void>();
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        await vi.waitFor(() => expect(harness.startTurnThreadIds).toEqual(['thread-1']));
+
+        session.queue.push('steer me', createMode(), 'local-1');
+        const steerHandler = rpcHandlers.get(RPC_METHODS.SteerQueuedMessage)!;
+        await expect(steerHandler({ localId: 'local-1' })).resolves.toEqual({
+            steered: false,
+            error: 'Steer outcome is being reconciled'
+        });
+
+        sourceClient.connected = false;
+        sourceClient.connectImplementation = () => reconnectGate.promise;
+        await vi.waitFor(() => expect(sourceClient.connectCalls).toBe(2), { timeout: 5_000 });
+
+        const switchRequest = Promise.resolve(rpcHandlers.get(RPC_METHODS.Switch)!({}));
+        try {
+            await vi.waitFor(() => expect(sourceClient.disconnectCalls).toBe(1), { timeout: 250 });
+        } finally {
+            reconnectGate.resolve();
+            await switchRequest;
+            await running;
+        }
+
+        expect(sourceClient.connected).toBe(false);
+    }, 10_000);
+
+    it('stops reconciliation before a deliberate switch awaits interrupt', async () => {
+        harness.suppressTurnCompletion = true;
+        const indeterminate = new Error('Codex app-server disconnected');
+        Object.defineProperty(indeterminate, INDETERMINATE_SYMBOL, { value: true });
+        harness.steerCompletionError = indeterminate;
+        const interruptGate = createDeferred<void>();
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        await vi.waitFor(() => expect(harness.startTurnThreadIds).toEqual(['thread-1']));
+
+        vi.useFakeTimers();
+        session.queue.push('steer me', createMode(), 'local-1');
+        const steerHandler = rpcHandlers.get(RPC_METHODS.SteerQueuedMessage)!;
+        await expect(steerHandler({ localId: 'local-1' })).resolves.toEqual({
+            steered: false,
+            error: 'Steer outcome is being reconciled'
+        });
+        sourceClient.connected = false;
+        sourceClient.interruptImplementation = () => interruptGate.promise;
+
+        const switchRequest = Promise.resolve(rpcHandlers.get(RPC_METHODS.Switch)!({}));
+        try {
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+            await vi.advanceTimersByTimeAsync(1_100);
+            expect(sourceClient.connectCalls).toBe(1);
+        } finally {
+            interruptGate.resolve();
+            await switchRequest;
+            vi.useRealTimers();
+            await running;
+        }
+    });
+
+    it('stops and awaits in-flight steer reconciliation after an abnormal main-loop exit', async () => {
+        harness.suppressTurnCompletion = true;
+        const indeterminate = new Error('Codex app-server disconnected');
+        Object.defineProperty(indeterminate, INDETERMINATE_SYMBOL, { value: true });
+        harness.steerCompletionError = indeterminate;
+        const reconnectGate = createDeferred<void>();
+        const { session, rpcHandlers } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        let settled = false;
+        void running.then(() => {
+            settled = true;
+        }, () => {
+            settled = true;
+        });
+        await vi.waitFor(() => expect(harness.startTurnThreadIds).toEqual(['thread-1']));
+
+        session.queue.push('steer me', createMode(), 'local-1');
+        const handler = rpcHandlers.get(RPC_METHODS.SteerQueuedMessage)!;
+        await expect(handler({ localId: 'local-1' })).resolves.toEqual({
+            steered: false,
+            error: 'Steer outcome is being reconciled'
+        });
+
+        sourceClient.connected = false;
+        sourceClient.connectImplementation = () => reconnectGate.promise;
+        await vi.waitFor(() => expect(sourceClient.connectCalls).toBe(2), { timeout: 5_000 });
+
+        sourceClient.isConnectedError = new Error('main loop failed');
+        harness.dispatchNotification?.('turn/completed', {
+            status: 'Completed',
+            turn: { id: 'turn-1' }
+        });
+
+        await vi.waitFor(() => {
+            expect(sourceClient.disconnectCalls).toBe(1);
+        });
+        expect(settled).toBe(false);
+
+        reconnectGate.resolve();
+        await expect(running).rejects.toThrow('main loop failed');
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        expect(sourceClient.connectCalls).toBe(2);
+        expect(sourceClient.connected).toBe(false);
+    }, 10_000);
+
+    it('logs cleanup failures and continues cleaning later resources', async () => {
+        const historyError = new Error('history cleanup failed');
+        const disconnectError = new Error('source disconnect failed');
+        vi.spyOn(CodexConversationHistory.prototype, 'cleanup').mockRejectedValue(historyError);
+        const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+        const { session } = createSessionStub();
+        const running = codexRemoteLauncher(session as never);
+        getSourceClientState().disconnectImplementation = async () => {
+            throw disconnectError;
+        };
+
+        await expect(running).resolves.toBe('exit');
+
+        expect(debugSpy).toHaveBeenCalledWith(
+            '[codex-remote]: Error disconnecting fork client',
+            historyError
+        );
+        expect(debugSpy).toHaveBeenCalledWith(
+            '[codex-remote]: Error disconnecting client',
+            disconnectError
+        );
+        expect(harness.happyServerStopCalls).toBe(1);
+    });
+
     it('invalidates queued steer handlers after abort or cleanup', () => {
         expect(isCurrentSteerHandler(3, 3, false)).toBe(true);
         expect(isCurrentSteerHandler(4, 3, false)).toBe(false);
@@ -1269,9 +1844,7 @@ describe('codexRemoteLauncher', () => {
             clientUserMessageId: 'local-1'
         });
         await vi.waitFor(() => expect(emitMessagesConsumed).toHaveBeenCalledWith(['local-1'], { steered: true }));
-        // The suppressed turn never completes, so the launcher stays busy;
-        // close the queue and leave the run promise unawaited.
-        session.queue.close();
+        await finishActiveLauncher(session, runPromise);
     });
 
     it('restores the row when the app-server explicitly rejects after dispatch', async () => {
@@ -1292,7 +1865,7 @@ describe('codexRemoteLauncher', () => {
         expect(result).toEqual({ steered: false, error: 'turn/steer not allowed here' });
         await vi.waitFor(() => expect(session.queue.cancelByLocalId('local-1')).toBe(true));
         expect(emitMessagesConsumed).not.toHaveBeenCalledWith(['local-1'], { steered: true });
-        session.queue.close();
+        await finishActiveLauncher(session, runPromise);
     });
 
     it('holds an indeterminate steer for explicit retry or cancel', async () => {
@@ -1317,7 +1890,7 @@ describe('codexRemoteLauncher', () => {
         expect(emitSteerIndeterminate).toHaveBeenCalledWith(['local-1']);
         expect(session.queue.cancelByLocalId('local-1')).toBe(true);
         expect(emitMessagesConsumed).not.toHaveBeenCalledWith(['local-1'], { steered: true });
-        session.queue.close();
+        await finishActiveLauncher(session, runPromise);
     });
 
     it('reconciles an indeterminate steer to accepted once the thread shows the message', async () => {
@@ -1347,7 +1920,7 @@ describe('codexRemoteLauncher', () => {
         await vi.waitFor(() => expect(emitMessagesConsumed).toHaveBeenCalledWith(['local-1'], { steered: true }), { timeout: 5_000 });
         // Row committed and consumed — the tombstone blocks a stale retry.
         expect(session.queue.cancelByLocalId('local-1')).toBe('consumed');
-        session.queue.close();
+        await finishActiveLauncher(session, runPromise);
     });
 
     it('reconciles when stdin dispatch fails indeterminately', async () => {
@@ -1368,7 +1941,7 @@ describe('codexRemoteLauncher', () => {
         expect(emitSteerIndeterminate).toHaveBeenCalledWith(['local-1']);
         expect(session.queue.cancelByLocalId('local-1')).toBe(true);
         expect(emitMessagesConsumed).not.toHaveBeenCalledWith(['local-1'], { steered: true });
-        session.queue.close();
+        await finishActiveLauncher(session, runPromise);
     });
 
     it('restores the queued row when stdin dispatch fails', async () => {
@@ -1385,14 +1958,21 @@ describe('codexRemoteLauncher', () => {
         expect(result).toEqual({ steered: false, error: 'stdin closed' });
         await vi.waitFor(() => expect(session.queue.cancelByLocalId('local-1')).toBe(true));
         expect(emitMessagesConsumed).not.toHaveBeenCalledWith(['local-1'], { steered: true });
-        session.queue.close();
+        await finishActiveLauncher(session, runPromise);
     });
     afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        harness.appServerClients = [];
+        harness.happyServerStopCalls = 0;
         harness.notifications = [];
         harness.dispatchNotification = null;
         harness.registerRequestCalls = [];
         harness.requestHandlers = new Map();
         harness.initializeCalls = [];
+        harness.initializeImplementations = [];
+        harness.supportsMethodCalls = [];
+        harness.supportsMethodImplementation = null;
         harness.setFeatureEnablementCalls = [];
         harness.failSetFeatureEnablement = false;
         harness.listCollaborationModeCalls = 0;
@@ -1436,6 +2016,7 @@ describe('codexRemoteLauncher', () => {
         harness.safetyBufferingFasterModel = null;
         harness.emitModelSafetyNotices = false;
         harness.startTurnMessages = [];
+        harness.forkThreadParams = [];
         harness.failResumeThreadIds = [];
         harness.remainingThreadSystemErrors = 0;
         harness.nextThreadSystemErrorMessage = null;
@@ -2187,6 +2768,47 @@ describe('codexRemoteLauncher', () => {
         expect(getModelReasoningEffort()).toBe('low');
     });
 
+    it('keeps the source lease while a safety-buffered turn rolls back after its terminal event', async () => {
+        harness.emitSafetyBuffering = true;
+        harness.safetyBufferingFasterModel = 'gpt-5.4-mini';
+        harness.emitTurnAbortedOnInterrupt = true;
+        const rollbackGate = createDeferred<void>();
+        const { session, rpcHandlers, getAgentState } = createSessionStub(['first message']);
+        const running = codexRemoteLauncher(session as never);
+        const sourceClient = getSourceClientState();
+        sourceClient.rollbackImplementation = () => rollbackGate.promise;
+
+        await vi.waitFor(() => {
+            expect(Object.values(getAgentState().requests)).toContainEqual(expect.objectContaining({
+                tool: 'request_user_input'
+            }));
+        });
+        const requestId = Object.keys(getAgentState().requests)[0];
+        const permissionResponse = Promise.resolve(rpcHandlers.get('permission')?.({
+            id: requestId,
+            approved: true,
+            answers: {
+                safety_buffering_action: {
+                    answers: ['Retry with a faster model']
+                }
+            }
+        }));
+
+        await vi.waitFor(() => expect(harness.rollbackCalls).toEqual([
+            { threadId: 'thread-1', numTurns: 1 }
+        ]));
+        try {
+            await expect(
+                rpcHandlers.get(RPC_METHODS.ForkConversation)!({})
+            ).rejects.toThrow('Session is busy');
+            expect(harness.appServerClients).toHaveLength(1);
+        } finally {
+            rollbackGate.resolve();
+            await permissionResponse;
+            await running;
+        }
+    });
+
     it('keeps the original safety-buffered turn running when the user dismisses the retry', async () => {
         harness.emitSafetyBuffering = true;
         harness.safetyBufferingFasterModel = 'gpt-5.4-mini';
@@ -2498,6 +3120,27 @@ describe('codexRemoteLauncher', () => {
             message: "Task failed: Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
         });
         expect(session.thinking).toBe(false);
+    });
+
+    it('keeps the source lease until automatic compact recovery completes', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.deferCompactCompletion = true;
+        harness.nextThreadSystemErrorMessage = "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+        const { session, rpcHandlers } = createSessionStub(['first message']);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.compactThreadIds).toEqual(['thread-1']));
+
+        await expect(
+            rpcHandlers.get(RPC_METHODS.ForkConversation)!({})
+        ).rejects.toThrow('Session is busy');
+        expect(harness.appServerClients).toHaveLength(1);
+
+        harness.dispatchNotification?.('thread/compacted', {
+            threadId: 'thread-1',
+            turnId: 'compact-1'
+        });
+        await expect(running).resolves.toBe('exit');
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message']);
     });
 
     it('does not create a new thread when same-conversation compact fails', async () => {

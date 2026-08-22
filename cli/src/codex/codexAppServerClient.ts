@@ -1,8 +1,13 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
-import { killProcessByChildProcess } from '@/utils/process';
+import {
+    getProcessStartMarker,
+    killProcessByChildProcess,
+    STRICT_PROCESS_OWNERSHIP_ENV
+} from '@/utils/process';
 import type {
     CollaborationModeListResponse,
     InitializeParams,
@@ -172,8 +177,27 @@ function resolveCodexAppServerCommand(): string {
     return best.command;
 }
 
+async function captureProcessStartMarker(pid: number): Promise<string | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const marker = getProcessStartMarker(pid);
+        if (marker !== null) return marker;
+        if (attempt < 2) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        }
+    }
+    return null;
+}
+
 export class CodexAppServerClient extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
+    private processStartMarker: string | null | undefined;
+    private processOwnershipToken: string | undefined;
+    private processExited = false;
+    private terminationUnconfirmed = false;
+    private requireConfirmedTermination = false;
+    private disconnecting: Promise<void> | null = null;
+    private retainDisconnecting = false;
+    private lifecycleGeneration = 0;
     private connected = false;
     private initialized = false;
 
@@ -204,34 +228,75 @@ export class CodexAppServerClient extends JsonLineParser {
         this.stderrHandler = handler;
     }
 
-    async connect(): Promise<void> {
+    async connect(options?: { requireVerifiedProcessIdentity?: boolean }): Promise<void> {
+        const lifecycleGeneration = this.lifecycleGeneration;
+        if (this.disconnecting) {
+            const disconnecting = this.disconnecting;
+            this.retainDisconnecting = false;
+            try {
+                await disconnecting;
+            } finally {
+                if (this.disconnecting === disconnecting) this.disconnecting = null;
+            }
+        }
+        this.assertConnectIsCurrent(lifecycleGeneration);
         if (this.connected) {
             return;
+        }
+        if (this.process) {
+            throw new Error(
+                'Cannot connect while previous Codex app-server process termination is unconfirmed'
+            );
+        }
+        const requireVerifiedProcessIdentity = options?.requireVerifiedProcessIdentity === true;
+        if (requireVerifiedProcessIdentity
+            && process.platform === 'win32'
+            && getProcessStartMarker(process.pid) === null) {
+            throw new Error('Codex app-server process identity could not be verified');
         }
 
         const codexCommand = resolveCodexAppServerCommand();
         logger.debug(`[CodexAppServer] Starting ${codexCommand} app-server`);
+        this.assertConnectIsCurrent(lifecycleGeneration);
+        const processOwnershipToken = requireVerifiedProcessIdentity
+            && process.platform !== 'win32'
+            ? randomUUID()
+            : undefined;
+        const childEnv = Object.keys(process.env).reduce((acc, key) => {
+            const value = process.env[key];
+            if (typeof value === 'string') acc[key] = value;
+            return acc;
+        }, {} as Record<string, string>);
+        if (processOwnershipToken) {
+            childEnv[STRICT_PROCESS_OWNERSHIP_ENV] = processOwnershipToken;
+        }
         const child = spawn(codexCommand, ['app-server'], {
             cwd: this.options.cwd,
-            env: Object.keys(process.env).reduce((acc, key) => {
-                const value = process.env[key];
-                if (typeof value === 'string') acc[key] = value;
-                return acc;
-            }, {} as Record<string, string>),
+            env: childEnv,
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: process.platform === 'win32',
-            windowsHide: process.platform === 'win32'
+            windowsHide: process.platform === 'win32',
+            ...(requireVerifiedProcessIdentity && process.platform !== 'win32'
+                ? { detached: true }
+                : {})
         });
         this.process = child;
+        this.processStartMarker = requireVerifiedProcessIdentity
+            ? null
+            : undefined;
+        this.processOwnershipToken = processOwnershipToken;
+        this.processExited = false;
+        this.terminationUnconfirmed = false;
+        this.requireConfirmedTermination = requireVerifiedProcessIdentity;
 
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
-            if (this.process === child) this.feed(chunk);
+            if (this.process === child && this.connected) this.feed(chunk);
         });
 
         child.stderr.setEncoding('utf8');
         child.stderr.on('data', (chunk) => {
-            if (this.process !== child) return;
+            if (this.process !== child || !this.connected) return;
             const text = chunk.toString().trim();
             if (text.length > 0) {
                 logger.debug(`[CodexAppServer][stderr] ${text}`);
@@ -241,18 +306,39 @@ export class CodexAppServerClient extends JsonLineParser {
 
         child.on('exit', (code, signal) => {
             if (this.process !== child) return;
+            const wasConnected = this.connected;
             const message = `Codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
             logger.debug(message);
             this.rejectAllPending(new Error(message));
             this.connected = false;
             this.initialized = false;
             this.resetParserState();
-            this.process = null;
-            this.transportAbandonedHandler?.();
+            if (this.requireConfirmedTermination) {
+                this.processExited = true;
+                this.terminationUnconfirmed = true;
+                if (process.platform !== 'win32') {
+                    const disconnecting = this.startDisconnect(undefined, true);
+                    void disconnecting.catch((error) => {
+                        logger.debug(
+                            '[CodexAppServer] Error terminating process group after exit',
+                            error
+                        );
+                    });
+                }
+            } else {
+                this.process = null;
+                this.processStartMarker = undefined;
+                this.processOwnershipToken = undefined;
+                this.processExited = false;
+                this.terminationUnconfirmed = false;
+                this.requireConfirmedTermination = false;
+            }
+            if (wasConnected) this.transportAbandonedHandler?.();
         });
 
         child.on('error', (error) => {
             if (this.process !== child) return;
+            const wasConnected = this.connected;
             logger.debug('[CodexAppServer] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
             this.rejectAllPending(new Error(
@@ -260,13 +346,52 @@ export class CodexAppServerClient extends JsonLineParser {
                 { cause: error }
             ));
             this.connected = false;
+            this.initialized = false;
             this.resetParserState();
-            this.process = null;
-            this.transportAbandonedHandler?.();
+            if (!this.requireConfirmedTermination || !child.pid) {
+                this.process = null;
+                this.processStartMarker = undefined;
+                this.processOwnershipToken = undefined;
+                this.processExited = false;
+                this.terminationUnconfirmed = false;
+                this.requireConfirmedTermination = false;
+            } else {
+                this.terminationUnconfirmed = true;
+            }
+            if (wasConnected) this.transportAbandonedHandler?.();
         });
 
+        if (requireVerifiedProcessIdentity) {
+            const processStartMarker = child.pid
+                ? await captureProcessStartMarker(child.pid)
+                : null;
+            if (processStartMarker === null
+                || this.process !== child
+                || this.processExited
+                || this.terminationUnconfirmed) {
+                this.processStartMarker = null;
+                const identityError = new Error(
+                    'Codex app-server process identity could not be verified'
+                );
+                try {
+                    await this.startDisconnect(undefined, false);
+                } catch (error) {
+                    logger.debug('[CodexAppServer] Error cleaning up unverified process', error);
+                }
+                throw identityError;
+            }
+            this.processStartMarker = processStartMarker;
+        }
+
+        this.assertConnectIsCurrent(lifecycleGeneration);
         this.connected = true;
         logger.debug('[CodexAppServer] Connected');
+    }
+
+    private assertConnectIsCurrent(lifecycleGeneration: number): void {
+        if (lifecycleGeneration !== this.lifecycleGeneration) {
+            throw new Error('Codex app-server connection was superseded by disconnect');
+        }
     }
 
     setNotificationHandler(handler: ((method: string, params: unknown) => void) | null): void {
@@ -450,26 +575,140 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as ThreadGoalClearResponse;
     }
 
-    async disconnect(): Promise<void> {
-        if (!this.connected) {
+    disconnect(options?: { deadline?: number }): Promise<void> {
+        return this.startDisconnect(options, false);
+    }
+
+    private startDisconnect(
+        options: { deadline?: number } | undefined,
+        retainUntilObserved: boolean
+    ): Promise<void> {
+        this.lifecycleGeneration += 1;
+        const activeDisconnect = this.disconnecting;
+        if (activeDisconnect) {
+            if (!retainUntilObserved) {
+                this.retainDisconnecting = false;
+                const clear = () => {
+                    if (this.disconnecting === activeDisconnect) this.disconnecting = null;
+                };
+                void activeDisconnect.then(clear, clear);
+            }
+            return activeDisconnect;
+        }
+        const disconnecting = this.disconnectProcess(options);
+        this.disconnecting = disconnecting;
+        this.retainDisconnecting = retainUntilObserved;
+        const clear = () => {
+            if (this.disconnecting === disconnecting && !this.retainDisconnecting) {
+                this.disconnecting = null;
+            }
+        };
+        void disconnecting.then(clear, clear);
+        return disconnecting;
+    }
+
+    private async disconnectProcess(options?: { deadline?: number }): Promise<void> {
+        if (!this.connected && !this.process) {
             return;
         }
 
         const child = this.process;
-        this.process = null;
+        const processStartMarker = this.processStartMarker;
+        const processOwnershipToken = this.processOwnershipToken;
+        const requireConfirmedTermination = this.requireConfirmedTermination;
+        const canVerifyProcessGroup = requireConfirmedTermination && process.platform !== 'win32';
+        this.connected = false;
+        this.initialized = false;
+        let stdinError: unknown = null;
+        let terminationError: unknown = null;
+        let termination: Promise<boolean> | null = null;
+        let terminationConfirmed = child === null;
 
         try {
-            child?.stdin.end();
             if (child) {
-                await killProcessByChildProcess(child);
+                if (this.processExited && this.terminationUnconfirmed && !canVerifyProcessGroup) {
+                    terminationError = new Error('Codex app-server process tree termination is unconfirmed');
+                } else {
+                    try {
+                        termination = canVerifyProcessGroup
+                            ? killProcessByChildProcess(
+                                child,
+                                false,
+                                processStartMarker,
+                                options?.deadline,
+                                true,
+                                processOwnershipToken
+                            )
+                            : killProcessByChildProcess(
+                                child,
+                                false,
+                                processStartMarker,
+                                options?.deadline
+                            );
+                    } catch (error) {
+                        terminationError = error;
+                    }
+                }
             }
-        } catch (error) {
-            logger.debug('[CodexAppServer] Error while stopping process', error);
+
+            try {
+                child?.stdin.end();
+            } catch (error) {
+                stdinError = error;
+            }
+
+            if (termination) {
+                try {
+                    const terminated = await termination;
+                    if (terminated) {
+                        terminationConfirmed = true;
+                    } else {
+                        terminationError = new Error('Codex app-server process could not be terminated');
+                    }
+                } catch (error) {
+                    terminationError = error;
+                }
+            }
         } finally {
             this.rejectAllPending(new Error('Codex app-server disconnected'));
             this.connected = false;
             this.initialized = false;
             this.resetParserState();
+        }
+
+        if (child && terminationConfirmed) {
+            terminationError = null;
+            if (this.process === child) {
+                this.process = null;
+                this.processStartMarker = undefined;
+                this.processOwnershipToken = undefined;
+                this.requireConfirmedTermination = false;
+            }
+            this.processExited = false;
+            this.terminationUnconfirmed = false;
+        } else if (!child) {
+            this.processStartMarker = undefined;
+            this.processOwnershipToken = undefined;
+            this.processExited = false;
+            this.terminationUnconfirmed = false;
+            this.requireConfirmedTermination = false;
+        } else if (terminationError) {
+            if (requireConfirmedTermination) {
+                this.terminationUnconfirmed = true;
+            } else if (this.process === child) {
+                this.process = null;
+                this.processStartMarker = undefined;
+                this.processOwnershipToken = undefined;
+                this.processExited = false;
+                this.terminationUnconfirmed = false;
+                this.requireConfirmedTermination = false;
+            }
+        }
+
+        const teardownError = terminationError ?? stdinError;
+        if (teardownError) {
+            logger.debug('[CodexAppServer] Error while stopping process', teardownError);
+            throw teardownError;
         }
 
         logger.debug('[CodexAppServer] Disconnected');
@@ -541,7 +780,7 @@ export class CodexAppServerClient extends JsonLineParser {
 
         const abandonUnconfirmedDispatch = (error: Error) => {
             const child = this.process;
-            this.process = null;
+            const disconnecting = this.startDisconnect(undefined, true);
             this.connected = false;
             this.initialized = false;
             try {
@@ -552,6 +791,9 @@ export class CodexAppServerClient extends JsonLineParser {
             this.rejectAllPending(error);
             this.resetParserState();
             this.transportAbandonedHandler?.();
+            void disconnecting.catch((disconnectError) => {
+                logger.debug('[CodexAppServer] Error terminating abandoned transport', disconnectError);
+            });
         };
 
         const failRequest = (error: Error, abandon = false) => {

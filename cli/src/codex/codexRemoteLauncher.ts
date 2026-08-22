@@ -221,6 +221,29 @@ export function isCurrentSteerHandler(
     return currentEpoch === handlerEpoch && !shouldExit;
 }
 
+export async function waitForSourceLeaseAcquisition(
+    acquisition: Promise<void>,
+    signal?: AbortSignal
+): Promise<void> {
+    if (!signal) {
+        await acquisition;
+        return;
+    }
+    if (signal.aborted) throw signal.reason;
+
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        await Promise.race([acquisition, aborted]);
+    } finally {
+        signal.removeEventListener('abort', onAbort);
+    }
+    if (signal.aborted) throw signal.reason;
+}
+
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
     private readonly appServerClient: CodexAppServerClient;
@@ -236,6 +259,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private currentTurnId: string | null = null;
     private readonly activeChildTurns = new Map<string, string>();
     readonly conversationHistory = new CodexConversationHistory(() => this.appServerClient);
+    private releaseConversationHistorySourceLease: (() => void) | null = null;
+    private beginConversationHistorySourceOperation: (() => Promise<() => void>) | null = null;
+    private stopSteerReconciliation: () => Promise<void> = async () => {};
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -291,7 +317,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         this.abortInProgress = true;
         this.steerEpoch++;
         logger.debug('[Codex] Abort requested - stopping current task');
+        let releaseSourceOperation: (() => void) | null = null;
         try {
+            if ((this.currentThreadId && this.currentTurnId) || this.activeChildTurns.size > 0) {
+                releaseSourceOperation = await this.beginConversationHistorySourceOperation?.() ?? null;
+            }
             await this.interruptActiveTurns('abort');
             this.currentTurnId = null;
 
@@ -306,6 +336,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             logger.debug('[Codex] Error during abort:', error);
         } finally {
+            releaseSourceOperation?.();
             this.abortController = new AbortController();
             this.abortInProgress = false;
         }
@@ -315,6 +346,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         logger.debug('[codex-remote]: Exiting agent via Ctrl-C');
         this.exitReason = 'exit';
         this.shouldExit = true;
+        void this.stopSteerReconciliation();
         await this.handleAbort();
     }
 
@@ -322,12 +354,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         logger.debug('[codex-remote]: Switching to local mode via double space');
         this.exitReason = 'switch';
         this.shouldExit = true;
+        void this.stopSteerReconciliation();
         await this.handleAbort();
     }
 
     private async handleSwitchRequest(): Promise<void> {
         this.exitReason = 'switch';
         this.shouldExit = true;
+        void this.stopSteerReconciliation();
         await this.handleAbort();
     }
 
@@ -688,8 +722,73 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let scheduleReadyAfterTurn: (() => void) | null = null;
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
+        let sourceOperationRefs = 0;
+        let turnOwnsSourceLease = false;
+        let sourceLeaseAcquisitionInFlight: Promise<void> | null = null;
+        const releaseSourceLease = () => {
+            const release = this.releaseConversationHistorySourceLease;
+            this.releaseConversationHistorySourceLease = null;
+            release?.();
+        };
+        const maybeReleaseSourceLease = () => {
+            if (sourceOperationRefs === 0 && !turnOwnsSourceLease) {
+                releaseSourceLease();
+            }
+        };
+        const ensureSourceLease = async (signal?: AbortSignal): Promise<void> => {
+            if (!this.releaseConversationHistorySourceLease) {
+                if (!sourceLeaseAcquisitionInFlight) {
+                    const acquisition = this.conversationHistory.acquireSourceLease().then((release) => {
+                        this.releaseConversationHistorySourceLease = release;
+                        maybeReleaseSourceLease();
+                    });
+                    sourceLeaseAcquisitionInFlight = acquisition;
+                    const clearAcquisition = () => {
+                        if (sourceLeaseAcquisitionInFlight === acquisition) {
+                            sourceLeaseAcquisitionInFlight = null;
+                        }
+                    };
+                    void acquisition.then(clearAcquisition, clearAcquisition);
+                }
+                await waitForSourceLeaseAcquisition(sourceLeaseAcquisitionInFlight, signal);
+            }
+            if (signal?.aborted) throw signal.reason;
+        };
+        const beginSourceOperation = async (signal?: AbortSignal): Promise<() => void> => {
+            sourceOperationRefs += 1;
+            let released = false;
+            const releaseOperation = () => {
+                if (released) return;
+                released = true;
+                sourceOperationRefs -= 1;
+                maybeReleaseSourceLease();
+            };
+            try {
+                await ensureSourceLease(signal);
+                return releaseOperation;
+            } catch (error) {
+                releaseOperation();
+                throw error;
+            }
+        };
+        const probeConversationHistoryCapabilities = (): void => {
+            void beginSourceOperation()
+                .then(async (releaseSourceOperation) => {
+                    try {
+                        await this.conversationHistory.probeCapabilities();
+                    } finally {
+                        releaseSourceOperation();
+                    }
+                })
+                .catch((error) => {
+                    logger.debug(`[Codex] Failed to probe conversation history capabilities: ${errorMessage(error)}`);
+                });
+        };
+        this.beginConversationHistorySourceOperation = () => beginSourceOperation();
         const setTurnInFlight = (value: boolean) => {
             turnInFlight = value;
+            turnOwnsSourceLease = value && this.releaseConversationHistorySourceLease !== null;
+            maybeReleaseSourceLease();
             session.client.updateAgentState((state) => ({ ...state, steeringActive: value }));
         };
         setTurnInFlight(false);
@@ -1875,6 +1974,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             threadId: string;
             message: QueuedMessage;
             timeout: ReturnType<typeof setTimeout> | null;
+            releaseSourceOperation: (() => void) | null;
         } | null = null;
         let manualCompact: {
             threadId: string;
@@ -1901,7 +2001,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             // The old process is gone; its foreground turn cannot deliver more
             // notifications. Let the loop recover on a fresh app-server.
             setTurnInFlight(false);
-            this.conversationHistory.setBusy(false);
             if (session.thinking) session.onThinkingChange(false);
             recoveryInFlight = false;
             activeMessage = null;
@@ -1940,6 +2039,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         }>();
         let steerReconcileTimer: ReturnType<typeof setTimeout> | null = null;
         let steerReconcileInProgress = false;
+        let steerReconcileInFlight: Promise<void> | null = null;
         let shuttingDown = false;
 
         const settleReconcileEntry = (localId: string, entry: { taken: QueueReservation<EnhancedMode>; batch: QueuedMessage }): void => {
@@ -1972,6 +2072,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             steerReconcileInProgress = true;
+            let resolveInFlight!: () => void;
+            const inFlight = new Promise<void>((resolve) => {
+                resolveInFlight = resolve;
+            });
+            steerReconcileInFlight = inFlight;
             try {
                 for (const [localId, entry] of Array.from(pendingSteerReconciliations.entries())) {
                     if (pendingSteerReconciliations.get(localId) !== entry) continue;
@@ -2002,6 +2107,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }, 1_000);
                     steerReconcileTimer.unref?.();
                 }
+                resolveInFlight();
+                if (steerReconcileInFlight === inFlight) {
+                    steerReconcileInFlight = null;
+                }
             }
         };
 
@@ -2017,6 +2126,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 void runSteerReconciliation();
             }, 1_000);
             steerReconcileTimer.unref?.();
+        };
+
+        this.stopSteerReconciliation = () => {
+            shuttingDown = true;
+            if (steerReconcileTimer) {
+                clearTimeout(steerReconcileTimer);
+                steerReconcileTimer = null;
+            }
+            pendingSteerReconciliations.clear();
+            return steerReconcileInFlight ?? Promise.resolve();
         };
 
         // thread/read auto-connects after a disconnect, but a freshly spawned
@@ -2043,7 +2162,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         // (client ids are not guaranteed durable), so anything unreadable or
         // unmatched stays 'unknown' and is retried.
         const reconcileSteerByClientId = async (threadId: string, localId: string): Promise<'accepted' | 'unknown'> => {
+            let releaseSourceOperation: (() => void) | null = null;
             try {
+                releaseSourceOperation = await beginSourceOperation();
                 await ensureAppServerInitialized();
                 const response = await appServerClient.readThread(
                     { threadId, includeTurns: true },
@@ -2065,6 +2186,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } catch (error) {
                 logger.debug(`[Codex] steer reconcile unavailable (${error instanceof Error ? error.message : String(error)})`);
                 return 'unknown';
+            } finally {
+                releaseSourceOperation?.();
             }
         };
 
@@ -2247,6 +2370,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (compactRecovery === recovery) {
                 compactRecovery = null;
             }
+            recovery.releaseSourceOperation?.();
+            recovery.releaseSourceOperation = null;
             recoveryInFlight = false;
             wakeLoop();
         };
@@ -2286,7 +2411,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             const recovery = {
                 threadId,
                 message: messageToRetry,
-                timeout: null as ReturnType<typeof setTimeout> | null
+                timeout: null as ReturnType<typeof setTimeout> | null,
+                releaseSourceOperation: null as (() => void) | null
             };
             compactRecovery = recovery;
             recovery.timeout = setTimeout(() => {
@@ -2301,7 +2427,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 `[Codex] Compacting retryable context failure on same thread ` +
                 `(attempt ${sameThreadCompactAttempt}/${SAME_THREAD_MAX_COMPACT_RETRIES}): ${error ?? 'unknown error'}`
             );
-            void appServerClient.compactThread({ threadId }, { signal: this.abortController.signal })
+            void beginSourceOperation(this.abortController.signal)
+                .then(async (releaseSourceOperation) => {
+                    if (compactRecovery !== recovery) {
+                        releaseSourceOperation();
+                        return;
+                    }
+                    recovery.releaseSourceOperation = releaseSourceOperation;
+                    await appServerClient.compactThread({ threadId }, { signal: this.abortController.signal });
+                })
                 .catch((compactError) => {
                     logger.warn('[Codex] Failed to start app-server thread compact before retry:', compactError);
                     failCompactRecovery(
@@ -2530,7 +2664,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             suppressReadyForInterruptedTurn(request.turnId);
             clearReadyAfterTurnTimer?.();
             let interrupted = false;
+            let releaseSourceOperation: (() => void) | null = null;
             try {
+                releaseSourceOperation = await beginSourceOperation();
                 await appServerClient.interruptTurn({
                     threadId: request.threadId,
                     turnId: request.turnId
@@ -2577,6 +2713,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 session.sendSessionEvent({ type: 'message', message });
             } finally {
                 recoveryInFlight = false;
+                releaseSourceOperation?.();
                 wakeLoop();
                 if (interrupted && !pending) {
                     scheduleReadyAfterTurn?.();
@@ -2704,7 +2841,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (!this.currentThreadId || this.currentThreadId === threadId) {
                         this.currentThreadId = threadId;
                         this.conversationHistory.setThreadId(threadId);
-                        void this.conversationHistory.probeCapabilities().catch(() => {});
+                        probeConversationHistoryCapabilities();
                         session.onSessionFound(threadId);
                     } else {
                         logger.debug(
@@ -3101,7 +3238,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
             if (isTerminalEvent) {
                 setTurnInFlight(false);
-                this.conversationHistory.setBusy(false);
                 allowAnonymousTerminalEvent = false;
                 if (session.thinking) {
                     logger.debug('thinking completed');
@@ -3732,7 +3868,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 applyResolvedModel(resumeRecord?.model);
                 this.currentThreadId = threadId;
                 this.conversationHistory.setThreadId(threadId);
-                void this.conversationHistory.probeCapabilities().catch(() => {});
+                probeConversationHistoryCapabilities();
                 session.onSessionFound(threadId);
                 hasThread = true;
                 logger.debug(`[Codex] Resumed app-server thread ${threadId} for /compact`);
@@ -3796,7 +3932,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     applyResolvedModel(resumeRecord?.model);
                     this.currentThreadId = threadId;
                     this.conversationHistory.setThreadId(threadId);
-                    void this.conversationHistory.probeCapabilities().catch(() => {});
+                    probeConversationHistoryCapabilities();
                     session.onSessionFound(threadId);
                     hasThread = true;
                     return threadId;
@@ -3829,7 +3965,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
                 this.currentThreadId = threadId;
                 this.conversationHistory.setThreadId(threadId);
-                void this.conversationHistory.probeCapabilities().catch(() => {});
+                probeConversationHistoryCapabilities();
                 session.onSessionFound(threadId);
                 hasThread = true;
                 return threadId;
@@ -3990,8 +4126,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
-            if (!appServerClient.isConnected() || !appServerClient.isInitialized()) {
-                await ensureAppServerInitialized();
+            const appServerReady = appServerClient.isConnected() && appServerClient.isInitialized();
+            if (!appServerReady && pendingSteerReconciliations.size === 0) {
+                let releaseReconnectSourceOperation: (() => void) | null = null;
+                try {
+                    releaseReconnectSourceOperation = await beginSourceOperation(this.abortController.signal);
+                    await ensureAppServerInitialized();
+                } finally {
+                    releaseReconnectSourceOperation?.();
+                }
             }
             if (pendingSteerReconciliations.size > 0) {
                 await runSteerReconciliation();
@@ -4049,7 +4192,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 clearReadyAfterTurnTimer?.();
             }
 
+            let releaseMessageSourceOperation: (() => void) | null = null;
             try {
+                releaseMessageSourceOperation = await beginSourceOperation(this.abortController.signal);
+                await ensureAppServerInitialized();
+
                 if (await handleGoalCommand(message)) {
                     continue;
                 }
@@ -4128,7 +4275,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                     this.currentThreadId = threadId;
                     this.conversationHistory.setThreadId(threadId);
-                    void this.conversationHistory.probeCapabilities().catch(() => {});
+                    probeConversationHistoryCapabilities();
                     session.onSessionFound(threadId);
                     hasThread = true;
                 } else {
@@ -4141,7 +4288,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 setTurnInFlight(true);
-                this.conversationHistory.setBusy(true);
                 allowAnonymousTerminalEvent = false;
                 const mode = {
                     ...message.mode,
@@ -4221,7 +4367,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
                 setTurnInFlight(false);
-                this.conversationHistory.setBusy(false);
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
 
@@ -4240,6 +4385,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     hasThread = false;
                 }
             } finally {
+                releaseMessageSourceOperation?.();
                 if (!turnInFlight) {
                     permissionHandler.reset();
                     reasoningProcessor.abort();
@@ -4272,24 +4418,33 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         clearDeferredThreadStatusFailure();
         cancelSafetyBufferingRequest('Session ended');
         cancelAllPendingThrottledAgentRunUpdates();
-        // Stop reconciliation: the launcher is leaving; no pending steer may
-        // spawn a fresh app-server after cleanup.
-        shuttingDown = true;
-        if (steerReconcileTimer) {
-            clearTimeout(steerReconcileTimer);
-            steerReconcileTimer = null;
-        }
-        pendingSteerReconciliations.clear();
+        void this.stopSteerReconciliation();
     }
 
     protected async cleanup(): Promise<void> {
         logger.debug('[codex-remote]: cleanup start');
+        this.beginConversationHistorySourceOperation = null;
+        const releaseSourceLease = this.releaseConversationHistorySourceLease;
+        this.releaseConversationHistorySourceLease = null;
+        releaseSourceLease?.();
         this.appServerClient.setTransportAbandonedHandler(null);
         this.appServerClient.setStderrHandler(null);
-        try {
-            await this.appServerClient.disconnect();
-        } catch (error) {
-            logger.debug('[codex-remote]: Error disconnecting client', error);
+        const reconciliationCleanup = this.stopSteerReconciliation();
+        const historyCleanup = this.conversationHistory.cleanup();
+        const sourceDisconnect = this.appServerClient.disconnect();
+        const [reconciliationResult, historyResult, sourceResult] = await Promise.allSettled([
+            reconciliationCleanup,
+            historyCleanup,
+            sourceDisconnect
+        ]);
+        if (reconciliationResult.status === 'rejected') {
+            logger.debug('[codex-remote]: Error stopping steer reconciliation', reconciliationResult.reason);
+        }
+        if (historyResult.status === 'rejected') {
+            logger.debug('[codex-remote]: Error disconnecting fork client', historyResult.reason);
+        }
+        if (sourceResult.status === 'rejected') {
+            logger.debug('[codex-remote]: Error disconnecting client', sourceResult.reason);
         }
 
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
