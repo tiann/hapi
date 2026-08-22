@@ -13,6 +13,7 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { readAgyConversationTitle } from '../utils/agySessionTitle';
+import { isSameAgyResponse } from '../utils/agyMessageText';
 import { resolveAgyTurnModels } from '../utils/agyConversationModel';
 import { killProcessByChildProcess } from '@/utils/process';
 import { AGY_MODEL_LABELS } from '@hapi/protocol';
@@ -434,6 +435,13 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         // prose emitted before a pre-result crash is not lost).
         let plannerResponseSent = false;
         let lastPlannerContent: string | null = null;
+        // The last planner step that reached DONE is held back instead of being
+        // emitted right away: the `result` envelope that follows carries the
+        // authoritative rendering of that SAME answer, so it must be able to
+        // REPLACE the delta-assembled one rather than land next to it. Anything
+        // that proves the held entry was not the final answer (a tool step, a
+        // later planner step, turn close) releases it unchanged.
+        let stagedPlanner: AgyTranscriptEntry | null = null;
         // Best-effort model resolution for default-model turns: when no explicit
         // --model was selected, the actual generation model is read from agy's
         // conversation DB (mirrors the removed scanner's enrichment).
@@ -487,12 +495,28 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                 );
             });
         };
+        // Hold `entry` back as the candidate final answer, releasing whatever was
+        // held before it (that one is now provably not the last planner step).
+        const stagePlanner = (entry: AgyTranscriptEntry) => {
+            releaseStagedPlanner();
+            stagedPlanner = entry;
+        };
+        const takeStagedPlanner = (): AgyTranscriptEntry | null => {
+            const staged = stagedPlanner;
+            stagedPlanner = null;
+            return staged;
+        };
+        const releaseStagedPlanner = () => {
+            const staged = takeStagedPlanner();
+            if (staged) sendPlanner(staged);
+        };
         const sendTool = (entry: AgyTranscriptEntry, toolCall: AgyToolCall) => {
             enqueueTranscript(() => {
                 this.session.client.sendAgySessionMessage(entry, this.conversationId ?? undefined, toolCall);
             });
         };
         const flushPlanner = async () => {
+            releaseStagedPlanner();
             for (const entry of planner.flushAll()) {
                 await sendChain;
                 sendPlanner(entry);
@@ -572,7 +596,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 accepted = true;
                                 const entry = planner.feedDelta(event.stepIndex, event.delta, event.isDone);
                                 if (entry) {
-                                    void sendPlanner(entry);
+                                    stagePlanner(entry);
                                 }
                                 break;
                             }
@@ -584,6 +608,10 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 // line is the invocation start (parameters only).
                                 accepted = true;
                                 if (event.isDone) {
+                                    // Prose that precedes a tool call is narration,
+                                    // not the final answer: release it so it keeps
+                                    // its place ahead of the tool card.
+                                    releaseStagedPlanner();
                                     sendTool(event.entry, event.toolCall);
                                 }
                                 break;
@@ -605,17 +633,36 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 // Flush any planner text that never reached a DONE
                                 // line (stream ended / response truncated). A
                                 // SUCCESS result carries the authoritative complete
-                                // answer: when unfinished deltas were force-flushed,
-                                // the last pending step is replaced by the result
-                                // response instead of discarding it or leaving a
-                                // partial ("hel" → "hello").
+                                // answer, so it REPLACES the delta-assembled
+                                // rendering of the same step instead of being
+                                // appended next to it: an unfinished step would
+                                // otherwise stay partial ("hel" → "hello"), and a
+                                // completed one would be delivered twice whenever
+                                // the two renderings are not byte-identical.
                                 const pending = planner.flushAll();
-                                if (event.status === 'SUCCESS' && event.response?.trim() && pending.length > 0) {
-                                    for (const entry of pending.slice(0, -1)) {
+                                const authoritative = event.status === 'SUCCESS' ? event.response?.trim() : undefined;
+                                let responseDelivered = false;
+                                if (authoritative) {
+                                    // The step the answer belongs to: a force-flushed
+                                    // unfinished step wins over the held DONE step
+                                    // (it is the later one), and anything before the
+                                    // carrier is released unchanged.
+                                    let carrier: AgyTranscriptEntry | null = null;
+                                    if (pending.length > 0) {
+                                        carrier = pending.pop()!;
+                                        releaseStagedPlanner();
+                                    } else {
+                                        carrier = takeStagedPlanner();
+                                    }
+                                    for (const entry of pending) {
                                         void sendPlanner(entry);
                                     }
-                                    void sendPlanner({ ...pending[pending.length - 1]!, content: event.response });
+                                    if (carrier) {
+                                        void sendPlanner({ ...carrier, content: event.response! });
+                                        responseDelivered = true;
+                                    }
                                 } else {
+                                    releaseStagedPlanner();
                                     for (const entry of pending) {
                                         void sendPlanner(entry);
                                     }
@@ -629,22 +676,27 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 if (event.status !== 'SUCCESS') {
                                     resultFailure = event.response?.trim()
                                         || `agy turn failed: ${event.status}`;
-                                } else if (event.response?.trim()) {
-                                    const response = event.response.trim();
-                                    // Deliver the authoritative final answer unless
-                                    // it was already emitted verbatim (trimmed — the
-                                    // envelope often carries a trailing newline the
-                                    // delta stream does not): a tool turn with
-                                    // completed pre-tool narration but no final
-                                    // agent_response would otherwise lose it.
-                                    if (lastPlannerContent?.trim() !== response) {
+                                } else if (authoritative && !responseDelivered) {
+                                    // No planner step was left to carry it: deliver
+                                    // the authoritative final answer as its own
+                                    // entry unless it was already emitted (a tool
+                                    // turn with completed pre-tool narration but no
+                                    // final agent_response would otherwise lose it).
+                                    // The comparison tolerates replacement
+                                    // characters — agy's delta stream mangles
+                                    // multi-byte characters that straddle a chunk
+                                    // boundary, and an exact mismatch there used to
+                                    // deliver the same answer a second time.
+                                    const alreadySent = lastPlannerContent !== null
+                                        && isSameAgyResponse(lastPlannerContent.trim(), authoritative);
+                                    if (!alreadySent) {
                                         void sendPlanner({
                                             step_index: -1,
                                             source: 'MODEL',
                                             type: 'PLANNER_RESPONSE',
                                             status: 'DONE',
                                             created_at: '',
-                                            content: response,
+                                            content: authoritative,
                                         });
                                     }
                                 }
