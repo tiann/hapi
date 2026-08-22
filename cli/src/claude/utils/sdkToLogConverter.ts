@@ -103,6 +103,14 @@ export class SDKToLogConverter {
     // — rather than a single sticky number — means a mid-session model switch picks up the
     // new model's own window immediately instead of inheriting the previous model's.
     private modelContextWindows = new Map<string, number>()
+    // Keys in modelContextWindows that came from result.modelUsage (ground truth,
+    // see the 'result' case below) rather than a heuristic or measured seed. Once a
+    // key is authoritative, seedMeasuredContextWindow() must never overwrite it --
+    // a get_context_usage response that resolves after the first result already
+    // landed (e.g. a very fast first turn) must not un-correct a value the ground
+    // truth path already fixed. This is additive to the existing result-overwrite
+    // path, which keeps unconditionally overwriting modelContextWindows itself.
+    private authoritativeContextWindowKeys = new Set<string>()
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -148,6 +156,56 @@ export class SDKToLogConverter {
      */
     updateSelectedModel(model: string | null | undefined): void {
         this.context.selectedModel = model ?? null
+    }
+
+    /**
+     * Whether `model` (an init model id) doesn't have a cached contextWindow yet --
+     * i.e. only the 200k/1M heuristic seed (or nothing) is backing it so far, and a
+     * live get_context_usage measurement (or eventually a result message) would
+     * still improve it. Read-only: unlike convert()'s system/init handling, this
+     * does not write to the cache. Callers use this *before* the heuristic seed
+     * runs (which would otherwise always make this return false) to decide whether
+     * a get_context_usage round trip is worth making for this turn.
+     *
+     * Returns the resolved cache key (opaque to the caller) when a seed is
+     * needed, or null when it isn't. The caller MUST thread this same key
+     * back into seedMeasuredContextWindow() once the measurement resolves,
+     * rather than passing `model` again for seedMeasuredContextWindow() to
+     * recompute: computeContextWindowKey() is not pure -- it reads
+     * `context.selectedModel`, which claudeRemoteLauncher.ts overwrites on
+     * every turn (mid-session model switches). If the key were recomputed at
+     * resolve time, a model switch during the get_context_usage round trip
+     * (e.g. fable[1m] -> fable while the CLI hasn't answered yet) would
+     * compute a *different* key than the one needsContextWindowSeed() (and
+     * the heuristic seed it gates) used, landing the measurement on the
+     * wrong variant's cache entry -- exactly the sibling-key collision
+     * computeContextWindowKey's "[1m]" folding exists to prevent (see #992).
+     */
+    needsContextWindowSeed(model: string): string | null {
+        const key = this.computeContextWindowKey(model)
+        return this.modelContextWindows.has(key) ? null : key
+    }
+
+    /**
+     * Overwrite a heuristic turn-1 seed with a real get_context_usage measurement
+     * once it resolves, at the exact key `needsContextWindowSeed()` returned when
+     * the request was fired (see that method's docstring for why `key` must be
+     * threaded through rather than recomputed here from a model id). This call is
+     * async and lands after convert()'s system/init handling already ran the
+     * 200k/1M heuristic for the same turn, so it always arrives second for a
+     * given key -- except it must never override a value result.modelUsage
+     * already confirmed (authoritativeContextWindowKeys), since that is ground
+     * truth and this is still just a measurement, not a guarantee the model
+     * won't have switched again by the time it resolves.
+     */
+    seedMeasuredContextWindow(key: string, maxTokens: number): void {
+        if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+            return
+        }
+        if (this.authoritativeContextWindowKeys.has(key)) {
+            return
+        }
+        this.modelContextWindows.set(key, maxTokens)
     }
 
     /**
@@ -409,6 +467,9 @@ export class SDKToLogConverter {
                                 ? (this.resolvedContextWindowKey ?? model)
                                 : model
                             this.modelContextWindows.set(key, cw)
+                            // Ground truth -- a later-resolving seedMeasuredContextWindow()
+                            // call for this key must not un-correct it.
+                            this.authoritativeContextWindowKeys.add(key)
                         }
                     }
                 }

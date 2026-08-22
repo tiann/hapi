@@ -281,6 +281,12 @@ export const SessionCopilotAgentModeRequestSchema = z.object({
 
 export type SessionCopilotAgentModeRequest = z.infer<typeof SessionCopilotAgentModeRequestSchema>
 
+export const SessionEffortRequestSchema = z.object({
+    effort: z.string().trim().min(1).nullable()
+})
+
+export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
+
 export const SessionModelRequestSchema = z.object({
     model: z.union([
         z.string().trim().min(1),
@@ -288,7 +294,14 @@ export const SessionModelRequestSchema = z.object({
             provider: z.string().trim().min(1),
             modelId: z.string().trim().min(1),
         }),
-    ]).nullable()
+    ]).nullable(),
+    // Optional so a model change can atomically clear an effort the new
+    // model no longer supports in the SAME request (see SessionChat.tsx's
+    // handleModelChange) instead of relying on a second, separate effort
+    // RPC that a prompt could race between. Reuses SessionEffortRequestSchema's
+    // own `effort` field rather than redefining the same nullable-string
+    // shape twice.
+    effort: SessionEffortRequestSchema.shape.effort.optional()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -298,12 +311,6 @@ export const SessionModelReasoningEffortRequestSchema = z.object({
 })
 
 export type SessionModelReasoningEffortRequest = z.infer<typeof SessionModelReasoningEffortRequestSchema>
-
-export const SessionEffortRequestSchema = z.object({
-    effort: z.string().trim().min(1).nullable()
-})
-
-export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
 
 // Fast mode is an explicit two-way choice. `'standard'` (not `null`) is the
 // stored sentinel for an explicit Fast-off so it stays distinct from
@@ -828,6 +835,36 @@ export type CursorModelSummary = OpencodeModelSummary
 export type CursorModelsResponse = OpencodeModelsResponse
 
 export type ListCursorModelsResponse = CursorModelsResponse
+
+/** One row of the `claude` CLI's `list_models` control-protocol catalog. */
+export type ClaudeModelSummary = {
+    /** The `--model` wire value (e.g. `opus[1m]`, `sonnet`, `default`). */
+    value: string
+    displayName: string
+    /** The SDK model id this value resolves to (e.g. `claude-opus-5[1m]`). */
+    resolvedModel?: string
+    /**
+     * Absent/empty means the model does not support `--effort` (e.g.
+     * haiku). This per-row contract only holds once it's known the running
+     * claude CLI reports this field at all -- older CLIs omit it from every
+     * row, which looks identical to "no levels" on its own. Callers should
+     * decide whether a given row's absence means "unsupported" by checking
+     * whether *any other row in the same `models` response* carries the
+     * field (see `catalogReportsEffortLevels()` in
+     * web/src/components/AssistantChat/claudeModelOptions.ts); a catalog
+     * where nothing carries it is unconfirmed, not evidence every model has
+     * zero levels.
+     */
+    supportedEffortLevels?: string[]
+}
+
+export type ClaudeModelsResponse = {
+    success: boolean
+    models?: ClaudeModelSummary[]
+    error?: string
+}
+
+export type ListClaudeModelsResponse = ClaudeModelsResponse
 
 /** Maps thinking levels to provider-specific values. null = unsupported. */
 export type PiThinkingLevelMap = Partial<Record<string, string | null>>

@@ -13,6 +13,8 @@ import type {
 export type {
     AgyModelsResponse,
     AgyModelSummary,
+    ClaudeModelsResponse,
+    ClaudeModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
     CommandResponse,

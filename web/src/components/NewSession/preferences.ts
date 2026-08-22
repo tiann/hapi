@@ -132,9 +132,19 @@ export function resolvePreferredLaunchSettings(
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
-    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot'
+    // claude joins codex/copilot here: its list is the live CLI catalog, so a
+    // saved value the static fallback does not carry (a catalog-only model, or
+    // a legacy '[1m]' alias this PR dropped from the offer list) must survive.
+    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot' && agent !== 'claude'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel
+    // The effort clamp stays, but not because the levels are static: the probe
+    // passes through whatever strings the CLI reports, and both effort pickers
+    // render an unknown level via `CLAUDE_EFFORT_LABELS[...] ?? level`. It stays
+    // because the static five are the only levels `--effort` accepts today, and
+    // a saved value outside the rendered options would leave the select showing
+    // a value it has no row for. Revisit if the catalog ever reports a level
+    // outside CLAUDE_EFFORT_LEVELS.
     const effort = agent === 'claude'
         ? resolvePreferredOptionValue(
             preferred?.effort ?? 'auto',

@@ -1,23 +1,29 @@
-import { CLAUDE_MODEL_PRESETS, getClaudeModelLabel } from '@hapi/protocol'
+import { CLAUDE_MODEL_FALLBACK_OPTIONS, getClaudeModelLabel } from '@hapi/protocol'
 import { describe, expect, it } from 'vitest'
 import { CLAUDE_EFFORT_OPTIONS, GROK_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
 
 describe('Claude model options', () => {
-    it('derives options from shared Claude model presets', () => {
+    it('derives options from the fallback offer list (no live catalog)', () => {
         expect(MODEL_OPTIONS.claude).toEqual([
             { value: 'auto', label: 'Default' },
-            ...CLAUDE_MODEL_PRESETS.map((model) => ({
-                value: model,
-                label: getClaudeModelLabel(model) ?? model
-            }))
+            ...CLAUDE_MODEL_FALLBACK_OPTIONS.map(({ value, label }) => ({ value, label }))
         ])
     })
 
-    it('exposes friendly labels for Claude model presets', () => {
-        expect(CLAUDE_MODEL_PRESETS).toEqual(['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'fable', 'fable[1m]'])
+    it('the fallback offer list has no bare/[1m] duplicate pairs', () => {
+        for (const option of CLAUDE_MODEL_FALLBACK_OPTIONS) {
+            expect(option.value.endsWith('[1m]')).toBe(false)
+        }
+        expect(CLAUDE_MODEL_FALLBACK_OPTIONS.map((option) => option.value)).toEqual(
+            ['opus', 'fable', 'sonnet', 'haiku']
+        )
+    })
+
+    it('exposes friendly labels for recognized Claude model aliases (role B), including legacy [1m] ids', () => {
         expect(getClaudeModelLabel('sonnet[1m]')).toBe('Sonnet 1M')
         expect(getClaudeModelLabel('opus[1m]')).toBe('Opus 1M')
         expect(getClaudeModelLabel('fable[1m]')).toBe('Fable 1M')
+        expect(getClaudeModelLabel('haiku')).toBe('Haiku')
     })
 })
 

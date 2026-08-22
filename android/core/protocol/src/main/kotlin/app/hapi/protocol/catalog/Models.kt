@@ -9,7 +9,7 @@ package app.hapi.protocol.catalog
  * come from `GET /api/sessions/:id/codex-models` per session.
  */
 object ClaudeModels {
-    /** `CLAUDE_MODEL_LABELS` — declaration order preserved (picker order). */
+    /** `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list. */
     val LABELS: Map<String, String> = linkedMapOf(
         "sonnet" to "Sonnet",
         "sonnet[1m]" to "Sonnet 1M",
@@ -17,10 +17,24 @@ object ClaudeModels {
         "opus[1m]" to "Opus 1M",
         "fable" to "Fable",
         "fable[1m]" to "Fable 1M",
+        "haiku" to "Haiku",
     )
 
-    /** `CLAUDE_MODEL_PRESETS`. */
-    val PRESETS: List<String> = LABELS.keys.toList()
+    /**
+     * `CLAUDE_MODEL_FALLBACK_OPTIONS`: what the picker offers when the live
+     * catalog is unavailable: one row per family, in catalog order. The `[1m]`
+     * ids are absent on purpose: they are the same models as their bare
+     * counterparts, so they survive only in [LABELS], which keeps resolving
+     * them for sessions created before they were dropped.
+     *
+     * Haiku is absent for a different reason: it is the first Claude model that
+     * supports no effort at all, and these pickers post model and effort
+     * separately against a static effort list, so offering it here would let a
+     * native session sit on Haiku with `high` pinned. [LABELS] still resolves
+     * it, so a session already on Haiku renders correctly. Add it once the
+     * native effort offers are model-aware.
+     */
+    val FALLBACK_PRESETS: List<String> = listOf("opus", "fable", "sonnet")
 
     /** `getClaudeModelLabel`: trimmed lookup; unknown/blank → null. */
     fun label(model: String?): String? {
@@ -66,15 +80,15 @@ object ModelCatalog {
 
     /**
      * `getClaudeComposerModelOptions`: Default first, then a synthetic row for
-     * a current model outside the preset list, then the presets.
+     * a current model outside the offer list, then the offer rows.
      */
     fun claudeModelOptions(currentModel: String?): List<CatalogOption> {
         val normalized = normalizeClaudeModel(currentModel)
         val options = mutableListOf(CatalogOption(value = null, label = "Default"))
-        if (normalized != null && normalized !in ClaudeModels.PRESETS) {
+        if (normalized != null && normalized !in ClaudeModels.FALLBACK_PRESETS) {
             options += CatalogOption(normalized, ClaudeModels.label(normalized) ?: normalized)
         }
-        ClaudeModels.PRESETS.forEach { preset ->
+        ClaudeModels.FALLBACK_PRESETS.forEach { preset ->
             options += CatalogOption(preset, ClaudeModels.label(preset) ?: preset)
         }
         return options

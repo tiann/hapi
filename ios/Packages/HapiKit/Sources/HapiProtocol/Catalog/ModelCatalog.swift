@@ -8,18 +8,27 @@ import Foundation
 // `core/protocol/.../catalog/Models.kt`). Codex-family model lists are NOT
 // static — they come from `GET /api/sessions/:id/codex-models` per session.
 
-/// `CLAUDE_MODEL_LABELS` / `CLAUDE_MODEL_PRESETS`.
+/// `CLAUDE_MODEL_LABELS` (recognition) / `CLAUDE_MODEL_FALLBACK_OPTIONS` (offer).
 public enum ClaudeModels {
-    /// Preset ids in declaration (picker) order.
-    public static let presets: [String] = [
-        "sonnet",
-        "sonnet[1m]",
+    /// `CLAUDE_MODEL_FALLBACK_OPTIONS`: what the picker offers when the live
+    /// catalog is unavailable -- one row per family, in catalog order. The
+    /// `[1m]` ids are absent here on purpose: they are the same models as their
+    /// bare counterparts, so they survive only in `labels` below, which keeps
+    /// resolving them for sessions created before they were dropped.
+    ///
+    /// Haiku is absent for a different reason: it is the first Claude model
+    /// that supports no effort at all, and these pickers post model and effort
+    /// separately against a static effort list, so offering it here would let a
+    /// native session sit on Haiku with `high` pinned. `labels` still resolves
+    /// it, so a session already on Haiku renders correctly. Add it once the
+    /// native effort offers are model-aware.
+    public static let fallbackPresets: [String] = [
         "opus",
-        "opus[1m]",
         "fable",
-        "fable[1m]",
+        "sonnet",
     ]
 
+    /// `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list.
     private static let labels: [String: String] = [
         "sonnet": "Sonnet",
         "sonnet[1m]": "Sonnet 1M",
@@ -27,6 +36,7 @@ public enum ClaudeModels {
         "opus[1m]": "Opus 1M",
         "fable": "Fable",
         "fable[1m]": "Fable 1M",
+        "haiku": "Haiku",
     ]
 
     /// `getClaudeModelLabel`: trimmed lookup; unknown/blank → nil.
@@ -84,13 +94,13 @@ public enum ModelCatalog {
     public static func claudeModelOptions(currentModel: String?) -> [CatalogOption] {
         let normalized = normalizeClaudeModel(currentModel)
         var options = [CatalogOption(value: nil, label: "Default")]
-        if let normalized, !ClaudeModels.presets.contains(normalized) {
+        if let normalized, !ClaudeModels.fallbackPresets.contains(normalized) {
             options.append(CatalogOption(
                 value: normalized,
                 label: ClaudeModels.label(for: normalized) ?? normalized
             ))
         }
-        for preset in ClaudeModels.presets {
+        for preset in ClaudeModels.fallbackPresets {
             options.append(CatalogOption(
                 value: preset,
                 label: ClaudeModels.label(for: preset) ?? preset

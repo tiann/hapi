@@ -39,7 +39,25 @@ export async function claudeRemote(opts: {
     onMessage: (message: SDKMessage) => void,
     onFirstResult?: (initialMessage: string) => void,
     onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void
+    onSessionReset?: () => void,
+    /**
+     * Whether `model` (a system/init model id) still needs a turn-1 contextWindow
+     * seed -- i.e. no measured or ground-truth value is cached for it yet. Checked
+     * before a get_context_usage round trip is made, so a session that already
+     * knows this model's real window (from an earlier turn this session, or an
+     * earlier live measurement) doesn't re-query for nothing on every turn.
+     *
+     * Returns the opaque cache key to pass back to onContextWindowSeed if a
+     * seed is needed, or null otherwise. The key MUST be captured here, at
+     * fire time, and threaded through unchanged -- SDKToLogConverter's cache
+     * key computation reads mutable session state (the live-updatable
+     * selected model), so recomputing it from `model` again once the
+     * get_context_usage response resolves could land the measurement on a
+     * different (sibling [1m]/bare) cache entry if the model changed mid-flight.
+     */
+    needsContextWindowSeed?: (model: string) => string | null,
+    /** A get_context_usage measurement resolved for the key needsContextWindowSeed() returned -- refines the turn-1 heuristic seed. */
+    onContextWindowSeed?: (info: { key: string, maxTokens: number }) => void
 }) {
     const debugPrefix = '[claudeRemote][async-debug]';
 
@@ -289,8 +307,61 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
+            // Decide (before onMessage's heuristic seed runs and makes this always
+            // return null) whether this init's model still needs a turn-1
+            // contextWindow seed, so we know whether a get_context_usage round
+            // trip is worth it. The returned key is captured now, at fire time,
+            // and threaded through unchanged to onContextWindowSeed -- see that
+            // option's docstring for why it must not be recomputed from
+            // seedModel again once the response resolves.
+            const systemInitForSeed = message.type === 'system' && message.subtype === 'init'
+                ? message as SDKSystemMessage
+                : null;
+            const seedModel = typeof systemInitForSeed?.model === 'string' ? systemInitForSeed.model : null;
+            const seedKey = seedModel !== null ? (opts.needsContextWindowSeed?.(seedModel) ?? null) : null;
+
             // Handle messages
             opts.onMessage(message);
+
+            if (seedKey !== null && seedModel !== null) {
+                // Fire-and-forget: getContextUsage() never throws (resolves null on
+                // any failure, and never hangs -- it has its own bounded timeout)
+                // and only ever refines a heuristic seed onMessage() just applied
+                // above, so this must not block message iteration.
+                void response.getContextUsage().then((usage) => {
+                    if (!usage || usage.maxTokens <= 0) {
+                        return;
+                    }
+                    // Discard a measurement that answers a different model than
+                    // the one this request was fired for -- e.g. the session
+                    // switched models again while this get_context_usage call
+                    // was in flight. A missing usage.model (older CLI) can't
+                    // disprove a match, so only a confirmed mismatch is discarded.
+                    //
+                    // Measured (claude 2.1.233, 2026-08-16): get_context_usage's
+                    // `model` field and system/init's `model` field (seedModel's
+                    // source) report the SAME id, suffix included, for every
+                    // alias tried -- e.g. `--model opus[1m]` reports
+                    // "claude-opus-5[1m]" on both init and get_context_usage;
+                    // `--model sonnet` reports "claude-sonnet-5" on both; fable's
+                    // bare-id-even-for-[1m] quirk matches on both sides too. So
+                    // this guard does not spuriously discard same-model
+                    // measurements on this version. Comparing with the "[1m]"
+                    // suffix stripped from both sides (rather than requiring an
+                    // exact match) is a cheap hedge against a future CLI version
+                    // reporting the suffix differently between the two calls --
+                    // HAPI does not pin a minimum claude CLI version.
+                    const stripSuffix = (id: string) => id.endsWith('[1m]') ? id.slice(0, -'[1m]'.length) : id;
+                    if (usage.model !== null && stripSuffix(usage.model) !== stripSuffix(seedModel)) {
+                        logger.debug(
+                            `[claudeRemote] Discarding get_context_usage measurement: reported model ` +
+                            `"${usage.model}" does not match the model this request was fired for ("${seedModel}")`
+                        );
+                        return;
+                    }
+                    opts.onContextWindowSeed?.({ key: seedKey, maxTokens: usage.maxTokens });
+                });
+            }
 
             // Handle special system messages
             if (message.type === 'system' && message.subtype === 'init') {

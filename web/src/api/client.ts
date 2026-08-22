@@ -32,6 +32,7 @@ import type {
 } from '@/types/api'
 import type {
     AgyModelsResponse,
+    ClaudeModelsResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -682,10 +683,18 @@ export class ApiClient {
         })
     }
 
-    async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
+    async setModel(
+        sessionId: string,
+        model: { provider: string; modelId: string } | string | null,
+        effort?: string | null
+    ): Promise<void> {
+        // effort is only included in the body when the caller explicitly
+        // passed one (even `null`, to clear it) -- omitting the argument
+        // entirely keeps the existing model-only request shape.
+        const body = effort !== undefined ? { model, effort } : { model }
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
-            body: JSON.stringify({ model })
+            body: JSON.stringify(body)
         })
     }
 
@@ -909,6 +918,12 @@ export class ApiClient {
     async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
+        )
+    }
+
+    async getMachineClaudeModelsForCwd(machineId: string, cwd: string): Promise<ClaudeModelsResponse> {
+        return await this.request<ClaudeModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/claude-models?cwd=${encodeURIComponent(cwd)}`
         )
     }
 

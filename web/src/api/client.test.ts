@@ -260,6 +260,46 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/voice/backend')
     })
 
+    it('sends only the model when no effort is given (existing shape unchanged)', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await api.setModel('session /?#', 'sonnet')
+
+        const [url, init] = fetchMock.mock.calls[0] ?? []
+        expect(url).toBe('/api/sessions/session%20%2F%3F%23/model')
+        expect(init).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ model: 'sonnet' })
+        })
+    })
+
+    it('folds an explicit effort clear into the same model request', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await api.setModel('session /?#', 'haiku', null)
+
+        const [, init] = fetchMock.mock.calls[0] ?? []
+        expect(init).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+    })
+
+    it('carries a concrete effort alongside the model when both are given', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await api.setModel('session /?#', 'opus[1m]', 'high')
+
+        const [, init] = fetchMock.mock.calls[0] ?? []
+        expect(init).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ model: 'opus[1m]', effort: 'high' })
+        })
+    })
+
     it('reads and updates masked transcription credentials', async () => {
         const status = {
             openai: { configured: true, source: 'settings', hint: '••••cret', editable: true },

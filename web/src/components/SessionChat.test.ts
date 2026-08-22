@@ -9,6 +9,7 @@ import {
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    shouldDriveClaudeCatalog,
     shouldRouteToScratchlist,
 } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -49,6 +50,31 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModel).toHaveBeenCalledWith('gpt-next')
     })
 })
+
+describe('shouldDriveClaudeCatalog', () => {
+    // Unlike codex/cursor/grok, the hub's model and effort routes for
+    // Claude sessions do not gate on controlledByUser (hub/src/web/routes/
+    // sessions.ts) -- only codex/cursor/grok's model route and grok's
+    // effort route 409 for a locally-controlled session. So the catalog
+    // query has to cover every active Claude session, controlled or not,
+    // to match what the route actually accepts.
+    it('is true for an active, locally-controlled Claude session (the fixed gap)', () => {
+        expect(shouldDriveClaudeCatalog('claude', true)).toBe(true)
+    })
+
+    it('is true for an active, remote Claude session', () => {
+        expect(shouldDriveClaudeCatalog('claude', true)).toBe(true)
+    })
+
+    it('is false for an inactive Claude session', () => {
+        expect(shouldDriveClaudeCatalog('claude', false)).toBe(false)
+    })
+
+    it('is false for a non-Claude flavor', () => {
+        expect(shouldDriveClaudeCatalog('codex', true)).toBe(false)
+    })
+})
+
 
 describe('resolvePiContextWindow', () => {
     const models = [

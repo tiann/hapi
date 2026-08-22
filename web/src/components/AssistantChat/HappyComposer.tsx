@@ -194,6 +194,40 @@ export function resolveVisibleModelEffortSelectedValue(args: {
     return selectedVisibleVariant ?? cursorDrillDownDefaultVariant ?? model
 }
 
+/**
+ * Resolve the non-Pi composer effort-selector options. `availableEffortOptions`
+ * is the machine-provided dynamic list (Grok's live reasoning-effort options,
+ * or Claude's supportedEffortLevels for the currently selected model) --
+ * checked with `!== undefined` rather than a length check so a model that
+ * genuinely supports zero effort levels (Claude's haiku) renders as "only
+ * Auto selectable" instead of silently falling through to the static
+ * full-level list, which would let the composer submit an effort haiku
+ * doesn't support. Grok's caller never passes an empty
+ * array today, so this is a no-op for that branch; extracted out of the
+ * `claudeEffortOptions` memo below so the branch logic itself is unit
+ * testable without a full component render.
+ */
+export function resolveComposerEffortOptions(args: {
+    agentFlavor?: string | null
+    effort?: string | null
+    availableEffortOptions?: Array<{ value: string; name?: string }>
+}): Array<{ value: string | null; label: string }> {
+    const { agentFlavor, effort, availableEffortOptions } = args
+    if (
+        (agentFlavor === 'grok' || agentFlavor === 'claude')
+        && availableEffortOptions !== undefined
+    ) {
+        return [
+            { value: null, label: agentFlavor === 'claude' ? 'Auto' : 'Default' },
+            ...availableEffortOptions.map((option) => ({
+                value: option.value,
+                label: option.name ?? option.value
+            }))
+        ]
+    }
+    return getClaudeComposerEffortOptions(effort)
+}
+
 export function ModelEffortSettingsSection(props: {
     agentFlavor?: string | null
     options: Array<{ value: string; label: string }>
@@ -1062,15 +1096,7 @@ export function HappyComposer(props: {
     const claudeEffortOptions = useMemo(
         () => agentFlavor === 'pi'
             ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
-            : agentFlavor === 'grok' && availableEffortOptions && availableEffortOptions.length > 0
-                ? [
-                    { value: null, label: 'Default' },
-                    ...availableEffortOptions.map((option) => ({
-                        value: option.value,
-                        label: option.name ?? option.value
-                    }))
-                ]
-            : getClaudeComposerEffortOptions(effort),
+            : resolveComposerEffortOptions({ agentFlavor, effort, availableEffortOptions }),
         [agentFlavor, effort, selectedPiModel, availableEffortOptions]
     )
     const permissionModes = useMemo(

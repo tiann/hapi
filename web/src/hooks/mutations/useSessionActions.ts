@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
@@ -22,7 +23,7 @@ export function useSessionActions(
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setCopilotAgentMode: (mode: CopilotAgentMode) => Promise<void>
-    setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
+    setModel: (model: { provider: string; modelId: string } | string | null, effort?: string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
     setServiceTier: (serviceTier: string | null) => Promise<void>
@@ -173,17 +174,30 @@ export function useSessionActions(
 
     const modelMutation = useMutation({
         mutationKey: sessionModelMutationKey(sessionId ?? ''),
-        mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
+        mutationFn: async (payload: {
+            model: { provider: string; modelId: string } | string | null
+            effort: string | null | undefined
+        }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.setModel(sessionId, model)
+            await api.setModel(sessionId, payload.model, payload.effort)
         },
         onSuccess: async () => {
             await invalidateSession()
             await invalidateCursorModels()
         },
     })
+    // Wrapped (rather than exposing mutateAsync directly, unlike the other
+    // actions below) so callers can keep calling setModel(model) with no
+    // second argument -- mutateAsync only takes a single variable, and the
+    // effort clear introduced for Claude model changes (SessionChat.tsx's
+    // handleModelChange) needs to ride along in that same variable/request.
+    const setModel = useCallback(
+        (model: { provider: string; modelId: string } | string | null, effort?: string | null) =>
+            modelMutation.mutateAsync({ model, effort }),
+        [modelMutation.mutateAsync]
+    )
 
     const modelReasoningEffortMutation = useMutation({
         mutationFn: async (modelReasoningEffort: string | null) => {
@@ -288,7 +302,7 @@ export function useSessionActions(
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
         setCopilotAgentMode: copilotAgentModeMutation.mutateAsync,
-        setModel: modelMutation.mutateAsync,
+        setModel,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
         setServiceTier: serviceTierMutation.mutateAsync,

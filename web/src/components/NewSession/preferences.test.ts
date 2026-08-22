@@ -123,18 +123,39 @@ describe('NewSession preferences', () => {
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toBeNull()
     })
 
-    it('falls back when remembered static Claude options are no longer available', () => {
+    it('keeps a remembered Claude model the static fallback does not carry', () => {
+        // The Claude list is the live CLI catalog, so the static fallback is not
+        // an allowlist. Clamping against it would silently discard both a
+        // catalog-only model and a legacy '[1m]' alias saved before that pair
+        // was dropped from the offer list. The effort value still clamps.
         expect(resolvePreferredLaunchSettings('claude', {
-            model: 'retired-model',
+            model: 'sonnet[1m]',
             cursorSelectedBase: 'auto',
             effort: 'ultra',
             modelReasoningEffort: 'default'
         })).toEqual({
-            model: 'auto',
+            model: 'sonnet[1m]',
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'default'
         })
+        expect(resolvePreferredLaunchSettings('claude', {
+            model: 'opusplan',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        }).model).toBe('opusplan')
+    })
+
+    it('still clamps a remembered model for a flavor whose list is static', () => {
+        // Claude leaving the clamp took the only coverage of its true branch
+        // with it; agy is one of the flavors the clamp still governs.
+        expect(resolvePreferredLaunchSettings('agy', {
+            model: 'retired-model',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        }).model).toBe('auto')
     })
 
     it('keeps dynamic model values for catalog validation after restore', () => {

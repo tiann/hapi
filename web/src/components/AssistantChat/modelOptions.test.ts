@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { getClaudeComposerModelOptions, resolveClaudeComposerWireValue } from './claudeModelOptions'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 
 describe('getModelOptionsForFlavor', () => {
@@ -28,37 +29,123 @@ describe('getModelOptionsForFlavor', () => {
         expect(options.some((o) => o.value === 'opus')).toBe(true)
     })
 
-    it('keeps Claude presets when explicit options only include Sonnet models', () => {
-        const options = getModelOptionsForFlavor('claude', null, [
-            { value: null, label: 'Default' },
+    // Claude's live catalog REPLACES the picker's options -- the same
+    // customOptions idiom codex/grok/copilot already use, not the old
+    // merge-onto-static-presets behavior. Unlike other flavors, claude does
+    // NOT run a supplied catalog through the generic withCurrentModelOption()
+    // pass: that helper only compares raw wire values and knows nothing about
+    // resolvedModel, so a session storing a *resolved* SDK id would fail to
+    // match the catalog's alias row and get a second, raw-labeled duplicate
+    // spliced in -- undoing the exact resolvedModel dedup
+    // getClaudeComposerModelOptions already did when the caller built the
+    // array. So a supplied non-empty catalog is trusted and returned as-is;
+    // the caller (SessionChat.tsx) is responsible for calling
+    // getClaudeComposerModelOptions itself first to get a complete list.
+    it('uses the supplied Claude catalog as-is (pure passthrough), does not re-derive it', () => {
+        const catalog = [
+            { value: null, label: 'Default (recommended)' },
+            { value: 'opus[1m]', label: 'Opus (1M context)' },
             { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' }
-        ])
-        expect(options).toEqual([
-            { value: null, label: 'Default' },
-            { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
-            { value: 'opus', label: 'Opus' },
-            { value: 'opus[1m]', label: 'Opus 1M' },
-            { value: 'fable', label: 'Fable' },
-            { value: 'fable[1m]', label: 'Fable 1M' }
-        ])
+            { value: 'haiku', label: 'Haiku' }
+        ]
+        const options = getModelOptionsForFlavor('claude', 'sonnet', catalog)
+        expect(options).toEqual(catalog)
+        expect(options).toBe(catalog)
     })
 
-    it('adds non-preset Claude options without hiding Opus presets', () => {
-        const options = getModelOptionsForFlavor('claude', null, [
-            { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' }
-        ])
-        expect(options).toEqual([
-            { value: null, label: 'Default' },
-            { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
-            { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
-            { value: 'opus', label: 'Opus' },
-            { value: 'opus[1m]', label: 'Opus 1M' },
-            { value: 'fable', label: 'Fable' },
-            { value: 'fable[1m]', label: 'Fable 1M' }
-        ])
+    it('falls back to the static preset list (role A) when no live catalog is supplied', () => {
+        expect(getModelOptionsForFlavor('claude', null, [])).toEqual(
+            getModelOptionsForFlavor('claude', null)
+        )
+        const options = getModelOptionsForFlavor('claude', null, undefined)
+        expect(options.some((option) => option.value?.endsWith('[1m]'))).toBe(false)
+    })
+
+    // Integration test through the real production path: SessionChat.tsx's
+    // claudeModelOptions memo calls getClaudeComposerModelOptions directly
+    // (not getModelOptionsForFlavor) to build customOptions, THEN
+    // HappyComposer.tsx renders via getModelOptionsForFlavor. Exercising only
+    // getClaudeComposerModelOptions in isolation (claudeModelOptions.test.ts)
+    // would not have caught the bug where the generic customOptions branch
+    // re-added a plain-labeled duplicate row on top of an already-deduped list.
+    it('integration: building the catalog via getClaudeComposerModelOptions first (as SessionChat.tsx does) and passing it through getModelOptionsForFlavor does not reintroduce a resolvedModel duplicate', () => {
+        const liveCatalog = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5', supportsFastMode: false },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportsFastMode: false }
+        ]
+        // A session storing the *resolved* SDK id rather than the wire alias.
+        const sessionModel = 'claude-opus-5[1m]'
+
+        const finalizedOptions = getClaudeComposerModelOptions(sessionModel, liveCatalog)
+        const rendered = getModelOptionsForFlavor('claude', sessionModel, finalizedOptions)
+
+        expect(rendered).toEqual(finalizedOptions)
+        // The core regression this guards: exactly one row represents the
+        // opus[1m] model (matched via resolvedModel), never a second raw
+        // "claude-opus-5[1m]" row alongside "Opus (1M context)".
+        expect(rendered.filter((option) => option.value === 'opus[1m]' || option.value === sessionModel)).toHaveLength(1)
+        expect(rendered.some((option) => option.value === sessionModel)).toBe(false)
+    })
+
+    it('integration: a legacy alias the live catalog no longer advertises still surfaces as an explicit, friendly-labeled row', () => {
+        const liveCatalog = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5', supportsFastMode: false },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportsFastMode: false }
+        ]
+        const sessionModel = 'sonnet[1m]'
+
+        const finalizedOptions = getClaudeComposerModelOptions(sessionModel, liveCatalog)
+        const rendered = getModelOptionsForFlavor('claude', sessionModel, finalizedOptions)
+
+        expect(rendered).toEqual(finalizedOptions)
+        expect(rendered.some((option) => option.value === 'sonnet[1m]' && option.label === 'Sonnet 1M')).toBe(true)
+        expect(rendered.filter((option) => option.value === 'sonnet[1m]')).toHaveLength(1)
+    })
+
+    it('resolving the wire value first, as SessionChat.tsx does, keeps the picker selection visible and lets Ctrl/Cmd+M cycling advance instead of clearing the pin', () => {
+        const liveCatalog = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5', supportsFastMode: false },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportsFastMode: false }
+        ]
+        // A resolved SDK id, as an existing session actually stores it.
+        const storedSessionModel = 'claude-opus-5[1m]'
+
+        // Mirrors SessionChat.tsx's claudeComposerModelValue memo -- the value
+        // actually passed as HappyComposer's `model` prop.
+        const resolvedModelValue = resolveClaudeComposerWireValue(storedSessionModel, liveCatalog)
+        expect(resolvedModelValue).toBe('opus[1m]')
+
+        // Mirrors SessionChat.tsx's claudeModelOptions memo.
+        const finalizedOptions = getClaudeComposerModelOptions(storedSessionModel, liveCatalog)
+
+        // (b) Selection display: HappyComposer's isSelected compares
+        // `model === option.value` for claude -- the resolved value must
+        // match a real row, or the picker shows nothing checked.
+        expect(finalizedOptions.some((option) => option.value === resolvedModelValue)).toBe(true)
+
+        // (a) Cycling: HappyComposer's Ctrl/Cmd+M calls getNextModelForFlavor
+        // with that same resolved value (not the raw stored id) -- it must
+        // advance to the next concrete model, not clear the pin to Default.
+        const next = getNextModelForFlavor('claude', resolvedModelValue, finalizedOptions)
+        expect(next).toBe('sonnet')
+
+        // Contrast: cycling from the *unresolved* raw stored id (not present
+        // as any row's value) still hits the "not found" branch -- the (a)
+        // fallback fix (this file) keeps that branch from clearing the pin to
+        // the null Default row, but it still just restarts at the first
+        // concrete model rather than properly advancing from the current
+        // position. This is why SessionChat.tsx resolving the wire value
+        // *before* it reaches the composer (rather than relying on this
+        // fallback alone) is the real fix, not just a safety net.
+        const nextFromUnresolvedId = getNextModelForFlavor('claude', storedSessionModel, finalizedOptions)
+        expect(nextFromUnresolvedId).not.toBeNull()
+        expect(nextFromUnresolvedId).toBe('opus[1m]')
     })
 
     it('includes custom Gemini model from env/config in options', () => {
@@ -210,12 +297,35 @@ describe('getNextModelForFlavor', () => {
         expect(next).not.toBeNull()
     })
 
-    it('cycles through Claude presets when explicit options only include Sonnet models', () => {
+    it('cycles through a supplied Claude catalog by replacing (not merging onto) the static presets, wrapping through the guaranteed Default row', () => {
         const next = getNextModelForFlavor('claude', 'sonnet[1m]', [
             { value: 'sonnet', label: 'Sonnet' },
             { value: 'sonnet[1m]', label: 'Sonnet 1M' }
         ])
-        expect(next).toBe('opus')
+        // The catalog IS the full options list (already contains the current
+        // model), but the null "Default" row is always guaranteed even when
+        // the supplied catalog omits it -- cycling from the last row wraps
+        // to Default, not back to the first supplied row.
+        expect(next).toBeNull()
+    })
+
+    it('Ctrl/Cmd+M cycling never posts a value the supplied Claude catalog would reject (plain wire strings only)', () => {
+        // Regression guard for the class of bug the Pi/OpenCode comments in
+        // this file warn about (cycler posting a value from the wrong
+        // source/shape). Claude model values are always plain wire strings
+        // (short aliases like "sonnet"/"opus[1m]", or a raw resolved id) --
+        // unlike Pi (provider-qualified) there is no structured value that
+        // could be malformed by generic cycling.
+        const catalog = [
+            { value: null, label: 'Default (recommended)' },
+            { value: 'opus[1m]', label: 'Opus (1M context)' },
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'haiku', label: 'Haiku' }
+        ]
+        for (const current of [null, 'sonnet', 'opus[1m]', 'haiku']) {
+            const next = getNextModelForFlavor('claude', current, catalog)
+            expect(catalog.some((option) => option.value === next)).toBe(true)
+        }
     })
 
     it('cycles explicit model options', () => {

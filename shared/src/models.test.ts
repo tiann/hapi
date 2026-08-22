@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-    CLAUDE_MODEL_PRESETS,
+    CLAUDE_MODEL_FALLBACK_OPTIONS,
     CLAUDE_MODEL_LABELS,
     DEFAULT_GEMINI_MODEL,
     GEMINI_MODEL_LABELS,
@@ -10,14 +10,21 @@ import {
 } from './models'
 
 describe('isClaudeModelPreset', () => {
-    test('accepts valid presets', () => {
-        for (const preset of CLAUDE_MODEL_PRESETS) {
+    test('accepts every recognized alias key', () => {
+        for (const preset of Object.keys(CLAUDE_MODEL_LABELS)) {
             expect(isClaudeModelPreset(preset)).toBe(true)
         }
     })
 
+    // haiku is a recognized alias (role B) even though the live CLI catalog
+    // only started advertising it recently -- list_models showed the CLI
+    // already offers it, and existing/new sessions need it resolved.
+    test('accepts haiku', () => {
+        expect(isClaudeModelPreset('haiku')).toBe(true)
+    })
+
     test('rejects unknown model string', () => {
-        expect(isClaudeModelPreset('haiku')).toBe(false)
+        expect(isClaudeModelPreset('gpt-4')).toBe(false)
     })
 
     test('rejects null and undefined', () => {
@@ -31,6 +38,7 @@ describe('getClaudeModelLabel', () => {
         expect(getClaudeModelLabel('sonnet')).toBe('Sonnet')
         expect(getClaudeModelLabel('opus')).toBe('Opus')
         expect(getClaudeModelLabel('opus[1m]')).toBe('Opus 1M')
+        expect(getClaudeModelLabel('haiku')).toBe('Haiku')
     })
 
     test('trims whitespace before lookup', () => {
@@ -38,7 +46,7 @@ describe('getClaudeModelLabel', () => {
     })
 
     test('returns null for unknown model', () => {
-        expect(getClaudeModelLabel('haiku')).toBeNull()
+        expect(getClaudeModelLabel('gpt-4')).toBeNull()
     })
 
     test('returns null for empty/whitespace-only string', () => {
@@ -47,13 +55,41 @@ describe('getClaudeModelLabel', () => {
     })
 })
 
-describe('model constants consistency', () => {
-    test('every CLAUDE_MODEL_PRESET has a label', () => {
-        for (const preset of CLAUDE_MODEL_PRESETS) {
-            expect(CLAUDE_MODEL_LABELS[preset]).toBeDefined()
+describe('CLAUDE_MODEL_FALLBACK_OPTIONS', () => {
+    test('has no [1m] pairs -- one row per model family', () => {
+        for (const option of CLAUDE_MODEL_FALLBACK_OPTIONS) {
+            expect(option.value.endsWith('[1m]')).toBe(false)
         }
     })
 
+    test('every fallback option value is a recognized alias (role B)', () => {
+        for (const option of CLAUDE_MODEL_FALLBACK_OPTIONS) {
+            expect(isClaudeModelPreset(option.value)).toBe(true)
+        }
+    })
+
+    test('includes haiku', () => {
+        expect(CLAUDE_MODEL_FALLBACK_OPTIONS.map((option) => option.value)).toContain('haiku')
+    })
+
+    test('sonnet/opus/fable carry the full effort level list', () => {
+        for (const value of ['sonnet', 'opus', 'fable'] as const) {
+            const option = CLAUDE_MODEL_FALLBACK_OPTIONS.find((entry) => entry.value === value)
+            expect(option?.supportedEffortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        }
+    })
+
+    // haiku must be a confirmed-empty array, not undefined -- undefined
+    // would mean "unknown", but we know (and hardcoded) that haiku doesn't
+    // support --effort.
+    test('haiku carries a confirmed-empty (not undefined) effort level list', () => {
+        const haiku = CLAUDE_MODEL_FALLBACK_OPTIONS.find((entry) => entry.value === 'haiku')
+        expect(haiku?.supportedEffortLevels).toEqual([])
+        expect(haiku?.supportedEffortLevels).not.toBeUndefined()
+    })
+})
+
+describe('model constants consistency', () => {
     test('every GEMINI_MODEL_PRESET has a label', () => {
         for (const preset of GEMINI_MODEL_PRESETS) {
             expect(GEMINI_MODEL_LABELS[preset]).toBeDefined()

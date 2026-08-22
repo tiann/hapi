@@ -338,6 +338,70 @@ describe('machines routes', () => {
         })
     })
 
+    it('returns 400 when /claude-models is called without cwd', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listClaudeModelsForCwd: async () => ({ success: true, models: [] })
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/claude-models')
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'cwd query parameter is required'
+        })
+    })
+
+    it('forwards cwd to listClaudeModelsForCwd and returns models', async () => {
+        const machine = createMachine()
+        const calls: Array<{ machineId: string; cwd: string }> = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listClaudeModelsForCwd: async (machineId: string, cwd: string) => {
+                calls.push({ machineId, cwd })
+                return {
+                    success: true,
+                    models: [
+                        { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5', supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+                        { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
+                    ]
+                }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request(
+            '/api/machines/machine-1/claude-models?cwd=' + encodeURIComponent('/home/user/proj')
+        )
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{ machineId: 'machine-1', cwd: '/home/user/proj' }])
+        expect(await response.json()).toEqual({
+            success: true,
+            models: [
+                { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5', supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+                { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
+            ]
+        })
+    })
+
     it('forwards cwd to listGrokModelsForCwd for Create-session discovery', async () => {
         const machine = createMachine()
         const calls: Array<{ machineId: string; cwd: string }> = []
