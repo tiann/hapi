@@ -29,6 +29,9 @@ export const DEFAULT_GEMINI_MODEL: GeminiModelPreset = 'gemini-2.5-pro'
 // needs an interactive keyring unlock, so this stays a hand-maintained mirror —
 // update it when agy's listing changes.
 export const AGY_MODEL_LABELS = {
+    'gemini-3.7-flash-high': 'Gemini 3.7 Flash (High)',
+    'gemini-3.7-flash-medium': 'Gemini 3.7 Flash (Medium)',
+    'gemini-3.7-flash-low': 'Gemini 3.7 Flash (Low)',
     'gemini-3.6-flash-high': 'Gemini 3.6 Flash (High)',
     'gemini-3.6-flash-medium': 'Gemini 3.6 Flash (Medium)',
     'gemini-3.6-flash-low': 'Gemini 3.6 Flash (Low)',
