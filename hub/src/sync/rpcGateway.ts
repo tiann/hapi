@@ -2,7 +2,9 @@ import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionM
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
+    CLAUDE_IMPORT_PAGE_BYTES,
     CursorChatStoreStatusSchema,
+    ListClaudeSessionsRpcResponseSchema,
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
@@ -21,6 +23,7 @@ import type {
     CopilotModelsResponse,
     GrokModelsResponse,
     GrokReasoningEffortResponse,
+    ListClaudeSessionsRpcResponse,
     ListDirectoryResponse,
     ListCodexSessionsRpcResponse,
     ListPiSessionsRpcResponse,
@@ -77,6 +80,7 @@ export type RpcPathExistsResponse = PathExistsResponse
 export type RpcCodexModel = CodexModelSummary
 export type RpcListCodexModelsResponse = CodexModelsResponse
 export type RpcListCodexSessionsResponse = ListCodexSessionsRpcResponse
+export type RpcListClaudeSessionsResponse = ListClaudeSessionsRpcResponse
 export type RpcListPiSessionsResponse = ListPiSessionsRpcResponse
 export type RpcArchiveCodexSessionResponse = ArchiveCodexSessionRpcResponse
 export type RpcCursorModel = CursorModelSummary
@@ -361,6 +365,30 @@ export class RpcGateway {
     async listCodexSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListCodexSessionsResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.ListCodexSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS)
         return ListCodexSessionsRpcResponseSchema.parse(result)
+    }
+
+    async listClaudeSessionSummariesForMachine(machineId: string, cwd?: string | null): Promise<RpcListClaudeSessionsResponse> {
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListClaudeSessions,
+            { mode: 'summaries', cwd: cwd ?? null },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return ListClaudeSessionsRpcResponseSchema.parse(result)
+    }
+
+    async listClaudeSessionPageForMachine(
+        machineId: string,
+        options: { cwd?: string | null; sessionId: string; cursor: number; maxBytes?: number }
+    ): Promise<RpcListClaudeSessionsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ListClaudeSessions, {
+            mode: 'messages',
+            cwd: options.cwd ?? null,
+            sessionId: options.sessionId,
+            cursor: options.cursor,
+            maxBytes: options.maxBytes ?? CLAUDE_IMPORT_PAGE_BYTES
+        }, MODEL_LIST_RPC_TIMEOUT_MS)
+        return ListClaudeSessionsRpcResponseSchema.parse(result)
     }
 
     async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListPiSessionsResponse> {

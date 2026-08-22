@@ -136,6 +136,18 @@ export const MetadataSchema = z.object({
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
+    claudeImportState: z.object({
+        state: z.enum(['importing', 'complete', 'failed', 'diverged']),
+        machineId: z.string(),
+        claudeSessionId: z.string(),
+        sourceFile: z.string(),
+        startedAt: z.number(),
+        updatedAt: z.number(),
+        messageCount: z.number().int().nonnegative().optional(),
+        lastLocalId: z.string().nullable().optional(),
+        prefixDigest: z.string().optional(),
+        error: z.string().optional()
+    }).optional(),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.
     piHistoryLeafEntryId: z.string().optional(),

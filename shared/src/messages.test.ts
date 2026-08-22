@@ -1,15 +1,62 @@
 import { describe, expect, test } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import {
+    CLAUDE_IMPORTED_USER_TRUNCATION_MARKER,
+    DISPLAY_HISTORY_STRING_LIMIT,
     extractAssistantPlainText,
     extractNotifySummary,
     getLiveReasoningStreamId,
     getReasoningStreamId,
     isRedundantGoalStatusEventContent,
+    normalizeClaudeAgentEventForImport,
+    normalizeClaudeImportedUserText,
     splitNotifySummary,
     stripNotifySummaryFooter,
     type NotifySummary
 } from './messages'
+
+describe('normalizeClaudeAgentEventForImport', () => {
+    test('removes SDK/native runtime differences without mutating the event', () => {
+        const event = {
+            type: 'assistant',
+            sessionId: 'session-1',
+            uuid: 'sdk-uuid',
+            parentUuid: 'sdk-parent',
+            timestamp: '2026-08-11T00:00:00.000Z',
+            cwd: '/sdk/project',
+            version: '1.2.3',
+            gitBranch: 'sdk-branch',
+            requestId: 'sdk-request',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'same answer' }],
+                usage: { input_tokens: 10, output_tokens: 5, context_window: 1_000_000 }
+            }
+        }
+
+        expect(normalizeClaudeAgentEventForImport(event)).toEqual({
+            type: 'assistant',
+            sessionId: 'session-1',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'same answer' }],
+                usage: { input_tokens: 10, output_tokens: 5 }
+            }
+        })
+        expect(event.message.usage.context_window).toBe(1_000_000)
+    })
+})
+
+describe('normalizeClaudeImportedUserText', () => {
+    test('truncates oversized prompts deterministically and idempotently', () => {
+        const prompt = 'x'.repeat(DISPLAY_HISTORY_STRING_LIMIT + 1)
+        const normalized = normalizeClaudeImportedUserText(prompt)
+
+        expect(normalized).toHaveLength(DISPLAY_HISTORY_STRING_LIMIT)
+        expect(normalized.endsWith(CLAUDE_IMPORTED_USER_TRUNCATION_MARKER)).toBe(true)
+        expect(normalizeClaudeImportedUserText(normalized)).toBe(normalized)
+    })
+})
 
 describe('extractAssistantPlainText', () => {
     test('returns null for non-objects', () => {

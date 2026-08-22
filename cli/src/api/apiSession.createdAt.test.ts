@@ -366,4 +366,22 @@ describe('sendClaudeSessionMessage createdAt propagation', () => {
         const [, payload] = fakeSocket.emit.mock.calls[0] as [string, Record<string, unknown>]
         expect(payload).not.toHaveProperty('createdAt')
     })
+
+    it('adds an explicit native transcript local id only when supplied by the scanner', () => {
+        const { client, fakeSocket } = makeClient()
+        const body = {
+            type: 'assistant',
+            uuid: 'assistant-native',
+            message: { role: 'assistant', content: 'hi' }
+        } as unknown as RawJSONLines
+
+        client.sendClaudeSessionMessage(body, {
+            claudeTranscriptLocalId: 'claude:native-session:assistant-native'
+        })
+
+        const [, payload] = fakeSocket.emit.mock.calls[0] as [string, {
+            message: { meta: { claudeTranscriptLocalId?: string } }
+        }]
+        expect(payload.message.meta.claudeTranscriptLocalId).toBe('claude:native-session:assistant-native')
+    })
 })

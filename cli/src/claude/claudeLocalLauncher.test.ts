@@ -36,6 +36,7 @@ import { claudeLocalLauncher } from './claudeLocalLauncher'
 
 function createSessionStub() {
     const sentMessages: Array<Record<string, unknown>> = []
+    const sentMessageOptions: Array<{ claudeTranscriptLocalId?: string } | undefined> = []
     let metadata: Metadata = { path: '/tmp/test', host: 'localhost' }
     return {
         session: {
@@ -51,7 +52,13 @@ function createSessionStub() {
             hookSettingsPath: null,
             queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
             client: {
-                sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
+                sendClaudeSessionMessage: (
+                    msg: Record<string, unknown>,
+                    options?: { claudeTranscriptLocalId?: string }
+                ) => {
+                    sentMessages.push(msg)
+                    sentMessageOptions.push(options)
+                },
                 updateMetadata: (handler: (current: Metadata) => Metadata) => {
                     metadata = handler(metadata)
                 },
@@ -63,6 +70,7 @@ function createSessionStub() {
             recordLocalLaunchFailure: () => {}
         },
         sentMessages,
+        sentMessageOptions,
         getMetadata: () => metadata,
         setMetadata: (value: Metadata) => { metadata = value }
     }
@@ -164,13 +172,17 @@ describe('claudeLocalLauncher message filtering', () => {
     })
 
     it('forwards normal conversation messages', async () => {
-        const { session, sentMessages } = createSessionStub()
+        const { session, sentMessages, sentMessageOptions } = createSessionStub()
         await claudeLocalLauncher(session as never)
 
         harness.scannerOnMessage!({ type: 'user', uuid: '1' })
         harness.scannerOnMessage!({ type: 'assistant', uuid: '2' })
 
         expect(sentMessages).toHaveLength(2)
+        expect(sentMessageOptions).toEqual([
+            { claudeTranscriptLocalId: 'claude:test-session:1' },
+            { claudeTranscriptLocalId: 'claude:test-session:2' }
+        ])
     })
 
     it('filters out isMeta messages (e.g. skill injections)', async () => {

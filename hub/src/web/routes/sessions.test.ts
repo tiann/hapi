@@ -63,6 +63,7 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
+    deleteSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
@@ -145,6 +146,7 @@ function createApp(session: Session, opts?: {
             status: { onDisk: true, store: 'acp' as const }
         })),
         archiveSession: archiveSessionMock,
+        deleteSession: opts?.deleteSession ?? (async () => {}),
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
         getSessionExport: opts?.getSessionExport ?? (() => ({
@@ -219,6 +221,22 @@ describe('sessions routes', () => {
         })
 
         expect(response.status).toBe(400)
+    })
+
+    it('returns 409 when deletion races with a conversation history action', async () => {
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            deleteSession: async () => {
+                throw new Error('Conversation history action already in progress')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1', { method: 'DELETE' })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Conversation history action already in progress'
+        })
     })
 
     it('updates the persisted pin mode', async () => {
