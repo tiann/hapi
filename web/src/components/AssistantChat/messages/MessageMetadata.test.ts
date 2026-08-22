@@ -176,7 +176,7 @@ describe('buildMessageMetadataLabels', () => {
             'Models: claude-opus-5, claude-haiku-4-5, claude-empty-5',
             'Tokens: 24 (10 in · 14 out)',
             'API-rate est.: <$0.0001',
-            'Round: 0.0s'
+            'Round: 0s'
         ])
     })
 })

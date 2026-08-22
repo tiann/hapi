@@ -492,14 +492,15 @@ export function reduceTimeline(
                     && !(block.kind === 'cli-output' && block.source === 'user')
                 let firstIndex = -1
                 for (let index = blocks.length - 1; index >= 0; index -= 1) {
-                    if (!isSummaryTarget(blocks[index])) break
+                    const block = blocks[index]
+                    if (block.kind === 'user-text' || (block.kind === 'cli-output' && block.source === 'user')) break
+                    if (block.kind === 'agent-event') continue
+                    if (!isSummaryTarget(block)) break
                     firstIndex = index
                 }
                 if (firstIndex !== -1) {
-                    const firstBlock = blocks[firstIndex]
-                    if (isSummaryTarget(firstBlock)) {
-                        firstBlock.roundSummary = summary
-                    }
+                    const summaryTarget = blocks[firstIndex]
+                    if (isSummaryTarget(summaryTarget)) summaryTarget.roundSummary = summary
                 }
                 continue
             }
