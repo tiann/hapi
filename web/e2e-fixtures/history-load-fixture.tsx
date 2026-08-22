@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '../src/index.css'
 import type { ApiClient } from '../src/api/client'
 import type { DecryptedMessage, MessagesResponse, Session } from '../src/types/api'
@@ -10,11 +11,12 @@ import { normalizeDecryptedMessage } from '../src/chat/normalize'
 import { reduceChatBlocks } from '../src/chat/reducer'
 import { reconcileChatBlocks } from '../src/chat/reconcile'
 import { buildVisibleChatBlocks } from '../src/chat/toolGroups'
+import { buildConversationOutline } from '../src/chat/outline'
 import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState } from '../src/lib/message-window-store'
+import { getMessageWindowState, ingestIncomingMessages } from '../src/lib/message-window-store'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -29,6 +31,9 @@ type Probe = {
     requests: { direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
     refetch: () => Promise<void>
     windowState: () => { messageCount: number; oldestSeq: number | null; newestSeq: number | null }
+    startStreaming: (intervalMs?: number) => void
+    stopStreaming: () => void
+    streamedCount: () => number
 }
 
 declare global {
@@ -36,6 +41,11 @@ declare global {
         __probe: Probe
     }
 }
+
+let liveMessages: DecryptedMessage[] = []
+let streamTimer: ReturnType<typeof setInterval> | null = null
+let streamSeq = TOTAL_MESSAGES + 1
+let streamedMessages = 0
 
 window.__probe = {
     requests: [],
@@ -47,7 +57,34 @@ window.__probe = {
             oldestSeq: state.oldestSeq,
             newestSeq: state.newestSeq
         }
-    }
+    },
+    startStreaming: (intervalMs = 150) => {
+        if (streamTimer) return
+        streamTimer = window.setInterval(() => {
+            const seq = streamSeq++
+            streamedMessages += 1
+            const message: DecryptedMessage = {
+                id: `m-${seq}`,
+                seq,
+                localId: null,
+                content: {
+                    role: 'assistant',
+                    content: { type: 'text', text: `Streamed message ${seq} ${'y'.repeat(80)}` }
+                },
+                createdAt: BASE_AT + seq,
+                invokedAt: BASE_AT + seq
+            }
+            liveMessages = [...liveMessages, message]
+            ingestIncomingMessages(SESSION_ID, [message])
+        }, intervalMs)
+    },
+    stopStreaming: () => {
+        if (streamTimer) {
+            window.clearInterval(streamTimer)
+            streamTimer = null
+        }
+    },
+    streamedCount: () => streamedMessages
 }
 
 // Test knobs via query params:
@@ -86,6 +123,8 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
         invokedAt: BASE_AT + seq
     } as DecryptedMessage
 })
+
+liveMessages = [...allMessages]
 
 function positionOf(message: DecryptedMessage): { at: number; seq: number } {
     return { at: message.invokedAt ?? message.createdAt, seq: message.seq ?? 0 }
@@ -142,7 +181,7 @@ const fakeApi = {
             }
             const cursorAt = query.beforeAt ?? Number.POSITIVE_INFINITY
             const cursorSeq = query.beforeSeq ?? Number.POSITIVE_INFINITY
-            const older = allMessages.filter((message) => {
+            const older = liveMessages.filter((message) => {
                 const position = positionOf(message)
                 return position.at < cursorAt || (position.at === cursorAt && position.seq < cursorSeq)
             })
@@ -165,7 +204,7 @@ const fakeApi = {
             }
         }
 
-        const pageMessages = allMessages.slice(-limit)
+        const pageMessages = liveMessages.slice(-limit)
         // After an epoch bump the "rewritten" tail renders taller rows, so
         // the reset changes content height — this is what re-fires the
         // ResizeObserver coverage re-check in the epoch-reset scenario.
@@ -189,6 +228,8 @@ const fakeApi = {
         }
     }
 } as unknown as ApiClient
+
+const outline = fixtureParams.has('outline')
 
 const fakeSession = {
     id: SESSION_ID,
@@ -251,6 +292,8 @@ function FixtureThread() {
         onAbort: noopAbort
     })
 
+    const outlineItems = useMemo(() => buildConversationOutline(reconciled.blocks), [reconciled.blocks])
+
     return (
         <AssistantRuntimeProvider runtime={runtime}>
             <div className="flex h-screen min-h-0 flex-col">
@@ -276,8 +319,8 @@ function FixtureThread() {
                     messagesVersion={messagesVersion}
                     historyVersion={historyVersion}
                     forceScrollToken={0}
-                    outlineOpen={false}
-                    outlineItems={[]}
+                    outlineOpen={outline}
+                    outlineItems={outlineItems}
                     onOutlineOpenChange={() => {}}
                 />
             </div>
@@ -285,8 +328,12 @@ function FixtureThread() {
     )
 }
 
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
-    <I18nProvider>
-        <FixtureThread />
-    </I18nProvider>
+    <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+            <FixtureThread />
+        </I18nProvider>
+    </QueryClientProvider>
 )

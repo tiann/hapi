@@ -49,7 +49,7 @@ type PendingScrollRestore = {
     targetHistoryVersion: number | null
 }
 
-type HistoryLoadSource = 'coverage' | 'user' | 'consumer'
+type HistoryLoadSource = 'coverage' | 'user' | 'consumer' | 'outline'
 type PullToLoadState = 'idle' | 'pulling' | 'ready'
 
 type HistoryLoaderState = {
@@ -482,7 +482,7 @@ export function HappyThread(props: {
     messagesWarning: string | null
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
-    onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean, options?: { shouldInstallBoundary?: () => boolean }) => Promise<OlderLoadOutcome>
     onCancelLoadMore: () => void
     unseenCount: number
     rawMessagesCount: number
@@ -611,6 +611,10 @@ export function HappyThread(props: {
     const atBottomRef = useRef(true)
     const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
+    // Render-time mirror so apply-time boundary decisions can read the live
+    // outline state without a stale closure or an effect-delayed ref.
+    const outlineOpenRef = useRef(props.outlineOpen)
+    outlineOpenRef.current = props.outlineOpen
     const lastScrollTopRef = useRef(0)
     const sessionIdRef = useRef(props.sessionId)
     const initialScrollSessionRef = useRef<string | null>(null)
@@ -678,6 +682,7 @@ export function HappyThread(props: {
         // old DOM after trimming. Only network/backoff work is cancellable.
         if (
             state.source === 'consumer'
+            || state.source === 'outline'
             || (state.phase !== 'loading' && state.phase !== 'backoff')
         ) {
             return
@@ -1212,7 +1217,11 @@ export function HappyThread(props: {
             }
         }
 
-        if (state.source !== 'consumer' && !needsViewportCoverage()) {
+        if (
+            state.source !== 'consumer'
+            && state.source !== 'outline'
+            && !needsViewportCoverage()
+        ) {
             finishStoppedAttempt(state, 'transient-stop')
             return
         }
@@ -1256,13 +1265,27 @@ export function HappyThread(props: {
                     ) {
                         return false
                     }
-                    if (current.source !== 'consumer' && !needsViewportCoverage()) {
+                    if (
+                        current.source !== 'consumer'
+                        && current.source !== 'outline'
+                        && !needsViewportCoverage()
+                    ) {
                         return false
                     }
                     pending.targetHistoryVersion = historyVersion
                     historyLoaderRef.current = { ...current, phase: 'awaiting-render' }
                     return true
-                })
+                }, state.source === 'outline'
+                    ? {
+                        // Only outline-driven loads hold the loaded-history
+                        // boundary, and only while the outline is still open at
+                        // APPLY time — a slow request that lands after the
+                        // outline closed must not leave the window unbounded.
+                        // Automatic coverage loads and tool-group hydration
+                        // (consumer) never hold it.
+                        shouldInstallBoundary: () => outlineOpenRef.current
+                    }
+                    : undefined)
             } catch (error) {
                 outcome = {
                     kind: 'failed',
@@ -1395,24 +1418,26 @@ export function HappyThread(props: {
         return requestOlder('consumer')
     }, [requestOlder])
 
+    const loadOlderFromOutline = useCallback((): Promise<OlderHistoryLoadResult> => {
+        return requestOlder('outline')
+    }, [requestOlder])
+
     const loadOlderForOutline = useCallback(async (): Promise<boolean> => {
         return await loadOlderFromConsumer() === 'loaded'
     }, [loadOlderFromConsumer])
 
-    const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
-        const target = await locateOutlineTargetMessage({
-            targetMessageId: item.targetMessageId,
-            findTarget: (anchorId) => document.getElementById(anchorId),
-            hasMoreMessages: () => hasMoreMessagesRef.current,
-            loadOlderPreservingScroll: loadOlderForOutline
-        })
-        if (target) {
-            target.scrollIntoView({ block: 'start', behavior: 'smooth' })
-            autoScrollEnabledRef.current = false
-        }
-        props.onOutlineItemClick?.(item)
+    const handleOutlineClose = useCallback(() => {
+        outlineOpenRef.current = false
         props.onOutlineOpenChange(false)
-    }, [loadOlderForOutline, props.onOutlineItemClick, props.onOutlineOpenChange])
+        // Closing the outline while still at the tail ends the loaded-history
+        // browsing session: re-assert tail mode so the store releases the
+        // history boundary and the window compacts back to the bounded tail.
+        // Scrolling up afterwards re-fetches the older pages via the coverage
+        // loader, so the loaded range is never lost permanently.
+        if (atBottomRef.current) {
+            onViewModeChangeRef.current('tail')
+        }
+    }, [props.onOutlineOpenChange])
 
     useEffect(() => {
         if (
@@ -1532,6 +1557,34 @@ export function HappyThread(props: {
     useEffect(() => {
         isLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])
+
+    const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
+        const target = await locateOutlineTargetMessage({
+            targetMessageId: item.targetMessageId,
+            findTarget: (anchorId) => document.getElementById(anchorId),
+            hasMoreMessages: () => hasMoreMessagesRef.current,
+            loadOlderPreservingScroll: loadOlderForOutline
+        })
+        if (!target) {
+            // The target could not be located; close through the release path
+            // so a held history boundary is released (the outline is gone).
+            handleOutlineClose()
+            return
+        }
+        // Navigating to an outline entry is an explicit history jump: enter
+        // history mode so the store's loaded-history protection (and its
+        // release on returning to the tail) follows the normal view-mode
+        // lifecycle. The browser clamps scrollIntoView to the live tail for
+        // newest entries, which would otherwise leave the store in tail mode
+        // with the boundary held and no release path.
+        atBottomRef.current = false
+        onViewModeChangeRef.current('history')
+        autoScrollEnabledRef.current = false
+        target.scrollIntoView({ block: 'start', behavior: 'smooth' })
+        props.onOutlineItemClick?.(item)
+        props.onOutlineOpenChange(false)
+    }, [loadOlderForOutline, handleOutlineClose, props.onOutlineItemClick, props.onOutlineOpenChange])
+
 
     const showSkeleton = props.isSyncingTail && props.rawMessagesCount === 0
     const handleShareTurn = useCallback((
@@ -1688,17 +1741,17 @@ export function HappyThread(props: {
                             type="button"
                             className="absolute inset-0 z-20 bg-black/20"
                             aria-label={t('session.outline.close')}
-                            onClick={() => props.onOutlineOpenChange(false)}
+                            onClick={handleOutlineClose}
                         />
                         <ConversationOutlinePanel
                             items={props.outlineItems}
                             hasMoreMessages={props.hasMoreMessages}
                             isLoadingMoreMessages={props.isLoadingMoreMessages}
                             onLoadMore={() => {
-                                void loadOlderFromConsumer()
+                                void loadOlderFromOutline()
                             }}
                             onSelect={handleOutlineSelect}
-                            onClose={() => props.onOutlineOpenChange(false)}
+                            onClose={handleOutlineClose}
                         />
                     </>
                 ) : null}

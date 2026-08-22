@@ -54,6 +54,24 @@ type InternalState = MessageWindowState & {
     oldestPositionSeq: number | null
     newestPositionAt: number | null
     newestPositionSeq: number | null
+    /**
+     * Oldest position of the "tail region" after older-history pages were
+     * loaded (the cursor of the last successful older-page fetch). Messages
+     * strictly older than this boundary are part of the loaded history the
+     * user is browsing; tail-mode trims must not evict them while streaming
+     * ingests arrive, or the viewport anchored in the loaded range jumps up
+     * repeatedly on a running session. Cleared when the window re-enters the
+     * tail (enterTailMode) or is rebuilt by a tail resync.
+     */
+    historyBoundaryAt: number | null
+    historyBoundarySeq: number | null
+    /**
+     * olderGeneration of the in-flight outline request that provisionally
+     * installed historyBoundaryAt/Seq at request start. A tail resync or
+     * cancel that invalidates that generation must release the boundary too,
+     * or the no-trim branch would outlive the load that armed it.
+     */
+    provisionalBoundaryGeneration: number | null
     requiresLatestReset: boolean
     preferLatestOnActivation: boolean
     syncGeneration: number
@@ -67,6 +85,8 @@ type PersistedMessageWindowState = {
     oldestPositionSeq: number | null
     newestPositionAt: number | null
     newestPositionSeq: number | null
+    historyBoundaryAt: number | null
+    historyBoundarySeq: number | null
     epoch: number | null
 }
 
@@ -162,6 +182,7 @@ function shouldPersistState(state: InternalState): boolean {
         || state.epoch !== null
         || state.oldestPositionAt !== null
         || state.newestPositionAt !== null
+        || state.historyBoundaryAt !== null
 }
 
 function persistState(sessionId: string, state: InternalState): void {
@@ -180,6 +201,8 @@ function persistState(sessionId: string, state: InternalState): void {
             oldestPositionSeq: state.oldestPositionSeq,
             newestPositionAt: state.newestPositionAt,
             newestPositionSeq: state.newestPositionSeq,
+            historyBoundaryAt: state.historyBoundaryAt,
+            historyBoundarySeq: state.historyBoundarySeq,
             epoch: state.epoch
         }
         sessionStorage.setItem(getStorageKey(sessionId), JSON.stringify(persisted))
@@ -241,6 +264,9 @@ function createState(sessionId: string): InternalState {
         oldestPositionSeq: null,
         newestPositionAt: null,
         newestPositionSeq: null,
+        historyBoundaryAt: null,
+        historyBoundarySeq: null,
+        provisionalBoundaryGeneration: null,
         requiresLatestReset: false,
         preferLatestOnActivation: false,
         syncGeneration: 0,
@@ -273,6 +299,7 @@ function hydrateState(sessionId: string): InternalState | null {
         }
         const oldest = readPosition(parsed.oldestPositionAt, parsed.oldestPositionSeq)
         const newest = readPosition(parsed.newestPositionAt, parsed.newestPositionSeq)
+        const historyBoundary = readPosition(parsed.historyBoundaryAt, parsed.historyBoundarySeq)
         const epoch = typeof parsed.epoch === 'number' && Number.isInteger(parsed.epoch) && parsed.epoch >= 0
             ? parsed.epoch
             : null
@@ -283,6 +310,8 @@ function hydrateState(sessionId: string): InternalState | null {
             oldestPositionSeq: oldest?.seq ?? null,
             newestPositionAt: newest?.at ?? null,
             newestPositionSeq: newest?.seq ?? null,
+            historyBoundaryAt: historyBoundary?.at ?? null,
+            historyBoundarySeq: historyBoundary?.seq ?? null,
             epoch,
             requiresLatestReset: parsed.messages.length > 0 && (newest === null || epoch === null)
         })
@@ -391,6 +420,9 @@ function buildState(
         | 'oldestPositionSeq'
         | 'newestPositionAt'
         | 'newestPositionSeq'
+        | 'historyBoundaryAt'
+        | 'historyBoundarySeq'
+        | 'provisionalBoundaryGeneration'
         | 'requiresLatestReset'
         | 'preferLatestOnActivation'
         | 'syncGeneration'
@@ -533,6 +565,8 @@ function mergeIntoWindow(
     options: {
         mode?: 'append' | 'prepend'
         regularLimit?: number
+        historyBoundaryAt?: number | null
+        historyBoundarySeq?: number | null
         advanceTailRevision?: boolean
     } = {}
 ): InternalState {
@@ -544,7 +578,72 @@ function mergeIntoWindow(
     const regularLimit = options.regularLimit
         ?? (previous.viewMode === 'history' ? HISTORY_WINDOW_SIZE : VISIBLE_WINDOW_SIZE)
     const merged = mergeMessages(previous.messages, retainedIncoming)
-    const { kept, dropped } = trimPreservingQueued(merged, regularLimit, mode)
+
+    const boundaryAt = options.historyBoundaryAt !== undefined
+        ? options.historyBoundaryAt
+        : previous.historyBoundaryAt
+    const boundarySeq = options.historyBoundarySeq !== undefined
+        ? options.historyBoundarySeq
+        : previous.historyBoundarySeq
+    const boundary = boundaryAt !== null && boundarySeq !== null
+        ? { at: boundaryAt, seq: boundarySeq }
+        : null
+
+    let kept: DecryptedMessage[]
+    let dropped: DecryptedMessage[]
+    let droppedNewest = false
+    if (boundary) {
+        // Loaded older history is present and the user is browsing it.
+        // Tail mode deliberately does NOT trim while the boundary is held:
+        // the loaded range must stay readable and the live tail must keep
+        // streaming — dropping either side would make the viewport jump or
+        // freeze new messages. Releasing the boundary (returning to the tail
+        // via enterTailMode, or a tail resync) restores the bounded window.
+        // History mode keeps the loaded range whole and caps the tail by
+        // dropping its NEWEST rows (reachable through the requiresLatestReset
+        // tail resync), so the kept window stays contiguous and the loaded
+        // range is never evicted.
+        const totalCap = Math.max(regularLimit, OLDER_LOAD_WINDOW_SIZE)
+        if (mode === 'append') {
+            kept = merged
+            dropped = []
+        } else {
+            const queued = merged.filter(isQueuedForInvocation)
+            const queuedIds = new Set(queued.map((message) => message.id))
+            const trimmable = merged.filter((message) => !queuedIds.has(message.id))
+            const loaded: DecryptedMessage[] = []
+            const tail: DecryptedMessage[] = []
+            for (const message of trimmable) {
+                const position = messagePosition(message)
+                if (!position) {
+                    loaded.push(message)
+                    continue
+                }
+                if (comparePosition(position, boundary) < 0) {
+                    loaded.push(message)
+                } else {
+                    tail.push(message)
+                }
+            }
+            const loadedTrim = sliceForTrim(loaded, totalCap, 'prepend')
+            const tailTrim = sliceForTrim(tail, Math.max(0, totalCap - loadedTrim.kept.length), 'prepend')
+            kept = mergeMessages([...loadedTrim.kept, ...tailTrim.kept], queued)
+            const keptIds = new Set(kept.map((message) => message.id))
+            dropped = merged.filter((message) => !keptIds.has(message.id))
+            if (dropped.length > 0) {
+                const droppedNewestPosition = derivePosition(dropped, 'newest')
+                const mergedNewestPosition = derivePosition(merged, 'newest')
+                droppedNewest = droppedNewestPosition !== null
+                    && mergedNewestPosition !== null
+                    && comparePosition(droppedNewestPosition, mergedNewestPosition) === 0
+            }
+        }
+    } else {
+        const trimmed = trimPreservingQueued(merged, regularLimit, mode)
+        kept = trimmed.kept
+        dropped = trimmed.dropped
+        droppedNewest = mode === 'prepend' && dropped.length > 0
+    }
     let next = buildState(previous, {
         messages: kept,
         ...(options.advanceTailRevision
@@ -554,21 +653,52 @@ function mergeIntoWindow(
     if (dropped.length === 0) {
         return next
     }
-    if (mode === 'append') {
-        const oldest = derivePosition(kept, 'oldest')
-        return buildState(next, {
-            hasMore: true,
-            oldestPositionAt: oldest?.at ?? next.oldestPositionAt,
-            oldestPositionSeq: oldest?.seq ?? next.oldestPositionSeq
+    if (droppedNewest) {
+        const newest = derivePosition(kept, 'newest')
+        next = buildState(next, {
+            requiresLatestReset: true,
+            newestPositionAt: newest?.at ?? null,
+            newestPositionSeq: newest?.seq ?? null
+        })
+        return next
+    }
+    const oldest = derivePosition(kept, 'oldest')
+    return buildState(next, {
+        hasMore: true,
+        oldestPositionAt: oldest?.at ?? next.oldestPositionAt,
+        oldestPositionSeq: oldest?.seq ?? next.oldestPositionSeq
+    })
+}
+
+// Rows accumulated while a provisional boundary held the no-trim branch have
+// no loaded page to justify them once the boundary is released; trim them with
+// the active view's existing window policy immediately.
+function trimReleasedProvisionalWindow(previous: InternalState): InternalState {
+    const historyMode = previous.viewMode === 'history'
+    const { kept, dropped } = trimPreservingQueued(
+        previous.messages,
+        historyMode ? HISTORY_WINDOW_SIZE : VISIBLE_WINDOW_SIZE,
+        historyMode ? 'prepend' : 'append'
+    )
+    if (dropped.length === 0) {
+        return previous
+    }
+    if (historyMode) {
+        const newest = derivePosition(kept, 'newest')
+        return buildState(previous, {
+            messages: kept,
+            requiresLatestReset: true,
+            newestPositionAt: newest?.at ?? null,
+            newestPositionSeq: newest?.seq ?? null
         })
     }
-    const newest = derivePosition(kept, 'newest')
-    next = buildState(next, {
-        requiresLatestReset: true,
-        newestPositionAt: newest?.at ?? null,
-        newestPositionSeq: newest?.seq ?? null
+    const oldest = derivePosition(kept, 'oldest')
+    return buildState(previous, {
+        messages: kept,
+        hasMore: true,
+        oldestPositionAt: oldest?.at ?? previous.oldestPositionAt,
+        oldestPositionSeq: oldest?.seq ?? previous.oldestPositionSeq
     })
-    return next
 }
 
 function pagePosition(at: number | null, seq: number | null): MessagePosition | null {
@@ -624,6 +754,13 @@ function applyLatestResponse(
         olderGeneration: options.replaceServerRows
             ? previous.olderGeneration + 1
             : previous.olderGeneration,
+        // A tail resync rebuilds the window from the server's authoritative
+        // rows; the loaded-history protection no longer applies.
+        historyBoundaryAt: options.replaceServerRows ? null : previous.historyBoundaryAt,
+        historyBoundarySeq: options.replaceServerRows ? null : previous.historyBoundarySeq,
+        provisionalBoundaryGeneration: options.replaceServerRows
+            ? null
+            : previous.provisionalBoundaryGeneration,
         warning: null
     })
 }
@@ -632,7 +769,13 @@ function beginTailSync(sessionId: string): number {
     let generation = 0
     updateState(sessionId, (previous) => {
         generation = previous.syncGeneration + 1
-        return buildState(previous, {
+        // Bumping olderGeneration invalidates any in-flight older-page request.
+        // If that request provisionally installed the history boundary, the
+        // load is gone — release the boundary too, or the no-trim branch would
+        // outlive it and the window would grow without limit.
+        const releaseProvisional = previous.provisionalBoundaryGeneration !== null
+            && previous.provisionalBoundaryGeneration === previous.olderGeneration
+        const cleared = buildState(previous, {
             syncGeneration: generation,
             // Tail reconciliation owns the authoritative epoch. An older-page
             // response captured before this point must not commit while the tail
@@ -640,8 +783,14 @@ function beginTailSync(sessionId: string): number {
             olderGeneration: previous.olderGeneration + 1,
             isSyncingTail: true,
             isLoadingMore: false,
-            warning: null
+            warning: null,
+            historyBoundaryAt: releaseProvisional ? null : previous.historyBoundaryAt,
+            historyBoundarySeq: releaseProvisional ? null : previous.historyBoundarySeq,
+            provisionalBoundaryGeneration: releaseProvisional ? null : previous.provisionalBoundaryGeneration
         })
+        // Shed the rows the no-trim branch accumulated while the provisional
+        // boundary was held, immediately rather than on the next ingest.
+        return releaseProvisional ? trimReleasedProvisionalWindow(cleared) : cleared
     })
     return generation
 }
@@ -810,6 +959,10 @@ function enterTailMode(previous: InternalState): InternalState {
     const oldest = dropped.length > 0
         ? derivePosition(kept, 'oldest')
         : readPosition(previous.oldestPositionAt, previous.oldestPositionSeq)
+    // Shedding rows while an older-page request is in flight can evict its
+    // `before` cursor row (the window's oldest at request start); invalidate
+    // that request so its apply cannot re-arm a stale cursor past the gap.
+    const invalidateInFlight = previous.isLoadingMore && dropped.length > 0
     return buildState(previous, {
         messages: kept,
         hasMore: previous.hasMore || dropped.length > 0,
@@ -818,7 +971,15 @@ function enterTailMode(previous: InternalState): InternalState {
         oldestPositionAt: oldest?.at ?? null,
         oldestPositionSeq: oldest?.seq ?? null,
         newestPositionAt: forceLatest ? null : previous.newestPositionAt,
-        newestPositionSeq: forceLatest ? null : previous.newestPositionSeq
+        newestPositionSeq: forceLatest ? null : previous.newestPositionSeq,
+        // Returning to the tail releases the loaded-history protection: the
+        // window is allowed to shed the older range again (invisibly, the
+        // user is at the bottom).
+        historyBoundaryAt: null,
+        historyBoundarySeq: null,
+        provisionalBoundaryGeneration: null,
+        olderGeneration: invalidateInFlight ? previous.olderGeneration + 1 : previous.olderGeneration,
+        isLoadingMore: invalidateInFlight ? false : previous.isLoadingMore
     })
 }
 
@@ -852,6 +1013,10 @@ export function activateMessageWindow(sessionId: string): void {
             previous.viewMode === 'tail'
             && kept.length === previous.messages.length
             && !forceLatest
+            // A boundary persisted from a previous page session must not
+            // survive: the outline that held it is gone, so the window has
+            // no release path and would grow unboundedly on SSE ingests.
+            && previous.historyBoundaryAt === null
         ) {
             return preferLatestOnActivation
                 ? buildState(previous, activationUpdates)
@@ -909,8 +1074,20 @@ export async function fetchOlderMessages(
     sessionId: string,
     options: {
         onBeforeApply?: (historyVersion: number) => boolean
+        /**
+         * Live predicate evaluated when the older page APPLIES (not when the
+         * request starts): when it returns true, the loaded-history boundary
+         * (tail-mode no-trim protection) is installed for this load. Only
+         * user-initiated outline browsing passes it — automatic coverage
+         * loads and tool-group hydration must not leave the window unbounded,
+         * and history-mode loads are already protected by the oldest-kept
+         * trim. Evaluating at apply time also covers an outline closed while
+         * a slow request was in flight.
+         */
+        shouldInstallBoundary?: () => boolean
     } = {}
 ): Promise<OlderLoadOutcome> {
+    const installBoundary = options.shouldInstallBoundary?.() === true
     const initial = getState(sessionId)
     const before = readPosition(initial.oldestPositionAt, initial.oldestPositionSeq)
     if (initial.isSyncingTail || initial.isLoadingMore) {
@@ -928,6 +1105,24 @@ export async function fetchOlderMessages(
         isLoadingMore: true,
         warning: null
     }))
+    // Install the boundary at REQUEST START, not when the response applies:
+    // while the request is in flight, SSE ingests keep trimming the tail and
+    // could evict the exclusive `before` cursor row (the window's oldest).
+    // Applying the older page afterwards would leave a permanent unreachable
+    // gap between the page and the trimmed window. Track when WE installed it
+    // (no pre-existing boundary) so the rejection/error exits can restore the
+    // bounded window if the load never completes.
+    const installedProvisionalBoundary = installBoundary && initial.historyBoundaryAt === null
+    if (installedProvisionalBoundary) {
+        updateState(sessionId, (previous) => {
+            if (previous.olderGeneration !== generation) return previous
+            return buildState(previous, {
+                historyBoundaryAt: before.at,
+                historyBoundarySeq: before.seq,
+                provisionalBoundaryGeneration: generation
+            })
+        })
+    }
 
     try {
         const response = await api.getMessages(sessionId, {
@@ -966,22 +1161,74 @@ export async function fetchOlderMessages(
             const nextHistoryVersion = previous.historyVersion + 1
             if (options.onBeforeApply && !options.onBeforeApply(nextHistoryVersion)) {
                 applyRejected = true
-                return buildState(previous, {
+                // A rejected apply never delivers the loaded page; restore the
+                // bounded window if we provisionally installed the boundary,
+                // and shed the rows the no-trim branch accumulated.
+                const cleared = buildState(previous, {
                     olderGeneration: previous.olderGeneration + 1,
                     isLoadingMore: false,
-                    warning: null
+                    warning: null,
+                    historyBoundaryAt: installedProvisionalBoundary ? null : previous.historyBoundaryAt,
+                    historyBoundarySeq: installedProvisionalBoundary ? null : previous.historyBoundarySeq,
+                    provisionalBoundaryGeneration: installedProvisionalBoundary
+                        ? null
+                        : previous.provisionalBoundaryGeneration
                 })
+                return installedProvisionalBoundary ? trimReleasedProvisionalWindow(cleared) : cleared
             }
-            const merged = mergeIntoWindow(previous, response.messages, {
-                mode: 'prepend',
-                regularLimit: OLDER_LOAD_WINDOW_SIZE
+            const installBoundaryNow = options.shouldInstallBoundary?.() === true
+            const compactedOnClose = !installBoundaryNow && installedProvisionalBoundary && previous.viewMode === 'tail'
+            let merged = mergeIntoWindow(previous, response.messages, {
+                // In history mode keep the oldest side (the loaded pages the
+                // user is browsing); in tail mode keep the whole window while
+                // the history boundary is held so the live tail keeps streaming.
+                mode: previous.viewMode === 'history' ? 'prepend' : 'append',
+                regularLimit: OLDER_LOAD_WINDOW_SIZE,
+                historyBoundaryAt: previous.historyBoundaryAt ?? (installBoundaryNow ? before.at : undefined),
+                historyBoundarySeq: previous.historyBoundarySeq ?? (installBoundaryNow ? before.seq : undefined)
             })
+            let oldestPositionAt: number | null = response.page.nextBeforeAt
+            let oldestPositionSeq: number | null = response.page.nextBeforeSeq
+            if (compactedOnClose) {
+                // The outline closed while the request was in flight: the
+                // boundary dies with the apply, and in tail mode the rows
+                // accumulated by the no-trim branch are shed back to the
+                // bounded tail window. In history mode the user is reading
+                // the loaded range — the oldest-kept trim protects it and the
+                // next ingest sheds only the tail overflow.
+                const trimmed = trimReleasedProvisionalWindow(merged)
+                if (trimmed !== merged) {
+                    // Rows were shed from the oldest end: the pagination
+                    // cursor must bookend the compacted window, not the
+                    // response's nextBefore (which would point into the gap).
+                    oldestPositionAt = trimmed.oldestPositionAt
+                    oldestPositionSeq = trimmed.oldestPositionSeq
+                }
+                merged = trimmed
+            }
             historyVersion = nextHistoryVersion
             return buildState(merged, {
                 hasMore: response.page.hasMore,
                 epoch: response.page.epoch,
-                oldestPositionAt: response.page.nextBeforeAt,
-                oldestPositionSeq: response.page.nextBeforeSeq,
+                oldestPositionAt,
+                oldestPositionSeq,
+                // The boundary was installed at request start; carry it past
+                // the apply only while the outline is still open. If it
+                // closed while the request was in flight, drop the boundary
+                // here so the window returns to the bounded tail trim.
+                historyBoundaryAt: installBoundaryNow
+                    ? before.at
+                    : installBoundary
+                        ? null
+                        : previous.historyBoundaryAt,
+                historyBoundarySeq: installBoundaryNow
+                    ? before.seq
+                    : installBoundary
+                        ? null
+                        : previous.historyBoundarySeq,
+                // The boundary is now held by the outline lifecycle, not by
+                // this request; the provisional ownership ends here.
+                provisionalBoundaryGeneration: null,
                 isLoadingMore: false,
                 historyVersion,
                 warning: null
@@ -1005,10 +1252,22 @@ export async function fetchOlderMessages(
             : new Error('Failed to load older messages')
         updateState(sessionId, (previous) => {
             if (previous.olderGeneration !== generation) return previous
-            return buildState(previous, {
+            // A failed request never delivers the loaded page; restore the
+            // bounded window if we provisionally installed the boundary, and
+            // shed the rows the no-trim branch accumulated while it was held.
+            if (!installedProvisionalBoundary) {
+                return buildState(previous, {
+                    isLoadingMore: false,
+                    warning: loadError.message
+                })
+            }
+            return trimReleasedProvisionalWindow(buildState(previous, {
                 isLoadingMore: false,
-                warning: loadError.message
-            })
+                warning: loadError.message,
+                historyBoundaryAt: null,
+                historyBoundarySeq: null,
+                provisionalBoundaryGeneration: null
+            }))
         })
         return { kind: 'failed', error: loadError }
     }
@@ -1019,18 +1278,30 @@ export function cancelOlderMessageLoad(sessionId: string): void {
         if (!previous.isLoadingMore) {
             return previous
         }
-        return buildState(previous, {
+        const releaseProvisional = previous.provisionalBoundaryGeneration !== null
+            && previous.provisionalBoundaryGeneration === previous.olderGeneration
+        const cleared = buildState(previous, {
             olderGeneration: previous.olderGeneration + 1,
             isLoadingMore: false,
-            warning: null
+            warning: null,
+            historyBoundaryAt: releaseProvisional ? null : previous.historyBoundaryAt,
+            historyBoundarySeq: releaseProvisional ? null : previous.historyBoundarySeq,
+            provisionalBoundaryGeneration: releaseProvisional ? null : previous.provisionalBoundaryGeneration
         })
+        return releaseProvisional ? trimReleasedProvisionalWindow(cleared) : cleared
     }, true)
 }
 
 export function setMessageViewMode(sessionId: string, mode: MessageViewMode): void {
     updateState(sessionId, (previous) => {
         if (previous.viewMode === mode) {
-            return previous
+            // Re-asserting tail mode while loaded history is held releases it:
+            // the user has returned to the live tail (e.g. the conversation
+            // outline closed after a "Load earlier" click), so the window can
+            // shed the older range again and stay bounded.
+            return mode === 'tail' && previous.historyBoundaryAt !== null
+                ? enterTailMode(previous)
+                : previous
         }
         if (mode === 'history') {
             return buildState(previous, { viewMode: 'history' })
@@ -1101,6 +1372,9 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
         tailRevision: source.tailRevision,
         oldestPositionAt: source.oldestPositionAt,
         oldestPositionSeq: source.oldestPositionSeq,
+        historyBoundaryAt: source.historyBoundaryAt,
+        historyBoundarySeq: source.historyBoundarySeq,
+        provisionalBoundaryGeneration: null,
         requiresLatestReset: true,
         syncGeneration: target.syncGeneration + 1,
         olderGeneration: target.olderGeneration + 1
