@@ -11,7 +11,7 @@ import type { AgentType } from './types'
 
 function renderedAgentValues(): string[] {
     const { container } = render(
-        <AgentSelector agent={'claude' as AgentType} isDisabled={false} onAgentChange={() => {}} />
+        <AgentSelector agent={'claude' as AgentType} isDisabled={false} onAgentChange={() => {}} visibleAgents={CREATABLE_AGENT_FLAVORS} />
     )
     return Array.from(container.querySelectorAll('input[type="radio"]'))
         .map((el) => (el as HTMLInputElement).value)
@@ -25,4 +25,16 @@ describe('AgentSelector', () => {
     it('offers exactly the creatable agent flavors', () => {
         expect(renderedAgentValues()).toEqual([...CREATABLE_AGENT_FLAVORS])
     })
+})
+
+it('only renders agents enabled in settings', () => {
+    const { container } = render(
+        <AgentSelector
+            agent={'claude' as AgentType}
+            isDisabled={false}
+            onAgentChange={() => {}}
+            visibleAgents={['claude', 'codex']}
+        />
+    )
+    expect(Array.from(container.querySelectorAll('input[type="radio"]')).map((el) => (el as HTMLInputElement).value)).toEqual(['claude', 'codex'])
 })

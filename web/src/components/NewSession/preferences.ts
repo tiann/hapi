@@ -27,7 +27,7 @@ export type PreferredLaunchSettings = {
 
 // Only launchable flavors are valid defaults; a stale 'gemini' preference
 // (no longer creatable) falls back to 'claude'.
-const VALID_AGENTS = CREATABLE_AGENT_FLAVORS
+const VALID_AGENTS: readonly AgentType[] = CREATABLE_AGENT_FLAVORS
 
 export function loadPreferredAgent(): AgentType {
     try {

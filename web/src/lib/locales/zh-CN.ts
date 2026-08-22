@@ -848,6 +848,8 @@ export default {
   'settings.display.sessionListStatus.standard': '基础',
   'settings.display.sessionListStatus.detailed': '扩展',
   'settings.display.sessionListStatus.detailedDescription': '选择会话列表中显示的状态提示。基础模式显示基本运行状态；扩展模式还会显示等待权限、等待输入、后台任务、新活动和定时消息（时钟图标）等提示。',
+  'settings.display.createAgents': '创建 Agent',
+  'settings.display.createAgents.description': '选择创建会话时要显示的 Agent。',
   'settings.display.sessionHeader': '会话顶部信息',
   'settings.display.sessionHeader.description': '选择在会话标题下方显示的信息。移动端显示 Agent 类型及优先级最高的一个可用信息。',
   'settings.display.sessionHeader.showLabels': '显示字段标题',

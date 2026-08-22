@@ -41,7 +41,7 @@ vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
 }))
 
-vi.mock('@hapi/protocol', () => ({ PROTOCOL_VERSION: 1 }))
+vi.mock('@hapi/protocol', () => ({ PROTOCOL_VERSION: 1, CREATABLE_AGENT_FLAVORS: ['claude', 'codex'], getFlavorLabel: (agent: string) => agent }))
 
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance }),
@@ -265,6 +265,20 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    })
+
+    it('persists Create agent visibility across remounts', () => {
+        const first = renderPage(<SettingsDisplayPage />)
+        expect(screen.getByRole('checkbox', { name: 'claude' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'codex' })).toBeChecked()
+
+        fireEvent.click(screen.getByRole('checkbox', { name: 'codex' }))
+        expect(JSON.parse(localStorage.getItem('hapi:newSession:agentVisibility:v1') ?? '{}')).toEqual({ claude: true, codex: false })
+        first.unmount()
+
+        renderPage(<SettingsDisplayPage />)
+        expect(screen.getByRole('checkbox', { name: 'claude' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'codex' })).not.toBeChecked()
     })
 
     it('keeps the session status description visible with its choice group', () => {
