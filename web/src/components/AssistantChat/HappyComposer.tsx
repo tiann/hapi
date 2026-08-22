@@ -21,6 +21,7 @@ import {
 } from 'react'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
+import { dictationDirectSendEligible } from '@/lib/dictationSend'
 import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
 import {
     RichComposerInput,
@@ -61,7 +62,7 @@ import { groupModelsByProvider } from './piModelGroups'
 import type { ApiClient } from '@/api/client'
 import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
-import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 
 export interface TextInputState {
@@ -340,6 +341,23 @@ export function HappyComposer(props: {
     onVoiceToggle?: () => void
     onVoiceMicToggle?: () => void
     voiceTranscriptionApi?: ApiClient
+    /**
+     * Resolves the target session for a voice dictation direct-send (same
+     * contract as `useSendMessage`'s `resolveSessionId`): an inactive
+     * session must be resumed before the message POST, otherwise the hub
+     * rejects it with 409 `session_inactive`. Captured at send time and
+     * applied after transcription completes, so the send survives
+     * navigation while the recording is being processed. When provided,
+     * direct voice sends are allowed on inactive sessions (they resume
+     * first instead of being downgraded to a plain stop).
+     */
+    resolveSessionIdForVoice?: (sessionId: string) => Promise<{ sessionId: string; resumed: boolean }>
+    /**
+     * Called when the voice direct-send resumed an inactive session and
+     * the message was delivered to the resumed session id, so the caller
+     * can navigate/seed the live session (mirrors `onSessionResolved`).
+     */
+    onVoiceSessionResolved?: (sessionId: string) => void
     // Schedule props (lifted from internal state when provided)
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
@@ -468,7 +486,12 @@ export function HappyComposer(props: {
         provider: voiceInput.provider,
         mode: voiceInput.transcriptionMode,
         getCurrentText: getCurrentComposerText,
-        onTextChange: setComposerText
+        onTextChange: setComposerText,
+        sendMessage: async (sessionId: string, text: string, deliveryMode?: MessageDeliveryMode) => {
+            if (props.voiceTranscriptionApi) {
+                await props.voiceTranscriptionApi.sendMessage(sessionId, text, null, undefined, undefined, deliveryMode)
+            }
+        }
     }), [
         props.voiceTranscriptionApi,
         voiceInput.provider,
@@ -479,8 +502,13 @@ export function HappyComposer(props: {
     const dictation = useDictation(dictationConfig)
     const dictationActive = voiceInput.voiceMode === 'dictation'
     const effectiveVoiceStatus = dictationActive ? dictation.status : voiceStatus
+    const handleDictationToggle = useCallback(async () => {
+        await dictation.toggle()
+    }, [dictation])
+
+
     const effectiveVoiceToggle = dictationActive
-        ? (dictation.supported ? dictation.toggle : undefined)
+        ? (dictation.supported ? handleDictationToggle : undefined)
         : onVoiceToggle
     const previousVoiceModeRef = useRef(voiceInput.voiceMode)
     useEffect(() => {
@@ -536,7 +564,6 @@ export function HappyComposer(props: {
     const isControlled = onScheduleProp !== undefined
     const pendingSchedule = isControlled ? (pendingScheduleProp ?? null) : pendingScheduleLocal
     const setPendingSchedule = isControlled ? onScheduleProp : setPendingScheduleLocal
-
     useEffect(() => {
         const acceptance = props.sendAcceptance
         if (!acceptance || acceptance === lastSendAcceptanceRef.current) return
@@ -654,6 +681,20 @@ export function HappyComposer(props: {
     const hasAnyAttachments = hasAttachments || hasHiddenAttachments
     const blocksScheduling =
         hasAttachments || hasHiddenAttachments || hiddenAttachmentStatePending
+    // Mirrors handleSend's dictation branch (see dictationDirectSendEligible):
+    // the dictation Send button must only appear when clicking it will actually
+    // run the session-bound stopAndSend path. With attachments (visible or
+    // hidden persisted) / a pending schedule / scratchlist mode handleSend
+    // falls back to dictation.toggle() (stop + transcribe), so a visible
+    // "Send" control would be misleading.
+    const dictationCanDirectSend = dictationActive
+        && dictationDirectSendEligible({
+            active,
+            resolveSessionIdAvailable: props.resolveSessionIdForVoice !== undefined,
+            blocksScheduling,
+            pendingSchedule,
+            scratchlistMode: props.scratchlistMode ?? false,
+        })
     const canSend = (hasText || hasAnyAttachments) && attachmentsReady && !controlsDisabled
 
     useEffect(() => {
@@ -1105,6 +1146,42 @@ export function HappyComposer(props: {
     }, [pendingSendIntentRef])
 
     const handleSend = useCallback(async (intent: ComposerSendIntent = 'default') => {
+        if (dictationActive && (dictation.status === 'connected' || dictation.status === 'connecting')) {
+            const canDirectSend = dictation.status === 'connected'
+                && dictationDirectSendEligible({
+                    active,
+                    resolveSessionIdAvailable: props.resolveSessionIdForVoice !== undefined,
+                    blocksScheduling,
+                    pendingSchedule,
+                    scratchlistMode: props.scratchlistMode ?? false,
+                })
+                && intent === 'default'
+            if (canDirectSend) {
+                richInputRef.current?.flushSerializedText()
+                const targetSessionId = props.sessionId ?? ''
+                const initialText = api.composer().getState().text
+                const deliveryMode = resolveMessageDeliveryMode({
+                    agentFlavor: props.agentFlavor,
+                    isSessionThinking: props.thinking ?? false,
+                    intent: 'default'
+                })
+                api.composer().setText('')
+                if (targetSessionId && dictation.stopAndSend) {
+                    await dictation.stopAndSend(targetSessionId, initialText, deliveryMode, {
+                        // Inactive sessions cannot accept a message POST until they
+                        // are resumed (hub returns 409 `session_inactive`), so the
+                        // voice send runs the same resume step as the text pipeline.
+                        resolveSessionId: props.resolveSessionIdForVoice,
+                        onSessionResolved: props.onVoiceSessionResolved,
+                    })
+                } else {
+                    await dictation.toggle()
+                }
+            } else {
+                await dictation.toggle()
+            }
+            return
+        }
         // SessionChat preloads the ref only when restoring a rejected send:
         // queue retries remain queue, while an ordinary fresh send always
         // starts from the explicit/default argument. Capture it before the
@@ -1215,6 +1292,16 @@ export function HappyComposer(props: {
         sendError,
         pendingSendIntentRef,
         resetPendingSendIntent,
+        dictationActive,
+        dictation.status,
+        dictation.toggle,
+        dictation.stopAndSend,
+        props.sessionId,
+        props.agentFlavor,
+        props.thinking,
+        active,
+        props.resolveSessionIdForVoice,
+        props.onVoiceSessionResolved,
     ])
 
     const flushAndSend = useCallback((intent: ComposerSendIntent = 'default') => {
@@ -2320,6 +2407,7 @@ export function HappyComposer(props: {
                             onSwitch={handleSwitch}
                             voiceEnabled={voiceEnabled}
                             dictationEnabled={dictationActive}
+                            dictationCanDirectSend={dictationCanDirectSend}
                             voiceStatus={effectiveVoiceStatus}
                             voiceMicMuted={dictationActive ? false : voiceMicMuted}
                             onVoiceToggle={effectiveVoiceToggle ?? (() => {})}

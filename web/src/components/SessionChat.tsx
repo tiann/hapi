@@ -517,6 +517,10 @@ type SessionChatProps = {
     ) => Promise<SendMessageAcceptance | false>
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
+    /** Inactive-session resume for voice dictation direct-sends; see HappyComposer. */
+    resolveSessionIdForVoice?: (sessionId: string) => Promise<{ sessionId: string; resumed: boolean }>
+    /** Navigate/seed after a voice direct-send resumed an inactive session. */
+    onVoiceSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
@@ -1122,15 +1126,38 @@ function SessionChatInner(props: SessionChatProps) {
     // Register session store for voice client tools
     useEffect(() => {
         registerSessionStore({
-            getSession: () => props.session as { agentState?: { requests?: Record<string, unknown> } } | null,
-            sendMessage: (_sessionId: string, message: string) => props.onSend(message),
-            approvePermission: async (_sessionId: string, requestId: string) => {
-                await props.api.approvePermission(props.session.id, requestId)
-                props.onRefresh()
+            getSession: async (sessionId: string) => {
+                if (sessionId === props.session.id) {
+                    return props.session as unknown as { agentState?: { requests?: Record<string, unknown> } }
+                }
+                try {
+                    const res = await props.api.getSession(sessionId)
+                    return res.session as unknown as { agentState?: { requests?: Record<string, unknown> } }
+                } catch {
+                    return null
+                }
             },
-            denyPermission: async (_sessionId: string, requestId: string) => {
-                await props.api.denyPermission(props.session.id, requestId)
-                props.onRefresh()
+            sendMessage: async (sessionId: string, message: string) => {
+                if (sessionId === props.session.id) {
+                    const accepted = await props.onSend(message)
+                    if (!accepted) {
+                        throw new Error('Message was not accepted')
+                    }
+                } else {
+                    await props.api.sendMessage(sessionId, message)
+                }
+            },
+            approvePermission: async (sessionId: string, requestId: string) => {
+                await props.api.approvePermission(sessionId, requestId)
+                if (sessionId === props.session.id) {
+                    props.onRefresh()
+                }
+            },
+            denyPermission: async (sessionId: string, requestId: string) => {
+                await props.api.denyPermission(sessionId, requestId)
+                if (sessionId === props.session.id) {
+                    props.onRefresh()
+                }
             }
         })
     }, [props.session, props.api, props.onSend, props.onRefresh])
@@ -1935,6 +1962,8 @@ function SessionChatInner(props: SessionChatProps) {
                         }
                         active={props.session.active}
                         allowSendWhenInactive
+                        resolveSessionIdForVoice={props.resolveSessionIdForVoice}
+                        onVoiceSessionResolved={props.onVoiceSessionResolved}
                         onResumeStoredDraft={() => handleSend('', undefined, null)}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
