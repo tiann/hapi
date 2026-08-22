@@ -527,10 +527,12 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('acknowledges a steer dispatched before an overlapping abort', async () => {
+    it('holds a dispatched steer indeterminate when abort races completion', async () => {
         let releasePrompt!: () => void;
         let releaseDispatch!: () => void;
+        let releaseSoftSteer!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
         const session = makeSession(null, false);
         const mode = { permissionMode: 'default' } as EnhancedMode;
@@ -547,11 +549,12 @@ describe('cursorAcpRemoteLauncher', () => {
         await Promise.resolve();
         releaseDispatch();
         await expect(steerResult).resolves.toEqual({ steered: true });
-        await handlers.get(RPC_METHODS.Abort)!();
+        const abortPromise = handlers.get(RPC_METHODS.Abort)!();
+        releaseSoftSteer();
+        await abortPromise;
 
-        await vi.waitFor(() => expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['steer'], { steered: true }));
-        expect(vi.mocked(session.client.emitMessagesConsumed).mock.calls
-            .filter(([ids]) => ids.includes('steer'))).toHaveLength(1);
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true });
+        expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer']);
 
         harness.deferPrompt = null;
         releasePrompt();

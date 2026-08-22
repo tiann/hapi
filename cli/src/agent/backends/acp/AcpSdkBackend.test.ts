@@ -1223,6 +1223,7 @@ describe('AcpSdkBackend', () => {
             isProcessingMessage: boolean;
         };
         backendInternal.isProcessingMessage = true;
+        (backendInternal as unknown as { acceptingSoftSteers: boolean }).acceptingSoftSteers = true;
         backendInternal.transport = {
             sendRequestWithDispatch: () => ({
                 dispatched: Promise.resolve(),
@@ -1256,6 +1257,7 @@ describe('AcpSdkBackend', () => {
             drainLateBuffers: () => Promise<void>;
         };
         backendInternal.isProcessingMessage = true;
+        (backendInternal as unknown as { acceptingSoftSteers: boolean }).acceptingSoftSteers = true;
         backendInternal.activePromptRequests = 1;
         backendInternal.transport = {
             sendRequestWithDispatch: () => ({
@@ -1295,6 +1297,7 @@ describe('AcpSdkBackend', () => {
             isProcessingMessage: boolean;
         };
         backendInternal.isProcessingMessage = true;
+        (backendInternal as unknown as { acceptingSoftSteers: boolean }).acceptingSoftSteers = true;
         backendInternal.transport = {
             sendRequest: () => new Promise((resolve) => {
                 resolvePrompt = resolve;

@@ -194,8 +194,9 @@ export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedReque
 
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
-    // True while the CLI is delivering a queued message into the active turn
-    // (Steer). Surfaced so the web can reflect the inject in progress.
+    // True while the CLI can deliver a queued message into the active turn
+    // (Codex turn/steer or Cursor ACP soft-send). Surfaced so the web can
+    // reflect the inject in progress.
     steeringActive: z.boolean().nullish(),
     // The mode the session was started in. Persisted so reopen/resume can
     // re-spawn in the same mode — notably 'pty', which has no agent terminal

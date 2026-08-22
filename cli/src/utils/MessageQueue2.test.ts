@@ -692,4 +692,231 @@ describe('MessageQueue2', () => {
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
     });
+
+    describe('takeByLocalId / reservation primitives (mid-turn steer)', () => {
+        it('takes an item out of the queue with its original index', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            queue.push('msg2', 'local', 'id-2');
+            queue.push('msg3', 'local', 'id-3');
+
+            const taken = queue.takeByLocalId('id-2');
+
+            expect(taken).not.toBeNull();
+            expect(taken!.item.message).toBe('msg2');
+            expect(taken!.index).toBe(1);
+            expect(taken!.state).toBe('reserved');
+            expect(queue.size()).toBe(2);
+            expect(queue.peekByLocalId('id-2')).toBeNull();
+        });
+
+        it('returns null when the localId is absent or already consumed', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+
+            expect(queue.takeByLocalId('id-missing')).toBeNull();
+            expect(queue.takeByLocalId('')).toBeNull();
+            expect(queue.takeByLocalId('id-1')).not.toBeNull();
+            expect(queue.takeByLocalId('id-1')).toBeNull();
+        });
+
+        it('restores the item at its original index when the queue is unchanged', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            queue.push('msg2', 'local', 'id-2');
+            queue.push('msg3', 'local', 'id-3');
+            const taken = queue.takeByLocalId('id-2');
+
+            expect(queue.restoreReservation(taken!)).toBe(true);
+
+            expect(queue.size()).toBe(3);
+            expect(queue.queue.map(i => i.message)).toEqual(['msg1', 'msg2', 'msg3']);
+            expect(queue.peekByLocalId('id-2')?.message).toBe('msg2');
+        });
+
+        it('restores at a clamped index when earlier items were consumed', async () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            queue.push('msg2', 'local', 'id-2');
+            queue.push('msg3', 'local', 'id-3');
+            const taken = queue.takeByLocalId('id-2');
+
+            // Consume msg1 + msg3 (different batch shape) before restoring.
+            const batch = await queue.waitForMessagesAndGetAsString();
+            expect(batch?.items.map(i => i.localId)).toEqual(['id-1', 'id-3']);
+
+            expect(queue.restoreReservation(taken!)).toBe(true);
+            expect(queue.queue.map(i => i.message)).toEqual(['msg2']);
+        });
+
+        it('restores by stable queue order after an earlier sibling is removed', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            queue.push('msg2', 'local', 'id-2');
+            queue.push('msg3', 'local', 'id-3');
+            const taken = queue.takeByLocalId('id-2');
+
+            expect(queue.cancelByLocalId('id-1')).toBe(true);
+            expect(queue.restoreReservation(taken!)).toBe(true);
+            expect(queue.queue.map((item) => item.message)).toEqual(['msg2', 'msg3']);
+        });
+
+        it('wakes a waiter when an item is restored', async () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+
+            // Queue is now empty, so the waiter blocks until the restore.
+            const waiter = queue.waitForMessagesAndGetAsString();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            queue.restoreReservation(taken!);
+            const batch = await waiter;
+            expect(batch?.items.map(i => i.localId)).toEqual(['id-1']);
+        });
+
+        it('commits after dispatch and can restore on the steer-failure path', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+
+            expect(queue.beginReservationDispatch(taken!)).toBe(true);
+            // The steer path restores the item when turn/steer fails after
+            // dispatch began, so restore stays allowed; commit drops it.
+            expect(queue.restoreReservation(taken!)).toBe(true);
+            expect(queue.size()).toBe(1);
+
+            const taken2 = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken2!);
+            expect(queue.commitReservation(taken2!)).toBe(true);
+            expect(queue.size()).toBe(0);
+        });
+
+        it('does not commit a reservation before transport starts', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            const consumed: string[] = [];
+            queue.onBatchConsumed = (localIds) => consumed.push(...localIds);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken!);
+
+            expect(queue.markDispatchingReservationsIndeterminate()).toEqual(['id-1']);
+            expect(queue.commitDispatchingReservations()).toEqual([]);
+            expect(consumed).toEqual([]);
+            expect(queue.pendingLocalIds()).toEqual([]);
+            expect(queue.cancelByLocalId('id-1')).toBe(true);
+        });
+
+        it('commits dispatching rows after transport starts before an abort reset', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            queue.push('msg2', 'local', 'id-2');
+            const taken = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken!);
+            queue.markReservationTransportStarted(taken!);
+
+            expect(queue.commitDispatchingReservations()).toEqual(['id-1']);
+            expect(queue.commitDispatchingReservations()).toEqual([]);
+            expect(queue.pendingLocalIds()).toEqual(['id-2']);
+        });
+
+        it('marks every dispatching reservation indeterminate before abort/reset', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken!);
+            queue.markReservationTransportStarted(taken!);
+
+            expect(queue.markAllDispatchingReservationsIndeterminate()).toEqual(['id-1']);
+            expect(queue.commitDispatchingReservations()).toEqual([]);
+            expect(queue.cancelByLocalId('id-1')).toBe(true);
+        });
+
+        it('cannot begin dispatch twice', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+
+            expect(queue.beginReservationDispatch(taken!)).toBe(true);
+            expect(queue.beginReservationDispatch(taken!)).toBe(false);
+        });
+
+        it('cancelByLocalId cancels a reserved item so restore fails', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+
+            expect(queue.cancelByLocalId('id-1')).toBe(true);
+            expect(queue.restoreReservation(taken!)).toBe(false);
+            expect(queue.commitReservation(taken!)).toBe(false);
+            expect(queue.size()).toBe(0);
+        });
+
+        it('cannot cancel a dispatching item', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken!);
+
+            expect(queue.cancelByLocalId('id-1')).toBe('in-flight');
+        });
+
+        it('pushIsolateAndClear cancels hidden reservations so a failed steer cannot resurrect', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+
+            queue.pushIsolateAndClear('/clear', 'local', 'clear-1');
+
+            // The reserved row is gone for good: restore refuses it.
+            expect(queue.restoreReservation(taken!)).toBe(false);
+            expect(queue.pendingLocalIds()).toEqual(['clear-1']);
+        });
+
+        it('holds dispatched reservations indeterminate before isolate-and-clear cancels the rest', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            const consumed: string[] = [];
+            const indeterminate: string[] = [];
+            queue.onBatchConsumed = (localIds) => consumed.push(...localIds);
+            queue.onBatchIndeterminate = (localIds) => indeterminate.push(...localIds);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken!);
+            queue.markReservationTransportStarted(taken!);
+
+            queue.pushIsolateAndClear('/clear', 'local', 'clear-1');
+
+            expect(consumed).toEqual([]);
+            expect(indeterminate).toEqual(['id-1']);
+            expect(queue.restoreReservation(taken!)).toBe(false);
+            expect(queue.pendingLocalIds()).toEqual(['clear-1']);
+        });
+
+        it('holds pre-transport reservations when isolate-and-clear races them', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            const indeterminate: string[] = [];
+            queue.onBatchIndeterminate = (localIds) => indeterminate.push(...localIds);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+            queue.beginReservationDispatch(taken!);
+
+            queue.pushIsolateAndClear('/clear', 'local', 'clear-1');
+
+            expect(indeterminate).toEqual(['id-1']);
+            expect(queue.restoreReservation(taken!)).toBe(false);
+            expect(queue.pendingLocalIds()).toEqual(['clear-1']);
+        });
+
+        it('reset and close cancel outstanding reservations', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-1');
+            const taken = queue.takeByLocalId('id-1');
+            queue.reset();
+            expect(queue.restoreReservation(taken!)).toBe(false);
+
+            queue.push('msg2', 'local', 'id-2');
+            const taken2 = queue.takeByLocalId('id-2');
+            queue.close();
+            expect(queue.restoreReservation(taken2!)).toBe(false);
+        });
+    });
 });

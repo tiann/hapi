@@ -275,7 +275,8 @@ export class AcpStdioTransport {
         options?: { timeoutMs?: number; dispatchTimeoutMs?: number }
     ): { dispatched: Promise<void>; completed: Promise<unknown> } {
         if (this.closed || this.exited) {
-            const error = markAcpIndeterminate(this.closeError ?? this.exitError ?? new Error('ACP transport is closed'));
+            const cause = this.closeError ?? this.exitError ?? new Error('ACP transport is closed');
+            const error = new Error(cause.message, { cause });
             return { dispatched: Promise.reject(error), completed: Promise.reject(error) };
         }
 
@@ -384,8 +385,8 @@ export class AcpStdioTransport {
             });
         } catch (error) {
             const writeError = error instanceof Error ? error : new Error(String(error));
-            this.markClosed(writeError);
             failRequest(writeError);
+            this.markClosed(new Error(writeError.message, { cause: writeError }));
         }
 
         return { dispatched, completed };

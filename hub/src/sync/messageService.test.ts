@@ -1249,6 +1249,28 @@ describe('MessageService.sendMessage deliveryMode', () => {
         })
     })
 
+    it('does not replay a steer left dispatching after a CLI crash', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'dispatching-crash-replay')
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'already sent to agent' } },
+            'dispatching-local'
+        )
+        expect(store.messages.setMessagesDeliveryState(session.id, ['dispatching-local'], 'dispatching')).toBe(1)
+
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+        expect(service.getQueuedState(session.id, ['dispatching-local'])).toEqual({
+            queuedLocalIds: [],
+            indeterminateLocalIds: ['dispatching-local'],
+            invokedLocalMessages: []
+        })
+    })
+
     it('delivers a duplicate-localId retry as queue even when the stored row retains steer', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
