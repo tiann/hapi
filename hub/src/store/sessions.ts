@@ -698,3 +698,35 @@ export function deleteSession(db: Database, id: string, namespace: string): bool
     ).run(id, namespace)
     return result.changes > 0
 }
+
+/** Delete a group only after validating every member in one transaction. */
+export function deleteArchivedSessions(
+    db: Database,
+    ids: string[],
+    namespace: string
+): StoredSession[] | null {
+    const uniqueIds = [...new Set(ids)]
+    if (uniqueIds.length === 0) return []
+
+    return db.transaction(() => {
+        const placeholders = uniqueIds.map(() => '?').join(', ')
+        const rows = db.prepare(
+            `SELECT * FROM sessions WHERE namespace = ? AND id IN (${placeholders})`
+        ).all(namespace, ...uniqueIds) as DbSessionRow[]
+        const allArchived = rows.length === uniqueIds.length && rows.every((row) => {
+            const metadata = safeJsonParse(row.metadata)
+            return row.active === 0
+                && isPlainObject(metadata)
+                && metadata.lifecycleState === 'archived'
+        })
+        if (!allArchived) return null
+
+        const result = db.prepare(
+            `DELETE FROM sessions WHERE namespace = ? AND id IN (${placeholders})`
+        ).run(namespace, ...uniqueIds)
+        if (result.changes !== uniqueIds.length) {
+            throw new Error('Failed to delete archived sessions')
+        }
+        return rows.map(toStoredSession)
+    })()
+}

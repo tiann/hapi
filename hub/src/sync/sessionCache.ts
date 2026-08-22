@@ -1085,6 +1085,43 @@ export class SessionCache {
         this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
     }
 
+    async deleteArchivedSessions(sessionIds: string[], namespace: string): Promise<void> {
+        const ids = [...new Set(sessionIds)]
+        if (ids.length === 0) return
+        const sessions = ids.map((id) => this.getSessionByNamespace(id, namespace))
+        if (sessions.some((session): session is undefined => !session)) {
+            throw new Error('Session access denied')
+        }
+        const scratchlistAttachments = new Map(
+            sessions.map((session) => [
+                session!.id,
+                this.store.scratchlist.list(session!.id).flatMap((entry) => entry.attachments)
+            ])
+        )
+        const deleted = this.store.sessions.deleteArchivedSessions(ids, namespace)
+        if (!deleted) {
+            throw new Error('Sessions are no longer archived')
+        }
+
+        for (const session of sessions) {
+            this.sessions.delete(session!.id)
+            this.lastBroadcastAtBySessionId.delete(session!.id)
+            this.todoBackfillAttemptedSessionIds.delete(session!.id)
+            this.pendingThinkingUntilBySessionId.delete(session!.id)
+            const attachments = scratchlistAttachments.get(session!.id) ?? []
+            void import('../scratchlistAttachments/storage').then(async ({
+                deleteScratchlistAttachmentFiles,
+                deleteScratchlistSessionAttachmentDir,
+                getHapiHomeDir,
+            }) => {
+                const hapiHome = getHapiHomeDir()
+                await deleteScratchlistAttachmentFiles(hapiHome, attachments)
+                await deleteScratchlistSessionAttachmentDir(hapiHome, namespace, session!.id)
+            })
+            this.publisher.emit({ type: 'session-removed', sessionId: session!.id, namespace })
+        }
+    }
+
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
         await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: true })
     }
