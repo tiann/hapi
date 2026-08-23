@@ -41,6 +41,7 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 - [Voice Assistant](docs/guide/voice-assistant.md)
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)
+- [Build Remote Agent companion](docs/guide/gbr.md) — phone spectator for the desktop coding-agent host (`gbr/1`; not a HAPI replacement)
 
 ## Native apps (iOS / Android)
 
