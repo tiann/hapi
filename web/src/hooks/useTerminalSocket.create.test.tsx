@@ -260,9 +260,11 @@ describe('useTerminalSocket terminal creation', () => {
             expect(testState.emissions.some(({ event }) => event === 'terminal:create')).toBe(true)
         })
 
-        // The UI may immediately choose an existing tab while B is still waiting
-        // for its first attach/ready. B must remain pending for later selection,
-        // but that pending state must not interfere with A.
+        // Mirror the real TerminalPage lifecycle: New selects B immediately
+        // after createTerminal(B), then the user may switch back to existing A
+        // while B is still pending. The B render matters because an A -> A
+        // rerender would not run the hook's terminalId synchronization effect.
+        hook.rerender({ terminalId: 'terminal-b' })
         hook.rerender({ terminalId: 'terminal-a' })
         act(() => {
             hook.result.current.connect(90, 25)
