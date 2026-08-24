@@ -274,16 +274,6 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         ))
     }
 
-    if (config.webhookUrl && config.webhookNotification) {
-        notificationChannels.push(new WebhookChannel(
-            config.webhookUrl,
-            config.webhookKey,
-            config.publicUrl,
-            visibilityTracker,
-            config.webhookBackgroundOnly
-        ))
-    }
-
     // Initialize Telegram bot (optional)
     if (config.telegramEnabled && config.telegramBotToken) {
         happyBot = new HappyBot({
@@ -296,6 +286,17 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         if (config.telegramNotification) {
             notificationChannels.push(happyBot)
         }
+    }
+
+    // User-controlled HTTP endpoint last so a hung webhook cannot delay Telegram.
+    if (config.webhookUrl && config.webhookNotification) {
+        notificationChannels.push(new WebhookChannel(
+            config.webhookUrl,
+            config.webhookKey,
+            config.publicUrl,
+            visibilityTracker,
+            config.webhookBackgroundOnly
+        ))
     }
 
     notificationHub = new NotificationHub(syncEngine, notificationChannels)

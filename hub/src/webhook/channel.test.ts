@@ -129,13 +129,24 @@ describe('WebhookChannel', () => {
     })
 
     it('throws a descriptive error when the endpoint responds with a non-2xx status', async () => {
-        const fetchMock = mock(async () => new Response('bad request', { status: 400, statusText: 'Bad Request' }))
+        const fetchMock = mock(async () => new Response(
+            'invalid key=secret-key https://example.com/hook?key=secret-key',
+            { status: 400, statusText: 'Bad Request' }
+        ))
         const originalFetch = globalThis.fetch
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
         try {
-            const channel = new WebhookChannel('https://example.com/hook', null, 'https://hapi.example.com')
-            await expect(channel.sendReady(createSession())).rejects.toThrow('Webhook 发送失败: HTTP 400')
+            const channel = new WebhookChannel('https://example.com/hook', 'secret-key', 'https://hapi.example.com')
+            let message = ''
+            try {
+                await channel.sendReady(createSession())
+            } catch (error) {
+                message = error instanceof Error ? error.message : String(error)
+            }
+            expect(message).toBe('Webhook 发送失败: HTTP 400 Bad Request')
+            expect(message).not.toContain('secret-key')
+            expect(message).not.toContain('invalid key')
         } finally {
             globalThis.fetch = originalFetch
         }

@@ -136,12 +136,12 @@ function parseOptionalWebhookUrl(value: unknown, label: string): string | null {
     return requireWebhookHttpUrl(trimmed, label)
 }
 
-function parseOptionalSecret(value: unknown): string | null {
+function parseOptionalSecret(value: unknown, label: string): string | null {
     if (value === null || value === undefined) {
         return null
     }
     if (typeof value !== 'string') {
-        return null
+        throw new Error(`${label} must be a string`)
     }
     const trimmed = value.trim()
     return trimmed ? trimmed : null
@@ -269,14 +269,14 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         // webhookKey: env > file > null
         let webhookKey: string | null = null
         if (process.env.HAPI_WEBHOOK_KEY) {
-            webhookKey = parseOptionalSecret(process.env.HAPI_WEBHOOK_KEY)
+            webhookKey = parseOptionalSecret(process.env.HAPI_WEBHOOK_KEY, 'HAPI_WEBHOOK_KEY')
             sources.webhookKey = 'env'
             if (settings.webhookKey === undefined && webhookKey) {
                 settings.webhookKey = webhookKey
                 needsSave = true
             }
         } else if (settings.webhookKey !== undefined) {
-            webhookKey = parseOptionalSecret(settings.webhookKey)
+            webhookKey = parseOptionalSecret(settings.webhookKey, 'webhookKey')
             sources.webhookKey = 'file'
         }
 
@@ -289,9 +289,11 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                 settings.webhookNotification = webhookNotification
                 needsSave = true
             }
-        } else if (settings.webhookNotification !== undefined) {
+        } else if (typeof settings.webhookNotification === 'boolean') {
             webhookNotification = settings.webhookNotification
             sources.webhookNotification = 'file'
+        } else if (settings.webhookNotification !== undefined) {
+            throw new Error('webhookNotification must be a boolean')
         }
 
         // webhookBackgroundOnly: env > file > false

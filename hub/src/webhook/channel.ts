@@ -138,8 +138,7 @@ export class WebhookChannel implements NotificationChannel {
         }
 
         if (!response.ok) {
-            const text = await response.text().catch(() => '')
-            throw new Error(`Webhook 发送失败: HTTP ${response.status} ${response.statusText}${text ? ` - ${text}` : ''}`)
+            throw new Error(`Webhook 发送失败: HTTP ${response.status} ${response.statusText}`)
         }
     }
 

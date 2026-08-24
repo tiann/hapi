@@ -145,6 +145,24 @@ describe('loadServerSettings', () => {
         await expect(loadServerSettings(dir)).rejects.toThrow('webhookUrl must be a valid http(s) URL')
     })
 
+    it('rejects a non-string webhook key from settings.json', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookKey: 12345
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookKey must be a string')
+    })
+
+    it('rejects a non-boolean webhook notification setting', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookNotification: 'false'
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookNotification must be a boolean')
+    })
+
     it('defaults push settings to null', async () => {
         dir = makeTempDir()
 
