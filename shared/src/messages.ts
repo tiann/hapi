@@ -7,6 +7,88 @@ type RoleWrappedRecord = {
     meta?: unknown
 }
 
+export const DISPLAY_HISTORY_STRING_LIMIT = 64 * 1024
+export const CLAUDE_IMPORTED_USER_TRUNCATION_MARKER = '\n…[hapi: oversized imported prompt truncated]…'
+const DISPLAY_HISTORY_TRUNCATE_HEAD = 48 * 1024
+const DISPLAY_HISTORY_TRUNCATE_TAIL = 12 * 1024
+
+export function normalizeClaudeImportedUserText(value: string): string {
+    return value.length > DISPLAY_HISTORY_STRING_LIMIT
+        ? `${value.slice(0, DISPLAY_HISTORY_STRING_LIMIT - CLAUDE_IMPORTED_USER_TRUNCATION_MARKER.length)}${CLAUDE_IMPORTED_USER_TRUNCATION_MARKER}`
+        : value
+}
+
+const CLAUDE_AGENT_IMPORT_RUNTIME_FIELDS = [
+    'uuid',
+    'parentUuid',
+    'timestamp',
+    'cwd',
+    'version',
+    'gitBranch',
+    'requestId'
+] as const
+
+/** Removes SDK/native runtime metadata before comparing imported Claude agent events. */
+export function normalizeClaudeAgentEventForImport(value: unknown): unknown {
+    if (!isObject(value)) return value
+
+    const normalized: Record<string, unknown> = { ...value }
+    for (const field of CLAUDE_AGENT_IMPORT_RUNTIME_FIELDS) {
+        delete normalized[field]
+    }
+
+    if (!isObject(normalized.message) || !isObject(normalized.message.usage)) {
+        return normalized
+    }
+
+    const usage = { ...normalized.message.usage }
+    delete usage.context_window
+    normalized.message = { ...normalized.message, usage }
+    return normalized
+}
+
+function truncateDisplayHistoryString(value: string): string {
+    const removed = value.length - DISPLAY_HISTORY_TRUNCATE_HEAD - DISPLAY_HISTORY_TRUNCATE_TAIL
+    return `${value.slice(0, DISPLAY_HISTORY_TRUNCATE_HEAD)}\n…[hapi: truncated ${removed} chars]…\n${value.slice(value.length - DISPLAY_HISTORY_TRUNCATE_TAIL)}`
+}
+
+function truncateDisplayHistoryValue(value: unknown): unknown {
+    if (typeof value === 'string') {
+        return value.length > DISPLAY_HISTORY_STRING_LIMIT ? truncateDisplayHistoryString(value) : value
+    }
+    if (Array.isArray(value)) {
+        let copy: unknown[] | null = null
+        for (let index = 0; index < value.length; index += 1) {
+            const item = truncateDisplayHistoryValue(value[index])
+            if (item !== value[index]) {
+                copy ??= value.slice()
+                copy[index] = item
+            }
+        }
+        return copy ?? value
+    }
+    if (value !== null && typeof value === 'object') {
+        const record = value as Record<string, unknown>
+        let copy: Record<string, unknown> | null = null
+        for (const key of Object.keys(record)) {
+            const item = truncateDisplayHistoryValue(record[key])
+            if (item !== record[key]) {
+                copy ??= { ...record }
+                copy[key] = item
+            }
+        }
+        return copy ?? value
+    }
+    return value
+}
+
+/** Caps strings in agent history before transport and persistence. */
+export function truncateOversizedAgentMessageContent(content: unknown): unknown {
+    if (content === null || typeof content !== 'object') return content
+    if ((content as Record<string, unknown>).role !== 'agent') return content
+    return truncateDisplayHistoryValue(content)
+}
+
 const VISIBLE_CLAUDE_SYSTEM_SUBTYPES = new Set([
     'api_error',
     'turn_duration',

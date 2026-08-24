@@ -56,8 +56,16 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const sessionId = sessionResult.sessionId
         const messageId = c.req.param('messageId')
 
-        const result = await engine.cancelQueuedMessage(sessionId, messageId)
-        return c.json(result)
+        try {
+            const result = await engine.cancelQueuedMessage(sessionId, messageId)
+            return c.json(result)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to cancel queued message'
+            if (message === 'Conversation history action already in progress') {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
     })
 
     app.post('/sessions/:id/messages/:messageId/steer', async (c) => {

@@ -316,6 +316,23 @@ export function getAllMessages(
     return rows.map(toStoredMessage)
 }
 
+export function getMessagesBeforeSeq(
+    db: Database,
+    sessionId: string,
+    beforeSeq: number,
+    limit: number = 200
+): StoredMessage[] {
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const safeBeforeSeq = Number.isFinite(beforeSeq) ? beforeSeq : Number.MAX_SAFE_INTEGER
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ? AND seq < ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, safeBeforeSeq, safeLimit) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
 export function getMessagesAfterSeq(
     db: Database,
     sessionId: string,

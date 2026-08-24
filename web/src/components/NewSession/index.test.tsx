@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     copilotModelsLoading: false,
     opencodeModels: [] as Array<{ modelId: string; name?: string }>,
     opencodeModelsLoading: false,
+    claudeDialogSelection: ['claude-native-1'] as string[],
     piDialogSelection: ['pi-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
@@ -150,6 +151,13 @@ vi.mock('../../utils/formatRunnerSpawnError', () => ({
 vi.mock('@/components/CodexSessionSyncDialog', () => ({
     CodexSessionSyncDialog: () => null
 }))
+vi.mock('@/components/ClaudeSessionImportDialog', () => ({
+    ClaudeSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button type="button" data-testid="select-claude-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.claudeDialogSelection)}>
+            select claude history
+        </button>
+    ) : null
+}))
 vi.mock('@/components/PiSessionImportDialog', () => ({
     PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onClose: () => void; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
         <>
@@ -261,6 +269,7 @@ describe('NewSession launch preferences', () => {
         mocks.copilotModelsLoading = false
         mocks.opencodeModels = [{ modelId: 'provider/current', name: 'Current' }]
         mocks.opencodeModelsLoading = false
+        mocks.claudeDialogSelection = ['claude-native-1']
         mocks.piDialogSelection = ['pi-native-1']
         mocks.piModels = []
         mocks.piModelsLoading = false
@@ -664,6 +673,58 @@ describe('NewSession launch preferences', () => {
             machineId: 'machine-1'
         })
         expect(piApi.reopenSession).toHaveBeenCalledWith('hapi-imported-1')
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('imports the selected Claude history and resumes the canonical HAPI session', async () => {
+        savePreferredAgent('claude')
+        const claudeApi = {
+            getClaudeSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [{
+                    id: 'claude-native-1',
+                    title: 'Existing Claude session',
+                    cwd: 'C:\\repo',
+                    file: 'C:\\claude-native-1.jsonl',
+                    modifiedAt: 1,
+                    messageCount: 2
+                }]
+            }),
+            importClaudeSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                results: [{ claudeSessionId: 'claude-native-1', hapiSessionId: 'hapi-claude-1', action: 'created', appended: 2 }]
+            }),
+            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-claude-1', resumed: true })
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'claudeImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-claude-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-claude-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-claude-1'))
+        expect(claudeApi.importClaudeSessions).toHaveBeenCalledWith({
+            sessionIds: ['claude-native-1'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1',
+            model: null,
+            effort: null,
+            permissionMode: 'default'
+        })
+        expect(claudeApi.reopenSession).toHaveBeenCalledWith('hapi-claude-1')
         expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 

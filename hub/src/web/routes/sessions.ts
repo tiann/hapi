@@ -898,8 +898,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to delete session'
-            // Map "active session" error to 409 conflict (race condition: session became active)
-            if (message.includes('active')) {
+            // Both lifecycle races and history operations are temporary conflicts.
+            if (message.includes('active') || message.includes('history action')) {
                 return c.json({ error: message }, 409)
             }
             return c.json({ error: message }, 500)
