@@ -3,6 +3,9 @@ import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
+import { requireWebhookHttpUrl } from './url'
+
+export const WEBHOOK_REQUEST_TIMEOUT_MS = 10_000
 
 function buildSessionUrl(baseUrl: string, sessionId: string): string {
     try {
@@ -13,19 +16,21 @@ function buildSessionUrl(baseUrl: string, sessionId: string): string {
     }
 }
 
+function isAbortError(error: unknown): boolean {
+    return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+}
+
 /**
  * Generic webhook notification channel.
  *
  * Unlike ServerChanChannel/HappyBot, this channel does not talk to a fixed
- * provider. It POSTs a small JSON payload to a user-supplied URL, so it
- * works with self-hosted relays, serverless functions, or any third-party
- * push gateway that accepts a webhook (e.g. Bark, PushPlus, WxPusher, a
- * custom Cloudflare Worker that fans out to Telegram/Server酱/whatever).
+ * provider. It POSTs HAPI's JSON payload to a user-supplied URL. Point this
+ * at a relay you control (self-hosted endpoint, serverless function, Worker)
+ * and have that relay forward to Telegram / Server酱 / Bark / etc.
  *
  * This is also the escape hatch for hubs that cannot reach the built-in
  * providers directly (e.g. sctapi.ftqq.com / api.telegram.org are
- * unreachable from the hub's network): point HAPI_WEBHOOK_URL at any
- * endpoint the hub *can* reach, and let that endpoint forward the message.
+ * unreachable from the hub's network).
  *
  * Payload:
  * {
@@ -42,13 +47,19 @@ function buildSessionUrl(baseUrl: string, sessionId: string): string {
  * `X-HAPI-Webhook-Key` header.
  */
 export class WebhookChannel implements NotificationChannel {
+    private readonly url: string
+    private readonly key: string | null
+
     constructor(
-        private readonly url: string,
-        private readonly key: string | null,
+        url: string,
+        key: string | null,
         private readonly publicUrl: string,
         private readonly visibilityTracker: VisibilityTracker | null = null,
         private readonly backgroundOnly = false
-    ) {}
+    ) {
+        this.url = requireWebhookHttpUrl(url)
+        this.key = key?.trim() ? key.trim() : null
+    }
 
     async sendReady(session: Session): Promise<void> {
         if (!session.active || this.shouldSuppress(session)) {
@@ -96,30 +107,35 @@ export class WebhookChannel implements NotificationChannel {
         const name = getSessionName(session)
         const sessionUrl = buildSessionUrl(this.publicUrl, session.id)
 
-        let target: URL
-        try {
-            target = new URL(this.url)
-        } catch {
-            throw new Error(`Webhook 发送失败: 无效的 URL "${this.url}"`)
-        }
+        const target = new URL(this.url)
         if (this.key) {
             target.searchParams.set('key', this.key)
         }
 
-        const response = await fetch(target, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json',
-                ...(this.key ? { 'x-hapi-webhook-key': this.key } : {})
-            },
-            body: JSON.stringify({
-                event,
-                title: `${title} · ${name}`,
-                content,
-                url: sessionUrl,
-                sessionId: session.id
+        let response: Response
+        try {
+            response = await fetch(target, {
+                method: 'POST',
+                redirect: 'error',
+                headers: {
+                    'content-type': 'application/json',
+                    ...(this.key ? { 'X-HAPI-Webhook-Key': this.key } : {})
+                },
+                body: JSON.stringify({
+                    event,
+                    title: `${title} · ${name}`,
+                    content,
+                    url: sessionUrl,
+                    sessionId: session.id
+                }),
+                signal: AbortSignal.timeout(WEBHOOK_REQUEST_TIMEOUT_MS)
             })
-        })
+        } catch (error) {
+            if (isAbortError(error)) {
+                throw new Error('Webhook 发送失败: 请求超时')
+            }
+            throw new Error(`Webhook 发送失败: ${error instanceof Error ? error.message : String(error)}`)
+        }
 
         if (!response.ok) {
             const text = await response.text().catch(() => '')

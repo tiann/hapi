@@ -57,9 +57,9 @@ These values can also be set in `settings.json` (`serverChanSendKey`, `serverCha
 
 ## Webhook setup
 
-Send notifications to any endpoint you control — a self-hosted relay, a serverless function, or a third-party push gateway (Bark, PushPlus, WxPusher, ...). This is also the way to go if the hub's machine cannot reach `api.telegram.org` / `sctapi.ftqq.com` directly: point the webhook at any URL the hub *can* reach, and have that endpoint forward the message onward.
+Send notifications to a relay you control — a self-hosted HTTP endpoint, a serverless function, or a Worker that forwards the payload onward (Telegram, Server酱, Bark, PushPlus, …). The hub posts **HAPI's own JSON**; Bark / PushPlus / WxPusher will not accept this body as a drop-in. Use a relay if the hub cannot reach `api.telegram.org` / `sctapi.ftqq.com` directly.
 
-1. Stand up an HTTP endpoint that accepts a POST request and returns a `2xx` status
+1. Stand up an HTTP(S) endpoint that accepts `POST` with the JSON below and returns a `2xx` status
 2. Set the webhook URL and start the hub:
 
 ```bash
@@ -81,7 +81,9 @@ The hub POSTs a JSON body to `HAPI_WEBHOOK_URL` for the same events as the other
 }
 ```
 
-`event` is one of `ready`, `permission`, `task_failed`, or `completed`.
+`event` is one of `ready`, `permission`, `task_failed`, or `completed`. Map `title`, `content`, and `url` in your relay to whatever the downstream gateway expects.
+
+Requests time out after 10 seconds and do not follow redirects (so a `key` query param / `X-HAPI-Webhook-Key` header cannot leak to a different host).
 
 Related environment variables:
 

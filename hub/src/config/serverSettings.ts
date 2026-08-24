@@ -9,6 +9,7 @@
  */
 
 import { getSettingsFile, updateSettings } from './settings'
+import { requireWebhookHttpUrl } from '../webhook/url'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -121,6 +122,31 @@ function rejectOldSettingsFields(settings: object, settingsFile: string): void {
     )
 }
 
+function parseOptionalWebhookUrl(value: unknown, label: string): string | null {
+    if (value === null || value === undefined) {
+        return null
+    }
+    if (typeof value !== 'string') {
+        throw new Error(`${label} must be a valid http(s) URL`)
+    }
+    const trimmed = value.trim()
+    if (!trimmed) {
+        return null
+    }
+    return requireWebhookHttpUrl(trimmed, label)
+}
+
+function parseOptionalSecret(value: unknown): string | null {
+    if (value === null || value === undefined) {
+        return null
+    }
+    if (typeof value !== 'string') {
+        return null
+    }
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+}
+
 /**
  * Load hub settings with priority: env > file > default
  * Saves new env values to file when not already present
@@ -226,31 +252,31 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             throw new Error('serverChanBackgroundOnly must be a boolean')
         }
 
-        // webhookUrl: env > file > null
+        // webhookUrl: env > file > null (http/https only)
         let webhookUrl: string | null = null
         if (process.env.HAPI_WEBHOOK_URL) {
-            webhookUrl = process.env.HAPI_WEBHOOK_URL
+            webhookUrl = parseOptionalWebhookUrl(process.env.HAPI_WEBHOOK_URL, 'HAPI_WEBHOOK_URL')
             sources.webhookUrl = 'env'
-            if (settings.webhookUrl === undefined) {
+            if (settings.webhookUrl === undefined && webhookUrl) {
                 settings.webhookUrl = webhookUrl
                 needsSave = true
             }
         } else if (settings.webhookUrl !== undefined) {
-            webhookUrl = settings.webhookUrl
+            webhookUrl = parseOptionalWebhookUrl(settings.webhookUrl, 'webhookUrl')
             sources.webhookUrl = 'file'
         }
 
         // webhookKey: env > file > null
         let webhookKey: string | null = null
         if (process.env.HAPI_WEBHOOK_KEY) {
-            webhookKey = process.env.HAPI_WEBHOOK_KEY
+            webhookKey = parseOptionalSecret(process.env.HAPI_WEBHOOK_KEY)
             sources.webhookKey = 'env'
-            if (settings.webhookKey === undefined) {
+            if (settings.webhookKey === undefined && webhookKey) {
                 settings.webhookKey = webhookKey
                 needsSave = true
             }
         } else if (settings.webhookKey !== undefined) {
-            webhookKey = settings.webhookKey
+            webhookKey = parseOptionalSecret(settings.webhookKey)
             sources.webhookKey = 'file'
         }
 

@@ -126,6 +126,25 @@ describe('loadServerSettings', () => {
         await expect(loadServerSettings(dir)).rejects.toThrow('webhookBackgroundOnly must be a boolean')
     })
 
+    it('rejects a non-http webhook URL from the environment', async () => {
+        dir = makeTempDir()
+        process.env.HAPI_WEBHOOK_URL = 'ftp://example.com/hook'
+        try {
+            await expect(loadServerSettings(dir)).rejects.toThrow('HAPI_WEBHOOK_URL must be a valid http(s) URL')
+        } finally {
+            delete process.env.HAPI_WEBHOOK_URL
+        }
+    })
+
+    it('rejects a non-http webhook URL from settings.json', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookUrl: 'not-a-url'
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookUrl must be a valid http(s) URL')
+    })
+
     it('defaults push settings to null', async () => {
         dir = makeTempDir()
 

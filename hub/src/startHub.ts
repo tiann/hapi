@@ -169,6 +169,16 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     } else {
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
     }
+    if (config.webhookUrl) {
+        const source = formatSource(config.sources.webhookUrl)
+        const notificationSource = formatSource(config.sources.webhookNotification)
+        const backgroundOnlySource = formatSource(config.sources.webhookBackgroundOnly)
+        console.log(`[Hub] Webhook: enabled (${source})`)
+        console.log(`[Hub] Webhook notifications: ${config.webhookNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
+        console.log(`[Hub] Webhook background-only: ${config.webhookBackgroundOnly ? 'enabled' : 'disabled'} (${backgroundOnlySource})`)
+    } else {
+        console.log('[Hub] Webhook: disabled (no HAPI_WEBHOOK_URL)')
+    }
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -272,7 +282,6 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             visibilityTracker,
             config.webhookBackgroundOnly
         ))
-        console.log('[Hub] Webhook notifications enabled:', config.webhookUrl)
     }
 
     // Initialize Telegram bot (optional)

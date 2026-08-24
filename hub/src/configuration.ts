@@ -12,8 +12,8 @@
  * - SERVERCHAN_SENDKEY: Server酱 SendKey/AppKey for push notifications
  * - SERVERCHAN_NOTIFICATION: Enable/disable Server酱 notifications (default: true)
  * - SERVERCHAN_BACKGROUND_ONLY: Only send Server酱 notifications without visible HAPI clients (default: false)
- * - HAPI_WEBHOOK_URL: Generic webhook endpoint to POST notification events to (any self-hosted
- *   relay or third-party push gateway that accepts a webhook)
+ * - HAPI_WEBHOOK_URL: HTTP(S) URL of a relay that accepts HAPI's notification JSON
+ *   (not a drop-in for Bark/PushPlus/WxPusher; the relay forwards onward)
  * - HAPI_WEBHOOK_KEY: Optional shared key sent as a `key` query param and `X-HAPI-Webhook-Key` header
  * - HAPI_WEBHOOK_NOTIFICATION: Enable/disable webhook notifications (default: true)
  * - HAPI_WEBHOOK_BACKGROUND_ONLY: Only send webhook notifications without visible HAPI clients (default: false)
@@ -89,7 +89,7 @@ class Configuration {
     /** Only send Server酱 notifications when no visible HAPI client exists */
     public readonly serverChanBackgroundOnly: boolean
 
-    /** Generic webhook endpoint URL for notification events */
+    /** HTTP(S) URL of a relay that accepts HAPI notification JSON */
     public readonly webhookUrl: string | null
 
     /** Optional shared key sent with webhook requests */

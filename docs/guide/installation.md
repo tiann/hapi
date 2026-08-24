@@ -189,7 +189,7 @@ On first run, HAPI:
 | `SERVERCHAN_SENDKEY` | - | `serverChanSendKey` | Server酱 (ServerChan) SendKey for push notifications |
 | `SERVERCHAN_NOTIFICATION` | `true` | `serverChanNotification` | Enable ServerChan notifications |
 | `SERVERCHAN_BACKGROUND_ONLY` | `false` | `serverChanBackgroundOnly` | Only send ServerChan notifications when no visible HAPI connection exists in the namespace |
-| `HAPI_WEBHOOK_URL` | - | `webhookUrl` | Generic webhook endpoint to POST notification events to (self-hosted relay or any third-party push gateway) |
+| `HAPI_WEBHOOK_URL` | - | `webhookUrl` | HTTP(S) URL of a relay that accepts HAPI notification JSON (not a drop-in for Bark/PushPlus) |
 | `HAPI_WEBHOOK_KEY` | - | `webhookKey` | Optional shared key sent as a `key` query param and `X-HAPI-Webhook-Key` header on every webhook request |
 | `HAPI_WEBHOOK_NOTIFICATION` | `true` | `webhookNotification` | Enable webhook notifications |
 | `HAPI_WEBHOOK_BACKGROUND_ONLY` | `false` | `webhookBackgroundOnly` | Only send webhook notifications when no visible HAPI connection exists in the namespace |

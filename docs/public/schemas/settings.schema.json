@@ -71,7 +71,8 @@
     },
     "webhookUrl": {
       "type": "string",
-      "description": "Generic webhook endpoint to POST notification events to. ENV: HAPI_WEBHOOK_URL"
+      "format": "uri",
+      "description": "HTTP(S) URL of a relay that accepts HAPI notification JSON. ENV: HAPI_WEBHOOK_URL"
     },
     "webhookKey": {
       "type": "string",
