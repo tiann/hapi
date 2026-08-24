@@ -144,6 +144,24 @@ describe('SessionList machine filter', () => {
         expect(screen.getByText('CPU 12% · RAM 88%')).toBeTruthy()
     })
 
+    it('shows the summary row for a sole machine with no visible sessions', () => {
+        // Fresh install / "active only" filtering: zero session groups, but the
+        // sole machine is online and its health must stay visible.
+        renderSessionList(
+            [],
+            {
+                'machine-1': makeMachine({
+                    id: 'machine-1',
+                    health: { collectedAt: 100, cpuPercent: 12, memoryPercent: 88 }
+                })
+            }
+        )
+
+        const summary = screen.getByText('Mint').parentElement!
+        expect(within(summary).getByText('(0)')).toBeTruthy()
+        expect(screen.getByText('CPU 12% · RAM 88%')).toBeTruthy()
+    })
+
     it('shows the filter bar and machine-suffixed group titles with multiple machines', () => {
         renderSessionList(multiMachineSessions)
 
