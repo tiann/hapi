@@ -72,6 +72,7 @@
     "webhookUrl": {
       "type": "string",
       "format": "uri",
+      "pattern": "^https?://",
       "description": "HTTP(S) URL of a relay that accepts HAPI notification JSON. ENV: HAPI_WEBHOOK_URL"
     },
     "webhookKey": {
