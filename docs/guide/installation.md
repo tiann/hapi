@@ -189,6 +189,10 @@ On first run, HAPI:
 | `SERVERCHAN_SENDKEY` | - | `serverChanSendKey` | Server酱 (ServerChan) SendKey for push notifications |
 | `SERVERCHAN_NOTIFICATION` | `true` | `serverChanNotification` | Enable ServerChan notifications |
 | `SERVERCHAN_BACKGROUND_ONLY` | `false` | `serverChanBackgroundOnly` | Only send ServerChan notifications when no visible HAPI connection exists in the namespace |
+| `HAPI_WEBHOOK_URL` | - | `webhookUrl` | Generic webhook endpoint to POST notification events to (self-hosted relay or any third-party push gateway) |
+| `HAPI_WEBHOOK_KEY` | - | `webhookKey` | Optional shared key sent as a `key` query param and `X-HAPI-Webhook-Key` header on every webhook request |
+| `HAPI_WEBHOOK_NOTIFICATION` | `true` | `webhookNotification` | Enable webhook notifications |
+| `HAPI_WEBHOOK_BACKGROUND_ONLY` | `false` | `webhookBackgroundOnly` | Only send webhook notifications when no visible HAPI connection exists in the namespace |
 | `HAPI_RELAY_API` | `relay.hapi.run` | - | Relay API domain for the public relay |
 | `HAPI_RELAY_AUTH` | Per-hub key issued by the relay | `relayAuthKey` | Relay auth key override (set only when an operator provides a key) |
 | `HAPI_RELAY_FORCE_TCP` | `false` | - | Force TCP mode for relay |

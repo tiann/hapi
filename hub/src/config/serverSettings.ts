@@ -36,6 +36,10 @@ export interface ServerSettings {
     serverChanSendKey: string | null
     serverChanNotification: boolean
     serverChanBackgroundOnly: boolean
+    webhookUrl: string | null
+    webhookKey: string | null
+    webhookNotification: boolean
+    webhookBackgroundOnly: boolean
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -58,6 +62,10 @@ export interface ServerSettingsResult {
         serverChanSendKey: 'env' | 'file' | 'default'
         serverChanNotification: 'env' | 'file' | 'default'
         serverChanBackgroundOnly: 'env' | 'file' | 'default'
+        webhookUrl: 'env' | 'file' | 'default'
+        webhookKey: 'env' | 'file' | 'default'
+        webhookNotification: 'env' | 'file' | 'default'
+        webhookBackgroundOnly: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
@@ -129,6 +137,10 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             serverChanSendKey: 'default',
             serverChanNotification: 'default',
             serverChanBackgroundOnly: 'default',
+            webhookUrl: 'default',
+            webhookKey: 'default',
+            webhookNotification: 'default',
+            webhookBackgroundOnly: 'default',
             listenHost: 'default',
             listenPort: 'default',
             publicUrl: 'default',
@@ -212,6 +224,64 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             sources.serverChanBackgroundOnly = 'file'
         } else if (settings.serverChanBackgroundOnly !== undefined) {
             throw new Error('serverChanBackgroundOnly must be a boolean')
+        }
+
+        // webhookUrl: env > file > null
+        let webhookUrl: string | null = null
+        if (process.env.HAPI_WEBHOOK_URL) {
+            webhookUrl = process.env.HAPI_WEBHOOK_URL
+            sources.webhookUrl = 'env'
+            if (settings.webhookUrl === undefined) {
+                settings.webhookUrl = webhookUrl
+                needsSave = true
+            }
+        } else if (settings.webhookUrl !== undefined) {
+            webhookUrl = settings.webhookUrl
+            sources.webhookUrl = 'file'
+        }
+
+        // webhookKey: env > file > null
+        let webhookKey: string | null = null
+        if (process.env.HAPI_WEBHOOK_KEY) {
+            webhookKey = process.env.HAPI_WEBHOOK_KEY
+            sources.webhookKey = 'env'
+            if (settings.webhookKey === undefined) {
+                settings.webhookKey = webhookKey
+                needsSave = true
+            }
+        } else if (settings.webhookKey !== undefined) {
+            webhookKey = settings.webhookKey
+            sources.webhookKey = 'file'
+        }
+
+        // webhookNotification: env > file > true
+        let webhookNotification = true
+        if (process.env.HAPI_WEBHOOK_NOTIFICATION !== undefined) {
+            webhookNotification = process.env.HAPI_WEBHOOK_NOTIFICATION === 'true'
+            sources.webhookNotification = 'env'
+            if (settings.webhookNotification === undefined) {
+                settings.webhookNotification = webhookNotification
+                needsSave = true
+            }
+        } else if (settings.webhookNotification !== undefined) {
+            webhookNotification = settings.webhookNotification
+            sources.webhookNotification = 'file'
+        }
+
+        // webhookBackgroundOnly: env > file > false
+        let webhookBackgroundOnly = false
+        if (process.env.HAPI_WEBHOOK_BACKGROUND_ONLY !== undefined) {
+            webhookBackgroundOnly = process.env.HAPI_WEBHOOK_BACKGROUND_ONLY === 'true'
+            sources.webhookBackgroundOnly = 'env'
+            if (settings.webhookBackgroundOnly === undefined) {
+                settings.webhookBackgroundOnly = webhookBackgroundOnly
+                needsSave = true
+            }
+        } else if (typeof settings.webhookBackgroundOnly === 'boolean') {
+            webhookBackgroundOnly = settings.webhookBackgroundOnly
+            sources.webhookBackgroundOnly = 'file'
+        } else if (settings.webhookBackgroundOnly !== undefined) {
+            throw new Error('webhookBackgroundOnly must be a boolean')
         }
 
         // listenHost: env > file > default
@@ -313,6 +383,10 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     serverChanSendKey,
                     serverChanNotification,
                     serverChanBackgroundOnly,
+                    webhookUrl,
+                    webhookKey,
+                    webhookNotification,
+                    webhookBackgroundOnly,
                     listenHost,
                     listenPort,
                     publicUrl,

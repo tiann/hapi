@@ -12,6 +12,11 @@
  * - SERVERCHAN_SENDKEY: Server酱 SendKey/AppKey for push notifications
  * - SERVERCHAN_NOTIFICATION: Enable/disable Server酱 notifications (default: true)
  * - SERVERCHAN_BACKGROUND_ONLY: Only send Server酱 notifications without visible HAPI clients (default: false)
+ * - HAPI_WEBHOOK_URL: Generic webhook endpoint to POST notification events to (any self-hosted
+ *   relay or third-party push gateway that accepts a webhook)
+ * - HAPI_WEBHOOK_KEY: Optional shared key sent as a `key` query param and `X-HAPI-Webhook-Key` header
+ * - HAPI_WEBHOOK_NOTIFICATION: Enable/disable webhook notifications (default: true)
+ * - HAPI_WEBHOOK_BACKGROUND_ONLY: Only send webhook notifications without visible HAPI clients (default: false)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
@@ -46,6 +51,10 @@ export interface ConfigSources {
     serverChanSendKey: ConfigSource
     serverChanNotification: ConfigSource
     serverChanBackgroundOnly: ConfigSource
+    webhookUrl: ConfigSource
+    webhookKey: ConfigSource
+    webhookNotification: ConfigSource
+    webhookBackgroundOnly: ConfigSource
     listenHost: ConfigSource
     listenPort: ConfigSource
     publicUrl: ConfigSource
@@ -79,6 +88,18 @@ class Configuration {
 
     /** Only send Server酱 notifications when no visible HAPI client exists */
     public readonly serverChanBackgroundOnly: boolean
+
+    /** Generic webhook endpoint URL for notification events */
+    public readonly webhookUrl: string | null
+
+    /** Optional shared key sent with webhook requests */
+    public readonly webhookKey: string | null
+
+    /** Webhook notifications enabled */
+    public readonly webhookNotification: boolean
+
+    /** Only send webhook notifications when no visible HAPI client exists */
+    public readonly webhookBackgroundOnly: boolean
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -142,6 +163,10 @@ class Configuration {
         this.serverChanSendKey = serverSettings.serverChanSendKey
         this.serverChanNotification = serverSettings.serverChanNotification
         this.serverChanBackgroundOnly = serverSettings.serverChanBackgroundOnly
+        this.webhookUrl = serverSettings.webhookUrl
+        this.webhookKey = serverSettings.webhookKey
+        this.webhookNotification = serverSettings.webhookNotification
+        this.webhookBackgroundOnly = serverSettings.webhookBackgroundOnly
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl

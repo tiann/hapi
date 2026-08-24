@@ -25,6 +25,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { WebhookChannel } from './webhook/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -261,6 +262,17 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             visibilityTracker,
             config.serverChanBackgroundOnly
         ))
+    }
+
+    if (config.webhookUrl && config.webhookNotification) {
+        notificationChannels.push(new WebhookChannel(
+            config.webhookUrl,
+            config.webhookKey,
+            config.publicUrl,
+            visibilityTracker,
+            config.webhookBackgroundOnly
+        ))
+        console.log('[Hub] Webhook notifications enabled:', config.webhookUrl)
     }
 
     // Initialize Telegram bot (optional)
