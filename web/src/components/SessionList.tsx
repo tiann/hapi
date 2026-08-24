@@ -1288,8 +1288,26 @@ export function SessionList(props: {
     const showMachineFilterBar = machineFilters.length >= 2
     // With a single machine there is nothing to filter, but health and the
     // session count still belong in the sidebar: render a compact summary
-    // row instead of the filter bar.
-    const singleMachineItem = machineFilters.length === 1 ? machineFilterItems[0] : null
+    // row instead of the filter bar. The row is derived from session groups,
+    // but those disappear when the sole machine has no visible sessions
+    // (fresh install, or "active only" filtering); fall back to the machines
+    // list so its health stays visible (#1259).
+    const soleRegisteredMachine = machineFilters.length === 0 && Object.keys(machinesById).length === 1
+        ? Object.values(machinesById)[0]
+        : null
+    const singleMachineItem = machineFilters.length === 1
+        ? machineFilterItems[0]
+        : soleRegisteredMachine
+            ? {
+                id: soleRegisteredMachine.id,
+                label: resolveMachineLabel(soleRegisteredMachine.id),
+                sessionCount: 0,
+                healthPresentation: presentMachineHealth(
+                    soleRegisteredMachine.health,
+                    getMachinePlatform(soleRegisteredMachine)
+                )
+            }
+            : null
     // A persisted filter whose machine no longer has sessions falls back to
     // "All"; with at most one machine the bar is hidden and never filters.
     const activeMachineFilter = showMachineFilterBar && machineFilter !== null
