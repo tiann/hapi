@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import {
     extractAssistantPlainText,
     extractNotifySummary,
+    getLiveReasoningStreamId,
+    getReasoningStreamId,
     isRedundantGoalStatusEventContent,
     splitNotifySummary,
     stripNotifySummaryFooter,
@@ -357,5 +360,44 @@ describe('isRedundantGoalStatusEventContent (regression-guard for messages.ts ed
             }
         }
         expect(isRedundantGoalStatusEventContent(value)).toBe(true)
+    })
+})
+
+describe('reasoning stream identity', () => {
+    function reasoningContent(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'reasoning', message: 'thinking', id: 'stream-1', ...overrides }
+            }
+        }
+    }
+
+    test('reads the stream id from a live snapshot', () => {
+        expect(getReasoningStreamId(reasoningContent({ live: true }))).toBe('stream-1')
+        expect(getLiveReasoningStreamId(reasoningContent({ live: true }))).toBe('stream-1')
+    })
+
+    test('treats a settled reasoning message as part of the stream but not as live', () => {
+        expect(getReasoningStreamId(reasoningContent())).toBe('stream-1')
+        expect(getLiveReasoningStreamId(reasoningContent())).toBeNull()
+    })
+
+    test('does not treat a non-boolean live marker as live', () => {
+        expect(getLiveReasoningStreamId(reasoningContent({ live: 'yes' }))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', id: 'stream-1' } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'reasoning', id: 'stream-1' } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', id: 'stream-1' } } }],
+        ['a missing id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning' } } }],
+        ['a blank id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', id: '   ' } } }],
+        ['a non-string id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', id: 7 } } }],
+        ['a non-object value', 'reasoning']
+    ])('returns null for %s', (_label, value) => {
+        expect(getReasoningStreamId(value)).toBeNull()
+        expect(getLiveReasoningStreamId(value)).toBeNull()
     })
 })

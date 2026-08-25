@@ -1,3 +1,4 @@
+import { getReasoningStreamId } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
@@ -443,11 +444,48 @@ function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
     return type === 'agent-run-start' || type === 'agent-run-update' || type === 'agent-run-trace'
 }
 
+/** Collapse a reasoning stream down to the one snapshot that still says
+ *  something.
+ *
+ *  The CLI re-sends a growing reasoning buffer under a stable stream id every
+ *  few hundred milliseconds, and the timeline already folds those snapshots
+ *  into a single block by that id. Sessions recorded before the hub started
+ *  retiring them still carry every intermediate, and spending window budget on
+ *  rows that render as one block is what pushes the surrounding conversation
+ *  out of reach. Messages with no stream id are left alone. */
+function dropSupersededReasoningSnapshots(messages: DecryptedMessage[]): DecryptedMessage[] {
+    const newestByStream = new Map<string, DecryptedMessage>()
+    for (const message of messages) {
+        const streamId = getReasoningStreamId(message.content)
+        if (streamId === null) continue
+        const incumbent = newestByStream.get(streamId)
+        if (!incumbent) {
+            newestByStream.set(streamId, message)
+            continue
+        }
+        // Fall back to arrival order when either row predates seq numbering:
+        // `messages` is kept in display order, so later still means newer.
+        const challengerAt = messagePosition(message)
+        const incumbentAt = messagePosition(incumbent)
+        const newer = challengerAt && incumbentAt
+            ? comparePosition(challengerAt, incumbentAt) >= 0
+            : true
+        if (newer) newestByStream.set(streamId, message)
+    }
+    if (newestByStream.size === 0) return messages
+
+    const survivors = new Set<string>()
+    for (const message of newestByStream.values()) survivors.add(message.id)
+    return messages.filter((message) =>
+        getReasoningStreamId(message.content) === null || survivors.has(message.id))
+}
+
 function trimPreservingQueued(
-    messages: DecryptedMessage[],
+    incoming: DecryptedMessage[],
     regularLimit: number,
     mode: 'append' | 'prepend'
 ): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    const messages = dropSupersededReasoningSnapshots(incoming)
     const queued = messages.filter(isQueuedForInvocation)
     const queuedIds = new Set(queued.map((message) => message.id))
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
@@ -1140,7 +1178,45 @@ export function removeOptimisticMessage(sessionId: string, localId: string): voi
     }, true)
 }
 
-export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number): void {
+export function markMessagesIndeterminate(sessionId: string, localIds: string[]): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    updateState(sessionId, (previous) => {
+        let changed = false
+        const messages = previous.messages.map((message) => {
+            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === 'indeterminate') {
+                return message
+            }
+            changed = true
+            return { ...message, deliveryState: 'indeterminate' as const }
+        })
+        return changed ? buildState(previous, { messages }) : previous
+    }, true)
+}
+
+export function markMessagesRequeued(sessionId: string, localIds: string[]): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    updateState(sessionId, (previous) => {
+        let changed = false
+        const messages = previous.messages.map((message) => {
+            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === undefined) {
+                return message
+            }
+            changed = true
+            const { deliveryState: _deliveryState, ...requeued } = message
+            return requeued
+        })
+        return changed ? buildState(previous, { messages }) : previous
+    }, true)
+}
+
+export function markMessagesConsumed(
+    sessionId: string,
+    localIds: string[],
+    invokedAt: number,
+    steered?: boolean
+): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (previous) => {
@@ -1151,12 +1227,15 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
             }
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
-            if (!needsStatus && !needsInvokedAt) return message
+            const needsSteered = steered === true && message.steered !== true
+            if (!needsStatus && !needsInvokedAt && !needsSteered) return message
             changed = true
+            const { deliveryState: _deliveryState, ...withoutDeliveryState } = message
             return {
-                ...message,
+                ...withoutDeliveryState,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),
-                ...(needsInvokedAt ? { invokedAt } : {})
+                ...(needsInvokedAt ? { invokedAt } : {}),
+                ...(needsSteered ? { steered: true } : {})
             }
         })
         if (!changed) return previous

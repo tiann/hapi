@@ -1,0 +1,69 @@
+{
+    "description": "Codex family: two message payloads sharing a stream id (data.id) are cumulative snapshots. Expects a single agent-text block keyed by the first message, carrying the final snapshot text.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-051:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Tracking down the failing pagination test: the cursor math drops the epoch check when seq wraps."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-051:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Tracking down the failing pagination test: the cursor math drops the epoch check when seq wraps."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "item_7",
+                            "message": "Tracking down the failing pagination",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-codex-051",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "item_7",
+                            "message": "Tracking down the failing pagination test: the cursor math drops the epoch check when seq wraps.",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000900,
+                "id": "msg-codex-052",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-message-stream-snapshot"
+}

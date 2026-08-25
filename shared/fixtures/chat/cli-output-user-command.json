@@ -1,0 +1,53 @@
+{
+    "description": "A user message with meta.sentFrom cli whose text carries command tags becomes a cli-output block with source user (not a user-text block); the tag markup is carried verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-cli-701",
+                "kind": "cli-output",
+                "localId": null,
+                "source": "user",
+                "text": "<command-name>/status</command-name>\n<command-message>status</command-message>\n<command-args></command-args>"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-cli-701",
+                "kind": "cli-output",
+                "localId": null,
+                "source": "user",
+                "text": "<command-name>/status</command-name>\n<command-message>status</command-message>\n<command-args></command-args>"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "<command-name>/status</command-name>\n<command-message>status</command-message>\n<command-args></command-args>",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "cli"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-cli-701",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "cli-output-user-command"
+}

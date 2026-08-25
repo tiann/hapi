@@ -1,0 +1,62 @@
+{
+    "description": "Event family: compact-summary (structured result of Pi's compact RPC) renders as an agent-event block with summary/tokensBefore/estimatedTokensAfter carried verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "estimatedTokensAfter": 12000,
+                    "summary": "## Context\n- Refactoring the SSE reconnect backoff.\n- Next: wire jitter into the retry delay.",
+                    "tokensBefore": 145000,
+                    "type": "compact-summary"
+                },
+                "id": "msg-event-371",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "estimatedTokensAfter": 12000,
+                    "summary": "## Context\n- Refactoring the SSE reconnect backoff.\n- Next: wire jitter into the retry delay.",
+                    "tokensBefore": 145000,
+                    "type": "compact-summary"
+                },
+                "id": "msg-event-371",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "estimatedTokensAfter": 12000,
+                            "summary": "## Context\n- Refactoring the SSE reconnect backoff.\n- Next: wire jitter into the retry delay.",
+                            "tokensBefore": 145000,
+                            "type": "compact-summary"
+                        },
+                        "id": "f8d9f90b-4a6b-4c7a-9ead-f1a2b3c4d371",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-event-371",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-compact-summary"
+}

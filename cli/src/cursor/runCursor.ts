@@ -112,6 +112,7 @@ export async function runCursor(opts: {
         logger.debug(`[cursor] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
         return removed;
     });
+    session.onRetryQueuedMessage((localId) => messageQueue.releaseIndeterminateReservation(localId));
 
     session.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
         if (!payload || typeof payload !== 'object') {

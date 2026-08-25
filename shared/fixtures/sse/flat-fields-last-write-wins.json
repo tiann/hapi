@@ -1,0 +1,74 @@
+{
+    "description": "Flat fields (active, thinking, model, modelReasoningEffort, effort, permissionMode) are last-write-wins assignments with no version gate; serviceTier additionally honors an explicit null (key present) as a clear.",
+    "expectedPatchResults": [
+        "applied",
+        "applied"
+    ],
+    "expectedSession": {
+        "active": false,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": "high",
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-opus-4-6",
+        "modelReasoningEffort": "high",
+        "namespace": "default",
+        "permissionMode": "acceptEdits",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": true,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": "standard",
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "flat-fields-last-write-wins",
+    "patches": [
+        {
+            "active": false,
+            "effort": "high",
+            "model": "claude-opus-4-6",
+            "modelReasoningEffort": "high",
+            "permissionMode": "acceptEdits",
+            "thinking": true
+        },
+        {
+            "serviceTier": null
+        }
+    ]
+}

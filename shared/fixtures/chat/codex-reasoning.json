@@ -1,0 +1,52 @@
+{
+    "description": "Codex family: reasoning payload becomes an agent-reasoning block (stream id kept internal — not part of the projection).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-061:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "**Weighing pagination approaches**\n\nThe epoch guard only fires when the server resets, so the client must drop its window on mismatch."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-061:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "**Weighing pagination approaches**\n\nThe epoch guard only fires when the server resets, so the client must drop its window on mismatch."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "rs_0af3d219",
+                            "message": "**Weighing pagination approaches**\n\nThe epoch guard only fires when the server resets, so the client must drop its window on mismatch.",
+                            "type": "reasoning"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-codex-061",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-reasoning"
+}

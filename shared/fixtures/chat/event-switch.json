@@ -1,0 +1,56 @@
+{
+    "description": "Event family: switch (local/remote takeover) renders as an agent-event block with the payload carried verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "mode": "remote",
+                    "type": "switch"
+                },
+                "id": "msg-event-301",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "mode": "remote",
+                    "type": "switch"
+                },
+                "id": "msg-event-301",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "mode": "remote",
+                            "type": "switch"
+                        },
+                        "id": "0f4b6a1c-91d2-4e37-8b5a-c6d7e8f9a301",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-event-301",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-switch"
+}

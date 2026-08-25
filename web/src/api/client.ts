@@ -8,6 +8,7 @@ import type {
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
     CodexArchiveSessionResponse,
+    DecryptedMessage,
     CodexCollaborationMode,
     CopilotAgentMode,
     FileSearchResponse,
@@ -23,7 +24,7 @@ import type {
     SkillsResponse,
     SpawnResponse,
     VisibilityPayload,
-    HapiSessionExport,
+    HapiSessionExportResponse,
     HubHealthResponse,
     SessionResponse,
     SessionTitleSuggestionResponse,
@@ -31,6 +32,7 @@ import type {
 } from '@/types/api'
 import type {
     AgyModelsResponse,
+    AgentAvailabilityResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -59,6 +61,11 @@ import type {
 import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
+
+export type RetryIndeterminateMessageResponse =
+    | { status: 'retried' | 'already-queued' | 'retry-unavailable'; localId: string | null }
+    | { status: 'invoked'; message: DecryptedMessage }
+    | { status: 'not-found' }
 
 export type ProviderCredentialSource = 'env' | 'settings' | 'none'
 
@@ -347,9 +354,13 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getSessionExport(sessionId: string, options?: { signal?: AbortSignal }): Promise<HapiSessionExport> {
-        return await this.request<HapiSessionExport>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/export`,
+    async getSessionExport(
+        sessionId: string,
+        options?: { force?: boolean; signal?: AbortSignal }
+    ): Promise<HapiSessionExportResponse> {
+        const query = options?.force ? '?force=true' : ''
+        return await this.request<HapiSessionExportResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/export${query}`,
             { signal: options?.signal }
         )
     }
@@ -553,6 +564,13 @@ export class ApiClient {
             { method: 'POST' }
         )
         return response as SteerQueuedMessageResponse
+    }
+
+    async retryIndeterminateMessage(sessionId: string, messageId: string): Promise<RetryIndeterminateMessageResponse> {
+        return await this.request<RetryIndeterminateMessageResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/retry`,
+            { method: 'POST' }
+        )
     }
 
     async abortSession(sessionId: string): Promise<void> {
@@ -781,6 +799,12 @@ export class ApiClient {
                 method: 'POST',
                 body: JSON.stringify({ path, includeHidden: options?.includeHidden === true })
             }
+        )
+    }
+
+    async getMachineAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
+        return await this.request<AgentAvailabilityResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-availability`
         )
     }
 

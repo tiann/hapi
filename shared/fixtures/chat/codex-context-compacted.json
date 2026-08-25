@@ -1,0 +1,86 @@
+{
+    "description": "Codex family: context_compacted maps to an agent-event of type compact with trigger and preTokens (accepting the snake_case pre_tokens wire key).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-511",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Carry on."
+            },
+            {
+                "createdAt": 1755000003100,
+                "event": {
+                    "preTokens": 186211,
+                    "trigger": "auto",
+                    "type": "compact"
+                },
+                "id": "msg-codex-512",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-511",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Carry on."
+            },
+            {
+                "createdAt": 1755000003100,
+                "event": {
+                    "preTokens": 186211,
+                    "trigger": "auto",
+                    "type": "compact"
+                },
+                "id": "msg-codex-512",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Carry on.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-511",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "pre_tokens": 186211,
+                            "thread_id": "thread-42",
+                            "trigger": "auto",
+                            "type": "context_compacted"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003100,
+                "id": "msg-codex-512",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-context-compacted"
+}

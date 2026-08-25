@@ -1,0 +1,41 @@
+{
+    "description": "message-cancelled removes the queued row by localId; a repeat delivery is an idempotent no-op on the already-empty window.",
+    "expectedState": {
+        "epoch": null,
+        "hasMore": false,
+        "messages": [],
+        "newestCursor": null,
+        "olderCursor": null,
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "message-cancelled-removes-queued-row",
+    "ops": [
+        {
+            "message": {
+                "content": {
+                    "content": {
+                        "text": "cancel me",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1000,
+                "id": "local-1",
+                "invokedAt": null,
+                "localId": "local-1",
+                "seq": null,
+                "status": "queued"
+            },
+            "op": "append-optimistic"
+        },
+        {
+            "localId": "local-1",
+            "op": "message-cancelled"
+        },
+        {
+            "localId": "local-1",
+            "op": "message-cancelled"
+        }
+    ]
+}

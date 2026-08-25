@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "Placeholder Firebase config (B-M4a). To enable FCM push in a self-build:",
+    "1. Create a Firebase project (console.firebase.google.com) and add an",
+    "   Android app with package name `run.hapi.companion` (or your fork's",
+    "   applicationId — keep app/build.gradle.kts in sync).",
+    "2. Download the real google-services.json from the Firebase console and",
+    "   save it as android/app/google-services.json (gitignored).",
+    "3. Configure the SAME Firebase project on your hub:",
+    "   FCM_SERVICE_ACCOUNT_PATH + FCM_PROJECT_ID (docs/api/native-companion-contract.md).",
+    "Without the file the app still builds and runs — push is simply reported",
+    "unavailable (PushBinding) and every push code path no-ops."
+  ],
+  "project_info": {
+    "project_number": "000000000000",
+    "project_id": "your-firebase-project-id",
+    "storage_bucket": "your-firebase-project-id.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+        "android_client_info": {
+          "package_name": "run.hapi.companion"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSy-your-android-api-key"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

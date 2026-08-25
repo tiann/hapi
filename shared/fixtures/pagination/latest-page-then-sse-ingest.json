@@ -1,0 +1,132 @@
+{
+    "description": "Cold start: a latest page seeds the window, epoch, older cursor (page.nextBefore) and newest cursor (page.snapshotHead); a live SSE message appends and advances the newest cursor to its position.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": true,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "a-1",
+                "invokedAt": 1000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 1
+            },
+            {
+                "createdAt": 2000,
+                "id": "a-2",
+                "invokedAt": 2000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 2
+            },
+            {
+                "createdAt": 3000,
+                "id": "a-3",
+                "invokedAt": 3000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 3
+            }
+        ],
+        "newestCursor": {
+            "at": 3000,
+            "seq": 3
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "latest-page-then-sse-ingest",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-1",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 1000,
+                            "id": "a-1",
+                            "invokedAt": 1000,
+                            "localId": null,
+                            "seq": 1
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-2",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 2000,
+                            "id": "a-2",
+                            "invokedAt": 2000,
+                            "localId": null,
+                            "seq": 2
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": true,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 2000,
+                        "snapshotHeadSeq": 2
+                    }
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "message": "a-3",
+                                "type": "message"
+                            },
+                            "type": "codex"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 3000,
+                    "id": "a-3",
+                    "invokedAt": 3000,
+                    "localId": null,
+                    "seq": 3
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}

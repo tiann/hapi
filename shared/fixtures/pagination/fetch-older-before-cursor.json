@@ -1,0 +1,135 @@
+{
+    "description": "Older pagination sends the compound (beforeAt, beforeSeq) pair from the current older cursor, prepends the rows, and adopts the response page.nextBefore as the new older cursor and page.hasMore as the exhaustion flag.",
+    "expectedState": {
+        "epoch": 4,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 9000,
+                "id": "a-9",
+                "invokedAt": 9000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 9
+            },
+            {
+                "createdAt": 10000,
+                "id": "a-10",
+                "invokedAt": 10000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 10
+            }
+        ],
+        "newestCursor": {
+            "at": 10000,
+            "seq": 10
+        },
+        "olderCursor": {
+            "at": 9000,
+            "seq": 9
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "fetch-older-before-cursor",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-10",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 10000,
+                            "id": "a-10",
+                            "invokedAt": 10000,
+                            "localId": null,
+                            "seq": 10
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 4,
+                        "hasMore": true,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 10000,
+                        "nextBeforeSeq": 10,
+                        "reset": false,
+                        "snapshotHeadAt": 10000,
+                        "snapshotHeadSeq": 10
+                    }
+                }
+            ]
+        },
+        {
+            "expectedOutcome": {
+                "addedRenderableCount": 1,
+                "hasMore": false,
+                "kind": "applied"
+            },
+            "expectedRequests": [
+                {
+                    "beforeAt": 10000,
+                    "beforeSeq": 10,
+                    "limit": 200
+                }
+            ],
+            "op": "fetch-older",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-9",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 9000,
+                            "id": "a-9",
+                            "invokedAt": 9000,
+                            "localId": null,
+                            "seq": 9
+                        }
+                    ],
+                    "page": {
+                        "direction": "before",
+                        "epoch": 4,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 9000,
+                        "nextBeforeSeq": 9,
+                        "reset": false,
+                        "snapshotHeadAt": null,
+                        "snapshotHeadSeq": null
+                    }
+                }
+            ]
+        }
+    ]
+}

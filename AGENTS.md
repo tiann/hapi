@@ -11,15 +11,18 @@ Local-first platform for running AI coding agents (Claude Code, Codex, Gemini) w
 ## Repo layout
 
 ```
-cli/     - CLI binary, agent wrappers, runner daemon
-hub/     - HTTP API + Socket.IO + SSE + Telegram bot
-web/     - React PWA for remote control
-shared/  - Common types, schemas, utilities
-docs/    - VitePress documentation site
-website/ - Marketing site
+cli/             - CLI binary, agent wrappers, runner daemon
+hub/             - HTTP API + Socket.IO + SSE + Telegram bot
+web/             - React PWA for remote control
+ios/             - Native SwiftUI app (in development)
+android/         - Native Kotlin Compose app (in development)
+shared/          - Common types, schemas, utilities
+shared/fixtures/ - Golden chat fixtures, generated from web pipeline (never hand-edit)
+docs/            - VitePress documentation site
+website/         - Marketing site
 ```
 
-Bun workspaces; `shared` consumed by cli, hub, web.
+Bun workspaces; `shared` consumed by cli, hub, web. `ios`/`android` outside workspaces (Xcode / Gradle toolchains).
 
 ## Architecture overview
 
@@ -64,10 +67,14 @@ Bun workspaces; `shared` consumed by cli, hub, web.
 
 ```bash
 bun typecheck           # All packages
-bun run test            # cli + hub tests
+bun run test            # cli + hub + web + shared tests
 bun run dev             # hub + web concurrently
 bun run build:single-exe # All-in-one binary
+bun run gen:fixtures    # Regenerate shared/fixtures/ from web pipeline
+cd android && ./gradlew :core:protocol:test  # Android protocol conformance
 ```
+
+iOS tests run in CI (`ios.yml`: macOS `swift test`); no local Xcode/Swift toolchain assumed.
 
 ## Key source dirs
 
@@ -109,6 +116,22 @@ bun run build:single-exe # All-in-one binary
 - `messages.ts` - Message parsing utilities
 - `modes.ts` - Permission/model mode definitions
 
+### iOS (`ios/`)
+- `Packages/HapiKit/` - local SPM package: `HapiProtocol` (wire models + chat pipeline, fixtures-verified), `HapiClient` (API/auth/SSE/stores)
+- `Hapi/` + `Hapi.xcodeproj` - thin SwiftUI app target
+
+### Android (`android/`)
+- `:core:protocol` - pure JVM wire types + chat pipeline (fixtures-verified)
+- `:core:data` - transport (OkHttp/SSE), auth, stores
+- `:app` - Compose UI, navigation, deep links, FCM
+
+## Protocol conformance (native apps)
+
+- `shared/fixtures/**` machine-generated from the web chat pipeline (source of truth). NEVER hand-edit; edit `web/scripts/fixtures/cases/` + regenerate.
+- Changing `web/src/chat/**`, `web/src/lib/message-window-store.ts`, or `web/src/lib/sessionPatch.ts`: run `bun run gen:fixtures`, commit the diff. CI enforces (`.github/workflows/fixtures.yml`); fixture diffs auto-trigger iOS/Android conformance suites (`ios.yml`/`android.yml`).
+- Native client contract docs: `docs/api/client-contract/` (auth, rest, sse, pagination, messages, errors).
+- Tracks: `ios/` (SwiftUI, iOS 17+) + `android/` (Kotlin Compose, minSdk 26) — independent codebases, share only contract + fixtures. Plan: `~/.claude/plans/web-pwa-abundant-yeti.md`.
+
 ## Pre-push self-review (agents)
 
 Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pre-push-review/`).
@@ -124,7 +147,7 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 - Run: `bun run test` (from root) or `bun run test` (from package)
 - Hub tests: `hub/src/**/*.test.ts`
 - CLI tests: `cli/src/**/*.test.ts`
-- No web tests currently
+- Web tests: `web/src/**/*.test.{ts,tsx}` (fixtures self-check: `web/src/chat/fixtures.test.ts`)
 
 ## Common tasks
 

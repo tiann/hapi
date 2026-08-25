@@ -100,6 +100,7 @@ ${chalk.bold('Usage:')}
   hapi codex             Start Codex mode
   hapi cursor            Start Cursor Agent mode
   hapi opencode          Start OpenCode ACP mode
+  hapi dsh               Start DeepSeek Harness ACP mode
   hapi resume [id]       Resume an existing HAPI session locally
   hapi mcp               Start MCP stdio bridge
   hapi connect           (not available in direct-connect mode)

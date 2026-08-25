@@ -1,0 +1,97 @@
+{
+    "description": "limit-warning has no dedicated wire event: the CLI writes an assistant text in the pipe format \"Claude AI usage limit warning|<unixSeconds>|<percentInt>|<limitType>\", which the reducer parses into an agent-event {type: limit-warning, utilization (0-1), endsAt, limitType} instead of a text block.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-341",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Keep working through the checklist."
+            },
+            {
+                "createdAt": 1755000001100,
+                "event": {
+                    "endsAt": 1755010800,
+                    "limitType": "weekly",
+                    "type": "limit-warning",
+                    "utilization": 0.9
+                },
+                "id": "msg-agent-342",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-341",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Keep working through the checklist."
+            },
+            {
+                "createdAt": 1755000001100,
+                "event": {
+                    "endsAt": 1755010800,
+                    "limitType": "weekly",
+                    "type": "limit-warning",
+                    "utilization": 0.9
+                },
+                "id": "msg-agent-342",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Keep working through the checklist.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-341",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Claude AI usage limit warning|1755010800|90|weekly",
+                                        "type": "text"
+                                    }
+                                ],
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:01.088Z",
+                            "type": "assistant",
+                            "uuid": "81c2e294-79fa-4b0f-8d3c-e4f5a6b7c342"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001100,
+                "id": "msg-agent-342",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-limit-warning-from-text"
+}

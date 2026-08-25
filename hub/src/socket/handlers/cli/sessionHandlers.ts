@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
-import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -134,6 +134,19 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+
+        // A reasoning stream arrives as a series of growing snapshots under one
+        // stable id, so a stream should cost one row rather than one per
+        // interval. Retire the earlier snapshots only once their replacement is
+        // stored: these are separate transactions, and clearing first would let
+        // a crash in between take the whole stream. Only rows marked live are
+        // eligible, so the settled message that closes a stream survives and
+        // also sweeps up its own leftovers.
+        const reasoningStreamId = getReasoningStreamId(content)
+        if (reasoningStreamId) {
+            store.messages.deleteLiveReasoningSnapshots(sid, reasoningStreamId, msg.id)
+        }
+
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
         }
@@ -364,7 +377,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -407,8 +420,67 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
         // Emit only after the DB transaction succeeds. This is an ACK-level
         // batch contract, so preserve its original timestamp even when IDs are
-        // heterogeneous, replayed, or unknown.
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
+        // heterogeneous, replayed, or unknown. `steered` is a live-only signal
+        // (never persisted) that marks mid-turn delivery for the web badge.
+        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
+    })
+
+    socket.on('messages-indeterminate', (data: { sid: string; localIds: string[] }) => {
+        if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
+            return
+        }
+        const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
+        if (localIds.length === 0) return
+        const sessionAccess = resolveSessionAccess(data.sid)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', data.sid, sessionAccess.reason)
+            return
+        }
+        try {
+            store.recordMessagesIndeterminate(data.sid, localIds, sessionAccess.value.namespace)
+        } catch (err) {
+            console.error('recordMessagesIndeterminate failed', err)
+            return
+        }
+        onWebappEvent?.({ type: 'messages-indeterminate', sessionId: data.sid, localIds })
+    })
+
+    socket.on('messages-steer-state', (
+        data: { sid: string; localIds: string[]; state: 'queued' | 'dispatching' },
+        ack?: (response: { ok: boolean }) => void
+    ) => {
+        const reply = typeof ack === 'function' ? ack : () => {}
+        if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)
+            || (data.state !== 'queued' && data.state !== 'dispatching')) {
+            reply({ ok: false })
+            return
+        }
+        const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
+        if (localIds.length === 0) {
+            reply({ ok: false })
+            return
+        }
+        const sessionAccess = resolveSessionAccess(data.sid)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', data.sid, sessionAccess.reason)
+            reply({ ok: false })
+            return
+        }
+        try {
+            const ok = store.recordSteerDeliveryState(
+                data.sid,
+                localIds,
+                data.state,
+                sessionAccess.value.namespace
+            )
+            reply({ ok })
+            if (ok && data.state === 'queued') {
+                onWebappEvent?.({ type: 'messages-requeued', sessionId: data.sid, localIds })
+            }
+        } catch (err) {
+            console.error('recordSteerDeliveryState failed', err)
+            reply({ ok: false })
+        }
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {

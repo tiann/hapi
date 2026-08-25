@@ -22,13 +22,15 @@ describe('OutgoingMessageQueue message filtering', () => {
         expect(sent).toHaveLength(2)
     })
 
-    it('filters out system messages', async () => {
+    it('filters hidden system messages but sends visible system messages', async () => {
         queue.enqueue({ type: 'system', subtype: 'init', uuid: '1' })
-        queue.enqueue({ type: 'assistant', uuid: '2' })
+        queue.enqueue({ type: 'system', subtype: 'turn_duration', uuid: '2' })
+        queue.enqueue({ type: 'assistant', uuid: '3' })
         await queue.flush()
 
-        expect(sent).toHaveLength(1)
-        expect(sent[0]).toMatchObject({ type: 'assistant' })
+        expect(sent).toHaveLength(2)
+        expect(sent[0]).toMatchObject({ type: 'system', subtype: 'turn_duration' })
+        expect(sent[1]).toMatchObject({ type: 'assistant' })
     })
 
     it('filters out isMeta messages', async () => {

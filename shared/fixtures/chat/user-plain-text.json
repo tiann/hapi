@@ -1,0 +1,54 @@
+{
+    "description": "User message: plain text with localId (optimistic-send identity) and invokedAt (consumption time). meta is carried on the wire but dropped by the normative projection.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-091",
+                "invokedAt": 1755000000420,
+                "kind": "user-text",
+                "localId": "local-5f8a3c1d-91b2-4e07-a6d4-2c9e7b3f5a10",
+                "text": "Please add a retry to the upload path."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-091",
+                "invokedAt": 1755000000420,
+                "kind": "user-text",
+                "localId": "local-5f8a3c1d-91b2-4e07-a6d4-2c9e7b3f5a10",
+                "text": "Please add a retry to the upload path."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Please add a retry to the upload path.",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "webapp"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-091",
+                "invokedAt": 1755000000420,
+                "localId": "local-5f8a3c1d-91b2-4e07-a6d4-2c9e7b3f5a10",
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "user-plain-text"
+}

@@ -28,6 +28,11 @@ describe('hasCapability', () => {
         expect(hasCapability('gemini', Capabilities.Effort)).toBe(false)
     })
 
+    test('dsh has no runtime model or effort switching', () => {
+        expect(hasCapability('dsh', Capabilities.ModelChange)).toBe(false)
+        expect(hasCapability('dsh', Capabilities.Effort)).toBe(false)
+    })
+
     test('codex supports model-change but not effort', () => {
         expect(hasCapability('codex', Capabilities.ModelChange)).toBe(true)
         expect(hasCapability('codex', Capabilities.Effort)).toBe(false)
@@ -79,6 +84,7 @@ describe('getFlavorLabel', () => {
         expect(getFlavorLabel('claude')).toBe('Claude')
         expect(getFlavorLabel('gemini')).toBe('Gemini')
         expect(getFlavorLabel('codex')).toBe('Codex')
+        expect(getFlavorLabel('dsh')).toBe('DeepSeek Harness')
         expect(getFlavorLabel('cursor')).toBe('Cursor')
         expect(getFlavorLabel('opencode')).toBe('OpenCode')
         expect(getFlavorLabel('pi')).toBe('Pi')
@@ -103,6 +109,7 @@ describe('isKnownFlavor', () => {
         expect(isKnownFlavor('claude')).toBe(true)
         expect(isKnownFlavor('gemini')).toBe(true)
         expect(isKnownFlavor('codex')).toBe(true)
+        expect(isKnownFlavor('dsh')).toBe(true)
         expect(isKnownFlavor('cursor')).toBe(true)
         expect(isKnownFlavor('opencode')).toBe(true)
         expect(isKnownFlavor('pi')).toBe(true)

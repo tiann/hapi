@@ -120,4 +120,63 @@ describe('buildMessageMetadataLabels', () => {
         })
         expect(parts.some(p => p.startsWith('Duration:'))).toBe(false)
     })
+
+    it('renders the exact Claude round summary hierarchy', () => {
+        const parts = buildMessageMetadataLabels({
+            model: 'derived-model-that-must-not-win',
+            usage: { input_tokens: 1, output_tokens: 1 },
+            roundSummary: {
+                modelUsage: {
+                    'claude-opus-5': {
+                        inputTokens: 80,
+                        cacheCreationInputTokens: 20,
+                        cacheReadInputTokens: 100_000,
+                        outputTokens: 500
+                    },
+                    'claude-haiku-4-5': {}
+                },
+                totalCostUsd: 0.028029,
+                numTurns: 9,
+                durationMs: 8163
+            }
+        } as any)
+
+        expect(parts).toEqual([
+            'Models: claude-opus-5, claude-haiku-4-5',
+            'Tokens: 100.6k (100.1k in · 500 out)',
+            'Cache read: 99.9% of input · API-rate est.: $0.028',
+            'Round: 8.2s · 9 internal turns'
+        ])
+    })
+
+    it('keeps the existing formatter byte-identical when no result summary is present', () => {
+        expect(buildMessageMetadataLabels({
+            durationMs: 1234,
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 3, output_tokens: 19, service_tier: 'standard' }
+        } as any)).toEqual([
+            'Duration: 1.2s',
+            'Model: claude-sonnet-4-6',
+            'Tokens: 22 total (3 in / 19 out)'
+        ])
+    })
+
+    it('uses the normalized valid model fields when other model counters are absent', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: {
+                    'claude-opus-5': { outputTokens: 10 },
+                    'claude-haiku-4-5': { inputTokens: 10, outputTokens: 4 },
+                    'claude-empty-5': {}
+                },
+                totalCostUsd: 0.00002,
+                durationMs: 12.5
+            }
+        })).toEqual([
+            'Models: claude-opus-5, claude-haiku-4-5, claude-empty-5',
+            'Tokens: 24 (10 in · 14 out)',
+            'API-rate est.: <$0.0001',
+            'Round: 0.0s'
+        ])
+    })
 })

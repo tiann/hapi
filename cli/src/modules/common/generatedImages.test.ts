@@ -116,6 +116,19 @@ describe('generatedImages', () => {
         clearGeneratedImages()
     })
 
+    it('preserves the source extension when a custom file name omits one', () => {
+        const file = registerGeneratedImage({
+            id: 'test-zip-with-title',
+            path: '/tmp/plan-a.zip',
+            fileName: 'Cursor Plan A Markdown 导出',
+            mimeType: 'application/octet-stream',
+            bytes: Buffer.from('PK\\x03\\x04')
+        })
+
+        expect(file.fileName).toBe('Cursor Plan A Markdown 导出.zip')
+        clearGeneratedImages()
+    })
+
     it('snapshots image bytes at registration time', () => {
         const source = Buffer.from('original image bytes')
         const image = registerGeneratedImage({

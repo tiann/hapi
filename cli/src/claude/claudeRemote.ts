@@ -30,7 +30,7 @@ export async function claudeRemote(opts: {
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
-    onReady: () => void,
+    onReady: (completionEvent?: string) => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
@@ -350,21 +350,18 @@ export async function claudeRemote(opts: {
                     opts.onFirstResult?.(initial.message);
                 }
 
-                // Send completion messages
+                let completionEvent: string | undefined;
                 if (isCompactCommand) {
-                    const completion = compactFailure
+                    completionEvent = compactFailure
                         ? `Compaction failed: ${compactFailure}`
                         : 'Compaction completed';
-                    logger.debug(`[claudeRemote] ${completion}`);
-                    if (opts.onCompletionEvent) {
-                        opts.onCompletionEvent(completion);
-                    }
+                    logger.debug(`[claudeRemote] ${completionEvent}`);
                     isCompactCommand = false;
                     compactFailure = null;
                 }
 
-                // Send ready event
-                opts.onReady();
+                // Flush the result carrier before completion, then announce ready.
+                await opts.onReady(completionEvent);
                 logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
 
                 // Pull next user message without blocking response stream processing.

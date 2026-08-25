@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Antigravity brand mark (Color variant). Upstream renders the wing as a
+     mask over 11 gaussian-blurred color blobs (SVG filters) which neither
+     VectorDrawable nor Xcode SVG supports; approximated with a left-to-right
+     gradient matching the blob layout (green wing tip, yellow crest, red
+     right arm, blue tip). iOS flattens further to the dominant brand blue.
+     Brand SVG via @lobehub/icons v5.4.0 - same source as
+     web/src/components/AgentFlavorIcon.tsx. Color variant: literal brand
+     fills, render untinted (Image, not Icon). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M 21.751 22.607 c 1.34 1.005 3.35 0.335 1.508 -1.508 C 17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74 0.815 21.1 c -2.01 2.009 0.167 2.511 1.507 1.506 5.192 -3.517 4.857 -9.714 9.715 -9.714 4.857 0 4.522 6.197 9.714 9.715 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="12"
+                android:endX="24"
+                android:endY="12">
+                <item
+                    android:color="#FF00B95C"
+                    android:offset="0" />
+                <item
+                    android:color="#FFFBBC04"
+                    android:offset="0.35" />
+                <item
+                    android:color="#FFFC413D"
+                    android:offset="0.68" />
+                <item
+                    android:color="#FF3186FF"
+                    android:offset="0.92" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

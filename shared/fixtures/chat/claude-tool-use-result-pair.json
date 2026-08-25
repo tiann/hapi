@@ -1,0 +1,219 @@
+{
+    "description": "Claude output family: assistant tool_use (Bash) paired with the tool_result delivered in a later user-typed output entry. Expects one completed tool-call block with the result attached, framed by agent text.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-021",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Run the unit tests."
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "msg-agent-022:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Running the suite now."
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "toolu_01VqSg8Q3rTests",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01VqSg8Q3rTests",
+                    "input": {
+                        "command": "bun test",
+                        "description": "Run unit tests"
+                    },
+                    "name": "Bash",
+                    "result": "420 pass\n0 fail\nRan 420 tests across 37 files. [4.21s]",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000024000,
+                "id": "msg-agent-024:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "All 420 tests pass."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": {
+            "contextSize": 72687,
+            "contextWindow": null,
+            "inputTokens": 2120,
+            "outputTokens": 18
+        },
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-021",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Run the unit tests."
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "msg-agent-022:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Running the suite now."
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "toolu_01VqSg8Q3rTests",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01VqSg8Q3rTests",
+                    "input": {
+                        "command": "bun test",
+                        "description": "Run unit tests"
+                    },
+                    "name": "Bash",
+                    "result": "420 pass\n0 fail\nRan 420 tests across 37 files. [4.21s]",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000024000,
+                "id": "msg-agent-024:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "All 420 tests pass."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Run the unit tests.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-021",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Running the suite now.",
+                                        "type": "text"
+                                    },
+                                    {
+                                        "id": "toolu_01VqSg8Q3rTests",
+                                        "input": {
+                                            "command": "bun test",
+                                            "description": "Run unit tests"
+                                        },
+                                        "name": "Bash",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 310,
+                                    "cache_read_input_tokens": 70112,
+                                    "input_tokens": 1975,
+                                    "output_tokens": 64
+                                }
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:03.310Z",
+                            "type": "assistant",
+                            "uuid": "9a4c1e72-6b0d-4f19-bc3e-d2f6a8b4c022"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003000,
+                "id": "msg-agent-022",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "420 pass\n0 fail\nRan 420 tests across 37 files. [4.21s]",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01VqSg8Q3rTests",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "9a4c1e72-6b0d-4f19-bc3e-d2f6a8b4c022",
+                            "timestamp": "2025-08-12T11:20:21.702Z",
+                            "type": "user",
+                            "uuid": "b5d2f803-7c1e-4a2b-8d4f-e3a7b9c5d023"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000021400,
+                "id": "msg-agent-023",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "All 420 tests pass.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 145,
+                                    "cache_read_input_tokens": 70422,
+                                    "input_tokens": 2120,
+                                    "output_tokens": 18
+                                }
+                            },
+                            "parentUuid": "b5d2f803-7c1e-4a2b-8d4f-e3a7b9c5d023",
+                            "timestamp": "2025-08-12T11:20:24.155Z",
+                            "type": "assistant",
+                            "uuid": "c6e3a914-8d2f-4b3c-9e5a-f4b8c0d6e024"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000024000,
+                "id": "msg-agent-024",
+                "localId": null,
+                "seq": 4
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-tool-use-result-pair"
+}

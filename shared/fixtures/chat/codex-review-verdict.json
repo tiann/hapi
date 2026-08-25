@@ -1,0 +1,82 @@
+{
+    "description": "Codex family: a message whose text is codex review JSON (findings + overall_correctness/…) parses into a codex-review block with the normalized review object (camelCase fields, code_location flattened to filePath/lineStart/lineEnd).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-531:0",
+                "kind": "codex-review",
+                "localId": null,
+                "review": {
+                    "findings": [
+                        {
+                            "body": "Retained sockets survive disconnects.",
+                            "confidenceScore": 0.82,
+                            "filePath": "/repo/hub/src/pairing/manager.ts",
+                            "lineEnd": 1619,
+                            "lineStart": 1614,
+                            "priority": 2,
+                            "title": "[P2] Remove retained sessions when sockets disconnect"
+                        }
+                    ],
+                    "overallConfidenceScore": 0.8,
+                    "overallCorrectness": "patch is incorrect",
+                    "overallExplanation": "The message-sending feature retains long-lived sockets but does not fully manage their lifecycle."
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-531:0",
+                "kind": "codex-review",
+                "localId": null,
+                "review": {
+                    "findings": [
+                        {
+                            "body": "Retained sockets survive disconnects.",
+                            "confidenceScore": 0.82,
+                            "filePath": "/repo/hub/src/pairing/manager.ts",
+                            "lineEnd": 1619,
+                            "lineStart": 1614,
+                            "priority": 2,
+                            "title": "[P2] Remove retained sessions when sockets disconnect"
+                        }
+                    ],
+                    "overallConfidenceScore": 0.8,
+                    "overallCorrectness": "patch is incorrect",
+                    "overallExplanation": "The message-sending feature retains long-lived sockets but does not fully manage their lifecycle."
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "550e8400-e29b-41d4-a716-446655440531",
+                            "message": "{\"findings\":[{\"title\":\"[P2] Remove retained sessions when sockets disconnect\",\"body\":\"Retained sockets survive disconnects.\",\"confidence_score\":0.82,\"priority\":2,\"code_location\":{\"absolute_file_path\":\"/repo/hub/src/pairing/manager.ts\",\"line_range\":{\"start\":1614,\"end\":1619}}}],\"overall_correctness\":\"patch is incorrect\",\"overall_explanation\":\"The message-sending feature retains long-lived sockets but does not fully manage their lifecycle.\",\"overall_confidence_score\":0.8}",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-codex-531",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-review-verdict"
+}

@@ -1,0 +1,99 @@
+{
+    "description": "Claude output family: system subtype api_error becomes an agent-event block with type api-error (retryAttempt/maxRetries/error carried through).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-031",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Continue with the refactor."
+            },
+            {
+                "createdAt": 1755000002500,
+                "event": {
+                    "error": {
+                        "message": "Overloaded",
+                        "status": 529
+                    },
+                    "maxRetries": 10,
+                    "retryAttempt": 2,
+                    "type": "api-error"
+                },
+                "id": "msg-agent-032",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-031",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Continue with the refactor."
+            },
+            {
+                "createdAt": 1755000002500,
+                "event": {
+                    "error": {
+                        "message": "Overloaded",
+                        "status": 529
+                    },
+                    "maxRetries": 10,
+                    "retryAttempt": 2,
+                    "type": "api-error"
+                },
+                "id": "msg-agent-032",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Continue with the refactor.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-031",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "error": {
+                                "message": "Overloaded",
+                                "status": 529
+                            },
+                            "maxRetries": 10,
+                            "retryAttempt": 2,
+                            "subtype": "api_error",
+                            "type": "system",
+                            "uuid": "d7f4b025-9e3a-4c4d-8f6b-a5c9d1e7f032"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002500,
+                "id": "msg-agent-032",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-system-api-error"
+}

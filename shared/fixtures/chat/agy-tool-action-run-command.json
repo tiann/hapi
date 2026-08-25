@@ -1,0 +1,82 @@
+{
+    "description": "agy flavor: agy_tool_action RUN_COMMAND with a paired run_command invocation maps to a canonical Bash tool-call (input.CommandLine/Cwd translated to command/cwd, bookkeeping args dropped) already COMPLETED (paired tool-result), keyed by data.toolUseId with the Created At/Completed At preamble stripped from the result.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "conv-7c1b:12",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "conv-7c1b:12",
+                    "input": {
+                        "command": "./gradlew --version",
+                        "cwd": "/repo/android"
+                    },
+                    "name": "Bash",
+                    "result": "The command completed successfully.\nOutput:\nGradle 8.7",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "conv-7c1b:12",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "conv-7c1b:12",
+                    "input": {
+                        "command": "./gradlew --version",
+                        "cwd": "/repo/android"
+                    },
+                    "name": "Bash",
+                    "result": "The command completed successfully.\nOutput:\nGradle 8.7",
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "content": "Created At: 2025-08-12T11:20:04Z\nCompleted At: 2025-08-12T11:20:06Z\nThe command completed successfully.\nOutput:\nGradle 8.7",
+                            "input": {
+                                "Blocking": true,
+                                "CommandLine": "./gradlew --version",
+                                "Cwd": "/repo/android",
+                                "WaitMsBeforeAsync": 5000,
+                                "toolSummary": "Check Gradle version"
+                            },
+                            "name": "RUN_COMMAND",
+                            "toolName": "run_command",
+                            "toolUseId": "conv-7c1b:12",
+                            "type": "agy_tool_action"
+                        },
+                        "type": "output"
+                    },
+                    "meta": {
+                        "sentFrom": "cli"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-agy-731",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "agy-tool-action-run-command"
+}

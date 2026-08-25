@@ -403,6 +403,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // to stamp invokedAt on the next user message before it stores the
                             // current turn's queued agent messages — making them sort permanently
                             // below the next user message.
+                            // The result summary is enqueued by onMessage immediately before onReady.
+                            // Drain it before ready so live clients receive the round metadata before
+                            // they close out the running turn.
                             await messageQueue.flush();
 
                             if (pending) {
@@ -504,13 +507,20 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // just asked to clear.
                             session.consumeOneTimeFlags();
                         },
-                        onReady: () => {
+                        onReady: async (completionEvent?: string) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
                             // respawn-storm guard. The turn that led here is no
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
+
+                            await messageQueue.flush();
+
+                            if (completionEvent) {
+                                logger.debug(`[remote]: Completion event: ${completionEvent}`);
+                                session.client.sendSessionEvent({ type: 'message', message: completionEvent });
+                            }
 
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +

@@ -1,0 +1,136 @@
+{
+    "description": "Completed request denied with a reason and no tool_result: the tool-call block is created from the tool_use with the denied permission attached, so its state maps to error and permission carries {status: denied, decision, reason}.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-411",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Clean up the workspace."
+            },
+            {
+                "createdAt": 1755000002400,
+                "id": "toolu_01PermDeny0001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01PermDeny0001",
+                    "input": {
+                        "command": "rm -rf /tmp/hapi-cache",
+                        "description": "Delete the cache directory"
+                    },
+                    "name": "Bash",
+                    "permission": {
+                        "decision": "denied",
+                        "reason": "Do not delete the cache — inspect it instead.",
+                        "status": "denied"
+                    },
+                    "state": "error"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-411",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Clean up the workspace."
+            },
+            {
+                "createdAt": 1755000002400,
+                "id": "toolu_01PermDeny0001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01PermDeny0001",
+                    "input": {
+                        "command": "rm -rf /tmp/hapi-cache",
+                        "description": "Delete the cache directory"
+                    },
+                    "name": "Bash",
+                    "permission": {
+                        "decision": "denied",
+                        "reason": "Do not delete the cache — inspect it instead.",
+                        "status": "denied"
+                    },
+                    "state": "error"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "toolu_01PermDeny0001": {
+                    "arguments": {
+                        "command": "rm -rf /tmp/hapi-cache",
+                        "description": "Delete the cache directory"
+                    },
+                    "completedAt": 1755000009100,
+                    "createdAt": 1755000002600,
+                    "decision": "denied",
+                    "reason": "Do not delete the cache — inspect it instead.",
+                    "status": "denied",
+                    "tool": "Bash"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Clean up the workspace.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-411",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01PermDeny0001",
+                                        "input": {
+                                            "command": "rm -rf /tmp/hapi-cache",
+                                            "description": "Delete the cache directory"
+                                        },
+                                        "name": "Bash",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "4d2e3f5a-9fb0-4bcc-8e3d-e6f7a8b9c412"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002400,
+                "id": "msg-agent-412",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-denied-with-reason"
+}

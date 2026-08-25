@@ -1,0 +1,93 @@
+{
+    "description": "One patch carrying flat fields, a newer metadata wrapper, and a stale agentState wrapper: the flat fields and metadata apply, the stale agentState is rejected, and all of it happens in a single applied call.",
+    "expectedPatchResults": [
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": {
+            "controlledByUser": false
+        },
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project-renamed",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 5,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": true,
+        "thinkingAt": 0,
+        "updatedAt": 1755000030000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": {
+            "controlledByUser": false
+        },
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "mixed-flat-and-versioned-patch",
+    "patches": [
+        {
+            "agentState": {
+                "value": {
+                    "requests": {
+                        "req-stale": {
+                            "arguments": {
+                                "command": "echo stale"
+                            },
+                            "createdAt": 1754999940000,
+                            "tool": "Bash"
+                        }
+                    }
+                },
+                "version": 2
+            },
+            "metadata": {
+                "value": {
+                    "flavor": "claude",
+                    "host": "devbox",
+                    "name": "project-renamed",
+                    "path": "/home/dev/project"
+                },
+                "version": 5
+            },
+            "thinking": true,
+            "updatedAt": 1755000030000
+        }
+    ]
+}

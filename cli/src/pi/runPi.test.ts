@@ -1264,6 +1264,7 @@ describe('Pi built-in slash commands', () => {
         harness.session.onUserMessage.mockReset();
         harness.session.onCancelQueuedMessage.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
+        harness.session.sendAgentMessage.mockReset();
         harness.session.sendSessionEvent.mockReset();
         harness.session.updateMetadata.mockReset();
         harness.cleanupCount = 0;
@@ -1341,6 +1342,14 @@ describe('Pi built-in slash commands', () => {
             type: 'response', id: compact.id, command: 'compact', success: true,
             data: { summary: 'API design focused summary', tokensBefore: 1000, estimatedTokensAfter: 120 },
         });
+
+        await vi.waitFor(() => expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'token_count',
+            info: expect.objectContaining({
+                total: expect.objectContaining({ inputTokens: 0, outputTokens: 0 }),
+                contextTokens: 120,
+            }),
+        })));
 
         // The summary lands as a structured event (the web renders it as a
         // dedicated block), not as a plain status message. (The /compact row

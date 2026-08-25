@@ -1,0 +1,40 @@
+name: ios
+
+on:
+    push:
+        branches:
+            - main
+        paths:
+            - 'ios/**'
+            - 'shared/fixtures/**'
+            - '.github/workflows/ios.yml'
+    pull_request:
+        paths:
+            - 'ios/**'
+            - 'shared/fixtures/**'
+            - '.github/workflows/ios.yml'
+
+concurrency:
+    group: ios-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    package-tests:
+        runs-on: macos-15
+        steps:
+            - uses: actions/checkout@v4
+            - name: Show toolchain versions
+              run: |
+                  xcodebuild -version
+                  swift --version
+            - name: Run HapiKit package tests
+              run: swift test --package-path ios/Packages/HapiKit
+
+    app-build:
+        runs-on: macos-15
+        steps:
+            - uses: actions/checkout@v4
+            - name: Show toolchain versions
+              run: xcodebuild -version
+            - name: Build Hapi app for iOS Simulator
+              run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO

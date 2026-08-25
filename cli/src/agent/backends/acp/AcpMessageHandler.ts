@@ -398,6 +398,7 @@ function getSuffixPrefixOverlap(base: string, next: string): number {
 
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
+    private acceptingUpdates = true;
     private bufferedText = '';
     // Array buffer avoids the O(N²) string concatenation that per-token
     // ACP streams (OpenCode/Zen emits one chunk per generated token) would
@@ -410,11 +411,24 @@ export class AcpMessageHandler {
     private reasoningSnapshotEmitted = false;
     private readonly textChunkMode: AcpTextChunkMode;
 
+    private readonly onMessage: (message: AgentMessage) => void;
+
     constructor(
-        private readonly onMessage: (message: AgentMessage) => void,
+        onMessage: (message: AgentMessage) => void,
         private readonly options: { textChunkMode?: AcpTextChunkMode; flavor?: string } = {}
     ) {
+        this.onMessage = (message) => {
+            if (this.acceptingUpdates) onMessage(message);
+        };
         this.textChunkMode = this.options.textChunkMode ?? 'dedupe';
+    }
+
+    /** Drop late updates from a cancelled prompt before the next handler exists. */
+    deactivate(): void {
+        this.acceptingUpdates = false;
+        this.bufferedText = '';
+        this.bufferedReasoning = [];
+        this.resetReasoningState();
     }
 
     /**

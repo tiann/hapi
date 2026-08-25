@@ -27,6 +27,16 @@ describe('agent config descriptors', () => {
         }))
     })
 
+    test('reports DSH permission as managed by its ACP composition', () => {
+        const descriptor = getAgentConfigDescriptor('dsh')
+        expect(descriptor.fields).toEqual([expect.objectContaining({
+            id: 'permission',
+            kind: 'status',
+            availability: 'managed'
+        })])
+        expect(resolveHapiYoloPermissionMode('dsh')).toBeNull()
+    })
+
     test('reports Pi permission as managed rather than pretending YOLO applies', () => {
         const descriptor = getAgentConfigDescriptor('pi')
         expect(descriptor.fields).toContainEqual(expect.objectContaining({

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { CliSocketWithData } from '../../socketTypes'
@@ -37,6 +38,20 @@ function redundantGoalStatusContent(message: string): unknown {
     }
 }
 
+function reasoningContent(streamId: string, text: string, live: boolean): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'reasoning', message: text, id: streamId, ...(live ? { live: true } : {}) }
+        }
+    }
+}
+
+function reasoningTextOf(message: { content: unknown }): string {
+    return (message.content as { content: { data: { message: string } } }).content.data.message
+}
+
 describe('cli session handlers', () => {
     it('preserves immediate queued rows for cleared handoff transfer', () => {
         const store = new Store(':memory:')
@@ -55,6 +70,52 @@ describe('cli session handlers', () => {
         expect(store.messages.getAllMessages(session.id)).toEqual([
             expect.objectContaining({ localId: 'held-local', invokedAt: null })
         ])
+    })
+
+    it('collapses a live reasoning stream into its settled message', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('reasoning-stream-session', {}, null, 'default')
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        for (const text of ['th', 'thin', 'think']) {
+            socket.trigger('message', { sid: session.id, message: reasoningContent('stream-1', text, true) })
+        }
+        socket.trigger('message', { sid: session.id, message: reasoningContent('stream-1', 'thinking', false) })
+        // A second stream in the same turn must survive the first one's cleanup.
+        socket.trigger('message', { sid: session.id, message: reasoningContent('stream-2', 'more', true) })
+
+        expect(store.messages.getAllMessages(session.id).map(reasoningTextOf)).toEqual(['thinking', 'more'])
+    })
+
+    it('keeps every reasoning snapshot that carries no stream id', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('reasoning-idless-session', {}, null, 'default')
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        for (const text of ['one', 'two']) {
+            socket.trigger('message', {
+                sid: session.id,
+                message: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: text } } }
+            })
+        }
+
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
     })
 
     it('drops redundant goal status events before persistence and broadcast', () => {

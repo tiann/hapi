@@ -1,0 +1,107 @@
+# Version catalog for hapi-android.
+# All versions verified to exist on Google Maven / Maven Central at scaffold time.
+# Keep conservative: bump deliberately, one PR at a time.
+
+[versions]
+agp = "8.11.1"
+kotlin = "2.1.21"
+composeBom = "2025.05.00"
+activityCompose = "1.10.1"
+coreKtx = "1.16.0"
+kotlinxSerialization = "1.8.1"
+kotlinxCoroutines = "1.10.2"
+okhttp = "4.12.0"
+securityCrypto = "1.1.0"
+junit = "4.13.2"
+turbine = "1.2.0"
+# Pairing flow (B-M1d).
+# datastore 1.1.7 (2025-06) + navigation-compose 2.9.0 (2025-05) +
+# lifecycle 2.9.0 (2025-05) are on Google Maven; zxing-android-embedded 4.3.0
+# is the final release on Maven Central (QR scanning without Play Services).
+datastore = "1.1.7"
+navigationCompose = "2.9.0"
+lifecycle = "2.9.0"
+zxingEmbedded = "4.3.0"
+# Markdown / syntax highlighting (B-M2d1). Both verified on Maven Central:
+# org.commonmark 0.24.0 (latest, 2024-10) + dev.snipme:highlights 1.0.0 (KMP, jvm variant).
+commonmark = "0.24.0"
+highlights = "1.0.0"
+# Generated-image loading (B-M2d2). Coil 2.x (stable, OkHttp 4-compatible);
+# Coil 3 is a package rename + engine split — migrate deliberately later.
+coil = "2.7.0"
+# FCM push + notification actions (B-M4a). All on Google Maven:
+# work-runtime-ktx 2.10.1 (2025-03), firebase-messaging 24.1.0 (2024-11),
+# google-services 4.4.2 (2024-04; applied conditionally, see :app build file).
+# fragment 1.8.5 is a version FLOOR constraint only (firebase-messaging drags
+# in 1.1.0 transitively, which lintVital rejects next to ActivityResult APIs).
+workManager = "2.10.1"
+firebaseMessaging = "24.1.0"
+googleServices = "4.4.2"
+fragment = "1.8.5"
+# Per-app locales (B-M5a): AppCompatDelegate.setApplicationLocales back to
+# API 26 (appcompat 1.7.1, 2025-06, on Google Maven).
+appcompat = "1.7.1"
+
+[libraries]
+# AndroidX
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+# Per-app locales (B-M5a): AppCompatActivity + AppCompatDelegate locale APIs.
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycle" }
+
+# Compose (versions come from the BOM)
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+
+# Markdown rendering (commonmark-java is pure JVM -- safe for :core:protocol)
+commonmark = { group = "org.commonmark", name = "commonmark", version.ref = "commonmark" }
+commonmark-ext-gfm-tables = { group = "org.commonmark", name = "commonmark-ext-gfm-tables", version.ref = "commonmark" }
+commonmark-ext-gfm-strikethrough = { group = "org.commonmark", name = "commonmark-ext-gfm-strikethrough", version.ref = "commonmark" }
+commonmark-ext-autolink = { group = "org.commonmark", name = "commonmark-ext-autolink", version.ref = "commonmark" }
+highlights = { group = "dev.snipme", name = "highlights", version.ref = "highlights" }
+
+# KotlinX
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+
+# Networking
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
+
+# QR scanning (pairing). No Play Services dependency by design (plan track B).
+zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
+
+# Image loading (generated images ride the authed hub OkHttp client).
+coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+
+# Push (B-M4a): FCM transport + expedited workers for notification actions.
+androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workManager" }
+firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging", version.ref = "firebaseMessaging" }
+# Constraint-only (see :app build file) — nothing in the app uses fragments.
+androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "fragment" }
+
+# Testing
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
+turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+# Applied conditionally in :app (only when google-services.json exists).
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

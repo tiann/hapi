@@ -1,0 +1,85 @@
+{
+    "description": "Claude output family: a user-typed entry whose string content is a <task-notification> envelope normalizes as sidechain; the reducer extracts the <summary> as an agent-event of type message (no parentUuid on the wire keeps it in the root lane).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-231",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Run the dev server in the background."
+            },
+            {
+                "createdAt": 1755000009000,
+                "event": {
+                    "message": "Background command \"bun run dev\" exited with code 0",
+                    "type": "message"
+                },
+                "id": "msg-agent-232:0",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-231",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Run the dev server in the background."
+            },
+            {
+                "createdAt": 1755000009000,
+                "event": {
+                    "message": "Background command \"bun run dev\" exited with code 0",
+                    "type": "message"
+                },
+                "id": "msg-agent-232:0",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Run the dev server in the background.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-231",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": "<task-notification><task-id>bash_1</task-id><summary>Background command \"bun run dev\" exited with code 0</summary></task-notification>"
+                            },
+                            "type": "user",
+                            "uuid": "d5e6f7a8-4b5c-4d6e-9f7a-b8c9d0e1f232"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000009000,
+                "id": "msg-agent-232",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-task-notification"
+}

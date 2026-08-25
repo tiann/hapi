@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Everything the app does rides HTTPS to the paired hub. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- FCM push (B-M4a): OS notifications for permission requests / ready /
+         task events. Requested at runtime (API 33+) once a hub is paired;
+         denial just silences the OS surface — in-app SSE is unaffected. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- WorkManager's library manifest merges FOREGROUND_SERVICE in; we
+         never run foreground work (expedited is API 31+ JobScheduler only,
+         see NotificationActionReceiver), so strip it from the merged
+         manifest — Play flags FGS permissions for declaration review. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
+        tools:node="remove" />
+
+    <!-- QR pairing only; the app is fully usable without a camera
+         (manual hub URL + token entry), hence required="false". -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
+    <!-- Voice dictation (B-M3ce): press-to-talk transcription in the chat
+         composer. Requested at first mic use; typing works without it,
+         hence required="false". -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+    <!-- Paired hubs must use HTTPS. Keep the platform cleartext deny in
+         addition to URL validation so future transports cannot regress it. -->
+    <application
+        android:name=".HapiApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HapiCompanion"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Pairing deep link: hapicompanion://bind?hub=<url>&code=<accessToken> -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="bind"
+                    android:scheme="hapicompanion" />
+            </intent-filter>
+        </activity>
+
+        <!-- Composer attachments (B-M3f): scratch Uri for TakePicture camera
+             captures (cache/attachments/), granted to the camera app only. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.attachments"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/attachment_file_paths" />
+        </provider>
+
+        <!-- zxing-android-embedded pins its stock CaptureActivity to
+             sensorLandscape; this subclass keeps the pairing scan in portrait
+             (selected via ScanOptions.setCaptureActivity). -->
+        <activity
+            android:name=".feature.pairing.PortraitCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:stateNotNeeded="true"
+            android:theme="@style/zxing_CaptureTheme"
+            android:windowSoftInputMode="stateAlwaysHidden" />
+
+        <!-- Per-app language on API < 33 (B-M5a): opting in to appcompat's
+             autoStoreLocales makes AppCompatDelegate.setApplicationLocales
+             persist the choice and re-apply it synchronously before the first
+             activity draws — no custom attachBaseContext plumbing. On API 33+
+             the framework LocaleManager takes over automatically. -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+        <!-- FCM entry point (B-M4a). Data-only messages per the companion
+             contract; inert when no Firebase config is present. -->
+        <service
+            android:name=".fcm.HapiFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Notification action taps (Allow / Deny / Reply / Dismiss). -->
+        <receiver
+            android:name=".fcm.NotificationActionReceiver"
+            android:exported="false" />
+
+        <!-- WorkManager on-demand initialization: the default initializer is
+             removed so HapiApp's Configuration.Provider (custom WorkerFactory
+             feeding AppGraph into the push workers) is authoritative even when
+             WorkManager cold-starts the process. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <!-- HAPI only requests expedited work on API 31+, where JobScheduler
+             handles it. Remove WorkManager's unused foreground fallback from
+             the merged manifest so the app declares no FGS capability. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            tools:node="remove" />
+    </application>
+
+</manifest>

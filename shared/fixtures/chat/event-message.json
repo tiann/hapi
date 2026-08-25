@@ -1,0 +1,56 @@
+{
+    "description": "Event family: a status message event renders as an agent-event block with {type: message, message} carried verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "message": "Model changed to gpt-5.2-codex",
+                    "type": "message"
+                },
+                "id": "msg-event-311",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "message": "Model changed to gpt-5.2-codex",
+                    "type": "message"
+                },
+                "id": "msg-event-311",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Model changed to gpt-5.2-codex",
+                            "type": "message"
+                        },
+                        "id": "1a5c7b2d-02e3-4f48-9c6b-d7e8f9a0b311",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-event-311",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-message"
+}

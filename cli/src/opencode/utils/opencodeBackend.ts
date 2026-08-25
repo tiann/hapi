@@ -2,6 +2,7 @@ import { createServer } from 'node:net';
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { buildOpencodeEnv } from './config';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {};
@@ -61,7 +62,7 @@ export function createOpencodeBackend(opts: {
     }
 
     return new AcpSdkBackend({
-        command: 'opencode',
+        command: getAgentLaunchCommand('opencode'),
         args,
         env: filterEnv(env),
         textChunkMode: 'delta',

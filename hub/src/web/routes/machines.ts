@@ -1,5 +1,6 @@
 import {
     MACHINE_DISPLAY_NAME_MAX_LENGTH,
+    MACHINE_CAPABILITIES,
     MachineListDirectoryRequestSchema,
     MachinePathsExistsRequestSchema,
     RenameMachineRequestSchema,
@@ -75,14 +76,25 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (machine instanceof Response) {
             return machine
         }
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)) {
+            return c.json({
+                type: 'error' as const,
+                message: 'This runner must be upgraded before creating sessions',
+                code: 'runner_upgrade_required' as const,
+            })
+        }
 
         const body = await c.req.json().catch(() => null)
         const parsed = SpawnSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
-        if (parsed.data.agent === 'agy' && parsed.data.startingMode && parsed.data.startingMode !== 'remote') {
-            return c.json({ error: 'AGY only supports remote mode' }, 400)
+        if (
+            (parsed.data.agent === 'agy' || parsed.data.agent === 'dsh')
+            && parsed.data.startingMode
+            && parsed.data.startingMode !== 'remote'
+        ) {
+            return c.json({ error: `${parsed.data.agent.toUpperCase()} only supports remote mode` }, 400)
         }
         const startingMode = parsed.data.startingMode
 
@@ -105,6 +117,29 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             startingMode
         )
         return c.json(result)
+    })
+
+    app.get('/machines/:id/agent-availability', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) return machine
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)) {
+            return c.json({
+                error: 'This runner must be upgraded before creating sessions',
+                code: 'runner_upgrade_required',
+            }, 409)
+        }
+
+        try {
+            return c.json(await engine.getAgentAvailability(machineId))
+        } catch (error) {
+            return c.json({
+                error: error instanceof Error ? error.message : 'Failed to inspect Agent availability',
+            }, 500)
+        }
     })
 
     app.post('/machines/:id/list-directory', async (c) => {
@@ -157,8 +192,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            const exists = await engine.checkPathsExist(machineId, uniquePaths)
-            return c.json({ exists })
+            return c.json(await engine.checkPathsExist(machineId, uniquePaths))
         } catch (error) {
             return c.json({ error: error instanceof Error ? error.message : 'Failed to check paths' }, 500)
         }

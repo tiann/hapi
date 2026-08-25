@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Framework theme only carries the pre-Compose window; real theming is
+         Material3 in ui/theme/Theme.kt. AppCompat descent is required since
+         B-M5a: MainActivity extends AppCompatActivity so per-app locales
+         (AppCompatDelegate.setApplicationLocales) apply on API < 33. -->
+    <style name="Theme.HapiCompanion" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>

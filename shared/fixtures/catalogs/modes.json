@@ -1,0 +1,214 @@
+{
+    "codexCollaborationModes": [
+        {
+            "label": "Default",
+            "mode": "default"
+        },
+        {
+            "label": "Plan",
+            "mode": "plan"
+        }
+    ],
+    "permissionModesByFlavor": {
+        "agy": [
+            {
+                "label": "Request Review",
+                "mode": "request-review",
+                "tone": "neutral"
+            },
+            {
+                "label": "Always Proceed",
+                "mode": "always-proceed",
+                "tone": "danger"
+            }
+        ],
+        "claude": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Accept Edits",
+                "mode": "acceptEdits",
+                "tone": "warning"
+            },
+            {
+                "label": "Auto",
+                "mode": "auto",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "bypassPermissions",
+                "tone": "danger"
+            },
+            {
+                "label": "Plan Mode",
+                "mode": "plan",
+                "tone": "info"
+            }
+        ],
+        "codex": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Read Only",
+                "mode": "read-only",
+                "tone": "warning"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
+        "copilot": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Read Only",
+                "mode": "read-only",
+                "tone": "warning"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
+        "cursor": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Plan Mode",
+                "mode": "plan",
+                "tone": "info"
+            },
+            {
+                "label": "Ask Mode",
+                "mode": "ask",
+                "tone": "info"
+            },
+            {
+                "label": "Debug Mode",
+                "mode": "debug",
+                "tone": "info"
+            },
+            {
+                "label": "Auto-review",
+                "mode": "autoReview",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
+        "dsh": [],
+        "gemini": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Read Only",
+                "mode": "read-only",
+                "tone": "warning"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
+        "grok": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Auto",
+                "mode": "auto",
+                "tone": "warning"
+            },
+            {
+                "label": "Plan Mode",
+                "mode": "plan",
+                "tone": "info"
+            },
+            {
+                "label": "Yolo",
+                "mode": "bypassPermissions",
+                "tone": "danger"
+            }
+        ],
+        "kimi": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Read Only",
+                "mode": "read-only",
+                "tone": "warning"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
+        "opencode": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Plan Mode",
+                "mode": "plan",
+                "tone": "info"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
+        "pi": []
+    }
+}

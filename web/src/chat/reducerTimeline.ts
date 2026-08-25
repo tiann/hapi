@@ -1,4 +1,4 @@
-import type { AgentReasoningBlock, AgentTextBlock, ChatBlock, CliOutputBlock, CodexReviewBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
+import type { AgentEventBlock, AgentReasoningBlock, AgentTextBlock, ChatBlock, CliOutputBlock, CodexReviewBlock, RoundSummary, ToolCallBlock, ToolPermission, UserTextBlock } from '@/chat/types'
 import type { TracedMessage } from '@/chat/tracer'
 import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/chat/reducerCliOutput'
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
@@ -483,6 +483,26 @@ export function reduceTimeline(
             if (msg.content.type === 'abort-restore') {
                 continue
             }
+            if (msg.content.type === 'turn-summary') {
+                const summary = msg.content.summary as RoundSummary
+                type SummaryTargetBlock = Exclude<ChatBlock, UserTextBlock | AgentEventBlock>
+                const isSummaryTarget = (block: ChatBlock): block is SummaryTargetBlock =>
+                    block.kind !== 'user-text'
+                    && block.kind !== 'agent-event'
+                    && !(block.kind === 'cli-output' && block.source === 'user')
+                let firstIndex = -1
+                for (let index = blocks.length - 1; index >= 0; index -= 1) {
+                    if (!isSummaryTarget(blocks[index])) break
+                    firstIndex = index
+                }
+                if (firstIndex !== -1) {
+                    const firstBlock = blocks[firstIndex]
+                    if (isSummaryTarget(firstBlock)) {
+                        firstBlock.roundSummary = summary
+                    }
+                }
+                continue
+            }
             if (msg.content.type === 'turn-duration') {
                 const targetId = msg.content.targetMessageId
                 const durationMs = msg.content.durationMs as number
@@ -706,7 +726,8 @@ export function reduceTimeline(
                 attachments: msg.content.attachments,
                 status: msg.status,
                 originalText: msg.originalText,
-                meta: msg.meta
+                meta: msg.meta,
+                steered: msg.steered
             })
             continue
         }

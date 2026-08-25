@@ -1,0 +1,103 @@
+{
+    "description": "User message with attachments: AttachmentMetadata keeps {id, filename, mimeType, size, path}; previewUrl on the wire is web-serving detail and is dropped by the projection.",
+    "expected": {
+        "blocks": [
+            {
+                "attachments": [
+                    {
+                        "filename": "crash.log",
+                        "id": "att-01HZXK3Q",
+                        "mimeType": "text/plain",
+                        "path": "/uploads/att-01HZXK3Q/crash.log",
+                        "size": 18432
+                    },
+                    {
+                        "filename": "screenshot.png",
+                        "id": "att-01HZXK4R",
+                        "mimeType": "image/png",
+                        "path": "/uploads/att-01HZXK4R/screenshot.png",
+                        "size": 204800
+                    }
+                ],
+                "createdAt": 1755000000000,
+                "id": "msg-user-101",
+                "invokedAt": 1755000000510,
+                "kind": "user-text",
+                "localId": "local-7d2b9e4f-03c6-4a18-b7e5-3d0f8c4a6b21",
+                "text": "Here is the crash log and a screenshot of the failure."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "attachments": [
+                    {
+                        "filename": "crash.log",
+                        "id": "att-01HZXK3Q",
+                        "mimeType": "text/plain",
+                        "path": "/uploads/att-01HZXK3Q/crash.log",
+                        "size": 18432
+                    },
+                    {
+                        "filename": "screenshot.png",
+                        "id": "att-01HZXK4R",
+                        "mimeType": "image/png",
+                        "path": "/uploads/att-01HZXK4R/screenshot.png",
+                        "size": 204800
+                    }
+                ],
+                "createdAt": 1755000000000,
+                "id": "msg-user-101",
+                "invokedAt": 1755000000510,
+                "kind": "user-text",
+                "localId": "local-7d2b9e4f-03c6-4a18-b7e5-3d0f8c4a6b21",
+                "text": "Here is the crash log and a screenshot of the failure."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "attachments": [
+                            {
+                                "filename": "crash.log",
+                                "id": "att-01HZXK3Q",
+                                "mimeType": "text/plain",
+                                "path": "/uploads/att-01HZXK3Q/crash.log",
+                                "previewUrl": "/api/uploads/att-01HZXK3Q/preview",
+                                "size": 18432
+                            },
+                            {
+                                "filename": "screenshot.png",
+                                "id": "att-01HZXK4R",
+                                "mimeType": "image/png",
+                                "path": "/uploads/att-01HZXK4R/screenshot.png",
+                                "size": 204800
+                            }
+                        ],
+                        "text": "Here is the crash log and a screenshot of the failure.",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "webapp"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-101",
+                "invokedAt": 1755000000510,
+                "localId": "local-7d2b9e4f-03c6-4a18-b7e5-3d0f8c4a6b21",
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "user-text-with-attachments"
+}

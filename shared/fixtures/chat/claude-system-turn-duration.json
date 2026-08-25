@@ -1,0 +1,109 @@
+{
+    "description": "Claude output family: system subtype turn_duration is consumed by the reducer (folded into the preceding block, no visible event row). Expects only user-text + agent-text blocks; durationMs itself is advisory and outside the normative projection.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-041",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Rename the flag and push."
+            },
+            {
+                "createdAt": 1755000005000,
+                "id": "msg-agent-042:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Done — renamed the flag and pushed the branch."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-041",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Rename the flag and push."
+            },
+            {
+                "createdAt": 1755000005000,
+                "id": "msg-agent-042:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Done — renamed the flag and pushed the branch."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Rename the flag and push.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-041",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Done — renamed the flag and pushed the branch.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:05.006Z",
+                            "type": "assistant",
+                            "uuid": "e8a5c136-0f4b-4d5e-9a7c-b6d0e2f8a042"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005000,
+                "id": "msg-agent-042",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "durationMs": 5417,
+                            "messageId": "msg-agent-042",
+                            "subtype": "turn_duration",
+                            "type": "system",
+                            "uuid": "f9b6d247-1a5c-4e6f-8b8d-c7e1f3a9b043"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005450,
+                "id": "msg-agent-043",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-system-turn-duration"
+}

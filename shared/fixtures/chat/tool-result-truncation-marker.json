@@ -1,0 +1,115 @@
+{
+    "description": "A tool_result containing the hub truncation marker (…[hapi: truncated N chars]…) passes through the pipeline byte-for-byte inside tool.result.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "toolu_01TrCtBuildLog",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01TrCtBuildLog",
+                    "input": {
+                        "command": "cat build.log",
+                        "description": "Inspect the build log"
+                    },
+                    "name": "Bash",
+                    "result": "[build] compiling 412 modules\n[build] step 1/9 …\n…[hapi: truncated 51200 chars]…\n[build] step 9/9 done\n[build] finished in 84.2s",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "toolu_01TrCtBuildLog",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01TrCtBuildLog",
+                    "input": {
+                        "command": "cat build.log",
+                        "description": "Inspect the build log"
+                    },
+                    "name": "Bash",
+                    "result": "[build] compiling 412 modules\n[build] step 1/9 …\n…[hapi: truncated 51200 chars]…\n[build] step 9/9 done\n[build] finished in 84.2s",
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01TrCtBuildLog",
+                                        "input": {
+                                            "command": "cat build.log",
+                                            "description": "Inspect the build log"
+                                        },
+                                        "name": "Bash",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:00.412Z",
+                            "type": "assistant",
+                            "uuid": "a1c8e359-2b6d-4f70-9c1e-d8f2a4b0c111"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-agent-111",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "[build] compiling 412 modules\n[build] step 1/9 …\n…[hapi: truncated 51200 chars]…\n[build] step 9/9 done\n[build] finished in 84.2s",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01TrCtBuildLog",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "a1c8e359-2b6d-4f70-9c1e-d8f2a4b0c111",
+                            "timestamp": "2025-08-12T11:20:01.933Z",
+                            "type": "user",
+                            "uuid": "b2d9f460-3c7e-4a81-8d2f-e9a3b5c1d112"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001800,
+                "id": "msg-agent-112",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "tool-result-truncation-marker"
+}

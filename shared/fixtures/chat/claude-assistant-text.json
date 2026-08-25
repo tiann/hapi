@@ -1,0 +1,112 @@
+{
+    "description": "Claude output family: plain assistant text with usage. Expects user-text + agent-text blocks and latestUsage derived from message.usage (contextSize = cache_creation + cache_read + input_tokens).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-001",
+                "invokedAt": 1755000000350,
+                "kind": "user-text",
+                "localId": "local-9e1c2b6a",
+                "text": "Summarize what the hub process does."
+            },
+            {
+                "createdAt": 1755000005200,
+                "id": "msg-agent-002:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The hub is the always-on relay: it stores sessions and messages, fans out SSE events to clients, and forwards permission decisions back to the CLI."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": {
+            "contextSize": 91730,
+            "contextWindow": null,
+            "inputTokens": 2413,
+            "outputTokens": 187
+        },
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-001",
+                "invokedAt": 1755000000350,
+                "kind": "user-text",
+                "localId": "local-9e1c2b6a",
+                "text": "Summarize what the hub process does."
+            },
+            {
+                "createdAt": 1755000005200,
+                "id": "msg-agent-002:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The hub is the always-on relay: it stores sessions and messages, fans out SSE events to clients, and forwards permission decisions back to the CLI."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Summarize what the hub process does.",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "webapp"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-001",
+                "invokedAt": 1755000000350,
+                "localId": "local-9e1c2b6a",
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "isSidechain": false,
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "The hub is the always-on relay: it stores sessions and messages, fans out SSE events to clients, and forwards permission decisions back to the CLI.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "id": "msg_01Xw2VuNqYrD8fKp",
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "stop_reason": "end_turn",
+                                "type": "message",
+                                "usage": {
+                                    "cache_creation_input_tokens": 1204,
+                                    "cache_read_input_tokens": 88113,
+                                    "input_tokens": 2413,
+                                    "output_tokens": 187,
+                                    "service_tier": "standard"
+                                }
+                            },
+                            "parentUuid": "41b7a9d2-8f05-4f7e-b6d3-9c2e5a7f4d10",
+                            "timestamp": "2025-08-12T11:20:05.173Z",
+                            "type": "assistant",
+                            "uuid": "6d1a9f30-4b2e-4c26-9d1c-a0f4c1e6b001"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005200,
+                "id": "msg-agent-002",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-assistant-text"
+}

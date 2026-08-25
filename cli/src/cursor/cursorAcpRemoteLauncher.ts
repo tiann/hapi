@@ -34,7 +34,9 @@ import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/c
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
+import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     cursorHapiMcpServerId,
     installCursorMcpOverlay,
@@ -50,6 +52,8 @@ import {
     stripRetryableCursorError
 } from './cursorAutoRetry';
 
+const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
+
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
@@ -63,6 +67,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendModel: string | null = null;
     private unregisterModelApplyHandler: (() => void) | null = null;
     private modelApplySeq = 0;
+    private activePromptModeHash: string | null = null;
+    /** True while a backend.prompt turn is in flight. */
+    private promptInFlight = false;
+    /** Concurrent soft-steer session/prompt RPCs still running after kickoff. */
+    private softSteerWaiters: Promise<void>[] = [];
     /** True when ACP process was spawned with `--auto-review`. */
     private spawnedWithAutoReview = false;
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
@@ -72,7 +81,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private pendingRetryableFromStderr = false;
     private pendingInlineRetryableError = false;
     private attemptProducedToolActivity = false;
-    private promptInFlight = false;
     private userAbortRequested = false;
 
     constructor(session: CursorSession) {
@@ -94,6 +102,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+        session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
 
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
             enableChangeTitle: false,
@@ -414,13 +423,165 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             onSwitch: () => this.handleSwitchRequest()
         });
 
+        // Soft steer = Cursor GUI "Send" (next-opportune / soft inject): fire a
+        // concurrent session/prompt without canceling the in-flight turn. Abort
+        // remains the hard stop path (GUI "Stop & send").
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : '';
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' };
+                }
+                const backend = this.backend;
+                const acpSessionId = this.acpSessionId;
+                if (!this.promptInFlight || !acpSessionId || !backend) {
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                const targetPromptGeneration = backend.getPromptGeneration();
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' };
+                }
+                const isControlCommand = Boolean(taken.item.isolate)
+                    || parseCursorSpecialCommand(taken.item.message).type !== null;
+                if (isControlCommand) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Control commands cannot be steered' };
+                }
+                if (this.activePromptModeHash !== taken.item.modeHash) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Queued message mode differs from the active turn' };
+                }
+
+                // Ack the hub once the soft-steer request is kicked off — not when
+                // the concurrent session/prompt finishes. ACP treats that response as
+                // turn completion, which can exceed the hub's 30s Socket.IO RPC timeout
+                // and report a false failure after the inject already started.
+                // Keep the launcher busy until that background prompt settles so we
+                // do not emit ready / start the next backend.prompt() while it runs.
+                if (!session.queue.beginReservationDispatch(taken)) {
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
+                if (!dispatchStatePersisted) {
+                    session.queue.markReservationIndeterminate(taken);
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer state is indeterminate' };
+                }
+                const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (!taken.originIndeterminate) {
+                        const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                        if (!persisted) {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
+                        }
+                    }
+                    if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                        session.client.emitSteerIndeterminate([localId]);
+                        return false;
+                    }
+                    return true;
+                };
+                if (taken.state !== 'dispatching') {
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                if (!this.promptInFlight
+                    || this.backend !== backend
+                    || this.acpSessionId !== acpSessionId
+                    || backend.getPromptGeneration() !== targetPromptGeneration) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+                let steer: { dispatched: Promise<void>; completed: Promise<void> };
+                try {
+                    steer = backend.beginSoftSteerPrompt(acpSessionId, [{
+                        type: 'text',
+                        text: taken.item.message
+                    }]);
+                } catch (error) {
+                    if (isAcpIndeterminateError(error)) {
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        logger.debug('[cursor-acp] soft-steer dispatch outcome unknown', error);
+                        return { steered: false, error: 'Steer outcome is being reconciled' };
+                    }
+                    logger.debug('[cursor-acp] soft-steer failed to start', error);
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Failed to soft-steer into active turn' };
+                }
+                // Completion still gates the next prompt (handler swap safety);
+                // register the waiter before awaiting dispatch so the main loop's
+                // finally cannot slip a prompt in between.
+                const steerDone = Promise.all([steer.dispatched, steer.completed]).then(() => {}, (error) => {
+                    logger.debug('[cursor-acp] soft-steer completion failed after dispatch', error);
+                });
+                this.softSteerWaiters.push(steerDone);
+                const removeWaiter = () => {
+                    this.softSteerWaiters = this.softSteerWaiters.filter((p) => p !== steerDone);
+                };
+                void steerDone.then(removeWaiter);
+                try {
+                    await steer.dispatched;
+                } catch (error) {
+                    if (isAcpIndeterminateError(error)) {
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        logger.debug('[cursor-acp] soft-steer dispatch outcome unknown', error);
+                        return { steered: false, error: 'Steer outcome is being reconciled' };
+                    }
+                    await restoreQueuedReservation();
+                    logger.debug('[cursor-acp] soft-steer failed to start', error);
+                    return { steered: false, error: 'Failed to soft-steer into active turn' };
+                }
+                // The RPC acks once stdin accepted the inject. The queue row is
+                // committed only when the concurrent prompt settles: an explicit
+                // JSON-RPC rejection means ACP never accepted the instruction
+                // (restore it for the next prompt), while a transport failure
+                // (abort/disconnect) keeps the row reserved — never re-delivered.
+                void steer.completed.then(() => {
+                    // Completion means ACP accepted the inject: the ACK must
+                    // reach the hub even when an abort reset the queue and
+                    // cancelled the reservation in between.
+                    session.queue.commitReservation(taken);
+                    messageBuffer.addMessage(taken.item.message, 'user');
+                    session.client.emitMessagesConsumed([localId], { steered: true });
+                }, (error) => {
+                    if (isAcpIndeterminateError(error)) {
+                        // Do not leave the reservation dispatching forever. Hold
+                        // it outside automatic replay and persist the ambiguous
+                        // outcome; a later explicit Steer retries this same row.
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        logger.debug('[cursor-acp] soft-steer outcome unknown after dispatch; row held for explicit resolution', error);
+                        return;
+                    }
+                    void restoreQueuedReservation().then((restored) => {
+                        if (restored) {
+                            logger.debug('[cursor-acp] soft-steer rejected by ACP; row restored', error);
+                        }
+                    });
+                });
+                return { steered: true };
+            }
+        );
+
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
 
+        try {
         while (!this.shouldExit) {
             const waitSignal = this.abortController.signal;
             const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
+
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) {
                     continue;
@@ -463,6 +624,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }];
 
             session.onThinkingChange(true);
+            this.promptInFlight = true;
+            session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
+            this.activePromptModeHash = batch.hash;
 
             try {
                 this.promptInFlight = true;
@@ -508,6 +672,31 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             } finally {
                 this.promptInFlight = false;
+                session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
+                // Soft-steers share the ACP session; wait for them before ready /
+                // the next prompt so message handlers are not swapped mid-inject.
+                // An Abort (which clears the waiters) must release this wait too:
+                // race the settle against the abort signal so the launcher never
+                // blocks on a soft steer whose completion is unbounded.
+                if (this.softSteerWaiters.length > 0 && !this.shouldExit) {
+                    const waitSignal = this.abortController.signal;
+                    let releaseWait!: () => void;
+                    const abortListener = () => releaseWait();
+                    if (!waitSignal.aborted) {
+                        waitSignal.addEventListener('abort', abortListener, { once: true });
+                    }
+                    try {
+                        await Promise.race([
+                            Promise.allSettled([...this.softSteerWaiters]),
+                            new Promise<void>((resolve) => { releaseWait = resolve; })
+                        ]);
+                    } finally {
+                        // Repeated waits must not accumulate abort listeners.
+                        waitSignal.removeEventListener('abort', abortListener);
+                    }
+                    this.softSteerWaiters = [];
+                }
+                this.activePromptModeHash = null;
                 this.pendingRetryableError = null;
                 this.pendingRetryableFromStderr = false;
                 this.pendingInlineRetryableError = false;
@@ -520,6 +709,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             }
         }
+        } finally {
+            // No wait here: Exit/Switch must reach cleanup() promptly; it
+            // disconnects the ACP transport, rejecting pending soft-steer
+            // requests and settling any waiters.
+        }
     }
 
     protected async cleanup(): Promise<void> {
@@ -530,6 +724,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         try {
             this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+            this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
+                steered: false,
+                error: 'Session ending'
+            }));
+            this.promptInFlight = false;
+            this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
+            this.softSteerWaiters = [];
             this.unregisterModelApplyHandler?.();
             this.unregisterModelApplyHandler = null;
 
@@ -887,13 +1088,47 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         this.userAbortRequested = true;
         const backend = this.backend;
-        const sessionId = this.session.sessionId;
+        const sessionId = this.acpSessionId ?? this.session.sessionId;
         if (backend && sessionId) {
+            const pendingSoftSteers = [...this.softSteerWaiters];
             await backend.cancelPrompt(sessionId);
+            // Drop soft-steer bookkeeping first; retain the foreground prompt
+            // count and wait for both boundaries before a new handler is used.
+            backend.abortSoftSteers();
+            if (!this.shouldExit) {
+                let timeout: ReturnType<typeof setTimeout> | null = null;
+                const drained = await Promise.race([
+                    Promise.all([
+                        backend.waitForResponseComplete(),
+                        Promise.allSettled(pendingSoftSteers)
+                    ]).then(() => true),
+                    new Promise<boolean>((resolve) => {
+                        timeout = setTimeout(() => resolve(false), CURSOR_ABORT_DRAIN_TIMEOUT_MS);
+                        timeout.unref?.();
+                    })
+                ]);
+                if (timeout) clearTimeout(timeout);
+                if (!drained) {
+                    // An ACP request that ignores cancel cannot safely share a
+                    // handler with the next prompt. End the launcher instead
+                    // of allowing late updates to cross the turn boundary.
+                    logger.warn('[cursor-acp] abort drain timed out; ending session to isolate late ACP updates');
+                    this.shouldExit = true;
+                }
+            }
         }
         await this.permissionAdapter?.cancelAll('User aborted');
         await this.extensionAdapter?.cancelAll('User aborted');
-        this.session.queue.reset();
+        // A soft steer may settle after Abort; preserve its reservation until
+        // the completion callback records accepted or indeterminate.
+        this.session.queue.reset({ preserveDispatchingReservations: true });
+        this.promptInFlight = false;
+        // Abort is the hard-stop path: drop soft-steer waiters so the prompt
+        // finally cannot block the next prompt on a soft steer whose completion
+        // is unbounded and may never settle. Soft counters were already reset
+        // above; only the foreground prompt was drained before continuing.
+        this.softSteerWaiters = [];
+        this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
         this.session.onThinkingChange(false);
         this.abortController.abort();
         this.abortController = new AbortController();

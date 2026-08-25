@@ -1,0 +1,130 @@
+{
+    "description": "Completed request canceled (request withdrawn/aborted before an answer): the tool-call block created from the tool_use maps to state error with permission {status: canceled} and no mode/decision/reason.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-421",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Write the migration file."
+            },
+            {
+                "createdAt": 1755000001900,
+                "id": "toolu_01PermCancel001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01PermCancel001",
+                    "input": {
+                        "content": "CREATE INDEX idx_messages_seq ON messages(seq);",
+                        "file_path": "/repo/hub/migrations/0007_add_index.sql"
+                    },
+                    "name": "Write",
+                    "permission": {
+                        "status": "canceled"
+                    },
+                    "state": "error"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-421",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Write the migration file."
+            },
+            {
+                "createdAt": 1755000001900,
+                "id": "toolu_01PermCancel001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01PermCancel001",
+                    "input": {
+                        "content": "CREATE INDEX idx_messages_seq ON messages(seq);",
+                        "file_path": "/repo/hub/migrations/0007_add_index.sql"
+                    },
+                    "name": "Write",
+                    "permission": {
+                        "status": "canceled"
+                    },
+                    "state": "error"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "toolu_01PermCancel001": {
+                    "arguments": {
+                        "content": "CREATE INDEX idx_messages_seq ON messages(seq);",
+                        "file_path": "/repo/hub/migrations/0007_add_index.sql"
+                    },
+                    "completedAt": 1755000004800,
+                    "createdAt": 1755000002100,
+                    "status": "canceled",
+                    "tool": "Write"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Write the migration file.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-421",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01PermCancel001",
+                                        "input": {
+                                            "content": "CREATE INDEX idx_messages_seq ON messages(seq);",
+                                            "file_path": "/repo/hub/migrations/0007_add_index.sql"
+                                        },
+                                        "name": "Write",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "5e3f4a6b-0ac1-4cdd-9f4e-f7a8b9c0d422"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001900,
+                "id": "msg-agent-422",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-canceled"
+}

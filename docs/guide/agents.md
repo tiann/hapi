@@ -13,6 +13,7 @@ HAPI is a wrapper around AI coding agents. One CLI (`hapi <agent>`) starts any s
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
+| DeepSeek Harness | `hapi dsh` | ACP (`dsh-acp-demo` or configured server) | — | ✓ | Managed by DSH ACP composition | — |
 | Antigravity (agy) | `hapi agy` | Headless print mode (per-turn `agy -p` + NDJSON) | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
@@ -23,7 +24,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, and OpenCode remote sessions all run over ACP.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is intentionally automation-only and currently supports fresh sessions, committed assistant output, cancellation, and one-shot permissions; it does not provide native resume, model switching, MCP injection, or live tool/reasoning telemetry.
 
 ### Permission modes
 
@@ -31,7 +32,7 @@ Permission modes are per-agent — each flavor exposes its own set (see the matr
 
 ### Local and remote mode
 
-Every session is either **local** (driven from the terminal) or **remote** (driven from web/phone). Switching is seamless and keeps the same session state:
+Every session is either **local** (driven from the terminal) or **remote** (driven from web/phone). DSH is remote-only because its ACP server has no local terminal surface. Switching is seamless and keeps the same session state for flavors that support both:
 
 - **Remote → local:** press double-space in the terminal.
 - **Local → remote:** send a message from the web UI or phone; the session switches automatically.
@@ -45,7 +46,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` works for every flavor except Gemini. An active remote session is handed off to the local terminal first. Pi and Antigravity are the exceptions in the other direction: neither has a local input path, so their sessions always resume in remote mode.
+`hapi resume` works for every resumable flavor except Gemini and fresh-session-only DSH. An active remote session is handed off to the local terminal first. Pi and Antigravity are the exceptions in the other direction: neither has a local input path, so their sessions always resume in remote mode.
 
 ## Cursor Agent
 
@@ -231,6 +232,35 @@ HAPI also exposes Grok's common slash commands, discovers skills from `.grok/ski
 - Grok subscription, credit, and model availability are controlled by xAI.
 
 If a remote session reports authentication failure, run `grok login --device-auth` on the runner machine and retry.
+
+## DeepSeek Harness
+
+`hapi dsh` uses the shared ACP transport and keeps DSH's runtime outside HAPI. The
+default executable is `dsh-acp-demo`; configure a different ACP server or a
+source checkout with `HAPI_DSH_ACP_COMMAND`, `HAPI_DSH_ACP_CONFIG`, or the JSON
+argument array `HAPI_DSH_ACP_ARGS_JSON`.
+
+The official demo is published as `@deepseek-ai/dsh-acp-demo`; use an exact
+version such as `0.1.0-rc.7` rather than npm's stale `latest` tag:
+
+```bash
+npm install -g @deepseek-ai/dsh-acp-demo@0.1.0-rc.7
+```
+
+A published package still needs a DSH Cordis composition/config. A source
+checkout can be launched directly:
+
+```bash
+export HAPI_DSH_ACP_COMMAND=pnpm
+export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
+hapi dsh
+```
+
+DSH sessions are remote-only and fresh-session-only. HAPI does not inject MCP
+servers or expose model/effort pickers because the official ACP contract leaves
+those surfaces to the DSH composition. Pending one-shot permission requests
+remain answerable in the standard HAPI UI, but the ACP composition owns the
+overall permission policy.
 
 ## Other agents
 

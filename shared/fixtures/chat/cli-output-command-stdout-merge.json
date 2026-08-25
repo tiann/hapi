@@ -1,0 +1,69 @@
+{
+    "description": "Two consecutive cli-origin user messages — a command-name block without stdout followed by a <local-command-stdout> block — merge into ONE cli-output block (id/localId of the first, texts joined with a newline).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-cli-711",
+                "kind": "cli-output",
+                "localId": null,
+                "source": "user",
+                "text": "<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>\n<local-command-stdout>Context usage: 84k/200k tokens (42%)</local-command-stdout>"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-cli-711",
+                "kind": "cli-output",
+                "localId": null,
+                "source": "user",
+                "text": "<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>\n<local-command-stdout>Context usage: 84k/200k tokens (42%)</local-command-stdout>"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "cli"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-cli-711",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "text": "<local-command-stdout>Context usage: 84k/200k tokens (42%)</local-command-stdout>",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "cli"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000700,
+                "id": "msg-cli-712",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "cli-output-command-stdout-merge"
+}

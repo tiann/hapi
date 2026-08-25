@@ -1,0 +1,113 @@
+{
+    "description": "todos wrappers gate on todosUpdatedAt with an absent watermark treated as 0: the first patch applies, then an older-versioned todos replay is dropped instead of resurrecting the pre-update list.",
+    "expectedPatchResults": [
+        "applied",
+        "unchanged"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "todos": [
+            {
+                "content": "Wire the SSE reconnect backoff",
+                "id": "todo-1",
+                "priority": "high",
+                "status": "completed"
+            },
+            {
+                "activeForm": "Porting the patch gate to native",
+                "content": "Port the patch gate to native",
+                "id": "todo-2",
+                "priority": "medium",
+                "status": "in_progress"
+            }
+        ],
+        "todosUpdatedAt": 1755000300000,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "todos-version-watermark-from-absent",
+    "patches": [
+        {
+            "todos": {
+                "value": [
+                    {
+                        "content": "Wire the SSE reconnect backoff",
+                        "id": "todo-1",
+                        "priority": "high",
+                        "status": "completed"
+                    },
+                    {
+                        "activeForm": "Porting the patch gate to native",
+                        "content": "Port the patch gate to native",
+                        "id": "todo-2",
+                        "priority": "medium",
+                        "status": "in_progress"
+                    }
+                ],
+                "version": 1755000300000
+            }
+        },
+        {
+            "todos": {
+                "value": [
+                    {
+                        "activeForm": "Wiring the SSE reconnect backoff",
+                        "content": "Wire the SSE reconnect backoff",
+                        "id": "todo-1",
+                        "priority": "high",
+                        "status": "in_progress"
+                    }
+                ],
+                "version": 1755000200000
+            }
+        }
+    ]
+}

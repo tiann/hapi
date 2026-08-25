@@ -116,7 +116,7 @@ jobs:
 
       - name: Run Codex for Mention Response
         if: steps.check_skip.outputs.should_skip != 'true'
-        uses: openai/codex-action@v1
+        uses: openai/codex-action@v1.11
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}

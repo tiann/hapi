@@ -2,12 +2,14 @@ import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionM
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
+    AgentAvailabilityResponseSchema,
     CursorChatStoreStatusSchema,
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
 import type {
     AgyModelsResponse,
+    AgentAvailabilityResponse,
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
@@ -186,7 +188,15 @@ export class RpcGateway {
         // CLI with `--hapi-session-id`, so the child reuses the existing hub
         // session row (same id) instead of minting a new one.
         forkSession?: boolean
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+    ): Promise<
+        | { type: 'success'; sessionId: string }
+        | {
+            type: 'error'
+            message: string
+            code?: 'agent_unavailable' | 'outside_workspace_roots'
+            agent?: AgentFlavor
+        }
+    > {
         try {
             const result = await this.machineRpc(
                 machineId,
@@ -218,7 +228,16 @@ export class RpcGateway {
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
-                    return { type: 'error', message: obj.errorMessage }
+                    const code = obj.code === 'agent_unavailable' || obj.code === 'outside_workspace_roots'
+                        ? obj.code
+                        : undefined
+                    const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
+                    return {
+                        type: 'error',
+                        message: obj.errorMessage,
+                        ...(code ? { code } : {}),
+                        ...(unavailableAgent ? { agent: unavailableAgent } : {}),
+                    }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
                     return { type: 'error', message: `Directory creation requires approval: ${obj.directory}` }
@@ -253,7 +272,12 @@ export class RpcGateway {
         return result as RpcListDirectoryResponse
     }
 
-    async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
+    async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
+        return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async checkPathsExist(machineId: string, paths: string[]): Promise<PathExistsResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.PathExists, { paths }) as RpcPathExistsResponse | unknown
         if (!result || typeof result !== 'object') {
             throw new Error('Unexpected path-exists result')
@@ -268,7 +292,13 @@ export class RpcGateway {
         for (const [key, value] of Object.entries(existsValue)) {
             exists[key] = value === true
         }
-        return exists
+        const outsideWorkspaceRoots = Array.isArray((result as RpcPathExistsResponse).outsideWorkspaceRoots)
+            ? (result as RpcPathExistsResponse).outsideWorkspaceRoots?.filter((path): path is string => typeof path === 'string')
+            : undefined
+        return {
+            exists,
+            ...(outsideWorkspaceRoots?.length ? { outsideWorkspaceRoots } : {}),
+        }
     }
 
     async getCursorChatStoreStatus(

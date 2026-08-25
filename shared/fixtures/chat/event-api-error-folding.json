@@ -1,0 +1,186 @@
+{
+    "description": "foldApiErrorEvents: three consecutive api_error system entries (retry 1, 2, 3) fold into a single agent-event carrying the LATEST api-error state; a following assistant text ends the run.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-351",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Summarize the diff."
+            },
+            {
+                "createdAt": 1755000008900,
+                "event": {
+                    "error": {
+                        "message": "Overloaded",
+                        "status": 529
+                    },
+                    "maxRetries": 10,
+                    "retryAttempt": 3,
+                    "type": "api-error"
+                },
+                "id": "msg-agent-354",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000015000,
+                "id": "msg-agent-355:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The diff renames the retry flag and threads it through the upload path."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-351",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Summarize the diff."
+            },
+            {
+                "createdAt": 1755000008900,
+                "event": {
+                    "error": {
+                        "message": "Overloaded",
+                        "status": 529
+                    },
+                    "maxRetries": 10,
+                    "retryAttempt": 3,
+                    "type": "api-error"
+                },
+                "id": "msg-agent-354",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000015000,
+                "id": "msg-agent-355:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The diff renames the retry flag and threads it through the upload path."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Summarize the diff.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-351",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "error": {
+                                "message": "Overloaded",
+                                "status": 529
+                            },
+                            "maxRetries": 10,
+                            "retryAttempt": 1,
+                            "subtype": "api_error",
+                            "type": "system",
+                            "uuid": "92d3f3a5-8a0b-4c1a-9e4d-f5a6b7c8d352"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "msg-agent-352",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "error": {
+                                "message": "Overloaded",
+                                "status": 529
+                            },
+                            "maxRetries": 10,
+                            "retryAttempt": 2,
+                            "subtype": "api_error",
+                            "type": "system",
+                            "uuid": "a3e4a4b6-9b1c-4d2b-8f5e-a6b7c8d9e353"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004500,
+                "id": "msg-agent-353",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "error": {
+                                "message": "Overloaded",
+                                "status": 529
+                            },
+                            "maxRetries": 10,
+                            "retryAttempt": 3,
+                            "subtype": "api_error",
+                            "type": "system",
+                            "uuid": "b4f5b5c7-0c2d-4e3c-9a6f-b7c8d9e0f354"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000008900,
+                "id": "msg-agent-354",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "The diff renames the retry flag and threads it through the upload path.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "c5a6c6d8-1d3e-4f4d-8b7a-c8d9e0f1a355"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000015000,
+                "id": "msg-agent-355",
+                "localId": null,
+                "seq": 5
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-api-error-folding"
+}

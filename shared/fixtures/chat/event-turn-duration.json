@@ -1,0 +1,107 @@
+{
+    "description": "Event family: a turn-duration event (durationMs + targetMessageId) is consumed by the reducer — folded into the targeted block, never surfacing as a chat block; durationMs itself is advisory and outside the normative projection.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-361",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Give me a one-line status."
+            },
+            {
+                "createdAt": 1755000002200,
+                "id": "msg-agent-362:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Migration is applied; tests are green."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-361",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Give me a one-line status."
+            },
+            {
+                "createdAt": 1755000002200,
+                "id": "msg-agent-362:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Migration is applied; tests are green."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Give me a one-line status.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-361",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Migration is applied; tests are green.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "d6b7d7e9-2e4f-4a5e-9c8b-d9e0f1a2b362"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002200,
+                "id": "msg-agent-362",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "durationMs": 2214,
+                            "targetMessageId": "msg-agent-362",
+                            "type": "turn-duration"
+                        },
+                        "id": "e7c8e8fa-3f5a-4b6f-8d9c-e0f1a2b3c363",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002450,
+                "id": "msg-event-363",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-turn-duration"
+}

@@ -1,0 +1,82 @@
+{
+    "description": "Codex family: an error payload becomes an agent-event block with {type: error, message} carried verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-501",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Continue the review."
+            },
+            {
+                "createdAt": 1755000002700,
+                "event": {
+                    "message": "Codex backend disconnected: stream closed before the turn completed",
+                    "type": "error"
+                },
+                "id": "msg-codex-502",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-501",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Continue the review."
+            },
+            {
+                "createdAt": 1755000002700,
+                "event": {
+                    "message": "Codex backend disconnected: stream closed before the turn completed",
+                    "type": "error"
+                },
+                "id": "msg-codex-502",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Continue the review.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-501",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Codex backend disconnected: stream closed before the turn completed",
+                            "type": "error"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002700,
+                "id": "msg-codex-502",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-error-event"
+}

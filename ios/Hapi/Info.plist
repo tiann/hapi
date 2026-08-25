@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>HAPI uses the camera to scan your hub's pairing QR code and to capture photos you attach to messages.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>HAPI uses the microphone to record voice dictation that is transcribed into your message.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>run.hapi.companion.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hapicompanion</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,106 @@
+{
+    "description": "An agentState wrapper older than the cached agentStateVersion is rejected: applying it would resurrect a permission request that was already resolved into completedRequests.",
+    "expectedPatchResults": [
+        "unchanged"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": {
+            "completedRequests": {
+                "req-1": {
+                    "arguments": {
+                        "command": "rm -rf build"
+                    },
+                    "completedAt": 1754999980000,
+                    "createdAt": 1754999970000,
+                    "decision": "approved",
+                    "status": "approved",
+                    "tool": "Bash"
+                }
+            },
+            "requests": null
+        },
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": {
+            "completedRequests": {
+                "req-1": {
+                    "arguments": {
+                        "command": "rm -rf build"
+                    },
+                    "completedAt": 1754999980000,
+                    "createdAt": 1754999970000,
+                    "decision": "approved",
+                    "status": "approved",
+                    "tool": "Bash"
+                }
+            },
+            "requests": null
+        },
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "agent-state-stale-version-dropped",
+    "patches": [
+        {
+            "agentState": {
+                "value": {
+                    "requests": {
+                        "req-1": {
+                            "arguments": {
+                                "command": "rm -rf build"
+                            },
+                            "createdAt": 1754999970000,
+                            "tool": "Bash"
+                        }
+                    }
+                },
+                "version": 4
+            }
+        }
+    ]
+}

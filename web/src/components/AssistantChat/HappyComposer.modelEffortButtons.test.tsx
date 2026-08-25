@@ -167,13 +167,49 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
     })
 
-    it('opens the settings sheet from the model button with Model before Permission', () => {
+    it('opens only the Model section from the model button (anchored open)', () => {
         renderComposer('claude')
         fireEvent.click(screen.getByRole('button', { name: 'Sonnet 4' }))
+        expect(screen.getByText('Model')).toBeTruthy()
+        // Anchored open: the other sections stay collapsed.
+        expect(screen.queryByText('Permission Mode')).toBeNull()
+        expect(screen.queryByText('Effort')).toBeNull()
+    })
+
+    it('opens only the Effort section from the effort button (anchored open)', () => {
+        renderComposer('claude')
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+        expect(screen.queryByText('Permission Mode')).toBeNull()
+    })
+
+    it('switches from the Model to the Effort section without closing the sheet', () => {
+        renderComposer('claude')
+        fireEvent.click(screen.getByRole('button', { name: 'Sonnet 4' }))
+        expect(screen.getByText('Model')).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+    })
+
+    it('opens the full sheet from the gear with Model before Permission', () => {
+        renderComposer('claude')
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
         const model = screen.getByText('Model')
         const permission = screen.getByText('Permission Mode')
         expect(model.compareDocumentPosition(permission) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
         expect(screen.getByText('Effort')).toBeTruthy()
+    })
+
+    it('expands an anchored sheet to the full sheet when the gear is clicked', () => {
+        renderComposer('claude')
+        fireEvent.click(screen.getByRole('button', { name: 'Sonnet 4' }))
+        expect(screen.queryByText('Effort')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        expect(screen.getByText('Model')).toBeTruthy()
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.getByText('Permission Mode')).toBeTruthy()
     })
 
     it('shows generic value buttons for Pi with the provider-qualified model label', () => {
@@ -203,7 +239,8 @@ describe('HappyComposer generic model/effort value buttons', () => {
         // The value button label and the matching sheet row share the model name.
         expect(screen.getAllByText('Gemini 2.5 Pro').length).toBeGreaterThan(1)
         expect(screen.getByText('Vertex Gemini 2.5 Pro')).toBeTruthy()
-        expect(screen.getByText('Effort')).toBeTruthy()
+        // Anchored open from the model button: the Effort section stays collapsed.
+        expect(screen.queryByText('Effort')).toBeNull()
     })
 
     it('keeps the gear reachable on narrow viewports even when the toolbar layout hides it', () => {

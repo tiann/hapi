@@ -20,6 +20,12 @@
  * - HAPI_RELAY_AUTH: Relay auth key override (default: per-hub key issued by the relay)
  * - HAPI_RELAY_FORCE_TCP: Force TCP relay mode when UDP is unavailable (true/1)
  * - VAPID_SUBJECT: Contact email or URL for Web Push (defaults to mailto:admin@hapi.run)
+ * - FCM_SERVICE_ACCOUNT_PATH: Firebase service-account JSON for Android push (settings: fcmServiceAccountPath;
+ *   the project id comes from the JSON itself)
+ * - HAPI_IOS_PUSH: iOS push transport apns|relay|off (default: relay; settings: iosPushMode)
+ * - HAPI_PUSH_RELAY_URL: iOS push relay URL (settings: iosPushRelayUrl)
+ * - APNS_KEY_P8_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_ENV:
+ *   direct-APNs credentials (settings: apnsKeyP8Path, apnsKeyId, apnsTeamId, apnsBundleId, apnsEnv)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
  * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)
  */
@@ -44,6 +50,14 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
+    fcmServiceAccountPath: ConfigSource
+    iosPushMode: ConfigSource
+    iosPushRelayUrl: ConfigSource
+    apnsKeyP8Path: ConfigSource
+    apnsKeyId: ConfigSource
+    apnsTeamId: ConfigSource
+    apnsBundleId: ConfigSource
+    apnsEnv: ConfigSource
     cliApiToken: 'env' | 'file' | 'generated'
 }
 
@@ -96,6 +110,17 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
+    // Push delivery (FCM + iOS/APNs) — nullable strings interpreted by
+    // fcm/fcmConfig.ts and push-ios/iosPushConfig.ts.
+    public readonly fcmServiceAccountPath: string | null
+    public readonly iosPushMode: string | null
+    public readonly iosPushRelayUrl: string | null
+    public readonly apnsKeyP8Path: string | null
+    public readonly apnsKeyId: string | null
+    public readonly apnsTeamId: string | null
+    public readonly apnsBundleId: string | null
+    public readonly apnsEnv: string | null
+
     /** Sources of each configuration value */
     public readonly sources: ConfigSources
 
@@ -121,6 +146,14 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.fcmServiceAccountPath = serverSettings.fcmServiceAccountPath
+        this.iosPushMode = serverSettings.iosPushMode
+        this.iosPushRelayUrl = serverSettings.iosPushRelayUrl
+        this.apnsKeyP8Path = serverSettings.apnsKeyP8Path
+        this.apnsKeyId = serverSettings.apnsKeyId
+        this.apnsTeamId = serverSettings.apnsTeamId
+        this.apnsBundleId = serverSettings.apnsBundleId
+        this.apnsEnv = serverSettings.apnsEnv
 
         // CLI API token - will be set by _setCliApiToken() before create() returns
         this.cliApiToken = ''

@@ -1,0 +1,68 @@
+{
+    "description": "The message-received echo of the caller's own send (server id, real seq, same localId) replaces the optimistic row while preserving the client-side status; only one row remains and it is no longer optimistic.",
+    "expectedState": {
+        "epoch": null,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "srv-1",
+                "invokedAt": null,
+                "localId": "local-1",
+                "optimistic": false,
+                "queued": true,
+                "seq": 1,
+                "status": "queued"
+            }
+        ],
+        "newestCursor": null,
+        "olderCursor": null,
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "optimistic-echo-reconciles-by-localid",
+    "ops": [
+        {
+            "message": {
+                "content": {
+                    "content": {
+                        "text": "hello agent",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1000,
+                "id": "local-1",
+                "invokedAt": null,
+                "localId": "local-1",
+                "seq": null,
+                "status": "sending"
+            },
+            "op": "append-optimistic"
+        },
+        {
+            "localId": "local-1",
+            "op": "update-status",
+            "status": "queued"
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "text": "hello agent",
+                            "type": "text"
+                        },
+                        "role": "user"
+                    },
+                    "createdAt": 1000,
+                    "id": "srv-1",
+                    "invokedAt": null,
+                    "localId": "local-1",
+                    "seq": 1
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}

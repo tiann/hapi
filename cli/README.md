@@ -1,6 +1,6 @@
 # hapi CLI
 
-Run Claude Code, Codex, Cursor Agent, Grok Build, or OpenCode sessions from your terminal and control them remotely through the hapi hub.
+Run Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, or DeepSeek Harness sessions from your terminal and control them remotely through the hapi hub.
 
 ## What it does
 
@@ -9,6 +9,7 @@ Run Claude Code, Codex, Cursor Agent, Grok Build, or OpenCode sessions from your
 - Starts Cursor Agent mode for Cursor CLI sessions.
 - Starts Grok Build locally or via ACP for remote sessions.
 - Starts OpenCode mode via ACP and its plugin hook system.
+- Starts DeepSeek Harness through an external ACP stdio server.
 - Provides an MCP stdio bridge for external tools.
 - Manages a background runner for long-running sessions.
 - Includes diagnostics and auth helpers.
@@ -33,6 +34,8 @@ Run Claude Code, Codex, Cursor Agent, Grok Build, or OpenCode sessions from your
 - `hapi grok` - Start Grok Build mode. See `src/grok/runGrok.ts`.
 - `hapi opencode` - Start OpenCode mode via ACP. See `src/opencode/runOpencode.ts`.
   Note: OpenCode supports local and remote modes; local mode streams via OpenCode plugins.
+- `hapi dsh` - Start DeepSeek Harness through ACP. See `src/dsh/runDsh.ts`.
+  DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
@@ -69,7 +72,10 @@ Both `start` and `start-sync` accept repeatable `--workspace-root <path>` (or `-
 - The runner refuses `list-directory` and `spawn-session` requests for paths outside the configured roots.
 - `~` and `~/foo` are expanded.
 
-Omitting the flag keeps the legacy behavior: no scoping, no `/browse` feature.
+Omitting the flag keeps manual session spawning unrestricted and leaves the
+web `/browse` feature disabled. Machine directory lookups used by session
+autocomplete and native pickers are still available, but are limited to the
+runner's home directory.
 
 See `src/runner/run.ts`.
 
@@ -90,6 +96,28 @@ See `src/ui/doctor.ts`.
 
 See `src/configuration.ts` for all options.
 
+DeepSeek Harness ACP uses `dsh-acp-demo` by default. Override the executable or
+its arguments without shell parsing:
+
+```bash
+export HAPI_DSH_ACP_COMMAND=dsh-acp-demo
+export HAPI_DSH_ACP_CONFIG=/path/to/deepseek-harness/examples/acp-agent/cordis.yml
+hapi dsh
+```
+
+For a source checkout, use JSON arguments:
+
+```bash
+export HAPI_DSH_ACP_COMMAND=pnpm
+export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
+```
+
+The official ACP demo is fresh-session-only and does not support native resume,
+model switching, MCP injection, or live tool/reasoning telemetry. HAPI uses the
+standard chat and pending one-shot permission surfaces; the ACP composition
+owns the overall permission policy and HAPI does not advertise resume or model
+controls for DSH.
+
 ### Required
 
 - `CLI_API_TOKEN` - Shared secret; must match the hub. Can be set via env or `~/.hapi/settings.json` (env wins).
@@ -101,6 +129,9 @@ See `src/configuration.ts` for all options.
 - `HAPI_EXPERIMENTAL` - Enable experimental features (true/1/yes).
 - `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`. Can also be set as the `extraHeaders` object in `~/.hapi/settings.json` (environment variable wins).
 - `HAPI_CLAUDE_PATH` - Path to a specific `claude` executable.
+- `HAPI_DSH_ACP_COMMAND` - ACP server executable for `hapi dsh` (default: `dsh-acp-demo`).
+- `HAPI_DSH_ACP_CONFIG` - Optional `dsh-acp-demo --config` path.
+- `HAPI_DSH_ACP_ARGS_JSON` - Optional JSON array of ACP server arguments.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
 
 ### Runner
@@ -144,7 +175,7 @@ Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
 - Cursor Agent CLI installed (`agent` on PATH) for `hapi cursor`. Install: `curl https://cursor.com/install -fsS | bash` (macOS/Linux), `irm 'https://cursor.com/install?win32=true' | iex` (Windows).
 - Grok Build CLI installed (`grok` on PATH) for `hapi grok`. Authenticate with `grok login --device-auth` on headless runner machines, or set `XAI_API_KEY`.
 - OpenCode CLI installed (`opencode` on PATH).
-- Bun for building from source.
+- Bun 1.4.0 for building from source.
 
 ## Build from source
 

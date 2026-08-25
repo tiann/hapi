@@ -143,6 +143,16 @@ export const UpdateMachineBodySchema = z.object({
 
 export type UpdateMachineBody = z.infer<typeof UpdateMachineBodySchema>
 
+export const UpdateRetryQueuedMessageBodySchema = z.object({
+    t: z.literal('retry-queued-message'),
+    sid: z.string(),
+    messageId: z.string(),
+    localId: z.string().nullable(),
+    message: UpdateNewMessageBodySchema.shape.message
+})
+
+export type UpdateRetryQueuedMessageBody = z.infer<typeof UpdateRetryQueuedMessageBodySchema>
+
 export const UpdateCancelQueuedMessageBodySchema = z.object({
     t: z.literal('cancel-queued-message'),
     sid: z.string(),
@@ -153,7 +163,11 @@ export const UpdateCancelQueuedMessageBodySchema = z.object({
 export type UpdateCancelQueuedMessageBody = z.infer<typeof UpdateCancelQueuedMessageBodySchema>
 
 export const CancelQueuedMessageAckSchema = z.object({
-    removed: z.boolean()
+    removed: z.boolean(),
+    inFlight: z.boolean().optional(),
+    indeterminate: z.boolean().optional(),
+    accepted: z.boolean().optional(),
+    consumed: z.boolean().optional()
 })
 
 export type CancelQueuedMessageAck = z.infer<typeof CancelQueuedMessageAckSchema>
@@ -161,7 +175,7 @@ export type CancelQueuedMessageAck = z.infer<typeof CancelQueuedMessageAckSchema
 export const UpdateSchema = z.object({
     id: z.string(),
     seq: z.number(),
-    body: z.union([UpdateNewMessageBodySchema, UpdateSessionBodySchema, UpdateMachineBodySchema, UpdateCancelQueuedMessageBodySchema]),
+    body: z.union([UpdateNewMessageBodySchema, UpdateRetryQueuedMessageBodySchema, UpdateSessionBodySchema, UpdateMachineBodySchema, UpdateCancelQueuedMessageBodySchema]),
     createdAt: z.number()
 })
 
@@ -220,7 +234,7 @@ export type MachineUpdateStateAck = {
 }
 
 export interface ServerToClientEvents {
-    update: (data: Update, ack?: (response: CancelQueuedMessageAck) => void) => void
+    update: (data: Update, ack?: (response: CancelQueuedMessageAck & { accepted?: boolean }) => void) => void
     'rpc-request': (data: { method: string; params: string }, callback: (response: string) => void) => void
     'terminal:open': (data: TerminalOpenPayload) => void
     'terminal:write': (data: TerminalWritePayload) => void
@@ -259,7 +273,9 @@ export interface ClientToServerEvents {
   /** CLI agent finished session/load (or equivalent) and can accept prompts. */
     'session-ready': (data: { sid: string; time: number }) => void
     'session-end': (data: { sid: string; time: number; reason?: SessionEndReason }) => void
-    'messages-consumed': (data: { sid: string; localIds: string[] }) => void
+    'messages-consumed': (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => void
+    'messages-indeterminate': (data: { sid: string; localIds: string[] }) => void
+    'messages-steer-state': (data: { sid: string; localIds: string[]; state: 'queued' | 'dispatching' }, cb: (response: { ok: boolean }) => void) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: UpdateMetadataAck) => void) => void
     'update-state': (data: { sid: string; expectedVersion: number; agentState: unknown | null }, cb: (answer: UpdateStateAck) => void) => void
     'machine-alive': (data: { machineId: string; time: number; health?: unknown }) => void

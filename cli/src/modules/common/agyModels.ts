@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS } from '@hapi/protocol'
 import type { AgyModelsResponse } from '@hapi/protocol/apiTypes'
 
@@ -145,8 +146,7 @@ function checkOutputForAuthError(output: string): string | null {
 // flaky or locked (headless runners):
 //  - GEMINI_FORCE_FILE_STORAGE makes agy read the saved OAuth file token directly
 //    instead of the keyring — the same hardening the headless spawn applies.
-//    Without it the
-//    probe spins for ~12 s and exits with "Please sign in to view available
+//    Without it the probe spins for ~12 s and exits with "Please sign in to view available
 //    models" even when the user IS signed in, which surfaces as a failed fetch.
 //  - SSH_* is stripped so agy doesn't fall into a degraded SSH-session auth path.
 function buildAgyProbeEnv(): NodeJS.ProcessEnv {
@@ -166,7 +166,7 @@ type AgyModelsProbe = { output: string } | { unreachable: true }
 // (stderr), and the auth failure can surface on either.
 function probeAgyModels(args: string[]): Promise<AgyModelsProbe> {
     return new Promise((resolve) => {
-        const child = spawn('agy', args, {
+        const child = spawn(getAgentLaunchCommand('agy'), args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: buildAgyProbeEnv(),
             windowsHide: process.platform === 'win32',

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+    <title id="title">HAPI tiny icon</title>
+    <rect width="512" height="512" rx="104" fill="#FFF8F8" />
+    <g fill="#F25562">
+        <rect x="62" y="241" width="52" height="14" rx="7" />
+        <rect x="398" y="241" width="52" height="14" rx="7" />
+        <path d="M27 248L58 226H74L44 248L74 270H58Z" />
+        <path transform="translate(512 0) scale(-1 1)" d="M27 248L58 226H74L44 248L74 270H58Z" />
+        <path fill-rule="evenodd" d="M160 84H352A86 86 0 0 1 438 170V338A86 86 0 0 1 352 424H160A86 86 0 0 1 74 338V170A86 86 0 0 1 160 84ZM160 122H352A48 48 0 0 1 400 170V338A48 48 0 0 1 352 386H160A48 48 0 0 1 112 338V170A48 48 0 0 1 160 122Z" />
+        <circle cx="190" cy="228" r="29" />
+        <circle cx="322" cy="228" r="29" />
+        <path d="M142 308Q256 414 370 308L342 308Q256 368 170 308Z" />
+        <circle cx="156" cy="308" r="14" />
+        <circle cx="356" cy="308" r="14" />
+    </g>
+</svg>

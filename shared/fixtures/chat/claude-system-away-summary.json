@@ -1,0 +1,84 @@
+{
+    "description": "Claude output family: system subtype away_summary (auto recap written by the local TUI on blur/focus) becomes an agent-event block with type recap; text comes from data.content.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-201",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Continue where we left off."
+            },
+            {
+                "createdAt": 1755000001500,
+                "event": {
+                    "text": "Was refactoring the SSE reconnect loop; next step is wiring the jittered backoff into useSSE.",
+                    "type": "recap"
+                },
+                "id": "msg-agent-202",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-201",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Continue where we left off."
+            },
+            {
+                "createdAt": 1755000001500,
+                "event": {
+                    "text": "Was refactoring the SSE reconnect loop; next step is wiring the jittered backoff into useSSE.",
+                    "type": "recap"
+                },
+                "id": "msg-agent-202",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Continue where we left off.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-201",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "content": "Was refactoring the SSE reconnect loop; next step is wiring the jittered backoff into useSSE.",
+                            "subtype": "away_summary",
+                            "type": "system",
+                            "uuid": "a2b3c4d5-1e2f-4a3b-8c4d-e5f6a7b8c202"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001500,
+                "id": "msg-agent-202",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-system-away-summary"
+}

@@ -1,10 +1,20 @@
+import { createElement } from 'react'
+import { act, render } from '@testing-library/react'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import {
     getSessionLastSeenAt,
     getSessionLastSeenSnapshot,
+    getSessionManualUnreadAt,
     initializeSessionLastSeen,
+    markSessionUnread,
     markSessionSeen,
+    useSessionLastSeenVersion,
 } from './sessionLastSeen'
+
+function SessionLastSeenVersionProbe() {
+    const version = useSessionLastSeenVersion()
+    return createElement('output', { 'data-testid': 'last-seen-version' }, version)
+}
 
 describe('sessionLastSeen', () => {
     beforeEach(() => {
@@ -30,6 +40,68 @@ describe('sessionLastSeen', () => {
         markSessionSeen('session-a', 5000)
         markSessionSeen('session-a', 2000)
         expect(getSessionLastSeenAt('session-a')).toBe(5000)
+    })
+
+    it('moves the watermark behind the current activity when marking unread', () => {
+        markSessionSeen('session-a', 5000)
+
+        markSessionUnread('session-a', 5000)
+
+        expect(getSessionLastSeenAt('session-a')).toBe(4999)
+        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
+    })
+
+    it('does not change an already-unread watermark when marking unread', () => {
+        markSessionSeen('session-a', 1000)
+
+        markSessionUnread('session-a', 5000)
+
+        expect(getSessionLastSeenAt('session-a')).toBe(1000)
+        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
+    })
+
+    it('clears the explicit unread marker when the session is seen', () => {
+        markSessionUnread('session-a', 5000)
+        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
+
+        markSessionSeen('session-a', 5000)
+
+        expect(getSessionManualUnreadAt('session-a')).toBeNull()
+    })
+
+    it('preserves an explicit unread marker when a stale seen timestamp arrives', () => {
+        markSessionUnread('session-a', 5000)
+
+        markSessionSeen('session-a', 4000)
+
+        expect(getSessionLastSeenAt('session-a')).toBe(4999)
+        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
+    })
+
+    it('notifies same-tab consumers when the watermark changes', () => {
+        const view = render(createElement(SessionLastSeenVersionProbe))
+        const initialVersion = Number(view.getByTestId('last-seen-version').textContent)
+
+        act(() => {
+            markSessionUnread('session-a', 5000)
+        })
+
+        expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 1))
+    })
+
+    it('notifies consumers when either read-state key changes in another tab', () => {
+        const view = render(createElement(SessionLastSeenVersionProbe))
+        const initialVersion = Number(view.getByTestId('last-seen-version').textContent)
+
+        act(() => {
+            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionLastSeen.v1' }))
+        })
+        expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 1))
+
+        act(() => {
+            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionManualUnread.v1' }))
+        })
+        expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 2))
     })
 
     it('uses the first session list as the unread baseline', () => {

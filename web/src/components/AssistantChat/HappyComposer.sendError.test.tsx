@@ -108,6 +108,9 @@ vi.mock('@/hooks/useActiveSuggestions', () => ({ useActiveSuggestions: () => [[]
 vi.mock('@/components/ChatInput/FloatingOverlay', () => ({ FloatingOverlay: ({ children }: { children: ReactNode }) => <>{children}</> }))
 vi.mock('@/components/ChatInput/Autocomplete', () => ({ Autocomplete: () => null }))
 vi.mock('@/components/AssistantChat/StatusBar', () => ({ StatusBar: () => null }))
+vi.mock('@/components/AssistantChat/SortableComposerAttachments', () => ({
+    SortableComposerAttachments: () => null,
+}))
 vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
     ComposerButtons: (props: {
         onSend: () => void

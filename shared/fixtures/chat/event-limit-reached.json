@@ -1,0 +1,85 @@
+{
+    "description": "Event family: limit-reached renders as an agent-event block with the event payload carried verbatim (endsAt is unix seconds).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-081",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Keep going with the migration."
+            },
+            {
+                "createdAt": 1755000002000,
+                "event": {
+                    "endsAt": 1755010800,
+                    "limitType": "five_hour",
+                    "type": "limit-reached"
+                },
+                "id": "msg-event-082",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-081",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Keep going with the migration."
+            },
+            {
+                "createdAt": 1755000002000,
+                "event": {
+                    "endsAt": 1755010800,
+                    "limitType": "five_hour",
+                    "type": "limit-reached"
+                },
+                "id": "msg-event-082",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Keep going with the migration.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-081",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "endsAt": 1755010800,
+                            "limitType": "five_hour",
+                            "type": "limit-reached"
+                        },
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "msg-event-082",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-limit-reached"
+}

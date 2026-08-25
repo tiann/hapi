@@ -1,0 +1,89 @@
+{
+    "description": "Claude output family: system subtype compact_boundary becomes an agent-event block with type compact; trigger/preTokens come from data.compactMetadata.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-221",
+                "kind": "user-text",
+                "localId": null,
+                "text": "/compact"
+            },
+            {
+                "createdAt": 1755000003200,
+                "event": {
+                    "preTokens": 167189,
+                    "trigger": "manual",
+                    "type": "compact"
+                },
+                "id": "msg-agent-222",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-221",
+                "kind": "user-text",
+                "localId": null,
+                "text": "/compact"
+            },
+            {
+                "createdAt": 1755000003200,
+                "event": {
+                    "preTokens": 167189,
+                    "trigger": "manual",
+                    "type": "compact"
+                },
+                "id": "msg-agent-222",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "/compact",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-221",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactMetadata": {
+                                "preTokens": 167189,
+                                "trigger": "manual"
+                            },
+                            "subtype": "compact_boundary",
+                            "type": "system",
+                            "uuid": "c4d5e6f7-3a4b-4c5d-8e6f-a7b8c9d0e222"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003200,
+                "id": "msg-agent-222",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-system-compact-boundary"
+}
