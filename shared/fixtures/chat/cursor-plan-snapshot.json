@@ -1,0 +1,168 @@
+{
+    "description": "Cursor ACP plan message (data.type plan, entries[{content, status}]) becomes a completed update_plan tool-call with the stable id cursor-plan-state; input and result both carry {plan: [{step, status}], source: cursor} and later snapshots would merge into the same card.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-741",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Fix the crash on empty sessions."
+            },
+            {
+                "createdAt": 1755000002900,
+                "id": "cursor-plan-state",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "cursor-plan-state",
+                    "input": {
+                        "plan": [
+                            {
+                                "status": "completed",
+                                "step": "Reproduce the crash"
+                            },
+                            {
+                                "status": "in_progress",
+                                "step": "Fix the null check in session list"
+                            },
+                            {
+                                "status": "pending",
+                                "step": "Add a regression test"
+                            }
+                        ],
+                        "source": "cursor"
+                    },
+                    "name": "update_plan",
+                    "result": {
+                        "plan": [
+                            {
+                                "status": "completed",
+                                "step": "Reproduce the crash"
+                            },
+                            {
+                                "status": "in_progress",
+                                "step": "Fix the null check in session list"
+                            },
+                            {
+                                "status": "pending",
+                                "step": "Add a regression test"
+                            }
+                        ],
+                        "source": "cursor"
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-741",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Fix the crash on empty sessions."
+            },
+            {
+                "createdAt": 1755000002900,
+                "id": "cursor-plan-state",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "cursor-plan-state",
+                    "input": {
+                        "plan": [
+                            {
+                                "status": "completed",
+                                "step": "Reproduce the crash"
+                            },
+                            {
+                                "status": "in_progress",
+                                "step": "Fix the null check in session list"
+                            },
+                            {
+                                "status": "pending",
+                                "step": "Add a regression test"
+                            }
+                        ],
+                        "source": "cursor"
+                    },
+                    "name": "update_plan",
+                    "result": {
+                        "plan": [
+                            {
+                                "status": "completed",
+                                "step": "Reproduce the crash"
+                            },
+                            {
+                                "status": "in_progress",
+                                "step": "Fix the null check in session list"
+                            },
+                            {
+                                "status": "pending",
+                                "step": "Add a regression test"
+                            }
+                        ],
+                        "source": "cursor"
+                    },
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Fix the crash on empty sessions.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-741",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "entries": [
+                                {
+                                    "content": "Reproduce the crash",
+                                    "status": "completed"
+                                },
+                                {
+                                    "content": "Fix the null check in session list",
+                                    "status": "in_progress"
+                                },
+                                {
+                                    "content": "Add a regression test",
+                                    "status": "pending"
+                                }
+                            ],
+                            "id": "cursor-plan-0a1b2c",
+                            "type": "plan"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002900,
+                "id": "msg-cursor-742",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "cursor-plan-snapshot"
+}

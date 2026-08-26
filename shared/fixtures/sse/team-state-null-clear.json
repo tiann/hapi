@@ -1,0 +1,86 @@
+{
+    "description": "teamState with value null means \"team deleted\": a strictly newer version clears the field entirely (absent in the expected session) and stores the watermark so a lagged pre-delete patch cannot resurrect the team.",
+    "expectedPatchResults": [
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "teamStateUpdatedAt": 1755000200000,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "teamState": {
+            "members": [
+                {
+                    "agentType": "claude",
+                    "name": "lead",
+                    "status": "active"
+                },
+                {
+                    "agentType": "claude",
+                    "name": "reviewer",
+                    "status": "idle"
+                }
+            ],
+            "teamName": "hapi-dev",
+            "updatedAt": 1754999900000
+        },
+        "teamStateUpdatedAt": 1754999900000,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "team-state-null-clear",
+    "patches": [
+        {
+            "teamState": {
+                "value": null,
+                "version": 1755000200000
+            }
+        }
+    ]
+}

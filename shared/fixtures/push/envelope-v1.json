@@ -1,0 +1,7 @@
+{
+  "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "nonce_hex": "000102030405060708090a0b",
+  "aad": "hapi-push-v1",
+  "plaintext": "{\"body\":\"Ready for input\",\"contractVersion\":\"1\",\"sessionId\":\"s1\",\"title\":\"HAPI\",\"type\":\"ready\"}",
+  "envelope_b64": "AAECAwQFBgcICQoLPCC0dKGc4CGvE/Lq1ZBYC+ykp12eCyoIGkvH5nIHdMBgc9qqyrNh8RvKXdeqtgoUzCoF/im/zLR28wgjOpDEzNweshOnvUNDJnbiL7/GLMQa/rASE0FpSo+Y/6gB0sShxRvIOvgJGpKK+MjRlFlu"
+}

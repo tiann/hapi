@@ -1,4 +1,5 @@
 import { AcpSdkBackend } from '@/agent/backends/acp';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {};
@@ -19,7 +20,7 @@ function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
  */
 export function createKimiBackend(): AcpSdkBackend {
     return new AcpSdkBackend({
-        command: 'kimi',
+        command: getAgentLaunchCommand('kimi'),
         args: ['acp'],
         env: filterEnv(process.env),
         flavor: 'kimi',

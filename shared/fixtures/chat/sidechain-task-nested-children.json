@@ -1,0 +1,440 @@
+{
+    "description": "A Task tool_use with sidechain messages grouped under it via parentToolUseId: the prompt-root sidechain entry is consumed (not rendered), the subagent turns reduce into children [agent-text, completed tool-call, agent-text], the parent tool_result completes the Task card, and sidechain usage never feeds latestUsage (the closing root message does).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-601",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Find where the upload retry logic lives."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "msg-agent-602:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Delegating the search to a subagent."
+            },
+            {
+                "children": [
+                    {
+                        "createdAt": 1755000004200,
+                        "id": "msg-agent-604:0",
+                        "kind": "agent-text",
+                        "localId": null,
+                        "text": "Scanning the upload path for retry logic."
+                    },
+                    {
+                        "createdAt": 1755000005100,
+                        "id": "toolu_01ScGrepRetry01",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "toolu_01ScGrepRetry01",
+                            "input": {
+                                "path": "/repo/web/src/lib",
+                                "pattern": "withRetry"
+                            },
+                            "name": "Grep",
+                            "result": "web/src/lib/upload.ts:88: return withRetry(uploadChunk, { attempts: 3 })",
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000007000,
+                        "id": "msg-agent-607:0",
+                        "kind": "agent-text",
+                        "localId": null,
+                        "text": "Retry logic lives in web/src/lib/upload.ts: withRetry wraps uploadChunk with 3 attempts."
+                    }
+                ],
+                "createdAt": 1755000002000,
+                "id": "toolu_01TaskExplore01",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01TaskExplore01",
+                    "input": {
+                        "description": "Find upload retry logic",
+                        "prompt": "Locate the retry/backoff implementation for uploads and summarize it.",
+                        "subagent_type": "Explore"
+                    },
+                    "name": "Task",
+                    "result": "Retry logic lives in web/src/lib/upload.ts (withRetry, 3 attempts).",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000009500,
+                "id": "msg-agent-609:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The upload retry logic is in web/src/lib/upload.ts — withRetry with 3 attempts."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": {
+            "contextSize": 62365,
+            "contextWindow": null,
+            "inputTokens": 1930,
+            "outputTokens": 31
+        },
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-601",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Find where the upload retry logic lives."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "msg-agent-602:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Delegating the search to a subagent."
+            },
+            {
+                "children": [
+                    {
+                        "createdAt": 1755000004200,
+                        "id": "msg-agent-604:0",
+                        "kind": "agent-text",
+                        "localId": null,
+                        "text": "Scanning the upload path for retry logic."
+                    },
+                    {
+                        "createdAt": 1755000005100,
+                        "id": "toolu_01ScGrepRetry01",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "toolu_01ScGrepRetry01",
+                            "input": {
+                                "path": "/repo/web/src/lib",
+                                "pattern": "withRetry"
+                            },
+                            "name": "Grep",
+                            "result": "web/src/lib/upload.ts:88: return withRetry(uploadChunk, { attempts: 3 })",
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000007000,
+                        "id": "msg-agent-607:0",
+                        "kind": "agent-text",
+                        "localId": null,
+                        "text": "Retry logic lives in web/src/lib/upload.ts: withRetry wraps uploadChunk with 3 attempts."
+                    }
+                ],
+                "createdAt": 1755000002000,
+                "id": "toolu_01TaskExplore01",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01TaskExplore01",
+                    "input": {
+                        "description": "Find upload retry logic",
+                        "prompt": "Locate the retry/backoff implementation for uploads and summarize it.",
+                        "subagent_type": "Explore"
+                    },
+                    "name": "Task",
+                    "result": "Retry logic lives in web/src/lib/upload.ts (withRetry, 3 attempts).",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000009500,
+                "id": "msg-agent-609:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The upload retry logic is in web/src/lib/upload.ts — withRetry with 3 attempts."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Find where the upload retry logic lives.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-601",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Delegating the search to a subagent.",
+                                        "type": "text"
+                                    },
+                                    {
+                                        "id": "toolu_01TaskExplore01",
+                                        "input": {
+                                            "description": "Find upload retry logic",
+                                            "prompt": "Locate the retry/backoff implementation for uploads and summarize it.",
+                                            "subagent_type": "Explore"
+                                        },
+                                        "name": "Task",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 130,
+                                    "cache_read_input_tokens": 60110,
+                                    "input_tokens": 1740,
+                                    "output_tokens": 88
+                                }
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:02.005Z",
+                            "type": "assistant",
+                            "uuid": "b5e7a8c9-2acd-4d9e-9fa5-f9a0b1c2d602"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "msg-agent-602",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "isSidechain": true,
+                            "message": {
+                                "content": "Locate the retry/backoff implementation for uploads and summarize it."
+                            },
+                            "parentToolUseId": "toolu_01TaskExplore01",
+                            "parentUuid": null,
+                            "type": "user",
+                            "uuid": "c6f8b9d0-3bde-4eaf-8ab6-a0b1c2d3e603"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002600,
+                "id": "msg-agent-603",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "isSidechain": true,
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Scanning the upload path for retry logic.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 0,
+                                    "cache_read_input_tokens": 8050,
+                                    "input_tokens": 910,
+                                    "output_tokens": 22
+                                }
+                            },
+                            "parentToolUseId": "toolu_01TaskExplore01",
+                            "parentUuid": "c6f8b9d0-3bde-4eaf-8ab6-a0b1c2d3e603",
+                            "timestamp": "2025-08-12T11:20:04.171Z",
+                            "type": "assistant",
+                            "uuid": "d7a9c0e1-4cef-4fb0-9bc7-b1c2d3e4f604"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004200,
+                "id": "msg-agent-604",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "isSidechain": true,
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01ScGrepRetry01",
+                                        "input": {
+                                            "path": "/repo/web/src/lib",
+                                            "pattern": "withRetry"
+                                        },
+                                        "name": "Grep",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentToolUseId": "toolu_01TaskExplore01",
+                            "parentUuid": "d7a9c0e1-4cef-4fb0-9bc7-b1c2d3e4f604",
+                            "timestamp": "2025-08-12T11:20:05.044Z",
+                            "type": "assistant",
+                            "uuid": "e8b0d1f2-5dfa-4ac1-8cd8-c2d3e4f5a605"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005100,
+                "id": "msg-agent-605",
+                "localId": null,
+                "seq": 5
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "isSidechain": true,
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "web/src/lib/upload.ts:88: return withRetry(uploadChunk, { attempts: 3 })",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01ScGrepRetry01",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentToolUseId": "toolu_01TaskExplore01",
+                            "parentUuid": "e8b0d1f2-5dfa-4ac1-8cd8-c2d3e4f5a605",
+                            "timestamp": "2025-08-12T11:20:05.702Z",
+                            "type": "user",
+                            "uuid": "f9c1e2a3-6eab-4bd2-9de9-d3e4f5a6b606"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005800,
+                "id": "msg-agent-606",
+                "localId": null,
+                "seq": 6
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "isSidechain": true,
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Retry logic lives in web/src/lib/upload.ts: withRetry wraps uploadChunk with 3 attempts.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentToolUseId": "toolu_01TaskExplore01",
+                            "parentUuid": "f9c1e2a3-6eab-4bd2-9de9-d3e4f5a6b606",
+                            "timestamp": "2025-08-12T11:20:06.911Z",
+                            "type": "assistant",
+                            "uuid": "a0d2f3b4-7fbc-4ce3-8efa-e4f5a6b7c607"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000007000,
+                "id": "msg-agent-607",
+                "localId": null,
+                "seq": 7
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "Retry logic lives in web/src/lib/upload.ts (withRetry, 3 attempts).",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01TaskExplore01",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "b5e7a8c9-2acd-4d9e-9fa5-f9a0b1c2d602",
+                            "timestamp": "2025-08-12T11:20:08.144Z",
+                            "type": "user",
+                            "uuid": "b1e3a4c5-8acd-4df4-9fab-f5a6b7c8d608"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000008200,
+                "id": "msg-agent-608",
+                "localId": null,
+                "seq": 8
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "The upload retry logic is in web/src/lib/upload.ts — withRetry with 3 attempts.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 95,
+                                    "cache_read_input_tokens": 60340,
+                                    "input_tokens": 1930,
+                                    "output_tokens": 31
+                                }
+                            },
+                            "parentUuid": "b1e3a4c5-8acd-4df4-9fab-f5a6b7c8d608",
+                            "timestamp": "2025-08-12T11:20:09.377Z",
+                            "type": "assistant",
+                            "uuid": "c2f4b5d6-9bde-4ea5-8abc-a6b7c8d9e609"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000009500,
+                "id": "msg-agent-609",
+                "localId": null,
+                "seq": 9
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "sidechain-task-nested-children"
+}

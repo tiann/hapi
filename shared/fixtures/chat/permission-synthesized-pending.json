@@ -1,0 +1,96 @@
+{
+    "description": "A pending agentState request with no matching tool_use in the (older) message window synthesizes a pending tool-call block: state pending, permission.status pending, input from request.arguments.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-121",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Install the missing dependency."
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "req-01J5XKQ8TZ3M",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "req-01J5XKQ8TZ3M",
+                    "input": {
+                        "command": "bun add zod",
+                        "description": "Install zod"
+                    },
+                    "name": "Bash",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "pending"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-121",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Install the missing dependency."
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "req-01J5XKQ8TZ3M",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "req-01J5XKQ8TZ3M",
+                    "input": {
+                        "command": "bun add zod",
+                        "description": "Install zod"
+                    },
+                    "name": "Bash",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "pending"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {},
+            "requests": {
+                "req-01J5XKQ8TZ3M": {
+                    "arguments": {
+                        "command": "bun add zod",
+                        "description": "Install zod"
+                    },
+                    "createdAt": 1755000006000,
+                    "tool": "Bash"
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Install the missing dependency.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-121",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-synthesized-pending"
+}

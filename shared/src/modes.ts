@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -139,6 +139,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     if (flavor === 'kimi') {
         return KIMI_PERMISSION_MODES
     }
+    if (flavor === 'dsh') {
+        return []
+    }
     if (flavor === 'copilot') {
         return COPILOT_PERMISSION_MODES
     }
@@ -179,4 +182,51 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
         mode,
         label: getCodexCollaborationModeLabel(mode)
     }))
+}
+
+/**
+ * Flavors that can deliver a queued message into an active turn on demand
+ * (per-message "Steer" from the waiting queue), without waiting for full-turn end.
+ *
+ * Steer = soft mid-turn delivery (same idea as Cursor GUI default "Send"):
+ * - Pi: native steer over the Pi runtime (first-class since #1466)
+ * - Codex: app-server `turn/steer` (true mid-turn inject)
+ * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
+ *   stream-json Cursor sessions are NOT steerable — gate with
+ *   {@link isSteeringSupportedForSession}.
+ *
+ * Claude / others: not supported (no reachable soft-steer path) — UI hides Steer.
+ */
+export const STEERING_SUPPORTED_FLAVORS = ['codex', 'cursor', 'pi'] as const
+
+export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
+    return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
+}
+
+/**
+ * Session-aware steer gate. Prefer this over {@link isSteeringSupportedForFlavor}
+ * when metadata is available: legacy Cursor stream-json sessions advertise
+ * flavor `cursor` but cannot steer.
+ *
+ * Matches CLI legacy detection: explicit `stream-json`, or a pre-ACP session
+ * that has `cursorSessionId` without `cursorSessionProtocol: 'acp'`.
+ */
+export function isSteeringSupportedForSession(metadata?: {
+    flavor?: string | null
+    cursorSessionId?: string | null
+    cursorSessionProtocol?: 'acp' | 'stream-json' | null
+} | null): boolean {
+    if (metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
+        return true
+    }
+    if (metadata?.flavor !== 'cursor') {
+        return false
+    }
+    if (metadata.cursorSessionProtocol === 'stream-json') {
+        return false
+    }
+    if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) {
+        return false
+    }
+    return true
 }

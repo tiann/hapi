@@ -1,0 +1,123 @@
+{
+    "description": "SSE rows the chat pipeline hides (e.g. meta system output) are not retained in the window, but the newest cursor still advances past their position so a later tail sync does not refetch them.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "a-1",
+                "invokedAt": 1000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 1
+            },
+            {
+                "createdAt": 2000,
+                "id": "a-2",
+                "invokedAt": 2000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 2
+            }
+        ],
+        "newestCursor": {
+            "at": 3000,
+            "seq": 3
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "sse-hidden-rows-advance-cursor-only",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-1",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 1000,
+                            "id": "a-1",
+                            "invokedAt": 1000,
+                            "localId": null,
+                            "seq": 1
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 1000,
+                        "snapshotHeadSeq": 1
+                    }
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "message": "a-2",
+                                "type": "message"
+                            },
+                            "type": "codex"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 2000,
+                    "id": "a-2",
+                    "invokedAt": 2000,
+                    "localId": null,
+                    "seq": 2
+                },
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "isMeta": true,
+                                "type": "system"
+                            },
+                            "type": "output"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 3000,
+                    "id": "hidden-3",
+                    "invokedAt": 3000,
+                    "localId": null,
+                    "seq": 3
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}

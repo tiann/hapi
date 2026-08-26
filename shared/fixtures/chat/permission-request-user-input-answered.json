@@ -1,0 +1,253 @@
+{
+    "description": "request_user_input (Pi, codex tool family) completed with NESTED answers (Record<questionId, {answers: string[]}>): the completed request attaches by callId; permission.answers keeps the nested map verbatim and the tool-call-result completes the card.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-441",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Deploy the latest build."
+            },
+            {
+                "createdAt": 1755000001700,
+                "id": "rui-01J9ZC4QD2",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "rui-01J9ZC4QD2",
+                    "input": {
+                        "questions": [
+                            {
+                                "id": "deploy_target",
+                                "multiple": false,
+                                "options": [
+                                    {
+                                        "description": "Safe to test",
+                                        "label": "staging"
+                                    },
+                                    {
+                                        "description": "Live traffic",
+                                        "label": "production"
+                                    }
+                                ],
+                                "question": "Which environment should I deploy to?",
+                                "required": true
+                            }
+                        ]
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "answers": {
+                            "deploy_target": {
+                                "answers": [
+                                    "staging"
+                                ]
+                            }
+                        },
+                        "decision": "approved",
+                        "status": "approved"
+                    },
+                    "result": {
+                        "answers": {
+                            "deploy_target": {
+                                "answers": [
+                                    "staging"
+                                ]
+                            }
+                        }
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-441",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Deploy the latest build."
+            },
+            {
+                "createdAt": 1755000001700,
+                "id": "rui-01J9ZC4QD2",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "rui-01J9ZC4QD2",
+                    "input": {
+                        "questions": [
+                            {
+                                "id": "deploy_target",
+                                "multiple": false,
+                                "options": [
+                                    {
+                                        "description": "Safe to test",
+                                        "label": "staging"
+                                    },
+                                    {
+                                        "description": "Live traffic",
+                                        "label": "production"
+                                    }
+                                ],
+                                "question": "Which environment should I deploy to?",
+                                "required": true
+                            }
+                        ]
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "answers": {
+                            "deploy_target": {
+                                "answers": [
+                                    "staging"
+                                ]
+                            }
+                        },
+                        "decision": "approved",
+                        "status": "approved"
+                    },
+                    "result": {
+                        "answers": {
+                            "deploy_target": {
+                                "answers": [
+                                    "staging"
+                                ]
+                            }
+                        }
+                    },
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "rui-01J9ZC4QD2": {
+                    "answers": {
+                        "deploy_target": {
+                            "answers": [
+                                "staging"
+                            ]
+                        }
+                    },
+                    "arguments": {
+                        "questions": [
+                            {
+                                "id": "deploy_target",
+                                "multiple": false,
+                                "options": [
+                                    {
+                                        "description": "Safe to test",
+                                        "label": "staging"
+                                    },
+                                    {
+                                        "description": "Live traffic",
+                                        "label": "production"
+                                    }
+                                ],
+                                "question": "Which environment should I deploy to?",
+                                "required": true
+                            }
+                        ]
+                    },
+                    "completedAt": 1755000016200,
+                    "createdAt": 1755000001900,
+                    "decision": "approved",
+                    "status": "approved",
+                    "tool": "request_user_input"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Deploy the latest build.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-441",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "rui-01J9ZC4QD2",
+                            "id": "8b6c7d9e-3df4-4a0b-8c7b-c0d1e2f3a442",
+                            "input": {
+                                "questions": [
+                                    {
+                                        "id": "deploy_target",
+                                        "multiple": false,
+                                        "options": [
+                                            {
+                                                "description": "Safe to test",
+                                                "label": "staging"
+                                            },
+                                            {
+                                                "description": "Live traffic",
+                                                "label": "production"
+                                            }
+                                        ],
+                                        "question": "Which environment should I deploy to?",
+                                        "required": true
+                                    }
+                                ]
+                            },
+                            "name": "request_user_input",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001700,
+                "id": "msg-agent-442",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "rui-01J9ZC4QD2",
+                            "id": "9c7d8eaf-4ea5-4b1c-9d8c-d1e2f3a4b443",
+                            "is_error": false,
+                            "output": {
+                                "answers": {
+                                    "deploy_target": {
+                                        "answers": [
+                                            "staging"
+                                        ]
+                                    }
+                                }
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000016800,
+                "id": "msg-agent-443",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-request-user-input-answered"
+}

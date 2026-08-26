@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cursor mark (Mono variant): currentColor upstream; tint at the call
+     site. Brand SVG via @lobehub/icons v5.4.0 - same source as
+     web/src/components/AgentFlavorIcon.tsx. Mono glyph ships black; the
+     AgentFlavorIcon composable applies the tint so dark mode works. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 22.106 5.68 L 12.5 0.135 a 0.998 0.998 0 0 0 -0.998 0 L 1.893 5.68 a 0.84 0.84 0 0 0 -0.419 0.726 v 11.186 c 0 0.3 0.16 0.577 0.42 0.727 l 9.607 5.547 a 0.999 0.999 0 0 0 0.998 0 l 9.608 -5.547 a 0.84 0.84 0 0 0 0.42 -0.727 V 6.407 a 0.84 0.84 0 0 0 -0.42 -0.726 z m -0.603 1.176 L 12.228 22.92 c -0.063 0.108 -0.228 0.064 -0.228 -0.061 V 12.34 a 0.59 0.59 0 0 0 -0.295 -0.51 l -9.11 -5.26 c -0.107 -0.062 -0.063 -0.228 0.062 -0.228 h 18.55 c 0.264 0 0.428 0.286 0.296 0.514 z"
+        android:fillType="evenOdd" />
+</vector>

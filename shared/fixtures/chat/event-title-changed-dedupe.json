@@ -1,0 +1,194 @@
+{
+    "description": "title-changed is synthesized from a mcp__hapi__change_title tool_use (no tool card, one event even though tool_use and tool_result both mention it). dedupeAgentEvents then drops a message event echoing the exact title and folds consecutive identical message events into one.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-331",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Rename this session appropriately."
+            },
+            {
+                "createdAt": 1755000002000,
+                "event": {
+                    "title": "Fix pagination cursor math",
+                    "type": "title-changed"
+                },
+                "id": "msg-agent-332:0",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000003500,
+                "event": {
+                    "message": "Compacting conversation.",
+                    "type": "message"
+                },
+                "id": "msg-event-335",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-331",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Rename this session appropriately."
+            },
+            {
+                "createdAt": 1755000002000,
+                "event": {
+                    "title": "Fix pagination cursor math",
+                    "type": "title-changed"
+                },
+                "id": "msg-agent-332:0",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000003500,
+                "event": {
+                    "message": "Compacting conversation.",
+                    "type": "message"
+                },
+                "id": "msg-event-335",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Rename this session appropriately.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-331",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01TitleChange01",
+                                        "input": {
+                                            "title": "Fix pagination cursor math"
+                                        },
+                                        "name": "mcp__hapi__change_title",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "3c7e9d4f-24a5-4b6a-9e8d-f9a0b1c2d332"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "msg-agent-332",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "Successfully changed chat title to: \"Fix pagination cursor math\"",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01TitleChange01",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "3c7e9d4f-24a5-4b6a-9e8d-f9a0b1c2d332",
+                            "type": "user",
+                            "uuid": "4d8fae50-35b6-4c7b-8f9e-a0b1c2d3e333"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002600,
+                "id": "msg-agent-333",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Fix pagination cursor math",
+                            "type": "message"
+                        },
+                        "id": "5e9fbf61-46c7-4d8c-9a0f-b1c2d3e4f334",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003000,
+                "id": "msg-event-334",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Compacting conversation.",
+                            "type": "message"
+                        },
+                        "id": "6fa0c072-57d8-4e9d-8b1a-c2d3e4f5a335",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003500,
+                "id": "msg-event-335",
+                "localId": null,
+                "seq": 5
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Compacting conversation.",
+                            "type": "message"
+                        },
+                        "id": "70b1d183-68e9-4fae-9c2b-d3e4f5a6b336",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003900,
+                "id": "msg-event-336",
+                "localId": null,
+                "seq": 6
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-title-changed-dedupe"
+}

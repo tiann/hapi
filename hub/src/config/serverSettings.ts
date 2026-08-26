@@ -12,6 +12,24 @@ import { getSettingsFile, updateSettings } from './settings'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
+/**
+ * Push delivery settings: all nullable strings under the same
+ * env > file > null rule (defaults and validation live in the resolvers,
+ * fcmConfig.ts / iosPushConfig.ts).
+ */
+const PUSH_SETTING_KEYS = [
+    ['fcmServiceAccountPath', 'FCM_SERVICE_ACCOUNT_PATH'],
+    ['iosPushMode', 'HAPI_IOS_PUSH'],
+    ['iosPushRelayUrl', 'HAPI_PUSH_RELAY_URL'],
+    ['apnsKeyP8Path', 'APNS_KEY_P8_PATH'],
+    ['apnsKeyId', 'APNS_KEY_ID'],
+    ['apnsTeamId', 'APNS_TEAM_ID'],
+    ['apnsBundleId', 'APNS_BUNDLE_ID'],
+    ['apnsEnv', 'APNS_ENV'],
+] as const
+
+export type PushSettingKey = (typeof PUSH_SETTING_KEYS)[number][0]
+
 export interface ServerSettings {
     telegramBotToken: string | null
     telegramNotification: boolean
@@ -22,6 +40,14 @@ export interface ServerSettings {
     listenPort: number
     publicUrl: string
     corsOrigins: string[]
+    fcmServiceAccountPath: string | null
+    iosPushMode: string | null
+    iosPushRelayUrl: string | null
+    apnsKeyP8Path: string | null
+    apnsKeyId: string | null
+    apnsTeamId: string | null
+    apnsBundleId: string | null
+    apnsEnv: string | null
 }
 
 export interface ServerSettingsResult {
@@ -36,7 +62,7 @@ export interface ServerSettingsResult {
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
-    }
+    } & Record<PushSettingKey, 'env' | 'file' | 'default'>
     savedToFile: boolean
 }
 
@@ -107,6 +133,14 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             listenPort: 'default',
             publicUrl: 'default',
             corsOrigins: 'default',
+            fcmServiceAccountPath: 'default',
+            iosPushMode: 'default',
+            iosPushRelayUrl: 'default',
+            apnsKeyP8Path: 'default',
+            apnsKeyId: 'default',
+            apnsTeamId: 'default',
+            apnsBundleId: 'default',
+            apnsEnv: 'default',
         }
         // telegramBotToken: env > file > null
         let telegramBotToken: string | null = null
@@ -242,6 +276,33 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             corsOrigins = deriveCorsOrigins(publicUrl)
         }
 
+        // Push settings: env > file > null, env persisted on first sight —
+        // one loop instead of nine copies of the per-field block above.
+        const push: Record<PushSettingKey, string | null> = {
+            fcmServiceAccountPath: null,
+            iosPushMode: null,
+            iosPushRelayUrl: null,
+            apnsKeyP8Path: null,
+            apnsKeyId: null,
+            apnsTeamId: null,
+            apnsBundleId: null,
+            apnsEnv: null,
+        }
+        for (const [key, envName] of PUSH_SETTING_KEYS) {
+            const envValue = process.env[envName]?.trim()
+            if (envValue) {
+                push[key] = envValue
+                sources[key] = 'env'
+                if (settings[key] === undefined) {
+                    settings[key] = envValue
+                    needsSave = true
+                }
+            } else if (settings[key] !== undefined) {
+                push[key] = settings[key] ?? null
+                sources[key] = 'file'
+            }
+        }
+
         return {
             settings,
             write: needsSave,
@@ -256,6 +317,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     listenPort,
                     publicUrl,
                     corsOrigins,
+                    ...push,
                 },
                 sources,
                 savedToFile: needsSave,

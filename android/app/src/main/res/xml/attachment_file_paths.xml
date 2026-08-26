@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Camera-capture scratch files for composer attachments (B-M3f):
+     cache/attachments/camera-*.jpg handed to TakePicture via FileProvider,
+     deleted right after ingest. -->
+<paths>
+    <cache-path
+        name="attachment_captures"
+        path="attachments/" />
+</paths>

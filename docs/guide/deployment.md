@@ -203,6 +203,11 @@ Create plist files for automatic startup on macOS.
         <key>HAPI_RUNNER_SUPERVISED</key>
         <string>1</string>
     </dict>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

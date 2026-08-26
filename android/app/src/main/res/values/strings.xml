@@ -1,0 +1,525 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HAPI</string>
+
+    <!-- Markdown / code / diff rendering (B-M2d1) -->
+    <string name="code_copy">Copy</string>
+    <string name="code_copied">Copied</string>
+    <string name="code_plain_fallback">text</string>
+    <string name="diff_binary_file">Binary file not shown</string>
+    <string name="diff_show_more">Show %1$d more lines</string>
+    <string name="diff_collapse">Collapse</string>
+
+    <!-- Pairing (B-M1d) -->
+    <string name="pairing_title">Pair with your hub</string>
+    <string name="pairing_intro">HAPI is self-hosted: your coding agents run on your own machines behind a HAPI hub you operate. Pair this app with that hub to watch and steer them from your phone.</string>
+    <string name="pairing_hint">Scan the “Companion app” QR code your hub prints on startup (with --relay), or enter the hub URL and access token by hand.</string>
+    <string name="pairing_scan_qr">Scan QR code</string>
+    <string name="pairing_manual_entry">Enter manually</string>
+    <string name="pairing_notice_dismiss">Dismiss</string>
+    <string name="pairing_error_dismiss">Dismiss</string>
+    <string name="pairing_validating">Checking hub…</string>
+    <string name="pairing_confirm_title">Pair with this hub?</string>
+    <string name="pairing_confirm_already">This hub is already paired on this device.</string>
+    <string name="pairing_confirm_pair">Pair now</string>
+    <string name="pairing_confirm_switch">Use existing pairing</string>
+    <string name="pairing_confirm_repair">Re-pair with the new code</string>
+    <string name="pairing_confirm_cancel">Cancel</string>
+    <string name="pairing_invalid_link">That pairing link is invalid, incomplete, or does not use HTTPS.</string>
+    <string name="pairing_back">Back</string>
+
+    <!-- Manual entry -->
+    <string name="pairing_manual_title">Manual pairing</string>
+    <string name="pairing_manual_hint">Find both values in the hub terminal on startup, or in the web app under Settings → Companion pairing.</string>
+    <string name="pairing_hub_url_label">Hub URL</string>
+    <string name="pairing_hub_url_placeholder">https://hub.example.com</string>
+    <string name="pairing_token_label">Access token</string>
+    <string name="pairing_token_placeholder">Paste the access token</string>
+    <string name="pairing_pair_button">Pair</string>
+
+    <!-- QR scan -->
+    <string name="pairing_scan_title">Scan pairing QR</string>
+    <string name="pairing_scan_prompt">Point the camera at the pairing QR code</string>
+    <string name="pairing_scan_not_pairing_qr">That QR code is not a valid HTTPS HAPI pairing code. Scan one of the two QR codes your hub prints (Companion app or Web app).</string>
+    <string name="pairing_scan_again">Scan again</string>
+    <string name="pairing_scan_permission_rationale">Camera access is needed to scan the pairing QR code. You can also pair manually instead.</string>
+    <string name="pairing_scan_grant_camera">Grant camera access</string>
+
+    <!-- Home (session list top bar + hub chores) -->
+    <string name="home_menu">Menu</string>
+    <string name="home_settings">Settings</string>
+    <string name="home_switch_hub">Switch hub</string>
+    <string name="home_pair_another">Pair another hub…</string>
+    <string name="home_sign_out">Sign out</string>
+    <string name="home_sign_out_message">Remove this hub pairing? The stored credentials are deleted from this device (the hub itself is untouched).</string>
+    <string name="home_cancel">Cancel</string>
+
+    <!-- New session (B-M3d) -->
+    <string name="new_session_title">New session</string>
+    <string name="new_session_back">Back</string>
+    <string name="new_session_fab">New session</string>
+    <string name="new_session_machine">Machine</string>
+    <string name="new_session_machines_loading">Loading machines…</string>
+    <string name="new_session_no_machines">No machines online</string>
+    <string name="new_session_runner_spawn_error">Runner last spawn error: %1$s</string>
+    <string name="new_session_directory">Directory</string>
+    <string name="new_session_directory_placeholder">/path/to/project</string>
+    <string name="new_session_browse">Browse directories</string>
+    <string name="directory_browser_choose_directory">Choose directory</string>
+    <string name="directory_browser_up">Go to parent directory</string>
+    <string name="directory_browser_refresh">Refresh</string>
+    <string name="directory_browser_show_hidden">Show hidden</string>
+    <string name="directory_browser_empty">No subdirectories</string>
+    <string name="directory_browser_select_current">Select current directory</string>
+    <string name="new_session_recent_paths">Recent paths</string>
+    <string name="new_session_type">Session type</string>
+    <string name="new_session_type_simple">Simple</string>
+    <string name="new_session_type_simple_desc">Use selected directory as-is</string>
+    <string name="new_session_type_worktree">Worktree</string>
+    <string name="new_session_type_worktree_desc">Create a new git worktree next to the repo</string>
+    <string name="new_session_worktree_name">Worktree name</string>
+    <string name="new_session_worktree_name_placeholder">feature-x (optional)</string>
+    <string name="new_session_agent">Agent</string>
+    <string name="new_session_agent_availability_loading">Checking installed Agents…</string>
+    <string name="new_session_retry">Retry</string>
+    <string name="new_session_model">Model</string>
+    <string name="new_session_effort">Effort</string>
+    <string name="new_session_reasoning_effort">Reasoning effort</string>
+    <string name="new_session_permission_mode">Permission mode</string>
+    <string name="new_session_permission_managed">Managed by agent</string>
+    <string name="new_session_permission_managed_desc">This agent manages its own permissions. YOLO mode is not available.</string>
+    <string name="new_session_yolo">YOLO mode</string>
+    <string name="new_session_yolo_title">Bypass approvals and sandbox</string>
+    <string name="new_session_yolo_desc">Uses dangerous agent flags when spawning.</string>
+    <string name="new_session_yolo_maps_to">Applies native %1$s mode.</string>
+    <string name="new_session_collaboration_mode">Collaboration mode</string>
+    <string name="new_session_copilot_agent_mode">Agent mode</string>
+    <string name="new_session_fast_mode">Fast mode</string>
+    <string name="new_session_fast_mode_standard">Standard</string>
+    <string name="new_session_fast_mode_fast">Fast</string>
+    <string name="new_session_loading">Loading…</string>
+    <string name="new_session_create">Create</string>
+    <string name="new_session_creating">Creating…</string>
+    <string name="new_session_create_and_make_directory">Create and make directory</string>
+
+    <!-- Settings scaffold (B-M4e) -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_cancel">Cancel</string>
+    <string name="settings_retry">Retry</string>
+    <string name="settings_load_error">Could not load this dashboard.</string>
+    <string name="settings_owner_only">This dashboard is only available to the hub owner (default namespace).</string>
+
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_system">Follow system</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_oled">OLED black</string>
+    <string name="settings_dynamic_color">Material You colors</string>
+    <string name="settings_dynamic_color_description">Derive app colors from your wallpaper.</string>
+    <string name="settings_dynamic_color_oled_note">Not available with OLED black.</string>
+
+    <string name="settings_section_language">Language</string>
+    <string name="settings_language">App language</string>
+    <string name="settings_language_system">Follow system</string>
+
+    <string name="settings_section_insights">Insights</string>
+    <string name="settings_usage_summary">Token usage across agents and models</string>
+    <string name="settings_storage_summary">Hub database size on disk</string>
+
+    <string name="settings_section_about">About</string>
+    <string name="settings_app_version">App version</string>
+    <string name="settings_protocol_version">Protocol version</string>
+    <string name="settings_hub">Hub</string>
+    <string name="settings_hub_checking">Checking hub…</string>
+    <string name="settings_hub_health">Status: %1$s · protocol v%2$d</string>
+    <string name="settings_hub_unreachable">Hub unreachable — tap to retry.</string>
+
+    <!-- Usage dashboard -->
+    <string name="settings_usage">Usage</string>
+    <string name="settings_usage_range_7d">7 days</string>
+    <string name="settings_usage_range_30d">30 days</string>
+    <string name="settings_usage_range_all">All time</string>
+    <string name="settings_usage_total">Total tokens</string>
+    <string name="settings_usage_uncached">Uncached</string>
+    <string name="settings_usage_input">Input</string>
+    <string name="settings_usage_output">Output</string>
+    <string name="settings_usage_cache_read">Cache read</string>
+    <string name="settings_usage_cache_creation">Cache creation</string>
+    <string name="settings_usage_cache_hit_rate">Cache hit rate</string>
+    <string name="settings_usage_requests">Requests</string>
+    <string name="settings_usage_daily_title">Daily tokens</string>
+    <string name="settings_usage_tooltip">%1$s tokens · %2$d req · in %3$s / out %4$s</string>
+    <string name="settings_usage_tooltip_empty">0 tokens</string>
+    <string name="settings_usage_by_agent">By agent</string>
+    <string name="settings_usage_by_model">By model</string>
+    <string name="settings_usage_bucket_details">%1$d requests · in %2$s · out %3$s</string>
+    <string name="settings_usage_sessions">Sessions with usage: %1$d</string>
+    <string name="settings_usage_empty">No usage recorded in this period.</string>
+
+    <!-- Storage dashboard -->
+    <string name="settings_storage">Storage</string>
+    <string name="settings_storage_description">Disk footprint of the hub\'s SQLite database (database, write-ahead log, shared memory).</string>
+    <string name="settings_storage_chart_title">SQLite files</string>
+    <string name="settings_storage_chart_empty">No storage data reported.</string>
+    <string name="settings_storage_database">Database</string>
+    <string name="settings_storage_wal">Write-ahead log</string>
+    <string name="settings_storage_shm">Shared memory</string>
+    <string name="settings_storage_total">Total</string>
+    <string name="settings_storage_path">Path</string>
+    <string name="settings_storage_refresh">Refresh</string>
+    <string name="settings_storage_refreshing">Refreshing…</string>
+
+    <!-- Push notifications (B-M4a) -->
+    <string name="channel_permission_requests">Permission requests</string>
+    <string name="channel_permission_requests_desc">An agent is waiting for you to allow or deny a tool call</string>
+    <string name="channel_ready">Agent ready</string>
+    <string name="channel_ready_desc">An agent finished and is waiting for input</string>
+    <string name="channel_task_notifications">Task notifications</string>
+    <string name="channel_task_notifications_desc">Task completed or failed, and other updates</string>
+    <string name="notif_action_allow">Allow</string>
+    <string name="notif_action_deny">Deny</string>
+    <string name="notif_action_reply">Reply</string>
+    <string name="notif_action_dismiss">Dismiss</string>
+    <string name="notif_reply_hint">Message</string>
+    <string name="notif_allowing">Allowing…</string>
+    <string name="notif_denying">Denying…</string>
+    <string name="notif_sending">Sending…</string>
+    <string name="notif_allowed">Allowed</string>
+    <string name="notif_denied">Denied</string>
+    <string name="notif_reply_sent">Reply sent</string>
+    <string name="notif_already_handled">Already handled</string>
+    <string name="notif_session_inactive">Session is no longer active — open the app to resume it</string>
+    <string name="notif_session_not_found">Session not found on any paired hub</string>
+    <string name="notif_action_failed">Couldn’t reach the hub — open the app to respond</string>
+    <string name="notif_reply_failed">Reply not sent — open the app to try again</string>
+
+    <!-- Session list (B-M2b / B-M3ce, extracted in B-M5a) -->
+    <string name="sessions_section_pinned">Pinned</string>
+    <string name="sessions_section_sessions">Sessions</string>
+    <string name="sessions_filter_all">All</string>
+    <string name="sessions_filter_unknown_machine">Unknown machine</string>
+    <string name="sessions_offline_banner">Offline — showing cached sessions</string>
+    <string name="sessions_empty_loading_title">Loading sessions…</string>
+    <string name="sessions_empty_offline_title">Hub unreachable</string>
+    <string name="sessions_empty_title">No sessions yet</string>
+    <string name="sessions_empty_loading_hint">Fetching the session list from the hub.</string>
+    <string name="sessions_empty_offline_hint">Pull to retry once you are back online.</string>
+    <string name="sessions_empty_hint">Start an agent with the hapi CLI and it will appear here.</string>
+    <string name="sessions_badge_needs_input">needs input</string>
+    <string name="sessions_badge_approve">approve %1$s</string>
+    <string name="sessions_badge_pending">pending</string>
+    <string name="sessions_action_unpin">Unpin</string>
+    <string name="sessions_action_pin_project">Pin to project</string>
+    <string name="sessions_action_pin_global">Pin globally</string>
+    <string name="sessions_action_rename">Rename</string>
+    <string name="sessions_action_reopen">Reopen</string>
+    <string name="sessions_action_archive">Archive</string>
+    <string name="sessions_action_delete">Delete</string>
+    <string name="sessions_error_pin">Pin failed</string>
+    <string name="sessions_error_archive">Archive failed</string>
+    <string name="sessions_error_rename">Rename failed</string>
+    <string name="sessions_error_delete">Delete failed</string>
+    <string name="sessions_error_reopen">Reopen failed</string>
+    <string name="sessions_error_machines">Could not load machines</string>
+    <string name="sessions_error_delete_active">Session is still active — archive it first</string>
+    <string name="sessions_reopen_failed_fallback">Failed to reopen session</string>
+    <string name="sessions_rename_title">Rename session</string>
+    <string name="sessions_rename_placeholder">Session name</string>
+    <string name="sessions_delete_title">Delete session?</string>
+    <string name="sessions_delete_message">“%1$s” and its message history will be removed from the hub permanently. Active sessions must be archived first.</string>
+    <string name="sessions_cancel">Cancel</string>
+    <string name="sessions_age_now">now</string>
+
+    <!-- Chat screen chrome (B-M2c/B-M3, extracted in B-M5a) -->
+    <string name="chat_back">Back</string>
+    <string name="chat_open_files">Session files</string>
+    <string name="chat_open_scratchlist">Scratchlist</string>
+    <string name="chat_open_scratchlist_count">Scratchlist (%1$d)</string>
+    <string name="chat_open_settings">Session settings</string>
+    <string name="chat_session_actions">Session actions</string>
+    <string name="chat_scratchlist_badge">Scratchlist</string>
+    <string name="chat_inactive_bar">Session inactive — send to resume, or</string>
+    <string name="chat_retry">Retry</string>
+    <string name="chat_loading_messages">Loading messages…</string>
+    <string name="chat_loading_older">Loading older messages…</string>
+    <string name="chat_load_failed_title">Couldn’t load this session</string>
+    <string name="chat_load_failed_hint">Check the connection to your hub and try again.</string>
+    <string name="chat_empty_title">No messages yet</string>
+    <string name="chat_empty_hint">Messages will appear here as the agent works.</string>
+    <string name="chat_new_messages_one">1 new message ↓</string>
+    <string name="chat_new_messages_many">%1$d new messages ↓</string>
+
+    <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
+    <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
+    <string name="chat_notice_mic_permission">Microphone permission is needed for dictation</string>
+    <string name="chat_notice_camera_permission">Camera permission is needed to take a photo</string>
+    <string name="chat_notice_attachment_too_large">%1$s is over the 50 MB upload limit</string>
+    <string name="chat_notice_attachment_unreadable">Couldn’t read %1$s</string>
+    <string name="chat_notice_draft_parked">Draft parked to scratchlist</string>
+    <string name="chat_notice_scratchlist_full">Scratchlist is full (200 entries)</string>
+    <string name="chat_notice_park_failed">Couldn’t park the draft — check the hub connection</string>
+    <string name="chat_notice_attachments_uploading">Attachments are still uploading — wait, or retry/remove the failed ones</string>
+    <string name="chat_notice_resume_failed">Session is inactive and could not be resumed</string>
+    <string name="chat_notice_abort_failed">Failed to abort</string>
+    <string name="chat_notice_rename_failed">Failed to rename session</string>
+    <string name="chat_notice_delete_failed">Failed to delete session</string>
+    <string name="chat_notice_cancel_failed">Failed to cancel queued message</string>
+    <string name="chat_notice_edit_kept_draft">Message cancelled — kept your current draft</string>
+    <string name="chat_notice_already_delivered">Already delivered to the agent</string>
+    <string name="chat_notice_steer_failed">Failed to steer message</string>
+    <string name="chat_notice_request_already_handled">Request was already handled</string>
+    <string name="chat_notice_request_failed">Request failed</string>
+    <string name="chat_notice_models_failed">Failed to load models</string>
+    <string name="chat_notice_config_failed">Failed to update session</string>
+
+    <!-- Composer (B-M3a/ce/f) -->
+    <string name="chat_composer_placeholder">Message the agent…</string>
+    <string name="chat_attachment_uploading">Uploading…</string>
+    <string name="chat_attachment_failed_retry">Failed — tap to retry</string>
+    <string name="chat_recording">● Recording…  %1$s</string>
+    <string name="chat_cancel">Cancel</string>
+    <string name="chat_park_draft">Park draft to scratchlist</string>
+    <string name="chat_composer_add_attachment">Add attachment</string>
+    <string name="chat_composer_mic">Start dictation</string>
+    <string name="chat_composer_stop_recording">Stop recording</string>
+    <string name="chat_composer_send">Send</string>
+    <string name="chat_composer_abort">Stop the current turn</string>
+    <string name="chat_send_steer">Send &amp; steer into current turn</string>
+    <string name="chat_queued_one">1 queued message</string>
+    <string name="chat_queued_many">%1$d queued messages</string>
+    <string name="chat_queued_scheduled">Scheduled · %1$s</string>
+    <string name="chat_queued_steer">Steer</string>
+    <string name="chat_queued_edit">Edit</string>
+    <string name="chat_picker_title">Attach</string>
+    <string name="chat_picker_photos">Photo library</string>
+    <string name="chat_picker_camera">Camera</string>
+    <string name="chat_picker_files">Files</string>
+
+    <!-- Dictation errors (B-M3ce) -->
+    <string name="chat_dictation_start_failed">Could not start recording</string>
+    <string name="chat_dictation_hub_unreachable">Could not reach the hub</string>
+    <string name="chat_dictation_recording_failed">Audio recording failed</string>
+    <string name="chat_dictation_no_audio">No audio was recorded</string>
+    <string name="chat_dictation_failed">Transcription failed</string>
+
+    <!-- Session config sheet (B-M3b) -->
+    <string name="chat_config_offline_note">Session is offline — changes apply after it resumes or may be rejected.</string>
+    <string name="chat_config_terminal_note">Session is controlled from the terminal — config changes will be rejected.</string>
+    <string name="chat_config_permission_mode">Permission mode</string>
+    <string name="chat_config_model">Model</string>
+    <string name="chat_config_loading_models">Loading models…</string>
+    <string name="chat_config_models_unavailable">Model list unavailable for this session.</string>
+    <string name="chat_config_effort">Effort</string>
+
+    <!-- Chat blocks (B-M2c/d) -->
+    <string name="chat_tool_awaiting_approval">Awaiting approval</string>
+    <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
+    <string name="chat_tool_approved">✓ Approved</string>
+    <string name="chat_tool_denied">✕ Denied</string>
+    <string name="chat_tool_canceled">— Canceled</string>
+    <string name="chat_tool_status_pending">pending</string>
+    <string name="chat_tool_status_error">error</string>
+    <string name="chat_agent_steps_one">1 agent step</string>
+    <string name="chat_agent_steps_many">%1$d agent steps</string>
+    <string name="chat_group_tools_one">1 tool</string>
+    <string name="chat_group_tools_many">%1$d tools</string>
+    <string name="chat_before">Before</string>
+    <string name="chat_after">After</string>
+    <string name="chat_edit_n_of_m">Edit %1$d/%2$d</string>
+    <string name="chat_empty_snippet">(empty)</string>
+    <string name="chat_result">Result</string>
+    <string name="chat_result_error">Result · error</string>
+    <string name="chat_reasoning_expanded">💭 Reasoning ▾</string>
+    <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
+    <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
+    <string name="chat_not_delivered">Not delivered</string>
+    <string name="chat_review_title">Code review</string>
+    <string name="chat_review_findings_one">1 finding</string>
+    <string name="chat_review_findings_many">%1$d findings</string>
+
+    <!-- Permission footers (B-M3b) -->
+    <string name="chat_perm_allow">Allow</string>
+    <string name="chat_perm_deny">Deny</string>
+    <string name="chat_perm_abort">Abort</string>
+    <string name="chat_perm_allow_for_session">Allow for this session</string>
+    <string name="chat_perm_allow_all_edits">Allow all edits</string>
+    <string name="chat_perm_already_handled">Already handled elsewhere</string>
+    <string name="chat_perm_type_answer">Type your answer…</string>
+    <string name="chat_perm_type_answer_first">Type an answer first</string>
+    <string name="chat_perm_answer_all">Answer every question first</string>
+    <string name="chat_perm_answer_required">Answer every required question first</string>
+    <string name="chat_perm_submit">Submit</string>
+    <string name="chat_perm_other">Other…</string>
+    <string name="chat_perm_optional_format">%1$s (optional)</string>
+    <string name="chat_perm_add_note">Add a note…</string>
+
+    <!-- External links (B-M2d) -->
+    <string name="chat_link_open_title">Open link?</string>
+    <string name="chat_link_open">Open</string>
+    <string name="chat_link_no_app">No app can open this link</string>
+
+    <!-- Tool card titles (ToolCardPresentation; web knownTools registry) -->
+    <string name="tool_terminal">Terminal</string>
+    <string name="tool_read_file">Read file</string>
+    <string name="tool_read_notebook">Read notebook</string>
+    <string name="tool_edit_file">Edit file</string>
+    <string name="tool_edit_notebook">Edit notebook</string>
+    <string name="tool_write_file">Write file</string>
+    <string name="tool_search_files">Search files</string>
+    <string name="tool_search_content">Search content</string>
+    <string name="tool_list_files">List files</string>
+    <string name="tool_web_fetch">Web fetch</string>
+    <string name="tool_web_search">Web search</string>
+    <string name="tool_task">Task</string>
+    <string name="tool_launch_agent">Launch Agent</string>
+    <string name="tool_agent_named">Agent: %1$s</string>
+    <string name="tool_agent">Agent</string>
+    <string name="tool_spawn_agent">Spawn agent</string>
+    <string name="tool_resume_agent">Resume agent</string>
+    <string name="tool_wait_agent">Wait for agent</string>
+    <string name="tool_close_agent">Close agent</string>
+    <string name="tool_interrupt_agent">Interrupt agent</string>
+    <string name="tool_broadcast">Broadcast</string>
+    <string name="tool_shutdown">Shutdown: %1$s</string>
+    <string name="tool_shutdown_fallback_recipient">agent</string>
+    <string name="tool_shutdown_response">Shutdown Response</string>
+    <string name="tool_message_named">Message: %1$s</string>
+    <string name="tool_message_agent">Message agent</string>
+    <string name="tool_list_agents">List agents</string>
+    <string name="tool_team_named">Team: %1$s</string>
+    <string name="tool_create_team">Create Team</string>
+    <string name="tool_delete_team">Delete Team</string>
+    <string name="tool_todo_list">Todo list</string>
+    <string name="tool_plan">Plan</string>
+    <string name="tool_plan_proposal">Plan proposal</string>
+    <string name="tool_skill">Skill</string>
+    <string name="tool_skill_named">Skill: %1$s</string>
+    <string name="tool_reasoning">Reasoning</string>
+    <string name="tool_permission_request">Permission request</string>
+    <string name="tool_permission_named">Permission: %1$s</string>
+    <string name="tool_apply_changes">Apply changes</string>
+    <string name="tool_diff">Diff</string>
+    <string name="tool_task_log">%1$s log</string>
+    <string name="tool_inspecting_task_log">Inspecting task log</string>
+    <string name="tool_background_task">Background task</string>
+    <string name="tool_error">Error</string>
+    <string name="tool_run_shell">Run shell</string>
+    <string name="tool_search">Search</string>
+    <string name="tool_open_url">Open URL</string>
+    <string name="tool_query">Query</string>
+    <string name="tool_question">Question</string>
+    <string name="tool_questions">%1$d Questions</string>
+    <string name="tool_questions_more">%1$s (+%2$d more)</string>
+    <string name="tool_write_lines">%1$d lines</string>
+    <string name="tool_write_chars">%1$d chars</string>
+    <string name="tool_edits_count">%1$s (%2$d edits)</string>
+
+    <!-- Files browser + viewer (B-M4c) -->
+    <string name="files_back">Back</string>
+    <string name="files_title">Files</string>
+    <string name="files_refresh">Refresh</string>
+    <string name="files_tab_changes">Changes</string>
+    <string name="files_tab_browse">Browse</string>
+    <string name="files_tab_search">Search</string>
+    <string name="files_git_unavailable">Git status unavailable for this session</string>
+    <string name="files_detached_head">Detached HEAD</string>
+    <string name="files_staged_unstaged">%1$d staged · %2$d unstaged</string>
+    <string name="files_no_changes">No changes in the working tree</string>
+    <string name="files_staged_header">Staged (%1$d)</string>
+    <string name="files_unstaged_header">Unstaged (%1$d)</string>
+    <string name="files_project_root">Project root</string>
+    <string name="files_show_hidden">Show hidden files</string>
+    <string name="files_collapse">Collapse</string>
+    <string name="files_expand">Expand</string>
+    <string name="files_search_placeholder">Search files…</string>
+    <string name="files_search_hint">Type to search files in the session directory</string>
+    <string name="files_search_no_match">No files matched</string>
+    <string name="files_error_git_status">Git status unavailable</string>
+    <string name="files_error_unstaged_diff">Unstaged diff unavailable: %1$s</string>
+    <string name="files_error_staged_diff">Staged diff unavailable: %1$s</string>
+    <string name="files_error_unknown">unknown error</string>
+    <string name="files_error_list">Failed to list directory</string>
+    <string name="files_error_search">Failed to search files</string>
+    <string name="files_error_load_diff">Failed to load diff</string>
+    <string name="files_error_read_file">Failed to read file</string>
+    <string name="files_viewer_copied">Copied</string>
+    <string name="files_viewer_copy_path">Copy path</string>
+    <string name="files_viewer_diff">Diff</string>
+    <string name="files_viewer_file">File</string>
+    <string name="files_viewer_unstaged">Unstaged</string>
+    <string name="files_viewer_staged">Staged</string>
+    <string name="files_viewer_source">Source</string>
+    <string name="files_viewer_preview">Preview</string>
+    <string name="files_viewer_line">Line %1$d</string>
+    <string name="files_viewer_no_changes">No changes in this file</string>
+    <string name="files_viewer_empty">This file is empty</string>
+    <string name="files_viewer_binary">Binary file — no preview available</string>
+    <string name="files_viewer_image_unsupported">Preview not available for this image format</string>
+
+    <!-- Scratchlist workbench (B-M4d) -->
+    <string name="scratchlist_back">Back</string>
+    <string name="scratchlist_title">Scratchlist</string>
+    <string name="scratchlist_count_none">No notes</string>
+    <string name="scratchlist_count_one">1 note</string>
+    <string name="scratchlist_count_many">%1$d notes</string>
+    <string name="scratchlist_new_note">New note</string>
+    <string name="scratchlist_edit_note">Edit note</string>
+    <string name="scratchlist_to_composer">To composer</string>
+    <string name="scratchlist_attachment_only">Attachment only</string>
+    <string name="scratchlist_placeholder">Note, draft, parking-lot idea…</string>
+    <string name="scratchlist_add_photo">Add photo</string>
+    <string name="scratchlist_delete">Delete</string>
+    <string name="scratchlist_cancel">Cancel</string>
+    <string name="scratchlist_save">Save</string>
+    <string name="scratchlist_retry">Retry</string>
+    <string name="scratchlist_load_failed">Couldn’t load the scratchlist</string>
+    <string name="scratchlist_check_connection">Check the connection to your hub and try again.</string>
+    <string name="scratchlist_empty_title">No notes yet</string>
+    <string name="scratchlist_empty_hint">Park drafts from the composer, or tap + to jot a note for this session.</string>
+    <string name="scratchlist_notice_full_delete_first">Scratchlist is full (200 entries) — delete one first</string>
+    <string name="scratchlist_notice_full">Scratchlist is full (200 entries)</string>
+    <string name="scratchlist_notice_needs_content">A note needs text or an attachment — use Delete to remove it</string>
+    <string name="scratchlist_notice_save_failed">Couldn’t save the note — check the hub connection</string>
+    <string name="scratchlist_notice_delete_failed">Couldn’t delete the note — check the hub connection</string>
+    <string name="scratchlist_notice_attach_failed">Couldn’t attach the file — check the hub connection</string>
+    <string name="scratchlist_notice_remove_attachment_failed">Couldn’t remove the attachment — check the hub connection</string>
+    <string name="scratchlist_notice_too_large">That file is over the hub’s per-file size limit</string>
+    <string name="scratchlist_notice_upload_failed">Upload failed — check the hub connection</string>
+    <string name="scratchlist_reject_unreadable">Couldn’t read the selected file</string>
+    <string name="scratchlist_reject_image_too_large">Image is too large even after compression</string>
+    <string name="scratchlist_reject_max_attachments">A note can hold at most %1$d attachments</string>
+    <string name="scratchlist_reject_type">That file type isn’t allowed for scratchlist attachments</string>
+    <string name="scratchlist_reject_file_too_large">That file is over the %1$d MB limit</string>
+    <string name="scratchlist_reject_budget">This note’s attachment budget is used up</string>
+
+    <!-- Pairing errors (PairingViewModel semantic errors, B-M1d) -->
+    <string name="pairing_error_invalid_url">Enter a valid HTTPS hub URL, like https://hub.example.com.</string>
+    <string name="pairing_error_empty_token">Enter the access token shown by your hub.</string>
+    <string name="pairing_error_token_rejected">The hub rejected this access token. Tokens change when the hub rotates its CLI_API_TOKEN — grab a fresh QR code or token and try again.</string>
+    <string name="pairing_error_hub_gone">That hub is no longer paired. Pair it again below.</string>
+    <string name="pairing_error_unreachable">Could not reach %1$s. Check the address, your network, and that the hub is running.</string>
+    <string name="pairing_error_not_a_hub">%1$s answered, but not like a HAPI hub. Double-check the URL (it should be the hub’s own address, not the web app’s).</string>
+    <string name="pairing_error_protocol_update_app">This hub speaks protocol v%1$d but the app supports v%2$d. Update the app and try again.</string>
+    <string name="pairing_error_protocol_update_hub">This hub speaks protocol v%1$d but the app supports v%2$d. Update the hub and try again.</string>
+    <string name="pairing_error_auth_failed">Pairing failed (HTTP %1$d). Try again in a moment.</string>
+    <string name="pairing_notice_token_revoked">This device’s pairing was revoked — the hub’s access token changed. Pair again to continue.</string>
+    <string name="pairing_notice_retry_exhausted">The hub kept rejecting this device’s session. Pair again to continue.</string>
+    <string name="pairing_notice_missing_credentials">The stored credentials for this hub went missing. Pair again to continue.</string>
+
+    <!-- New session form notices (B-M3d) -->
+    <string name="new_session_error_worktree_missing">Worktree sessions require an existing repository directory.</string>
+    <string name="new_session_error_directory_missing">Directory does not exist. Creating the session will create it automatically.</string>
+    <string name="new_session_error_directory_missing_confirm">Directory does not exist. Tap Create again to create it automatically.</string>
+    <string name="new_session_error_create">Failed to create session</string>
+    <string name="new_session_error_codex_models">Failed to load Codex models</string>
+    <string name="new_session_error_models_detail">Failed to load models: %1$s</string>
+    <string name="new_session_error_worktree_name">Name needs at least one letter or digit</string>
+    <string name="new_session_error_directory_outside_workspace_roots">Directory must be inside one of this machine’s workspace roots.</string>
+    <string name="directory_browser_error">Failed to browse directories</string>
+    <string name="new_session_error_agent_availability">Failed to check installed Agents</string>
+    <string name="new_session_error_runner_upgrade_required">Upgrade and restart this machine’s HAPI runner before creating sessions.</string>
+    <string name="new_session_error_no_available_agents">No supported Agents are installed on this machine.</string>
+    <string name="new_session_error_selected_agent_unavailable">The selected Agent is not available on this machine.</string>
+</resources>

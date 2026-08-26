@@ -1,43 +1,99 @@
 import { describe, expect, it } from 'vitest'
-import { parsePiModelsTable } from './piModels'
+import { parsePiModelsProbeLine } from './piModels'
 
-const SAMPLE_TABLE = `provider      model                     context  max-out  thinking  images
-openai-codex  gpt-5.3-codex-spark       128K     128K     yes       no
-openai-codex  gpt-5.6-sol               272K     128K     yes       yes
-opencode-go   deepseek-v4-pro           1M       384K     yes       no
-opencode-go   gpt-5.6-luna              1.1M     128K     yes       yes
-opencode-go   qwen3.6-plus              1M       65.5K    yes       yes
-`
+const PROBE_RPC_ID = 'hapi-machine-models-probe'
 
-describe('parsePiModelsTable', () => {
-    it('parses provider/model columns and reasoning flag', () => {
-        const models = parsePiModelsTable(SAMPLE_TABLE)
-        expect(models).toEqual([
-            { provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark', reasoning: true },
-            { provider: 'openai-codex', modelId: 'gpt-5.6-sol', reasoning: true },
-            { provider: 'opencode-go', modelId: 'deepseek-v4-pro', reasoning: true },
-            { provider: 'opencode-go', modelId: 'gpt-5.6-luna', reasoning: true },
-            { provider: 'opencode-go', modelId: 'qwen3.6-plus', reasoning: true },
-        ])
+function probeResponseLine(data: unknown): string {
+    return JSON.stringify({
+        id: PROBE_RPC_ID,
+        type: 'response',
+        command: 'get_available_models',
+        success: true,
+        data,
+    })
+}
+
+describe('parsePiModelsProbeLine', () => {
+    it('parses the get_available_models response with full model records', () => {
+        const result = parsePiModelsProbeLine(probeResponseLine({
+            models: [
+                {
+                    id: 'claude-opus-5',
+                    provider: 'anthropic',
+                    name: 'Claude Opus 5',
+                    contextWindow: 200000,
+                    reasoning: true,
+                    thinkingLevelMap: { off: 'off', minimal: null, xhigh: 'xhigh', max: 'max' },
+                },
+                { id: 'gpt-4o', provider: 'openai', reasoning: false },
+            ],
+        }))
+        expect(result).toEqual({
+            kind: 'models',
+            models: [
+                {
+                    provider: 'anthropic',
+                    modelId: 'claude-opus-5',
+                    name: 'Claude Opus 5',
+                    contextWindow: 200000,
+                    reasoning: true,
+                    thinkingLevelMap: { off: 'off', minimal: null, xhigh: 'xhigh', max: 'max' },
+                },
+                { provider: 'openai', modelId: 'gpt-4o', reasoning: false },
+            ],
+        })
     })
 
-    it('skips the header, separators, and short lines', () => {
-        const models = parsePiModelsTable(`provider model context max-out thinking images
-=== === === === === ===
-junk
-`)
-        expect(models).toEqual([])
+    it('ignores non-JSON lines and unrelated RPC traffic', () => {
+        expect(parsePiModelsProbeLine('starting up...')).toBeNull()
+        expect(parsePiModelsProbeLine('')).toBeNull()
+        expect(parsePiModelsProbeLine('{not json')).toBeNull()
+        expect(parsePiModelsProbeLine(JSON.stringify({ type: 'event', event: 'agent_start' }))).toBeNull()
+        expect(parsePiModelsProbeLine(JSON.stringify({
+            id: PROBE_RPC_ID, type: 'response', command: 'get_state', success: true, data: {},
+        }))).toBeNull()
     })
 
-    it('treats non-reasoning models as reasoning false', () => {
-        const models = parsePiModelsTable(`provider      model                     context  max-out  thinking  images
-anthropic     claude-haiku             200K     64K      no        no
-`)
-        expect(models).toEqual([{ provider: 'anthropic', modelId: 'claude-haiku', reasoning: false }])
+    it('ignores a get_available_models response addressed to another request id', () => {
+        expect(parsePiModelsProbeLine(JSON.stringify({
+            id: 'someone-else',
+            type: 'response',
+            command: 'get_available_models',
+            success: true,
+            data: { models: [{ id: 'm', provider: 'p' }] },
+        }))).toBeNull()
     })
 
-    it('dedupes identical provider/model pairs', () => {
-        const models = parsePiModelsTable(SAMPLE_TABLE + 'openai-codex  gpt-5.6-sol               272K     128K     yes       yes\n')
-        expect(models.filter((m) => m.modelId === 'gpt-5.6-sol')).toHaveLength(1)
+    it('surfaces an explicit RPC failure with its error text', () => {
+        expect(parsePiModelsProbeLine(JSON.stringify({
+            id: PROBE_RPC_ID,
+            type: 'response',
+            command: 'get_available_models',
+            success: false,
+            error: 'Unknown command',
+        }))).toEqual({ kind: 'error', error: 'Unknown command' })
+    })
+
+    it('falls back to a generic message when the failure carries no error text', () => {
+        expect(parsePiModelsProbeLine(JSON.stringify({
+            id: PROBE_RPC_ID,
+            type: 'response',
+            command: 'get_available_models',
+            success: false,
+        }))).toEqual({ kind: 'error', error: 'Pi rejected the model probe request' })
+    })
+
+    it('returns an empty catalog for a malformed data payload', () => {
+        expect(parsePiModelsProbeLine(probeResponseLine('not-an-object'))).toEqual({ kind: 'models', models: [] })
+        expect(parsePiModelsProbeLine(probeResponseLine({}))).toEqual({ kind: 'models', models: [] })
+    })
+
+    it('drops entries without an id but keeps the rest', () => {
+        expect(parsePiModelsProbeLine(probeResponseLine({
+            models: [
+                { provider: 'openai' },
+                { id: 'kept', provider: 'openai' },
+            ],
+        }))).toEqual({ kind: 'models', models: [{ provider: 'openai', modelId: 'kept' }] })
     })
 })

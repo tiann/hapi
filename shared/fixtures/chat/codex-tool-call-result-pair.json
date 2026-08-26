@@ -1,0 +1,145 @@
+{
+    "description": "Codex family: a tool-call (callId + name + structured input) paired with its tool-call-result (output object) merges into one completed tool-call block; input and output are carried verbatim (command as argv array, output as {exit_code, stdout, …}).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-561",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Run the test suite."
+            },
+            {
+                "createdAt": 1755000001800,
+                "id": "call_9f2d81aa04",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call_9f2d81aa04",
+                    "input": {
+                        "command": [
+                            "bash",
+                            "-lc",
+                            "bun test"
+                        ],
+                        "cwd": "/repo"
+                    },
+                    "name": "CodexBash",
+                    "result": {
+                        "duration_seconds": 4.21,
+                        "exit_code": 0,
+                        "stdout": "420 pass\n0 fail\nRan 420 tests across 37 files. [4.21s]"
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-561",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Run the test suite."
+            },
+            {
+                "createdAt": 1755000001800,
+                "id": "call_9f2d81aa04",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call_9f2d81aa04",
+                    "input": {
+                        "command": [
+                            "bash",
+                            "-lc",
+                            "bun test"
+                        ],
+                        "cwd": "/repo"
+                    },
+                    "name": "CodexBash",
+                    "result": {
+                        "duration_seconds": 4.21,
+                        "exit_code": 0,
+                        "stdout": "420 pass\n0 fail\nRan 420 tests across 37 files. [4.21s]"
+                    },
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Run the test suite.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-561",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call_9f2d81aa04",
+                            "id": "bfe1a2c3-6ac7-4d3e-9fae-f3a4b5c6d562",
+                            "input": {
+                                "command": [
+                                    "bash",
+                                    "-lc",
+                                    "bun test"
+                                ],
+                                "cwd": "/repo"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001800,
+                "id": "msg-codex-562",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call_9f2d81aa04",
+                            "id": "c0f2b3d4-7bd8-4e4f-8ab0-a4b5c6d7e563",
+                            "is_error": false,
+                            "output": {
+                                "duration_seconds": 4.21,
+                                "exit_code": 0,
+                                "stdout": "420 pass\n0 fail\nRan 420 tests across 37 files. [4.21s]"
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000009400,
+                "id": "msg-codex-563",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-tool-call-result-pair"
+}

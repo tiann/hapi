@@ -76,6 +76,23 @@ describe('EffortField', () => {
         expect(container.querySelector('select')).toBeNull()
     })
 
+    it('filters Pi thinking levels by the selected model thinkingLevelMap', () => {
+        const { container } = render(
+            <EffortField
+                {...baseProps}
+                agent="pi"
+                piSelectedModel={{
+                    reasoning: true,
+                    thinkingLevelMap: { off: null, minimal: null, xhigh: 'xhigh', max: 'max' },
+                }}
+            />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'auto', 'low', 'medium', 'high', 'xhigh', 'max'
+        ])
+    })
+
     it('renders Codex reasoning effort options', () => {
         const { container } = render(
             <EffortField {...baseProps} agent="codex" />

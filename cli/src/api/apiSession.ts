@@ -241,7 +241,8 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingHubPromptEchoes: { text: string; localIds: string[] }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
-    private cancelQueuedMessageCallback: ((localId: string) => boolean) | null = null
+    private cancelQueuedMessageCallback: ((localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed') | null = null
+    private retryQueuedMessageCallback: ((localId: string) => boolean) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -421,7 +422,7 @@ export class ApiSessionClient extends EventEmitter {
             this.agentTerminalActive = false
         }))
 
-        this.socket.on('update', (data: Update, ack?: (response: { removed: boolean }) => void) => {
+        this.socket.on('update', (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
             try {
                 if (!data.body) return
 
@@ -430,11 +431,41 @@ export class ApiSessionClient extends EventEmitter {
                     return
                 }
 
+                if (data.body.t === 'retry-queued-message') {
+                    // Explicit user retry: release any held in-memory
+                    // reservation and bypass the normal message-id dedup.
+                    let accepted = true
+                    if (data.body.localId && this.cancelQueuedMessageCallback) {
+                        const cancelled = this.cancelQueuedMessageCallback(data.body.localId)
+                        accepted = cancelled !== 'in-flight' && cancelled !== 'consumed'
+                        if (cancelled === 'indeterminate') {
+                            accepted = this.retryQueuedMessageCallback?.(data.body.localId) === true
+                        }
+                        if (cancelled === 'consumed') {
+                            ack?.({ removed: false, accepted: false, consumed: true })
+                            return
+                        }
+                    }
+                    if (accepted) {
+                        this.handleIncomingMessage(data.body.message, true)
+                    }
+                    ack?.({ removed: false, accepted })
+                    return
+                }
+
                 if (data.body.t === 'cancel-queued-message') {
-                    const removed = (data.body.localId && this.cancelQueuedMessageCallback)
+                    const result = (data.body.localId && this.cancelQueuedMessageCallback)
                         ? this.cancelQueuedMessageCallback(data.body.localId)
                         : false
-                    ack?.({ removed })
+                    // 'in-flight' = the row is inside an async steer: not
+                    // removed, but also NOT consumed — the hub must neither
+                    // delete it nor stamp invoked_at.
+                    ack?.({
+                        removed: result === true,
+                        inFlight: result === 'in-flight',
+                        indeterminate: result === 'indeterminate',
+                        consumed: result === 'consumed'
+                    })
                     return
                 }
 
@@ -665,8 +696,12 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    onCancelQueuedMessage(callback: (localId: string) => boolean): void {
+    onCancelQueuedMessage(callback: (localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed'): void {
         this.cancelQueuedMessageCallback = callback
+    }
+
+    onRetryQueuedMessage(callback: (localId: string) => boolean): void {
+        this.retryQueuedMessageCallback = callback
     }
 
     private enqueueUserMessage(message: UserMessage, localId?: string): void {
@@ -733,8 +768,12 @@ export class ApiSessionClient extends EventEmitter {
         return true
     }
 
-    private handleIncomingMessage(message: { id?: string; seq?: number; localId?: string | null; content: unknown }): void {
-        if (!this.incomingFilter.accept({ id: message.id, seq: message.seq })) {
+    private handleIncomingMessage(
+        message: { id?: string; seq?: number; localId?: string | null; content: unknown },
+        force = false
+    ): void {
+        const accepted = this.incomingFilter.accept({ id: message.id, seq: message.seq })
+        if (!force && !accepted) {
             return
         }
 
@@ -1174,7 +1213,7 @@ export class ApiSessionClient extends EventEmitter {
         }, 'droppable')
     }
 
-    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }): void {
+    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean }): void {
         if (localIds.length === 0) return
         // `clearQueuedThinkingGrace` is an opt-in signal for the hub to drop
         // the 15s queued-thinking grace immediately. Only synchronous handlers
@@ -1182,14 +1221,47 @@ export class ApiSessionClient extends EventEmitter {
         // inside `onUserMessage`) should set it — normal queue drains still
         // need the grace so the spinner doesn't flicker between drain and
         // backend.prompt start.
-        const payload: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean } = {
+        const payload: {
+            sid: string
+            localIds: string[]
+            clearQueuedThinkingGrace?: boolean
+            steered?: boolean
+        } = {
             sid: this.sessionId,
             localIds
         }
         if (options?.clearQueuedThinkingGrace) {
             payload.clearQueuedThinkingGrace = true
         }
+        if (options?.steered) {
+            payload.steered = true
+        }
         this.emitOrQueue(() => this.socket.emit('messages-consumed', payload))
+    }
+
+    /** Persist the durable pre-dispatch/restore state with a hub ACK. */
+    async setSteerDeliveryState(localIds: string[], state: 'queued' | 'dispatching'): Promise<boolean> {
+        if (localIds.length === 0 || this.state !== 'active') return false
+        try {
+            const response = await this.socket.timeout(5_000).emitWithAck('messages-steer-state', {
+                sid: this.sessionId,
+                localIds,
+                state
+            })
+            return response?.ok === true
+        } catch (error) {
+            logger.debug('[API] Failed to persist steer delivery state', error)
+            return false
+        }
+    }
+
+    /** Persist a steer whose transport completed ambiguously; no consumed ACK. */
+    emitSteerIndeterminate(localIds: string[]): void {
+        if (localIds.length === 0) return
+        this.emitOrQueue(() => this.socket.emit('messages-indeterminate', {
+            sid: this.sessionId,
+            localIds
+        }))
     }
 
     sendSessionDeath(reason?: SessionEndReason): void {

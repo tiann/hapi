@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS } from '@hapi/protocol'
 import type { AgyModelsResponse } from '@hapi/protocol/apiTypes'
 
@@ -51,6 +52,38 @@ function deriveAgyId(name: string): string {
     return id.replace(/-+/g, '-')
 }
 
+// agy's structured listing: one JSON object on stdout carrying the exact wire
+// ids and display labels, so nothing has to be recovered from the human-facing
+// table. Returns null when the output isn't that object — which is how older
+// agy releases behave: they don't know `--output-format` and print the table
+// instead of failing, so the caller falls through to the text parser.
+function parseAgyModelsJson(output: string): AgyModelsResponse['availableModels'] | null {
+    for (const line of output.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('{')) continue
+        let payload: unknown
+        try {
+            payload = JSON.parse(trimmed)
+        } catch {
+            continue
+        }
+        const entries = (payload as { command?: { data?: { models?: unknown } } })?.command?.data?.models
+        if (!Array.isArray(entries)) continue
+        const models: AgyModelsResponse['availableModels'] = []
+        const seen = new Set<string>()
+        for (const entry of entries) {
+            const { id, label } = (entry ?? {}) as { id?: unknown; label?: unknown }
+            if (typeof id !== 'string' || !id || seen.has(id)) continue
+            seen.add(id)
+            models.push(typeof label === 'string' && label ? { modelId: id, name: label } : { modelId: id })
+        }
+        if (models.length > 0) return models
+    }
+    return null
+}
+
+export const _parseAgyModelsJsonForTests = parseAgyModelsJson
+
 // Parse `agy models` stdout into model entries, preserving agy's order. Returns
 // null when no model lines are found (so the caller can fall back).
 function parseAgyModelsOutput(output: string): AgyModelsResponse['availableModels'] | null {
@@ -60,10 +93,14 @@ function parseAgyModelsOutput(output: string): AgyModelsResponse['availableModel
     for (const raw of clean.split('\n')) {
         const line = raw.trim()
         if (!line) continue
-        // agy 1.1.5 prints two columns: the exact wire id, then the display
-        // name separated by two or more spaces. Never derive an id from the
-        // whole row: that produced ids such as `<id>-<id>`.
-        const columns = line.match(/^([a-z0-9][a-z0-9._/-]*)\s{2,}(.+)$/i)
+        // agy prints two columns: the exact wire id, then the display name. It
+        // pads them into aligned columns when stdout is a TTY, and separates
+        // them with a single tab when stdout is a pipe, which is the path this
+        // probe takes. Require a tab or 2+ spaces, never a single space: a bare
+        // `\s+` would also split status prose like "Fetching available
+        // models..." into a fake model row. Never derive an id from the whole
+        // row either: that produced ids such as `<id>-<id>`.
+        const columns = line.match(/^([a-z0-9][a-z0-9._/-]*)(?:\t+| {2,})(.+)$/i)
         if (columns) {
             const modelId = columns[1]
             if (seen.has(modelId)) continue
@@ -109,8 +146,7 @@ function checkOutputForAuthError(output: string): string | null {
 // flaky or locked (headless runners):
 //  - GEMINI_FORCE_FILE_STORAGE makes agy read the saved OAuth file token directly
 //    instead of the keyring — the same hardening the headless spawn applies.
-//    Without it the
-//    probe spins for ~12 s and exits with "Please sign in to view available
+//    Without it the probe spins for ~12 s and exits with "Please sign in to view available
 //    models" even when the user IS signed in, which surfaces as a failed fetch.
 //  - SSH_* is stripped so agy doesn't fall into a degraded SSH-session auth path.
 function buildAgyProbeEnv(): NodeJS.ProcessEnv {
@@ -121,13 +157,16 @@ function buildAgyProbeEnv(): NodeJS.ProcessEnv {
     return env
 }
 
-// Fetch the live model list from `agy models` (the agy CLI's own listing) so the
-// picker always matches what agy currently offers — no redeploy when agy changes
-// models. The hardcoded mirror is only a fallback (timeout / spawn error /
-// unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
-async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
-    return await new Promise((resolve) => {
-        const child = spawn('agy', ['models'], {
+// `unreachable` covers the cases where agy never produced a listing at all
+// (spawn failure, timeout) and there is nothing to read either way.
+type AgyModelsProbe = { output: string } | { unreachable: true }
+
+// Run one `agy` invocation and hand back everything it wrote. Both streams are
+// joined because agy splits the listing (stdout) from its progress line
+// (stderr), and the auth failure can surface on either.
+function probeAgyModels(args: string[]): Promise<AgyModelsProbe> {
+    return new Promise((resolve) => {
+        const child = spawn(getAgentLaunchCommand('agy'), args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: buildAgyProbeEnv(),
             windowsHide: process.platform === 'win32',
@@ -140,7 +179,7 @@ async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
             if (settled) return
             settled = true
             child.kill('SIGTERM')
-            resolve({ success: true, availableModels: buildModelList() })
+            resolve({ unreachable: true })
         }, PROBE_TIMEOUT_MS)
 
         child.stdout?.on('data', (chunk: Buffer) => {
@@ -153,26 +192,57 @@ async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
             if (settled) return
             settled = true
             clearTimeout(timeout)
-            resolve({ success: true, availableModels: buildModelList() })
+            resolve({ unreachable: true })
         })
         child.on('exit', () => {
             if (settled) return
             settled = true
             clearTimeout(timeout)
-
-            const output = stdout + stderr
-            const authError = checkOutputForAuthError(output)
-            if (authError) {
-                resolve({ success: false, error: authError })
-                return
-            }
-
-            // Prefer the live list; fall back to the hardcoded mirror if the
-            // output couldn't be parsed (format change, partial fetch, etc.).
-            const parsed = parseAgyModelsOutput(output)
-            resolve({ success: true, availableModels: parsed ?? buildModelList() })
+            resolve({ output: stdout + stderr })
         })
     })
+}
+
+// Fetch the live model list from `agy models` (the agy CLI's own listing) so the
+// picker always matches what agy currently offers — no redeploy when agy changes
+// models. The hardcoded mirror is only a fallback (timeout / spawn error /
+// unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
+async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
+    // `--output-format` is a global flag: it has to come before the subcommand,
+    // and agy only accepts the `=` form here. Releases that predate it ignore
+    // the flag and print the table, which the text parser still understands.
+    const probe = await probeAgyModels(['--output-format=json', 'models'])
+    if ('unreachable' in probe) {
+        return { success: true, availableModels: buildModelList() }
+    }
+
+    const authError = checkOutputForAuthError(probe.output)
+    if (authError) {
+        return { success: false, error: authError }
+    }
+
+    // Prefer the structured listing, then the printed table for agy releases
+    // that don't emit it, then the hardcoded mirror if neither could be read
+    // (format change, partial fetch, etc.).
+    const parsed = parseAgyModelsJson(probe.output) ?? parseAgyModelsOutput(probe.output)
+    if (parsed) {
+        return { success: true, availableModels: parsed }
+    }
+
+    // Nothing readable came back. Every agy release checked ignores an unknown
+    // `--output-format` and prints the table anyway, but a build that rejected
+    // it would emit no models at all and leave the picker on the mirror, so ask
+    // once more without the flag before giving up on the live list. This only
+    // costs a second invocation on builds that produced nothing usable.
+    const retry = await probeAgyModels(['models'])
+    if ('unreachable' in retry) {
+        return { success: true, availableModels: buildModelList() }
+    }
+    const retryAuthError = checkOutputForAuthError(retry.output)
+    if (retryAuthError) {
+        return { success: false, error: retryAuthError }
+    }
+    return { success: true, availableModels: parseAgyModelsOutput(retry.output) ?? buildModelList() }
 }
 
 export async function listAgyModels(): Promise<ListAgyModelsResponse> {

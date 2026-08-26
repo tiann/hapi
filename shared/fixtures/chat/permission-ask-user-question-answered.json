@@ -1,0 +1,238 @@
+{
+    "description": "AskUserQuestion completed with FLAT answers (Record<question-index, string[]>): the completed request attaches to the tool-call; permission.answers keeps the flat map verbatim and the tool_result completes the interactive card.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-431",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Set up persistence for the prototype."
+            },
+            {
+                "createdAt": 1755000002300,
+                "id": "toolu_01AskDbChoice01",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01AskDbChoice01",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Zero-config local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Matches production",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database should the prototype use?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "answers": {
+                            "0": [
+                                "SQLite"
+                            ]
+                        },
+                        "decision": "approved",
+                        "status": "approved"
+                    },
+                    "result": "User selected \"SQLite\" for \"Which database should the prototype use?\"",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-431",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Set up persistence for the prototype."
+            },
+            {
+                "createdAt": 1755000002300,
+                "id": "toolu_01AskDbChoice01",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01AskDbChoice01",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Zero-config local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Matches production",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database should the prototype use?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "answers": {
+                            "0": [
+                                "SQLite"
+                            ]
+                        },
+                        "decision": "approved",
+                        "status": "approved"
+                    },
+                    "result": "User selected \"SQLite\" for \"Which database should the prototype use?\"",
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "toolu_01AskDbChoice01": {
+                    "answers": {
+                        "0": [
+                            "SQLite"
+                        ]
+                    },
+                    "arguments": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Zero-config local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Matches production",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database should the prototype use?"
+                            }
+                        ]
+                    },
+                    "completedAt": 1755000020400,
+                    "createdAt": 1755000002500,
+                    "decision": "approved",
+                    "status": "approved",
+                    "tool": "AskUserQuestion"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Set up persistence for the prototype.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-431",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01AskDbChoice01",
+                                        "input": {
+                                            "questions": [
+                                                {
+                                                    "header": "Database",
+                                                    "multiSelect": false,
+                                                    "options": [
+                                                        {
+                                                            "description": "Zero-config local file",
+                                                            "label": "SQLite"
+                                                        },
+                                                        {
+                                                            "description": "Matches production",
+                                                            "label": "Postgres"
+                                                        }
+                                                    ],
+                                                    "question": "Which database should the prototype use?"
+                                                }
+                                            ]
+                                        },
+                                        "name": "AskUserQuestion",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "6f4a5b7c-1bd2-4dee-8a5f-a8b9c0d1e432"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002300,
+                "id": "msg-agent-432",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "User selected \"SQLite\" for \"Which database should the prototype use?\"",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01AskDbChoice01",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "6f4a5b7c-1bd2-4dee-8a5f-a8b9c0d1e432",
+                            "type": "user",
+                            "uuid": "7a5b6c8d-2ce3-4eff-9b6a-b9c0d1e2f433"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000021000,
+                "id": "msg-agent-433",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-ask-user-question-answered"
+}

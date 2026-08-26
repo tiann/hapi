@@ -1,0 +1,73 @@
+{
+    "description": "Keep-alive noise gate: a patch whose only effective change is an activeAt delta below 60s is render-irrelevant and returns unchanged (the cached activeAt does NOT move); a delta of at least 60s applies.",
+    "expectedPatchResults": [
+        "unchanged",
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000060000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "keepalive-subminute-active-at-dropped",
+    "patches": [
+        {
+            "active": true,
+            "activeAt": 1755000010000,
+            "thinking": false
+        },
+        {
+            "active": true,
+            "activeAt": 1755000060000,
+            "thinking": false
+        }
+    ]
+}

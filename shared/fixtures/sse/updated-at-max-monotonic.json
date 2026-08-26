@@ -1,0 +1,74 @@
+{
+    "description": "updatedAt is max-monotonic: a patch carrying an older updatedAt applies its other fields without rewinding the clock; a newer updatedAt advances it; an older updatedAt alone is a no-op (unchanged).",
+    "expectedPatchResults": [
+        "applied",
+        "applied",
+        "unchanged"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": true,
+        "thinkingAt": 0,
+        "updatedAt": 1755000005000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "updated-at-max-monotonic",
+    "patches": [
+        {
+            "thinking": true,
+            "updatedAt": 1754999995000
+        },
+        {
+            "updatedAt": 1755000005000
+        },
+        {
+            "updatedAt": 1754999998000
+        }
+    ]
+}

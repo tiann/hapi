@@ -1,0 +1,55 @@
+{
+    "description": "agy flavor: agy_message planner prose becomes a plain agent-text block (per-turn data.model is footer metadata outside the normative projection; meta.sentFrom cli is carried on the wire but dropped).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-agy-721:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Looking at the failing build, the Gradle wrapper version is stale. I will bump it and rerun."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-agy-721:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Looking at the failing build, the Gradle wrapper version is stale. I will bump it and rerun."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "content": "Looking at the failing build, the Gradle wrapper version is stale. I will bump it and rerun.",
+                            "model": "Gemini 3 Pro (High)",
+                            "type": "agy_message"
+                        },
+                        "type": "output"
+                    },
+                    "meta": {
+                        "sentFrom": "cli"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-agy-721",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "agy-message"
+}

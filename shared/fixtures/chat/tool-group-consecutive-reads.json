@@ -1,0 +1,368 @@
+{
+    "description": "Three consecutive groupable tool calls (Read, Grep, Glob) collapse into one tool-group in visibleBlocks (membership + order + boundary ids), while blocks keeps three individual tool-call blocks.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-131",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Find where the session store lives."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "toolu_01GrpRead0001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01GrpRead0001",
+                    "input": {
+                        "file_path": "/repo/hub/src/store/index.ts"
+                    },
+                    "name": "Read",
+                    "result": "export * from \"./sessionStore\"\nexport * from \"./contentCodec\"",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000003400,
+                "id": "toolu_01GrpGrep0002",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01GrpGrep0002",
+                    "input": {
+                        "path": "/repo/hub/src",
+                        "pattern": "class SessionStore"
+                    },
+                    "name": "Grep",
+                    "result": "hub/src/store/sessionStore.ts:42:export class SessionStore {",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000004700,
+                "id": "toolu_01GrpGlob0003",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01GrpGlob0003",
+                    "input": {
+                        "pattern": "hub/src/store/**/*.test.ts"
+                    },
+                    "name": "Glob",
+                    "result": "hub/src/store/sessionStore.test.ts\nhub/src/store/contentCodec.test.ts",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000006500,
+                "id": "msg-agent-138:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The session store is hub/src/store/sessionStore.ts, with tests alongside it."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-131",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Find where the session store lives."
+            },
+            {
+                "createdAt": 1755000002000,
+                "firstToolId": "toolu_01GrpRead0001",
+                "id": "tool-group:toolu_01GrpRead0001",
+                "kind": "tool-group",
+                "lastToolId": "toolu_01GrpGlob0003",
+                "tools": [
+                    {
+                        "createdAt": 1755000002000,
+                        "id": "toolu_01GrpRead0001",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "toolu_01GrpRead0001",
+                            "input": {
+                                "file_path": "/repo/hub/src/store/index.ts"
+                            },
+                            "name": "Read",
+                            "result": "export * from \"./sessionStore\"\nexport * from \"./contentCodec\"",
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000003400,
+                        "id": "toolu_01GrpGrep0002",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "toolu_01GrpGrep0002",
+                            "input": {
+                                "path": "/repo/hub/src",
+                                "pattern": "class SessionStore"
+                            },
+                            "name": "Grep",
+                            "result": "hub/src/store/sessionStore.ts:42:export class SessionStore {",
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000004700,
+                        "id": "toolu_01GrpGlob0003",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "toolu_01GrpGlob0003",
+                            "input": {
+                                "pattern": "hub/src/store/**/*.test.ts"
+                            },
+                            "name": "Glob",
+                            "result": "hub/src/store/sessionStore.test.ts\nhub/src/store/contentCodec.test.ts",
+                            "state": "completed"
+                        }
+                    }
+                ]
+            },
+            {
+                "createdAt": 1755000006500,
+                "id": "msg-agent-138:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "The session store is hub/src/store/sessionStore.ts, with tests alongside it."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Find where the session store lives.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-131",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01GrpRead0001",
+                                        "input": {
+                                            "file_path": "/repo/hub/src/store/index.ts"
+                                        },
+                                        "name": "Read",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "c3e0a571-4d8f-4b92-9e3a-f0b4c6d2e132"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "msg-agent-132",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "export * from \"./sessionStore\"\nexport * from \"./contentCodec\"",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01GrpRead0001",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "c3e0a571-4d8f-4b92-9e3a-f0b4c6d2e132",
+                            "type": "user",
+                            "uuid": "d4f1b682-5e9a-4ca3-8f4b-a1c5d7e3f133"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002600,
+                "id": "msg-agent-133",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01GrpGrep0002",
+                                        "input": {
+                                            "path": "/repo/hub/src",
+                                            "pattern": "class SessionStore"
+                                        },
+                                        "name": "Grep",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": "d4f1b682-5e9a-4ca3-8f4b-a1c5d7e3f133",
+                            "type": "assistant",
+                            "uuid": "e5a2c793-6f0b-4db4-9a5c-b2d6e8f4a134"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003400,
+                "id": "msg-agent-134",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "hub/src/store/sessionStore.ts:42:export class SessionStore {",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01GrpGrep0002",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "e5a2c793-6f0b-4db4-9a5c-b2d6e8f4a134",
+                            "type": "user",
+                            "uuid": "f6b3d804-7a1c-4ec5-8b6d-c3e7f9a5b135"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004000,
+                "id": "msg-agent-135",
+                "localId": null,
+                "seq": 5
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01GrpGlob0003",
+                                        "input": {
+                                            "pattern": "hub/src/store/**/*.test.ts"
+                                        },
+                                        "name": "Glob",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": "f6b3d804-7a1c-4ec5-8b6d-c3e7f9a5b135",
+                            "type": "assistant",
+                            "uuid": "a7c4e915-8b2d-4fd6-9c7e-d4f8a0b6c136"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004700,
+                "id": "msg-agent-136",
+                "localId": null,
+                "seq": 6
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "hub/src/store/sessionStore.test.ts\nhub/src/store/contentCodec.test.ts",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01GrpGlob0003",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "a7c4e915-8b2d-4fd6-9c7e-d4f8a0b6c136",
+                            "type": "user",
+                            "uuid": "b8d5f026-9c3e-4ae7-8d8f-e5a9b1c7d137"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005200,
+                "id": "msg-agent-137",
+                "localId": null,
+                "seq": 7
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "The session store is hub/src/store/sessionStore.ts, with tests alongside it.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": "b8d5f026-9c3e-4ae7-8d8f-e5a9b1c7d137",
+                            "type": "assistant",
+                            "uuid": "c9e6a137-0d4f-4bf8-9e9a-f6b0c2d8e138"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000006500,
+                "id": "msg-agent-138",
+                "localId": null,
+                "seq": 8
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "tool-group-consecutive-reads"
+}

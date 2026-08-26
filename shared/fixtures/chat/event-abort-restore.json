@@ -1,0 +1,65 @@
+{
+    "description": "Event family: abort-restore (composer side-effect carrying the aborted prompt text) is consumed by the reducer and must NOT surface as a chat block.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-381",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Refactor the reconnect loop."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-381",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Refactor the reconnect loop."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Refactor the reconnect loop.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-381",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "text": "Refactor the reconnect loop.",
+                            "type": "abort-restore"
+                        },
+                        "id": "09eafa1c-5b7c-4d8b-8fae-a2b3c4d5e382",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000900,
+                "id": "msg-event-382",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-abort-restore"
+}

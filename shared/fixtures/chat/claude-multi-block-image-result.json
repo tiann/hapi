@@ -1,0 +1,207 @@
+{
+    "description": "Claude output family: one assistant message carrying multiple blocks (text + tool_use) yields agent-text + tool-call from the same message; the tool_result arrives with array-of-parts content (text part + base64 image part) which is attached to tool.result verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-241",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Take a screenshot of the failing test run."
+            },
+            {
+                "createdAt": 1755000002800,
+                "id": "msg-agent-242:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Grabbing the screenshot now."
+            },
+            {
+                "createdAt": 1755000002800,
+                "id": "toolu_01ShotFailRun1",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01ShotFailRun1",
+                    "input": {
+                        "selector": "#test-run-4"
+                    },
+                    "name": "mcp__playwright__screenshot",
+                    "result": [
+                        {
+                            "text": "Screenshot captured.",
+                            "type": "text"
+                        },
+                        {
+                            "source": {
+                                "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                                "media_type": "image/png",
+                                "type": "base64"
+                            },
+                            "type": "image"
+                        }
+                    ],
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": {
+            "contextSize": 65920,
+            "contextWindow": null,
+            "inputTokens": 1620,
+            "outputTokens": 41
+        },
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-241",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Take a screenshot of the failing test run."
+            },
+            {
+                "createdAt": 1755000002800,
+                "id": "msg-agent-242:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Grabbing the screenshot now."
+            },
+            {
+                "createdAt": 1755000002800,
+                "id": "toolu_01ShotFailRun1",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01ShotFailRun1",
+                    "input": {
+                        "selector": "#test-run-4"
+                    },
+                    "name": "mcp__playwright__screenshot",
+                    "result": [
+                        {
+                            "text": "Screenshot captured.",
+                            "type": "text"
+                        },
+                        {
+                            "source": {
+                                "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                                "media_type": "image/png",
+                                "type": "base64"
+                            },
+                            "type": "image"
+                        }
+                    ],
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Take a screenshot of the failing test run.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-241",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": "Grabbing the screenshot now.",
+                                        "type": "text"
+                                    },
+                                    {
+                                        "id": "toolu_01ShotFailRun1",
+                                        "input": {
+                                            "selector": "#test-run-4"
+                                        },
+                                        "name": "mcp__playwright__screenshot",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 220,
+                                    "cache_read_input_tokens": 64080,
+                                    "input_tokens": 1620,
+                                    "output_tokens": 41
+                                }
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:02.744Z",
+                            "type": "assistant",
+                            "uuid": "e6f7a8b9-5c6d-4e7f-8a8b-c9d0e1f2a242"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002800,
+                "id": "msg-agent-242",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": [
+                                            {
+                                                "text": "Screenshot captured.",
+                                                "type": "text"
+                                            },
+                                            {
+                                                "source": {
+                                                    "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                                                    "media_type": "image/png",
+                                                    "type": "base64"
+                                                },
+                                                "type": "image"
+                                            }
+                                        ],
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01ShotFailRun1",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "e6f7a8b9-5c6d-4e7f-8a8b-c9d0e1f2a242",
+                            "timestamp": "2025-08-12T11:20:05.512Z",
+                            "type": "user",
+                            "uuid": "f7a8b9c0-6d7e-4f8a-9b9c-d0e1f2a3b243"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005600,
+                "id": "msg-agent-243",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-multi-block-image-result"
+}

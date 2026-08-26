@@ -33,6 +33,10 @@ For local network access:
 http://<your-computer-ip>:3006
 ```
 
+That cleartext URL is for a browser/PWA on your trusted LAN. The native
+Android companion requires an HTTPS hub URL; use `hapi hub --relay` or place
+an HTTPS reverse proxy/tunnel in front of the hub.
+
 If your phone cannot connect, make sure the hub is not only listening on `127.0.0.1`. For LAN access, set `listenHost` to `0.0.0.0` in `~/.hapi/settings.json` or set `HAPI_LISTEN_HOST=0.0.0.0`, then restart `hapi hub`.
 
 For internet access:
@@ -156,6 +160,9 @@ Then restart `hapi hub` and open:
 ```bash
 http://<your-computer-ip>:3006
 ```
+
+This direct LAN URL is for browser/PWA access. The native Android companion
+requires HTTPS (`hapi hub --relay`, or your own HTTPS reverse proxy/tunnel).
 
 Also verify your OS firewall allows inbound connections on port `3006`.
 

@@ -307,6 +307,7 @@ export async function runCodex(opts: {
         logger.debug(`[codex] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
         return removed;
     });
+    session.onRetryQueuedMessage((localId) => messageQueue.releaseIndeterminateReservation(localId));
 
     const formatFailureReason = (message: string): string => {
         const maxLength = 200;

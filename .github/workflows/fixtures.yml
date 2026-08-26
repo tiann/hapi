@@ -1,0 +1,56 @@
+name: fixtures
+
+on:
+    push:
+        branches:
+            - main
+        paths:
+            - 'web/src/chat/**'
+            - 'web/src/lib/message-window-store.ts'
+            - 'web/src/lib/sessionPatch.ts'
+            - 'web/src/lib/messages.ts'
+            - 'shared/src/**'
+            - 'web/scripts/**'
+            - 'shared/fixtures/**'
+            - '.github/workflows/fixtures.yml'
+    pull_request:
+        paths:
+            - 'web/src/chat/**'
+            - 'web/src/lib/message-window-store.ts'
+            - 'web/src/lib/sessionPatch.ts'
+            - 'web/src/lib/messages.ts'
+            - 'shared/src/**'
+            - 'web/scripts/**'
+            - 'shared/fixtures/**'
+            - '.github/workflows/fixtures.yml'
+
+permissions:
+    contents: read
+
+concurrency:
+    group: fixtures-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    drift-gate:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+            - run: bun install --frozen-lockfile
+            - name: Regenerate fixtures from the web pipeline
+              run: bun run gen:fixtures
+            - name: Fail on fixtures drift
+              id: drift
+              # --intent-to-add makes brand-new fixture files (new cases) visible
+              # to git diff; deletions of stale files are visible either way.
+              run: |
+                  git add --intent-to-add shared/fixtures
+                  git diff --exit-code -- shared/fixtures
+            - name: Explain drift
+              if: failure() && steps.drift.conclusion == 'failure'
+              run: echo '::error::web pipeline behavior changed — run `bun run gen:fixtures` and commit the updated fixtures so native ports see the diff'
+            - name: Web self-conformance (fixture-related tests)
+              # src/lib/sessionPatch matches nothing until K7 lands its tests;
+              # vitest unions filters, so the extra filter is future-proof, not fatal.
+              run: cd web && bun run test -- src/chat/fixtures.test.ts src/lib/message-window-store.test.ts src/lib/messages.test.ts src/lib/sessionPatch

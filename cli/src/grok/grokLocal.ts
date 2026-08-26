@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger'
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import type { PermissionMode } from './types'
 import { assertSafeWindowsShellArg } from './utils/windowsShellArgs'
 
@@ -44,7 +45,7 @@ export async function grokLocal(opts: GrokLocalOptions & {
     logger.debug(`[GrokLocal] Spawning grok with args: ${JSON.stringify(args)}`)
 
     await spawnWithTerminalGuard({
-        command: 'grok',
+        command: getAgentLaunchCommand('grok'),
         args,
         cwd: opts.path,
         env: process.env,

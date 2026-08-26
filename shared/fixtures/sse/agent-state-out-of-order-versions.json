@@ -1,0 +1,105 @@
+{
+    "description": "Out-of-order arrival across the two SSE connections: version 7 lands first and applies; the older version 6 arrives second and is dropped. Final state is the v7 value.",
+    "expectedPatchResults": [
+        "applied",
+        "unchanged"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": {
+            "requests": {
+                "req-2": {
+                    "arguments": {
+                        "file_path": "/home/dev/project/README.md"
+                    },
+                    "createdAt": 1755000002000,
+                    "tool": "Write"
+                }
+            }
+        },
+        "agentStateVersion": 7,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "agent-state-out-of-order-versions",
+    "patches": [
+        {
+            "agentState": {
+                "value": {
+                    "requests": {
+                        "req-2": {
+                            "arguments": {
+                                "file_path": "/home/dev/project/README.md"
+                            },
+                            "createdAt": 1755000002000,
+                            "tool": "Write"
+                        }
+                    }
+                },
+                "version": 7
+            }
+        },
+        {
+            "agentState": {
+                "value": {
+                    "requests": {
+                        "req-1": {
+                            "arguments": {
+                                "command": "ls"
+                            },
+                            "createdAt": 1755000001000,
+                            "tool": "Bash"
+                        }
+                    }
+                },
+                "version": 6
+            }
+        }
+    ]
+}

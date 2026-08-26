@@ -1,4 +1,4 @@
-import { basename } from 'node:path'
+import { basename, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { open } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -277,6 +277,14 @@ export function isInlineMediaMimeType(mimeType: string): boolean {
     return mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/')
 }
 
+function preserveSourceExtension(fileName: string, path: string): string {
+    const sourceExtension = extname(basename(path))
+    if (!sourceExtension || extname(fileName)) {
+        return fileName
+    }
+    return `${fileName}${sourceExtension}`
+}
+
 export function detectDisplayMediaMimeType(bytes: Uint8Array): string {
     const imageMimeType = detectImageMimeType(bytes)
     if (imageMimeType) return imageMimeType
@@ -312,9 +320,10 @@ export function registerGeneratedImage(args: { id: string; path: string; mimeTyp
         generatedImageBytes -= previous.content.byteLength
     }
 
+    const fallbackFileName = basename(args.path) || `${args.id}.png`
     const metadata: GeneratedImageMetadata = {
         id: args.id,
-        fileName: args.fileName || basename(args.path) || `${args.id}.png`,
+        fileName: preserveSourceExtension(args.fileName || fallbackFileName, args.path),
         content,
         mimeType: args.mimeType,
         createdAt: Date.now()

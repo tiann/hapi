@@ -106,7 +106,7 @@ jobs:
       - name: Run Codex for PR Review
         id: run_codex
         if: steps.check_bot.outputs.has_review_for_current_head != 'true'
-        uses: openai/codex-action@v1
+        uses: openai/codex-action@v1.11
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}

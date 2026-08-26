@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentMessage } from '@/agent/types';
 import { AcpSdkBackend } from './AcpSdkBackend';
+import { AcpMessageHandler } from './AcpMessageHandler';
 import { buildAcpStdioSpawnOptions } from './AcpStdioTransport';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 
@@ -1142,6 +1143,194 @@ describe('AcpSdkBackend', () => {
         expect(registered.get('cursor/ask_question')).toBe(handler);
     });
 
+    it('beginSoftSteerPrompt sends concurrent session/prompt without cancel', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: (method: string, params: unknown, options?: { timeoutMs?: number }) => { dispatched: Promise<void>; completed: Promise<unknown> };
+                sendNotification: (method: string, params: unknown) => void;
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.transport = {
+            sendRequestWithDispatch: (method, params) => {
+                calls.push({ method, params });
+                return { dispatched: Promise.resolve(), completed: Promise.resolve({ stopReason: 'end_turn' }) };
+            },
+            sendNotification: () => {},
+            close: async () => {}
+        };
+
+        backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]);
+
+        expect(calls).toEqual([{
+            method: 'session/prompt',
+            params: {
+                sessionId: 'session-1',
+                prompt: [{ type: 'text', text: 'pivot now' }]
+            }
+        }]);
+    });
+
+    it('beginSoftSteerPrompt drains buffered output after completion', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: (method: string, params: unknown, options?: { timeoutMs?: number }) => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+            messageHandler: { drainBuffers: () => void } | null;
+        };
+        const events: string[] = [];
+        backendInternal.isProcessingMessage = true;
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => {
+                events.push('request');
+                return { dispatched: Promise.resolve(), completed: Promise.resolve({ stopReason: 'end_turn' }) };
+            },
+            close: async () => {}
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {
+            events.push('quiet');
+        };
+        backendInternal.messageHandler = {
+            drainBuffers: () => events.push('drain')
+        };
+        backendInternal.drainLateBuffers = async () => {
+            events.push('late');
+        };
+
+        await backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]).completed;
+
+        expect(events).toEqual(['request', 'quiet', 'drain', 'late', 'drain']);
+    });
+
+    it('beginSoftSteerPrompt returns a pending promise without blocking the caller', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        let resolvePrompt: ((value: unknown) => void) | null = null;
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: (method: string, params: unknown, options?: { timeoutMs?: number }) => { dispatched: Promise<void>; completed: Promise<unknown> };
+                sendNotification: (method: string, params: unknown) => void;
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({
+                dispatched: Promise.resolve(),
+                completed: new Promise((resolve) => { resolvePrompt = resolve; })
+            }),
+            sendNotification: () => {},
+            close: async () => {}
+        };
+
+        // Must not hang waiting for the ACP prompt response (hub RPC is 30s).
+        let settled = false;
+        const pending = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]).completed.then(() => {
+            settled = true;
+        });
+        expect(resolvePrompt).not.toBeNull();
+        expect(settled).toBe(false);
+        resolvePrompt!({ stopReason: 'end_turn' });
+        await pending;
+        expect(settled).toBe(true);
+    });
+
+    it('keeps response completion pending until a concurrent soft steer settles', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        let resolvePrompt: ((value: unknown) => void) | null = null;
+        const backendInternal = backend as unknown as {
+            transport: { sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> }; close: () => Promise<void> } | null;
+            isProcessingMessage: boolean;
+            activePromptRequests: number;
+            finishPromptRequest: (epoch: number) => void;
+            waitForSessionUpdateQuiet: () => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.activePromptRequests = 1;
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({
+                dispatched: Promise.resolve(),
+                completed: new Promise((resolve) => { resolvePrompt = resolve; })
+            }),
+            close: async () => {}
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {};
+        backendInternal.drainLateBuffers = async () => {};
+
+        const pendingSteer = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]);
+        let responseComplete = false;
+        const responseWait = backend.waitForResponseComplete().then(() => { responseComplete = true; });
+
+        backendInternal.finishPromptRequest(0);
+        await Promise.resolve();
+        expect(backend.processingMessage).toBe(true);
+        expect(responseComplete).toBe(false);
+
+        resolvePrompt!({ stopReason: 'end_turn' });
+        await pendingSteer.completed;
+        await responseWait;
+        expect(backend.processingMessage).toBe(false);
+        expect(responseComplete).toBe(true);
+    });
+
+    it('softSteerPrompt awaits session/prompt completion', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        let resolvePrompt: ((value: unknown) => void) | null = null;
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown, options?: { timeoutMs?: number }) => Promise<unknown>;
+                sendNotification: (method: string, params: unknown) => void;
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.transport = {
+            sendRequest: () => new Promise((resolve) => {
+                resolvePrompt = resolve;
+            }),
+            sendNotification: () => {},
+            close: async () => {}
+        };
+
+        let done = false;
+        const pending = backend.softSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]).then(() => {
+            done = true;
+        });
+        await Promise.resolve();
+        expect(done).toBe(false);
+        resolvePrompt!({ stopReason: 'end_turn' });
+        await pending;
+        expect(done).toBe(true);
+    });
+
+    it('beginSoftSteerPrompt rejects when no prompt is in flight', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: () => Promise<unknown>; close: () => Promise<void> } | null;
+            isProcessingMessage: boolean;
+        };
+        backendInternal.isProcessingMessage = false;
+        backendInternal.transport = {
+            sendRequest: async () => null,
+            close: async () => {}
+        };
+
+        expect(() => backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'x' }]))
+            .toThrow(/No active ACP prompt/);
+    });
+
+
     it('suppressUpdatesDuring drops session/update notifications that would otherwise leak into the previous turn\'s onUpdate, then restores normal forwarding', async () => {
         // Reproduces the real /compact duplicate-summary bug: OpenCode keeps
         // streaming session/update notifications (over the same ACP
@@ -1538,5 +1727,59 @@ describe('AcpSdkBackend', () => {
             options: []
         }, { outcome: 'cancelled' });
         await pending;
+    });
+});
+
+describe('AcpSdkBackend abortSoftSteers', () => {
+    it('drains buffered foreground output before suppressing late updates', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const updates: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => updates.push(message));
+        const backendInternal = backend as unknown as {
+            messageHandler: AcpMessageHandler | null;
+        };
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'partial answer' }
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'partial thought' }
+        });
+        backendInternal.messageHandler = handler;
+
+        backend.abortSoftSteers();
+
+        expect(updates).toEqual([
+            { type: 'reasoning', text: 'partial thought' },
+            { type: 'text', text: 'partial answer' }
+        ]);
+    });
+
+    it('releases processingMessage without waiting for the concurrent prompt', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            isProcessingMessage: boolean;
+            activePromptRequests: number;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.activePromptRequests = 2;
+
+        backend.abortSoftSteers();
+
+        expect(backend.processingMessage).toBe(false);
+        expect(backendInternal.activePromptRequests).toBe(0);
+    });
+
+    it('is a no-op when nothing is in flight', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            activePromptRequests: number;
+        };
+        backendInternal.activePromptRequests = 0;
+
+        expect(() => backend.abortSoftSteers()).not.toThrow();
+        expect(backend.processingMessage).toBe(false);
     });
 });

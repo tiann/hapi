@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 import type { CursorModelsResponse, CursorModelSummary } from '@hapi/protocol/apiTypes';
 import {
     releaseAgentCliSpawnLeaseSync,
@@ -226,7 +227,7 @@ async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
     };
 
     return await new Promise((resolve, reject) => {
-        const child = spawn('agent', ['--list-models'], {
+        const child = spawn(getAgentLaunchCommand('cursor'), ['--list-models'], {
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: process.platform === 'win32',

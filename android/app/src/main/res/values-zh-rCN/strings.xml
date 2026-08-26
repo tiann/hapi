@@ -1,0 +1,532 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Simplified Chinese (zh-CN) translation (B-M5a).
+  Terminology follows the web app's corpus (web/src/lib/locales/zh-CN.ts):
+  会话/机器/权限模式/工作树/草稿夹/语音输入/用量 etc. Technical identifiers
+  (model ids, flavor names, permission-mode catalog labels) stay untranslated,
+  matching the web's choices.
+-->
+<resources>
+    <string name="app_name">HAPI</string>
+
+    <!-- Markdown / code / diff rendering (B-M2d1) -->
+    <string name="code_copy">复制</string>
+    <string name="code_copied">已复制</string>
+    <string name="code_plain_fallback">文本</string>
+    <string name="diff_binary_file">二进制文件不显示</string>
+    <string name="diff_show_more">显示另外 %1$d 行</string>
+    <string name="diff_collapse">收起</string>
+
+    <!-- Pairing (B-M1d) -->
+    <string name="pairing_title">与您的 hub 配对</string>
+    <string name="pairing_intro">HAPI 是自托管的：您的编码智能体运行在您自己的机器上，由您自己运营的 HAPI hub 管理。将本应用与该 hub 配对，即可在手机上查看并操控它们。</string>
+    <string name="pairing_hint">扫描 hub 启动时打印的“伴侣应用（Companion app）”二维码（需 --relay），或手动输入 hub 地址和访问令牌。</string>
+    <string name="pairing_scan_qr">扫描二维码</string>
+    <string name="pairing_manual_entry">手动输入</string>
+    <string name="pairing_notice_dismiss">忽略</string>
+    <string name="pairing_error_dismiss">忽略</string>
+    <string name="pairing_validating">正在检查 hub…</string>
+    <string name="pairing_confirm_title">与此 hub 配对？</string>
+    <string name="pairing_confirm_already">此设备已与该 hub 配对。</string>
+    <string name="pairing_confirm_pair">立即配对</string>
+    <string name="pairing_confirm_switch">使用现有配对</string>
+    <string name="pairing_confirm_repair">用新配对码重新配对</string>
+    <string name="pairing_confirm_cancel">取消</string>
+    <string name="pairing_invalid_link">该配对链接无效、不完整，或未使用 HTTPS。</string>
+    <string name="pairing_back">返回</string>
+
+    <!-- Manual entry -->
+    <string name="pairing_manual_title">手动配对</string>
+    <string name="pairing_manual_hint">这两项信息可在 hub 启动时的终端里找到，也可在网页应用的“设置 → 伴侣应用配对”中查看。</string>
+    <string name="pairing_hub_url_label">Hub 地址</string>
+    <string name="pairing_hub_url_placeholder">https://hub.example.com</string>
+    <string name="pairing_token_label">访问令牌</string>
+    <string name="pairing_token_placeholder">粘贴访问令牌</string>
+    <string name="pairing_pair_button">配对</string>
+
+    <!-- QR scan -->
+    <string name="pairing_scan_title">扫描配对二维码</string>
+    <string name="pairing_scan_prompt">将相机对准配对二维码</string>
+    <string name="pairing_scan_not_pairing_qr">这不是有效的 HTTPS HAPI 配对二维码。请扫描 hub 打印的两个二维码之一（伴侣应用或网页应用）。</string>
+    <string name="pairing_scan_again">重新扫描</string>
+    <string name="pairing_scan_permission_rationale">扫描配对二维码需要相机权限。您也可以改用手动配对。</string>
+    <string name="pairing_scan_grant_camera">授予相机权限</string>
+
+    <!-- Home (session list top bar + hub chores) -->
+    <string name="home_menu">菜单</string>
+    <string name="home_settings">设置</string>
+    <string name="home_switch_hub">切换 hub</string>
+    <string name="home_pair_another">配对另一个 hub…</string>
+    <string name="home_sign_out">退出登录</string>
+    <string name="home_sign_out_message">移除此 hub 配对？存储在本设备上的凭据将被删除（hub 本身不受影响）。</string>
+    <string name="home_cancel">取消</string>
+
+    <!-- New session (B-M3d) -->
+    <string name="new_session_title">新建会话</string>
+    <string name="new_session_back">返回</string>
+    <string name="new_session_fab">新建会话</string>
+    <string name="new_session_machine">机器</string>
+    <string name="new_session_machines_loading">加载机器…</string>
+    <string name="new_session_no_machines">没有在线机器</string>
+    <string name="new_session_runner_spawn_error">Runner 上次启动错误：%1$s</string>
+    <string name="new_session_directory">目录</string>
+    <string name="new_session_directory_placeholder">/path/to/project</string>
+    <string name="new_session_browse">浏览目录</string>
+    <string name="directory_browser_choose_directory">选择目录</string>
+    <string name="directory_browser_up">前往上级目录</string>
+    <string name="directory_browser_refresh">刷新</string>
+    <string name="directory_browser_show_hidden">显示隐藏目录</string>
+    <string name="directory_browser_empty">没有子目录</string>
+    <string name="directory_browser_select_current">选择当前目录</string>
+    <string name="new_session_recent_paths">最近路径</string>
+    <string name="new_session_type">会话类型</string>
+    <string name="new_session_type_simple">简单</string>
+    <string name="new_session_type_simple_desc">直接使用选定的目录</string>
+    <string name="new_session_type_worktree">工作树</string>
+    <string name="new_session_type_worktree_desc">在仓库旁创建新的 git 工作树</string>
+    <string name="new_session_worktree_name">工作树名称</string>
+    <string name="new_session_worktree_name_placeholder">feature-x（可选）</string>
+    <string name="new_session_agent">代理</string>
+    <string name="new_session_agent_availability_loading">正在检查已安装的代理…</string>
+    <string name="new_session_retry">重试</string>
+    <string name="new_session_model">模型</string>
+    <string name="new_session_effort">思考强度</string>
+    <string name="new_session_reasoning_effort">推理强度</string>
+    <string name="new_session_permission_mode">权限模式</string>
+    <string name="new_session_permission_managed">由代理管理</string>
+    <string name="new_session_permission_managed_desc">此代理自行管理权限，YOLO 模式不适用。</string>
+    <string name="new_session_yolo">YOLO 模式</string>
+    <string name="new_session_yolo_title">跳过审批和沙箱</string>
+    <string name="new_session_yolo_desc">启动时使用危险的代理标志。</string>
+    <string name="new_session_yolo_maps_to">将应用原生的 %1$s 模式。</string>
+    <string name="new_session_collaboration_mode">协作模式</string>
+    <string name="new_session_copilot_agent_mode">代理模式</string>
+    <string name="new_session_fast_mode">快速模式</string>
+    <string name="new_session_fast_mode_standard">标准</string>
+    <string name="new_session_fast_mode_fast">快速</string>
+    <string name="new_session_loading">加载中…</string>
+    <string name="new_session_create">创建</string>
+    <string name="new_session_creating">创建中…</string>
+    <string name="new_session_create_and_make_directory">创建并新建目录</string>
+
+    <!-- Settings scaffold (B-M4e) -->
+    <string name="settings_title">设置</string>
+    <string name="settings_back">返回</string>
+    <string name="settings_cancel">取消</string>
+    <string name="settings_retry">重试</string>
+    <string name="settings_load_error">无法加载此看板。</string>
+    <string name="settings_owner_only">此看板仅对 hub 所有者（default 命名空间）可用。</string>
+
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_theme">主题</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_theme_oled">OLED 纯黑</string>
+    <string name="settings_dynamic_color">Material You 配色</string>
+    <string name="settings_dynamic_color_description">根据壁纸生成应用配色。</string>
+    <string name="settings_dynamic_color_oled_note">在 OLED 纯黑下不可用。</string>
+
+    <string name="settings_section_language">语言</string>
+    <string name="settings_language">应用语言</string>
+    <string name="settings_language_system">跟随系统</string>
+
+    <string name="settings_section_insights">洞察</string>
+    <string name="settings_usage_summary">各代理与模型的 Token 用量</string>
+    <string name="settings_storage_summary">Hub 数据库磁盘占用</string>
+
+    <string name="settings_section_about">关于</string>
+    <string name="settings_app_version">应用版本</string>
+    <string name="settings_protocol_version">协议版本</string>
+    <string name="settings_hub">Hub</string>
+    <string name="settings_hub_checking">正在检查 hub…</string>
+    <string name="settings_hub_health">状态：%1$s · 协议 v%2$d</string>
+    <string name="settings_hub_unreachable">无法连接 hub — 点按重试。</string>
+
+    <!-- Usage dashboard -->
+    <string name="settings_usage">Token 用量</string>
+    <string name="settings_usage_range_7d">近 7 天</string>
+    <string name="settings_usage_range_30d">近 30 天</string>
+    <string name="settings_usage_range_all">全部时间</string>
+    <string name="settings_usage_total">总 Token</string>
+    <string name="settings_usage_uncached">非缓存</string>
+    <string name="settings_usage_input">输入</string>
+    <string name="settings_usage_output">输出</string>
+    <string name="settings_usage_cache_read">缓存命中</string>
+    <string name="settings_usage_cache_creation">缓存创建</string>
+    <string name="settings_usage_cache_hit_rate">缓存命中率</string>
+    <string name="settings_usage_requests">请求数</string>
+    <string name="settings_usage_daily_title">每日 Token</string>
+    <string name="settings_usage_tooltip">%1$s Token · %2$d 次请求 · 输入 %3$s / 输出 %4$s</string>
+    <string name="settings_usage_tooltip_empty">0 Token</string>
+    <string name="settings_usage_by_agent">按 Agent</string>
+    <string name="settings_usage_by_model">按模型</string>
+    <string name="settings_usage_bucket_details">%1$d 次请求 · 输入 %2$s · 输出 %3$s</string>
+    <string name="settings_usage_sessions">有用量记录的会话：%1$d</string>
+    <string name="settings_usage_empty">此时间段内没有记录到用量。</string>
+
+    <!-- Storage dashboard -->
+    <string name="settings_storage">存储空间</string>
+    <string name="settings_storage_description">Hub SQLite 数据库的磁盘占用（数据库、预写日志、共享内存）。</string>
+    <string name="settings_storage_chart_title">SQLite 文件</string>
+    <string name="settings_storage_chart_empty">暂无存储数据。</string>
+    <string name="settings_storage_database">数据库</string>
+    <string name="settings_storage_wal">预写日志</string>
+    <string name="settings_storage_shm">共享内存</string>
+    <string name="settings_storage_total">总计</string>
+    <string name="settings_storage_path">路径</string>
+    <string name="settings_storage_refresh">刷新</string>
+    <string name="settings_storage_refreshing">正在刷新…</string>
+
+    <!-- Push notifications (B-M4a) -->
+    <string name="channel_permission_requests">权限请求</string>
+    <string name="channel_permission_requests_desc">智能体正在等待您允许或拒绝一次工具调用</string>
+    <string name="channel_ready">代理就绪</string>
+    <string name="channel_ready_desc">智能体已完成并正在等待输入</string>
+    <string name="channel_task_notifications">任务通知</string>
+    <string name="channel_task_notifications_desc">任务完成或失败等更新</string>
+    <string name="notif_action_allow">允许</string>
+    <string name="notif_action_deny">拒绝</string>
+    <string name="notif_action_reply">回复</string>
+    <string name="notif_action_dismiss">忽略</string>
+    <string name="notif_reply_hint">消息</string>
+    <string name="notif_allowing">允许中…</string>
+    <string name="notif_denying">拒绝中…</string>
+    <string name="notif_sending">发送中…</string>
+    <string name="notif_allowed">已允许</string>
+    <string name="notif_denied">已拒绝</string>
+    <string name="notif_reply_sent">回复已发送</string>
+    <string name="notif_already_handled">已处理</string>
+    <string name="notif_session_inactive">会话已停止 — 请打开应用以恢复</string>
+    <string name="notif_session_not_found">在已配对的 hub 上未找到该会话</string>
+    <string name="notif_action_failed">无法连接 hub — 请打开应用处理</string>
+    <string name="notif_reply_failed">回复未发送 — 请打开应用重试</string>
+
+    <!-- Session list (B-M2b / B-M3ce, extracted in B-M5a) -->
+    <string name="sessions_section_pinned">置顶会话</string>
+    <string name="sessions_section_sessions">会话</string>
+    <string name="sessions_filter_all">全部</string>
+    <string name="sessions_filter_unknown_machine">未知机器</string>
+    <string name="sessions_offline_banner">离线 — 显示缓存的会话</string>
+    <string name="sessions_empty_loading_title">正在加载会话…</string>
+    <string name="sessions_empty_offline_title">无法连接 hub</string>
+    <string name="sessions_empty_title">还没有会话</string>
+    <string name="sessions_empty_loading_hint">正在从 hub 获取会话列表。</string>
+    <string name="sessions_empty_offline_hint">恢复网络后下拉重试。</string>
+    <string name="sessions_empty_hint">用 hapi CLI 启动一个智能体，会话就会出现在这里。</string>
+    <string name="sessions_badge_needs_input">需要输入</string>
+    <string name="sessions_badge_approve">批准 %1$s</string>
+    <string name="sessions_badge_pending">待处理</string>
+    <string name="sessions_action_unpin">取消置顶</string>
+    <string name="sessions_action_pin_project">项目置顶</string>
+    <string name="sessions_action_pin_global">全局置顶</string>
+    <string name="sessions_action_rename">重命名</string>
+    <string name="sessions_action_reopen">重新打开</string>
+    <string name="sessions_action_archive">归档</string>
+    <string name="sessions_action_delete">删除</string>
+    <string name="sessions_error_pin">置顶操作失败</string>
+    <string name="sessions_error_archive">归档失败</string>
+    <string name="sessions_error_rename">重命名失败</string>
+    <string name="sessions_error_delete">删除失败</string>
+    <string name="sessions_error_reopen">重新打开失败</string>
+    <string name="sessions_error_machines">无法加载机器列表</string>
+    <string name="sessions_error_delete_active">会话仍在运行 — 请先归档</string>
+    <string name="sessions_reopen_failed_fallback">无法重新打开会话</string>
+    <string name="sessions_rename_title">重命名会话</string>
+    <string name="sessions_rename_placeholder">会话名称</string>
+    <string name="sessions_delete_title">删除会话？</string>
+    <string name="sessions_delete_message">“%1$s”及其消息历史将从 hub 永久移除。运行中的会话必须先归档。</string>
+    <string name="sessions_cancel">取消</string>
+    <string name="sessions_age_now">刚刚</string>
+
+    <!-- Chat screen chrome (B-M2c/B-M3, extracted in B-M5a) -->
+    <string name="chat_back">返回</string>
+    <string name="chat_open_files">会话文件</string>
+    <string name="chat_open_scratchlist">草稿夹</string>
+    <string name="chat_open_scratchlist_count">草稿夹（%1$d）</string>
+    <string name="chat_open_settings">会话设置</string>
+    <string name="chat_session_actions">会话操作</string>
+    <string name="chat_scratchlist_badge">草稿夹</string>
+    <string name="chat_inactive_bar">会话已停止 — 发送消息即可恢复，或</string>
+    <string name="chat_retry">重试</string>
+    <string name="chat_loading_messages">加载消息…</string>
+    <string name="chat_loading_older">正在加载更早的消息…</string>
+    <string name="chat_load_failed_title">无法加载此会话</string>
+    <string name="chat_load_failed_hint">请检查与 hub 的连接后重试。</string>
+    <string name="chat_empty_title">还没有消息</string>
+    <string name="chat_empty_hint">智能体工作时，消息会显示在这里。</string>
+    <string name="chat_new_messages_one">1 条新消息 ↓</string>
+    <string name="chat_new_messages_many">%1$d 条新消息 ↓</string>
+
+    <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
+    <string name="chat_notice_no_transcription">Hub 未配置转录提供商</string>
+    <string name="chat_notice_mic_permission">语音输入需要麦克风权限</string>
+    <string name="chat_notice_camera_permission">拍照需要相机权限</string>
+    <string name="chat_notice_attachment_too_large">%1$s 超过 50 MB 上传上限</string>
+    <string name="chat_notice_attachment_unreadable">无法读取 %1$s</string>
+    <string name="chat_notice_draft_parked">草稿已存入草稿夹</string>
+    <string name="chat_notice_scratchlist_full">草稿夹已满（200 条）</string>
+    <string name="chat_notice_park_failed">无法暂存草稿 — 请检查 hub 连接</string>
+    <string name="chat_notice_attachments_uploading">附件仍在上传 — 请稍候，或重试/移除失败的附件</string>
+    <string name="chat_notice_resume_failed">会话已停止，且无法恢复</string>
+    <string name="chat_notice_abort_failed">中止失败</string>
+    <string name="chat_notice_rename_failed">重命名会话失败</string>
+    <string name="chat_notice_delete_failed">删除会话失败</string>
+    <string name="chat_notice_cancel_failed">取消队列消息失败</string>
+    <string name="chat_notice_edit_kept_draft">消息已取消 — 已保留当前草稿</string>
+    <string name="chat_notice_already_delivered">已发送给智能体</string>
+    <string name="chat_notice_steer_failed">插入消息失败</string>
+    <string name="chat_notice_request_already_handled">该请求已被处理</string>
+    <string name="chat_notice_request_failed">请求失败</string>
+    <string name="chat_notice_models_failed">加载模型失败</string>
+    <string name="chat_notice_config_failed">更新会话失败</string>
+
+    <!-- Composer (B-M3a/ce/f) -->
+    <string name="chat_composer_placeholder">输入消息…</string>
+    <string name="chat_attachment_uploading">上传中…</string>
+    <string name="chat_attachment_failed_retry">失败 — 点按重试</string>
+    <string name="chat_recording">● 录音中…  %1$s</string>
+    <string name="chat_cancel">取消</string>
+    <string name="chat_park_draft">将草稿存入草稿夹</string>
+    <string name="chat_composer_add_attachment">添加附件</string>
+    <string name="chat_composer_mic">开始语音输入</string>
+    <string name="chat_composer_stop_recording">停止录音</string>
+    <string name="chat_composer_send">发送</string>
+    <string name="chat_composer_abort">中止当前回合</string>
+    <string name="chat_send_steer">发送并插入当前回合</string>
+    <string name="chat_queued_one">1 条队列消息</string>
+    <string name="chat_queued_many">%1$d 条队列消息</string>
+    <string name="chat_queued_scheduled">定时发送 · %1$s</string>
+    <string name="chat_queued_steer">插入</string>
+    <string name="chat_queued_edit">编辑</string>
+    <string name="chat_picker_title">添加附件</string>
+    <string name="chat_picker_photos">相册</string>
+    <string name="chat_picker_camera">相机</string>
+    <string name="chat_picker_files">文件</string>
+
+    <!-- Dictation errors (B-M3ce) -->
+    <string name="chat_dictation_start_failed">无法开始录音</string>
+    <string name="chat_dictation_hub_unreachable">无法连接 hub</string>
+    <string name="chat_dictation_recording_failed">录音失败</string>
+    <string name="chat_dictation_no_audio">未录到任何音频</string>
+    <string name="chat_dictation_failed">转录失败</string>
+
+    <!-- Session config sheet (B-M3b) -->
+    <string name="chat_config_offline_note">会话已离线 — 更改将在恢复后生效，也可能被拒绝。</string>
+    <string name="chat_config_terminal_note">会话由终端控制 — 配置更改会被拒绝。</string>
+    <string name="chat_config_permission_mode">权限模式</string>
+    <string name="chat_config_model">模型</string>
+    <string name="chat_config_loading_models">正在加载模型…</string>
+    <string name="chat_config_models_unavailable">此会话暂无模型列表。</string>
+    <string name="chat_config_effort">思考强度</string>
+
+    <!-- Chat blocks (B-M2c/d) -->
+    <string name="chat_tool_awaiting_approval">等待审批</string>
+    <string name="chat_tool_awaiting_approval_badge">⏳ 等待审批</string>
+    <string name="chat_tool_approved">✓ 已批准</string>
+    <string name="chat_tool_denied">✕ 已拒绝</string>
+    <string name="chat_tool_canceled">— 已取消</string>
+    <string name="chat_tool_status_pending">等待中</string>
+    <string name="chat_tool_status_error">错误</string>
+    <string name="chat_agent_steps_one">1 个智能体步骤</string>
+    <string name="chat_agent_steps_many">%1$d 个智能体步骤</string>
+    <string name="chat_group_tools_one">1 个工具</string>
+    <string name="chat_group_tools_many">%1$d 个工具</string>
+    <string name="chat_before">修改前</string>
+    <string name="chat_after">修改后</string>
+    <string name="chat_edit_n_of_m">编辑 %1$d/%2$d</string>
+    <string name="chat_empty_snippet">（空）</string>
+    <string name="chat_result">结果</string>
+    <string name="chat_result_error">结果 · 错误</string>
+    <string name="chat_reasoning_expanded">💭 思考 ▾</string>
+    <string name="chat_reasoning_collapsed">💭 思考 ▸</string>
+    <string name="chat_not_delivered_retry">未送达 — 点按重试</string>
+    <string name="chat_not_delivered">未送达</string>
+    <string name="chat_review_title">Code review</string>
+    <string name="chat_review_findings_one">1 条发现</string>
+    <string name="chat_review_findings_many">%1$d 条发现</string>
+
+    <!-- Permission footers (B-M3b) -->
+    <string name="chat_perm_allow">允许</string>
+    <string name="chat_perm_deny">拒绝</string>
+    <string name="chat_perm_abort">中止</string>
+    <string name="chat_perm_allow_for_session">本会话允许</string>
+    <string name="chat_perm_allow_all_edits">允许所有编辑</string>
+    <string name="chat_perm_already_handled">已在其他设备处理</string>
+    <string name="chat_perm_type_answer">输入您的答案…</string>
+    <string name="chat_perm_type_answer_first">请先输入答案</string>
+    <string name="chat_perm_answer_all">请先回答所有问题</string>
+    <string name="chat_perm_answer_required">请先回答所有必答问题</string>
+    <string name="chat_perm_submit">提交</string>
+    <string name="chat_perm_other">其他…</string>
+    <string name="chat_perm_optional_format">%1$s（可选）</string>
+    <string name="chat_perm_add_note">添加备注…</string>
+
+    <!-- External links (B-M2d) -->
+    <string name="chat_link_open_title">打开此链接？</string>
+    <string name="chat_link_open">打开</string>
+    <string name="chat_link_no_app">没有应用可以打开此链接</string>
+
+    <!-- Tool card titles (ToolCardPresentation; web knownTools registry) -->
+    <string name="tool_terminal">终端</string>
+    <string name="tool_read_file">读取文件</string>
+    <string name="tool_read_notebook">读取笔记本</string>
+    <string name="tool_edit_file">编辑文件</string>
+    <string name="tool_edit_notebook">编辑笔记本</string>
+    <string name="tool_write_file">写入文件</string>
+    <string name="tool_search_files">搜索文件</string>
+    <string name="tool_search_content">搜索内容</string>
+    <string name="tool_list_files">列出文件</string>
+    <string name="tool_web_fetch">网页抓取</string>
+    <string name="tool_web_search">网页搜索</string>
+    <string name="tool_task">任务</string>
+    <string name="tool_launch_agent">启动智能体</string>
+    <string name="tool_agent_named">智能体：%1$s</string>
+    <string name="tool_agent">智能体</string>
+    <string name="tool_spawn_agent">派生智能体</string>
+    <string name="tool_resume_agent">恢复智能体</string>
+    <string name="tool_wait_agent">等待智能体</string>
+    <string name="tool_close_agent">关闭智能体</string>
+    <string name="tool_interrupt_agent">中断智能体</string>
+    <string name="tool_broadcast">广播</string>
+    <string name="tool_shutdown">关闭：%1$s</string>
+    <string name="tool_shutdown_fallback_recipient">智能体</string>
+    <string name="tool_shutdown_response">关闭响应</string>
+    <string name="tool_message_named">消息：%1$s</string>
+    <string name="tool_message_agent">向智能体发消息</string>
+    <string name="tool_list_agents">列出智能体</string>
+    <string name="tool_team_named">团队：%1$s</string>
+    <string name="tool_create_team">创建团队</string>
+    <string name="tool_delete_team">删除团队</string>
+    <string name="tool_todo_list">任务清单</string>
+    <string name="tool_plan">计划</string>
+    <string name="tool_plan_proposal">计划提案</string>
+    <string name="tool_skill">技能</string>
+    <string name="tool_skill_named">技能：%1$s</string>
+    <string name="tool_reasoning">思考</string>
+    <string name="tool_permission_request">权限请求</string>
+    <string name="tool_permission_named">权限：%1$s</string>
+    <string name="tool_apply_changes">应用更改</string>
+    <string name="tool_diff">Diff</string>
+    <string name="tool_task_log">%1$s 日志</string>
+    <string name="tool_inspecting_task_log">查看任务日志</string>
+    <string name="tool_background_task">后台任务</string>
+    <string name="tool_error">错误</string>
+    <string name="tool_run_shell">运行命令</string>
+    <string name="tool_search">搜索</string>
+    <string name="tool_open_url">打开链接</string>
+    <string name="tool_query">查询</string>
+    <string name="tool_question">问题</string>
+    <string name="tool_questions">%1$d 个问题</string>
+    <string name="tool_questions_more">%1$s（另 %2$d 个）</string>
+    <string name="tool_write_lines">%1$d 行</string>
+    <string name="tool_write_chars">%1$d 字符</string>
+    <string name="tool_edits_count">%1$s（%2$d 处编辑）</string>
+
+    <!-- Files browser + viewer (B-M4c) -->
+    <string name="files_back">返回</string>
+    <string name="files_title">文件</string>
+    <string name="files_refresh">刷新</string>
+    <string name="files_tab_changes">变更</string>
+    <string name="files_tab_browse">目录</string>
+    <string name="files_tab_search">搜索</string>
+    <string name="files_git_unavailable">此会话的 Git 状态不可用</string>
+    <string name="files_detached_head">游离 HEAD</string>
+    <string name="files_staged_unstaged">%1$d 个已暂存 · %2$d 个未暂存</string>
+    <string name="files_no_changes">工作区没有变更</string>
+    <string name="files_staged_header">已暂存（%1$d）</string>
+    <string name="files_unstaged_header">未暂存（%1$d）</string>
+    <string name="files_project_root">项目根目录</string>
+    <string name="files_show_hidden">显示隐藏文件</string>
+    <string name="files_collapse">收起</string>
+    <string name="files_expand">展开</string>
+    <string name="files_search_placeholder">搜索文件…</string>
+    <string name="files_search_hint">输入以在会话目录中搜索文件</string>
+    <string name="files_search_no_match">没有匹配的文件</string>
+    <string name="files_error_git_status">Git 状态不可用</string>
+    <string name="files_error_unstaged_diff">未暂存 Diff 不可用：%1$s</string>
+    <string name="files_error_staged_diff">已暂存 Diff 不可用：%1$s</string>
+    <string name="files_error_unknown">未知错误</string>
+    <string name="files_error_list">加载目录失败</string>
+    <string name="files_error_search">搜索文件失败</string>
+    <string name="files_error_load_diff">加载 Diff 失败</string>
+    <string name="files_error_read_file">读取文件失败</string>
+    <string name="files_viewer_copied">已复制</string>
+    <string name="files_viewer_copy_path">复制路径</string>
+    <string name="files_viewer_diff">Diff</string>
+    <string name="files_viewer_file">文件</string>
+    <string name="files_viewer_unstaged">未暂存</string>
+    <string name="files_viewer_staged">已暂存</string>
+    <string name="files_viewer_source">源码</string>
+    <string name="files_viewer_preview">预览</string>
+    <string name="files_viewer_line">第 %1$d 行</string>
+    <string name="files_viewer_no_changes">此文件没有变更</string>
+    <string name="files_viewer_empty">文件为空</string>
+    <string name="files_viewer_binary">二进制文件 — 无法预览</string>
+    <string name="files_viewer_image_unsupported">此图片格式无法预览</string>
+
+    <!-- Scratchlist workbench (B-M4d) -->
+    <string name="scratchlist_back">返回</string>
+    <string name="scratchlist_title">草稿夹</string>
+    <string name="scratchlist_count_none">暂无笔记</string>
+    <string name="scratchlist_count_one">1 条笔记</string>
+    <string name="scratchlist_count_many">%1$d 条笔记</string>
+    <string name="scratchlist_new_note">新建笔记</string>
+    <string name="scratchlist_edit_note">编辑笔记</string>
+    <string name="scratchlist_to_composer">复制到输入框</string>
+    <string name="scratchlist_attachment_only">仅附件</string>
+    <string name="scratchlist_placeholder">笔记、草稿或想法…</string>
+    <string name="scratchlist_add_photo">添加图片</string>
+    <string name="scratchlist_delete">删除</string>
+    <string name="scratchlist_cancel">取消</string>
+    <string name="scratchlist_save">保存</string>
+    <string name="scratchlist_retry">重试</string>
+    <string name="scratchlist_load_failed">无法加载草稿夹</string>
+    <string name="scratchlist_check_connection">请检查与 hub 的连接后重试。</string>
+    <string name="scratchlist_empty_title">还没有笔记</string>
+    <string name="scratchlist_empty_hint">从输入框暂存草稿，或点按 + 为此会话记一条笔记。</string>
+    <string name="scratchlist_notice_full_delete_first">草稿夹已满（200 条）— 请先删除一条</string>
+    <string name="scratchlist_notice_full">草稿夹已满（200 条）</string>
+    <string name="scratchlist_notice_needs_content">笔记需要文字或附件 — 如需移除请使用“删除”</string>
+    <string name="scratchlist_notice_save_failed">无法保存笔记 — 请检查 hub 连接</string>
+    <string name="scratchlist_notice_delete_failed">无法删除笔记 — 请检查 hub 连接</string>
+    <string name="scratchlist_notice_attach_failed">无法附加文件 — 请检查 hub 连接</string>
+    <string name="scratchlist_notice_remove_attachment_failed">无法移除附件 — 请检查 hub 连接</string>
+    <string name="scratchlist_notice_too_large">该文件超过 hub 的单文件大小上限</string>
+    <string name="scratchlist_notice_upload_failed">上传失败 — 请检查 hub 连接</string>
+    <string name="scratchlist_reject_unreadable">无法读取所选文件</string>
+    <string name="scratchlist_reject_image_too_large">图片压缩后仍然过大</string>
+    <string name="scratchlist_reject_max_attachments">一条笔记最多包含 %1$d 个附件</string>
+    <string name="scratchlist_reject_type">草稿夹附件不支持该文件类型</string>
+    <string name="scratchlist_reject_file_too_large">该文件超过 %1$d MB 上限</string>
+    <string name="scratchlist_reject_budget">此笔记的附件容量已用完</string>
+
+    <!-- Pairing errors (PairingViewModel semantic errors, B-M1d) -->
+    <string name="pairing_error_invalid_url">请输入有效的 HTTPS hub 地址，例如 https://hub.example.com。</string>
+    <string name="pairing_error_empty_token">请输入 hub 显示的访问令牌。</string>
+    <string name="pairing_error_token_rejected">Hub 拒绝了此访问令牌。Hub 轮换 CLI_API_TOKEN 后令牌会变化 — 请重新获取二维码或令牌后再试。</string>
+    <string name="pairing_error_hub_gone">该 hub 已不在配对列表中。请在下方重新配对。</string>
+    <string name="pairing_error_unreachable">无法连接 %1$s。请检查地址和网络，并确认 hub 正在运行。</string>
+    <string name="pairing_error_not_a_hub">%1$s 有响应，但看起来不是 HAPI hub。请核对地址（应为 hub 自身的地址，而非网页应用的地址）。</string>
+    <string name="pairing_error_protocol_update_app">此 hub 使用协议 v%1$d，而应用支持 v%2$d。请更新应用后重试。</string>
+    <string name="pairing_error_protocol_update_hub">此 hub 使用协议 v%1$d，而应用支持 v%2$d。请更新 hub 后重试。</string>
+    <string name="pairing_error_auth_failed">配对失败（HTTP %1$d）。请稍后重试。</string>
+    <string name="pairing_notice_token_revoked">此设备的配对已被撤销 — hub 的访问令牌已更改。请重新配对以继续。</string>
+    <string name="pairing_notice_retry_exhausted">Hub 持续拒绝此设备的会话。请重新配对以继续。</string>
+    <string name="pairing_notice_missing_credentials">此 hub 的存储凭据已丢失。请重新配对以继续。</string>
+
+    <!-- New session form notices (B-M3d) -->
+    <string name="new_session_error_worktree_missing">工作树会话需要已存在的仓库目录。</string>
+    <string name="new_session_error_directory_missing">目录不存在，创建会话时将自动创建。</string>
+    <string name="new_session_error_directory_missing_confirm">目录不存在。再次点按“创建”将自动新建该目录。</string>
+    <string name="new_session_error_create">创建会话失败</string>
+    <string name="new_session_error_codex_models">加载 Codex 模型失败</string>
+    <string name="new_session_error_models_detail">加载模型失败：%1$s</string>
+    <string name="new_session_error_worktree_name">名称需要至少包含一个字母或数字</string>
+    <string name="new_session_error_directory_outside_workspace_roots">目录必须位于此机器配置的某个工作区根目录内。</string>
+    <string name="directory_browser_error">浏览目录失败</string>
+    <string name="new_session_error_agent_availability">检查已安装代理失败</string>
+    <string name="new_session_error_runner_upgrade_required">创建会话前，请升级并重启此机器上的 HAPI runner。</string>
+    <string name="new_session_error_no_available_agents">此机器上没有安装受支持的代理。</string>
+    <string name="new_session_error_selected_agent_unavailable">所选代理在此机器上不可用。</string>
+</resources>

@@ -1,10 +1,24 @@
+import { SESSION_EXPORT_MAX_BYTES } from '@hapi/protocol/sessionExport'
 import type { ApiClient } from '@/api/client'
-import type { HapiSessionExport } from '@/types/api'
+import type {
+    HapiSessionExport,
+    HapiSessionExportResponse,
+    HapiSessionExportWarning
+} from '@/types/api'
 import { serializeSessionMarkdown } from './markdown'
 
 export type SessionExportFormat = 'json' | 'markdown'
 
+export type SessionExportDownloadResult =
+    | { type: 'warning'; warning: HapiSessionExportWarning }
+    | { type: 'too-large'; count: number; estimatedBytes: number; maxBytes: number }
+    | { type: 'downloaded'; filename: string; messageCount: number }
+
 export const SESSION_EXPORT_FORMAT_STORAGE_KEY = 'hapi.sessionExportFormat'
+
+function isSessionExportWarning(response: HapiSessionExportResponse): response is HapiSessionExportWarning {
+    return 'type' in response && response.type === 'warning'
+}
 
 export function readSessionExportFormat(): SessionExportFormat {
     if (typeof window === 'undefined') return 'json'
@@ -47,8 +61,7 @@ export function buildSessionExportFilename(payload: HapiSessionExport, format: S
     return `${slug}-${shortId}-${formatDate(payload.exportedAt)}.${extension}`
 }
 
-function downloadTextFile(filename: string, text: string, mimeType: string): void {
-    const blob = new Blob([text], { type: mimeType })
+function downloadBlobFile(filename: string, blob: Blob): void {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -64,14 +77,32 @@ export async function downloadSessionExport(
     api: ApiClient,
     sessionId: string,
     format: SessionExportFormat,
-    options?: { signal?: AbortSignal }
-): Promise<{ filename: string; messageCount: number }> {
-    const payload = await api.getSessionExport(sessionId, { signal: options?.signal })
-    const filename = buildSessionExportFilename(payload, format)
-    if (format === 'json') {
-        downloadTextFile(filename, `${JSON.stringify(payload, null, 2)}\n`, 'application/json;charset=utf-8')
-    } else {
-        downloadTextFile(filename, serializeSessionMarkdown(payload), 'text/markdown;charset=utf-8')
+    options?: { force?: boolean; signal?: AbortSignal }
+): Promise<SessionExportDownloadResult> {
+    const response: HapiSessionExportResponse = await api.getSessionExport(sessionId, {
+        force: options?.force,
+        signal: options?.signal
+    })
+    if (isSessionExportWarning(response)) {
+        return { type: 'warning', warning: response }
     }
-    return { filename, messageCount: payload.messages.length }
+
+    const payload: HapiSessionExport = response
+    const filename = buildSessionExportFilename(payload, format)
+    const text = format === 'json'
+        ? `${JSON.stringify(payload, null, 2)}\n`
+        : serializeSessionMarkdown(payload)
+    const mimeType = format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8'
+    const blob = new Blob([text], { type: mimeType })
+    const estimatedBytes = blob.size
+    if (estimatedBytes > SESSION_EXPORT_MAX_BYTES) {
+        return {
+            type: 'too-large',
+            count: payload.messages.length,
+            estimatedBytes,
+            maxBytes: SESSION_EXPORT_MAX_BYTES
+        }
+    }
+    downloadBlobFile(filename, blob)
+    return { type: 'downloaded', filename, messageCount: payload.messages.length }
 }

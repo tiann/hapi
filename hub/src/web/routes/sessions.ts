@@ -139,13 +139,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        const result = engine.getSessionExport(sessionResult.sessionId, sessionResult.session)
+        const force = c.req.query('force') === 'true'
+        const result = engine.getSessionExport(
+            sessionResult.sessionId,
+            sessionResult.session,
+            { force }
+        )
         if (result.type === 'too-large') {
             return c.json({
-                error: 'Session export too large',
+                type: 'too-large',
+                error: 'Session export exceeds the resource limit',
+                code: 'session_export_too_large',
                 count: result.count,
-                limit: result.limit
+                estimatedBytes: result.estimatedBytes,
+                maxBytes: result.maxBytes
             }, 413)
+        }
+        if (result.type === 'warning') {
+            return c.json(result)
         }
 
         return c.json(result.payload)

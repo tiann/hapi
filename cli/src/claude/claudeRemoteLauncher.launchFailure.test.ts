@@ -141,6 +141,51 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         expect(restoredMessageText).toBe('hello');
     });
 
+    it('sends the result carrier before compact completion and ready', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.push('/compact', { permissionMode: 'default' });
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const wireOrder: string[] = [];
+
+        client.sendClaudeSessionMessage.mockImplementation((logMessage: any) => {
+            if (logMessage.type === 'system' && logMessage.subtype === 'turn_duration') {
+                wireOrder.push('result');
+            }
+        });
+        client.sendSessionEvent.mockImplementation((event: any) => {
+            if (event?.type === 'message' && event.message === 'Compaction completed') {
+                wireOrder.push('completion');
+            }
+            if (event?.type === 'ready') {
+                wireOrder.push('ready');
+            }
+        });
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            const input = await opts.nextMessage();
+            expect(input?.message).toBe('/compact');
+            opts.onMessage({
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's-1'
+            });
+            await opts.onReady('Compaction completed');
+            triggerSwitch(client);
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        expect(wireOrder).toEqual(['result', 'completion', 'ready']);
+    });
+
     it('restores a joined batch as separate items with each original localId and order preserved', async () => {
         // MessageQueue2.collectBatch() joins same-mode messages into a single
         // `message` string for the SDK (`sameModeMessages.join('\n')`), but

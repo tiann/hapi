@@ -1,0 +1,23 @@
+{
+    "name": "hapi-push-relay",
+    "private": true,
+    "version": "0.1.0",
+    "description": "Official HAPI push relay - forwards E2E-encrypted push envelopes from self-hosted hubs to APNs, seeing ciphertext only",
+    "author": "weishu",
+    "license": "AGPL-3.0-only",
+    "type": "module",
+    "scripts": {
+        "start": "bun run src/index.ts",
+        "dev": "bun --watch run src/index.ts",
+        "test": "bun test",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "jose": "^6.1.3"
+    },
+    "devDependencies": {
+        "@types/node": "26.3.0",
+        "bun-types": "1.4.0",
+        "typescript": "^5"
+    }
+}

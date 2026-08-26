@@ -17,6 +17,7 @@ import { isSameAgyResponse } from '../utils/agyMessageText';
 import { resolveAgyTurnModels } from '../utils/agyConversationModel';
 import { killProcessByChildProcess } from '@/utils/process';
 import { AGY_MODEL_LABELS } from '@hapi/protocol';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 const AGY_PRINT_TIMEOUT = '30m';
 
@@ -118,7 +119,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         super(process.env.DEBUG ? opts.session.logPath : undefined);
         this.session = opts.session;
         this.spawnAgy = opts.spawnAgy ?? ((args, cwd) => {
-            const child = spawn('agy', args, {
+            const child = spawn(getAgentLaunchCommand('agy'), args, {
                 cwd,
                 stdio: ['pipe', 'pipe', 'pipe'],
                 env: buildAgySpawnEnv(),

@@ -2,6 +2,7 @@ import type { ApiClient } from '@/api/client'
 import {
     getQueuedReconcileCandidateLocalIds,
     markMessagesConsumed,
+    markMessagesIndeterminate,
     reconcileQueuedLocalIds,
     syncTailMessages,
 } from './message-window-store'
@@ -18,11 +19,13 @@ export async function reconcileQueuedStateAfterConnect(
         return
     }
     const queuedLocalIds: string[] = []
+    const indeterminateLocalIds: string[] = []
     const invokedLocalMessages: Array<{ localId: string; invokedAt: number }> = []
     for (let index = 0; index < candidateLocalIds.length; index += QUEUED_STATE_BATCH_SIZE) {
         const batch = candidateLocalIds.slice(index, index + QUEUED_STATE_BATCH_SIZE)
         const state = await api.getQueuedState(sessionId, batch)
         queuedLocalIds.push(...state.queuedLocalIds)
+        indeterminateLocalIds.push(...(state.indeterminateLocalIds ?? []))
         invokedLocalMessages.push(...state.invokedLocalMessages)
     }
     const invokedByTimestamp = new Map<number, string[]>()
@@ -34,5 +37,6 @@ export async function reconcileQueuedStateAfterConnect(
     for (const [invokedAt, localIds] of invokedByTimestamp) {
         markMessagesConsumed(sessionId, localIds, invokedAt)
     }
-    reconcileQueuedLocalIds(sessionId, candidateLocalIds, queuedLocalIds)
+    markMessagesIndeterminate(sessionId, indeterminateLocalIds)
+    reconcileQueuedLocalIds(sessionId, candidateLocalIds, [...queuedLocalIds, ...indeterminateLocalIds])
 }

@@ -1,0 +1,120 @@
+{
+    "description": "Claude output family: assistant message carrying a thinking block followed by text. Expects agent-reasoning + agent-text blocks from the same message (ids <messageId>:<blockIndex>).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-011",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Why does the reconnect use jitter?"
+            },
+            {
+                "createdAt": 1755000004100,
+                "id": "msg-agent-012:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "Reconnect stampedes: if every client retries at the same delay, the hub gets a synchronized burst. Adding jitter spreads the retries."
+            },
+            {
+                "createdAt": 1755000004100,
+                "id": "msg-agent-012:1",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Jitter desynchronizes clients so a hub restart does not trigger a thundering-herd of simultaneous reconnects."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": {
+            "contextSize": 76060,
+            "contextWindow": null,
+            "inputTokens": 1810,
+            "outputTokens": 96
+        },
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-011",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Why does the reconnect use jitter?"
+            },
+            {
+                "createdAt": 1755000004100,
+                "id": "msg-agent-012:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "Reconnect stampedes: if every client retries at the same delay, the hub gets a synchronized burst. Adding jitter spreads the retries."
+            },
+            {
+                "createdAt": 1755000004100,
+                "id": "msg-agent-012:1",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Jitter desynchronizes clients so a hub restart does not trigger a thundering-herd of simultaneous reconnects."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Why does the reconnect use jitter?",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-011",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "signature": "EqQBCkgIBBACGAIiQL5",
+                                        "thinking": "Reconnect stampedes: if every client retries at the same delay, the hub gets a synchronized burst. Adding jitter spreads the retries.",
+                                        "type": "thinking"
+                                    },
+                                    {
+                                        "text": "Jitter desynchronizes clients so a hub restart does not trigger a thundering-herd of simultaneous reconnects.",
+                                        "type": "text"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant",
+                                "usage": {
+                                    "cache_creation_input_tokens": 0,
+                                    "cache_read_input_tokens": 74250,
+                                    "input_tokens": 1810,
+                                    "output_tokens": 96
+                                }
+                            },
+                            "parentUuid": null,
+                            "timestamp": "2025-08-12T11:20:04.021Z",
+                            "type": "assistant",
+                            "uuid": "7f2b8c41-5d3f-4e37-8a2d-b1e5d2f7c012"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004100,
+                "id": "msg-agent-012",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-thinking-block"
+}

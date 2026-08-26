@@ -27,7 +27,13 @@ import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
-import { getSessionLastSeenAt, getSessionLastSeenSnapshot } from '@/lib/sessionLastSeen'
+import {
+    getSessionLastSeenAt,
+    getSessionLastSeenSnapshot,
+    getSessionManualUnreadAt,
+    markSessionUnread,
+    useSessionLastSeenVersion
+} from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
@@ -905,6 +911,7 @@ function SessionItem(props: {
     inRunningSection?: boolean
     projectLabel?: string
     machineLabel?: string
+    lastSeenVersion: number
 }) {
     const { t } = useTranslation()
     const { addToast } = useToast()
@@ -918,7 +925,8 @@ function SessionItem(props: {
         showDetailedStatus = false,
         inRunningSection = false,
         projectLabel,
-        machineLabel
+        machineLabel,
+        lastSeenVersion
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -1010,10 +1018,11 @@ function SessionItem(props: {
         () => showDetailedStatus
             ? classifySessionAttention(s, {
                 selected,
-                lastSeenAt: getSessionLastSeenAt(s.id)
+                lastSeenAt: getSessionLastSeenAt(s.id),
+                manualUnreadAt: getSessionManualUnreadAt(s.id)
             })
             : null,
-        [s, selected, showDetailedStatus]
+        [s, selected, showDetailedStatus, lastSeenVersion]
     )
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
     const { attentionId, scheduleId, describedBy } = useSessionRowTooltipIds(
@@ -1037,6 +1046,7 @@ function SessionItem(props: {
                     selected={selected}
                     nestedTooltips
                     attentionTooltipId={attentionId}
+                    lastSeenVersion={lastSeenVersion}
                     scheduleTooltipId={scheduleId}
                     inRunningSection={inRunningSection}
                     projectLabel={projectLabel}
@@ -1055,6 +1065,7 @@ function SessionItem(props: {
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
+                onMarkUnread={() => markSessionUnread(s.id, s.updatedAt)}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -1193,6 +1204,7 @@ export function SessionList(props: {
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
+    const lastSeenVersion = useSessionLastSeenVersion()
     // Transient unread lens — not a Settings preference. Cleared on reload; rows drop as they're seen.
     const [showUnreadOnly, setShowUnreadOnly] = useState(false)
     const { pinInProgressSessions } = usePinInProgressSessions()
@@ -1291,7 +1303,7 @@ export function SessionList(props: {
             selectedSessionId,
             id => lastSeenById[id] ?? 0
         )
-    }, [visibleSessions, selectedSessionId, showUnreadOnly])
+    }, [lastSeenVersion, visibleSessions, selectedSessionId, showUnreadOnly])
     const machineFilteredSessions = useMemo(
         () => activeMachineFilter === null
             ? unreadFilteredSessions
@@ -1524,6 +1536,7 @@ export function SessionList(props: {
                                             inRunningSection
                                             projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            lastSeenVersion={lastSeenVersion}
                                         />
                                     ))}
                                 </div>
@@ -1650,6 +1663,7 @@ export function SessionList(props: {
                                     titleSuggestionAvailable={titleSuggestionAvailable}
                                     selected={s.id === selectedSessionId}
                                     showDetailedStatus={showDetailedStatus}
+                                    lastSeenVersion={lastSeenVersion}
                                 />
                             </div>
                         ))}
@@ -2015,6 +2029,7 @@ export function SessionList(props: {
                                             inRunningSection
                                             projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            lastSeenVersion={lastSeenVersion}
                                         />
                                     ))}
                                 </div>

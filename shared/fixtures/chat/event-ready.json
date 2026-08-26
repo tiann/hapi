@@ -1,0 +1,63 @@
+{
+    "description": "Event family: a ready event sets top-level hasReadyEvent and is consumed — it must NOT surface as a chat block.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-071",
+                "kind": "user-text",
+                "localId": null,
+                "text": "hi"
+            }
+        ],
+        "hasReadyEvent": true,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-071",
+                "kind": "user-text",
+                "localId": null,
+                "text": "hi"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "hi",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-071",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "type": "ready"
+                        },
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001200,
+                "id": "msg-event-072",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-ready"
+}

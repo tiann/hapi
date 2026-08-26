@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 export async function opencodeLocal(opts: {
     path: string;
@@ -18,7 +19,7 @@ export async function opencodeLocal(opts: {
     logger.debug(`[OpencodeLocal] Spawning opencode with args: ${JSON.stringify(args)}`);
 
     await spawnWithTerminalGuard({
-        command: 'opencode',
+        command: getAgentLaunchCommand('opencode'),
         args,
         cwd: opts.path,
         env: opts.env,

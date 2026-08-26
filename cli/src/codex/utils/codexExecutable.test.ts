@@ -181,4 +181,15 @@ describe('resolveCodexCommand', () => {
             args: []
         });
     });
+
+    it('uses the fixed macOS Codex app executable when PATH has no CLI', async () => {
+        setPlatform('darwin');
+        const { MACOS_CODEX_APP_COMMAND, resolveCodexCommand } = await import('./codexExecutable');
+        existsSyncMock.mockImplementation((candidate: string) => candidate === MACOS_CODEX_APP_COMMAND);
+
+        expect(resolveCodexCommand()).toEqual({
+            command: MACOS_CODEX_APP_COMMAND,
+            args: []
+        });
+    });
 });

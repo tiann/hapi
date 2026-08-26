@@ -52,7 +52,19 @@ export default defineConfig({
       {
         text: 'API',
         items: [
-          { text: 'Native Companion Contract', link: '/api/native-companion-contract' }
+          { text: 'Native Companion Contract', link: '/api/native-companion-contract' },
+          {
+            text: 'Client contract',
+            items: [
+              { text: 'Overview', link: '/api/client-contract/' },
+              { text: 'Auth', link: '/api/client-contract/auth' },
+              { text: 'REST', link: '/api/client-contract/rest' },
+              { text: 'SSE', link: '/api/client-contract/sse' },
+              { text: 'Pagination', link: '/api/client-contract/pagination' },
+              { text: 'Messages', link: '/api/client-contract/messages' },
+              { text: 'Errors', link: '/api/client-contract/errors' }
+            ]
+          }
         ]
       }
     ],
@@ -62,7 +74,7 @@ export default defineConfig({
     ],
 
     footer: {
-      message: 'Released under the AGPL-3.0 License.',
+      message: 'Released under the AGPL-3.0 License. · <a href="/docs/privacy.html">Privacy Policy</a>',
       copyright: 'Copyright © 2025-present'
     },
 

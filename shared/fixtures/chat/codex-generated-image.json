@@ -1,0 +1,64 @@
+{
+    "description": "Codex family: generated-image becomes a generated-image block keeping {imageId, fileName, mimeType}; the wire source (inline media provenance) and sourceImageId are web rendering concerns and are dropped by the projection.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "fileName": "latency-chart.png",
+                "id": "msg-codex-521:0",
+                "imageId": "img-01J9ZD8KM4TQ",
+                "kind": "generated-image",
+                "localId": null,
+                "mimeType": "image/png"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "fileName": "latency-chart.png",
+                "id": "msg-codex-521:0",
+                "imageId": "img-01J9ZD8KM4TQ",
+                "kind": "generated-image",
+                "localId": null,
+                "mimeType": "image/png"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "fileName": "latency-chart.png",
+                            "id": "aed0f1b2-5fb6-4c2d-8e9d-e2f3a4b5c521",
+                            "imageId": "img-01J9ZD8KM4TQ",
+                            "mimeType": "image/png",
+                            "source": {
+                                "flavor": "codex",
+                                "ingress": "tool_result",
+                                "toolCallId": "call_img_58210"
+                            },
+                            "sourceImageId": "ig_58210",
+                            "type": "generated-image"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-codex-521",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-generated-image"
+}

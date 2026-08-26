@@ -1,0 +1,127 @@
+{
+    "description": "Queued-state recovery after a resume gap: candidates are the user rows with invokedAt strictly null; the server verdict stamps invoked ones like messages-consumed, keeps the still-queued one, and drops candidates in neither list (deleted server-side).",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 2000,
+                "id": "u-2",
+                "invokedAt": null,
+                "localId": "local-kept",
+                "optimistic": false,
+                "queued": true,
+                "seq": 2
+            },
+            {
+                "createdAt": 3000,
+                "id": "u-3",
+                "invokedAt": 4000,
+                "localId": "local-consumed",
+                "optimistic": false,
+                "queued": false,
+                "seq": 3,
+                "status": "sent"
+            }
+        ],
+        "newestCursor": {
+            "at": 3000,
+            "seq": 3
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "queued-state-reconciliation-drops-deleted",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "text": "deleted server-side",
+                                    "type": "text"
+                                },
+                                "role": "user"
+                            },
+                            "createdAt": 1000,
+                            "id": "u-1",
+                            "invokedAt": null,
+                            "localId": "local-stale",
+                            "seq": 1
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "text": "still queued",
+                                    "type": "text"
+                                },
+                                "role": "user"
+                            },
+                            "createdAt": 2000,
+                            "id": "u-2",
+                            "invokedAt": null,
+                            "localId": "local-kept",
+                            "seq": 2
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "text": "consumed during the gap",
+                                    "type": "text"
+                                },
+                                "role": "user"
+                            },
+                            "createdAt": 3000,
+                            "id": "u-3",
+                            "invokedAt": null,
+                            "localId": "local-consumed",
+                            "seq": 3
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 3000,
+                        "snapshotHeadSeq": 3
+                    }
+                }
+            ]
+        },
+        {
+            "expectedCandidates": [
+                "local-stale",
+                "local-kept",
+                "local-consumed"
+            ],
+            "invoked": [
+                {
+                    "invokedAt": 4000,
+                    "localId": "local-consumed"
+                }
+            ],
+            "op": "queued-state",
+            "queuedLocalIds": [
+                "local-kept"
+            ]
+        }
+    ]
+}

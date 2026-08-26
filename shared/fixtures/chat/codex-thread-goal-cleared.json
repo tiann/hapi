@@ -1,0 +1,64 @@
+{
+    "description": "Codex family: thread_goal_cleared normalizes to a thread-goal-cleared event which is SILENT in the timeline — expected blocks contain only the user text.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-551",
+                "kind": "user-text",
+                "localId": null,
+                "text": "/goal clear"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-551",
+                "kind": "user-text",
+                "localId": null,
+                "text": "/goal clear"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "/goal clear",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-551",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "thread_id": "thread-42",
+                            "type": "thread_goal_cleared"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001100,
+                "id": "msg-codex-552",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-thread-goal-cleared"
+}

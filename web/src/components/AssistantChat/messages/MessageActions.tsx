@@ -8,6 +8,7 @@ import { MessageMetadata, buildMessageMetadataLabels, type MessageMetadataProps 
 import { MessageTimestamp } from './MessageTimestamp'
 import { cn } from '@/lib/utils'
 import { ShareTurnButton } from './ShareTurnButton'
+import { MessageActionButton } from './MessageActionButton'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 export type MessageHistoryAction = {
@@ -70,47 +71,37 @@ export function MessageActions({
         <ShareTurnButton
             messageElementId={messageElementId}
             fallbackText={copyText}
-            className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
         />
     ) : null
 
     const historyButtons = !actionsLocked ? (
         <>
             {showRewind && onRewind ? (
-                <button
-                    type="button"
-                    title={t('message.rewind')}
-                    aria-label={t('message.rewind')}
-                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                <MessageActionButton
+                    label={t('message.rewind')}
                     onClick={() => setRewindOpen(true)}
                 >
                     <RewindIcon className="h-3.5 w-3.5" />
-                </button>
+                </MessageActionButton>
             ) : null}
             {showFork && onFork ? (
-                <button
-                    type="button"
-                    title={t('message.fork')}
-                    aria-label={t('message.fork')}
-                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                <MessageActionButton
+                    label={t('message.fork')}
                     onClick={() => setForkOpen(true)}
                 >
                     <ForkIcon className="h-3.5 w-3.5" />
-                </button>
+                </MessageActionButton>
             ) : null}
         </>
     ) : null
 
     const copyButton = canCopy ? (
-        <button
-            type="button"
-            title={copied ? t('message.copied') : t('message.copy')}
-            aria-label={copied ? t('message.copied') : t('message.copy')}
-            className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+        <MessageActionButton
+            label={copied ? t('message.copied') : t('message.copy')}
             onClick={() => copy(copyText!)}
         >
             {copied ? <CheckIcon className="h-3.5 w-3.5 text-green-500" /> : <CopyIcon className="h-3.5 w-3.5" />}
-        </button>
+        </MessageActionButton>
     ) : null
 
     return (

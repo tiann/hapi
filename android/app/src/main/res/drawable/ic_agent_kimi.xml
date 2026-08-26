@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Kimi mark (Mono variant): currentColor upstream (KimiColor hard-codes a
+     white glyph that vanishes on light surfaces - same call as the web).
+     Brand SVG via @lobehub/icons v5.4.0 - same source as
+     web/src/components/AgentFlavorIcon.tsx. Mono glyph ships black; the
+     AgentFlavorIcon composable applies the tint so dark mode works. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 21.846 0 a 1.923 1.923 0 1 1 0 3.846 H 20.15 a 0.226 0.226 0 0 1 -0.227 -0.226 V 1.923 C 19.923 0.861 20.784 0 21.846 0 z"
+        android:fillType="evenOdd" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 11.065 11.199 l 7.257 -7.2 c 0.137 -0.136 0.06 -0.41 -0.116 -0.41 H 14.3 a 0.164 0.164 0 0 0 -0.117 0.051 l -7.82 7.756 c -0.122 0.12 -0.302 0.013 -0.302 -0.179 V 3.82 c 0 -0.127 -0.083 -0.23 -0.185 -0.23 H 3.186 c -0.103 0 -0.186 0.103 -0.186 0.23 V 19.77 c 0 0.128 0.083 0.23 0.186 0.23 h 2.69 c 0.103 0 0.186 -0.102 0.186 -0.23 v -3.25 c 0 -0.069 0.025 -0.135 0.069 -0.178 l 2.424 -2.406 a 0.158 0.158 0 0 1 0.205 -0.023 l 6.484 4.772 a 7.677 7.677 0 0 0 3.453 1.283 c 0.108 0.012 0.2 -0.095 0.2 -0.23 v -3.06 c 0 -0.117 -0.07 -0.212 -0.164 -0.227 a 5.028 5.028 0 0 1 -2.027 -0.807 l -5.613 -4.064 c -0.117 -0.078 -0.132 -0.279 -0.028 -0.381 z"
+        android:fillType="evenOdd" />
+</vector>

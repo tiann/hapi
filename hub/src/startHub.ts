@@ -15,6 +15,11 @@ import { PushNotificationChannel } from './push/pushNotificationChannel'
 import { FcmService } from './fcm/fcmService'
 import { FcmNotificationChannel } from './fcm/fcmNotificationChannel'
 import { resolveFcmConfig } from './fcm/fcmConfig'
+import { ApnsClient } from './push-ios/apnsClient'
+import { RelayClient } from './push-ios/relayClient'
+import { IosPushService } from './push-ios/iosPushService'
+import { IosPushNotificationChannel } from './push-ios/iosPushChannel'
+import { resolveIosPushConfig } from './push-ios/iosPushConfig'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
@@ -205,7 +210,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     // Accountable principal for A2A work-graph notify ingest (P3).
     syncEngine.setHubOwnerUserId(await getOrCreateOwnerId())
 
-    const fcmConfig = resolveFcmConfig()
+    const fcmConfig = resolveFcmConfig(config)
 
     // Build the optional FCM service early so the native-fallback probe
     // can consult its health gate. When FCM is configured, `fcmService` is
@@ -222,6 +227,22 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     if (fcmConfig && fcmService) {
         notificationChannels.push(new FcmNotificationChannel(fcmService, sseManager, visibilityTracker, store))
         console.log('[Fcm] Native companion push enabled (project:', fcmConfig.projectId + ')')
+    }
+
+    // iOS push (P1): encrypt-then-route sibling of the FCM channel. Ordering
+    // matters - both native channels run before PushNotificationChannel so a
+    // successful native send sets the nativeGate and suppresses web-push.
+    const iosPushConfig = resolveIosPushConfig(config)
+    if (iosPushConfig.mode === 'relay') {
+        const iosPushService = new IosPushService(new RelayClient(iosPushConfig.relayUrl), store)
+        notificationChannels.push(new IosPushNotificationChannel(iosPushService, store))
+        console.log(`[Hub] iOS push: relay (${iosPushConfig.source}, url: ${iosPushConfig.relayUrl})`)
+    } else if (iosPushConfig.mode === 'apns') {
+        const iosPushService = new IosPushService(new ApnsClient(iosPushConfig), store)
+        notificationChannels.push(new IosPushNotificationChannel(iosPushService, store))
+        console.log(`[Hub] iOS push: apns (${iosPushConfig.env}, topic: ${iosPushConfig.bundleId})`)
+    } else {
+        console.log(`[Hub] iOS push: off (${iosPushConfig.reason})`)
     }
 
     notificationChannels.push(
@@ -349,7 +370,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             })
             const companionDeeplink = `hapicompanion://bind?${companionParams.toString()}`
             console.log('')
-            console.log('Or pair the HAPI companion app (Android phone / Wear OS):')
+            console.log('Or pair the HAPI companion app (iOS / Android / Wear OS):')
             console.log(`  ${companionDeeplink}`)
             try {
                 const companionQrString = await QRCode.toString(companionDeeplink, {

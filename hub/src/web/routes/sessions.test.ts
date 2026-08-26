@@ -60,7 +60,7 @@ function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
     reopenSession?: (sessionId: string, namespace: string) => Promise<ReopenResultMock>
     listSlashCommands?: SyncEngine['listSlashCommands']
-    getSessionExport?: (sessionId: string, session: Session) => unknown
+    getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
@@ -359,23 +359,69 @@ describe('sessions routes', () => {
         expect(body.messages.map((message) => message.id)).toEqual(['msg-1', 'msg-2'])
     })
 
-    it('returns 413 when the export exceeds the hard message cap', async () => {
+    it('returns a structured warning instead of rejecting an export above the message threshold', async () => {
+        const session = createSession()
+        const warning = {
+            type: 'warning' as const,
+            count: 20_001,
+            limit: 20_000,
+            estimatedBytes: 12_345_678
+        }
+        const { app } = createApp(session, {
+            getSessionExport: () => warning
+        })
+
+        const response = await app.request('/api/sessions/session-1/export')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(warning)
+    })
+
+    it('passes an explicit force confirmation through for the complete export', async () => {
+        const session = createSession()
+        let receivedOptions: { force?: boolean } | undefined
+        const payload = {
+            schemaVersion: 2 as const,
+            exportedAt: 1_762_000_000_000,
+            session,
+            messages: [],
+            scratchlist: []
+        }
+        const { app } = createApp(session, {
+            getSessionExport: (_sessionId, _session, options) => {
+                receivedOptions = options
+                return { type: 'success', payload }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/export?force=true')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(payload)
+        expect(receivedOptions).toEqual({ force: true })
+    })
+
+    it('returns structured 413 details for exports over the resource limit', async () => {
         const session = createSession()
         const { app } = createApp(session, {
             getSessionExport: () => ({
                 type: 'too-large',
                 count: 20_001,
-                limit: 20_000
+                estimatedBytes: 104_857_601,
+                maxBytes: 104_857_600
             })
         })
 
-        const response = await app.request('/api/sessions/session-1/export')
+        const response = await app.request('/api/sessions/session-1/export?force=true')
 
         expect(response.status).toBe(413)
         expect(await response.json()).toEqual({
-            error: 'Session export too large',
+            type: 'too-large',
+            error: 'Session export exceeds the resource limit',
+            code: 'session_export_too_large',
             count: 20_001,
-            limit: 20_000
+            estimatedBytes: 104_857_601,
+            maxBytes: 104_857_600
         })
     })
 

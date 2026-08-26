@@ -1,0 +1,75 @@
+{
+    "description": "Codex family: thread_goal_updated normalizes to a thread-goal-updated event which is SILENT in the timeline (filtered as a goal-state signal) — expected blocks contain only the user text. latestGoal is derived state outside the normative projection.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-541",
+                "kind": "user-text",
+                "localId": null,
+                "text": "/goal Ship the pagination fix"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-541",
+                "kind": "user-text",
+                "localId": null,
+                "text": "/goal Ship the pagination fix"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "/goal Ship the pagination fix",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-541",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "goal": {
+                                "createdAt": 1755000001300,
+                                "objective": "Ship the pagination fix",
+                                "status": "active",
+                                "threadId": "thread-42",
+                                "timeUsedSeconds": 42,
+                                "tokenBudget": 200000,
+                                "tokensUsed": 8016,
+                                "updatedAt": 1755000001300
+                            },
+                            "thread_id": "thread-42",
+                            "turn_id": "turn-7",
+                            "type": "thread_goal_updated"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001300,
+                "id": "msg-codex-542",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-thread-goal-updated"
+}

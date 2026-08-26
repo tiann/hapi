@@ -16,6 +16,7 @@ const harness = vi.hoisted(() => ({
     session: {
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
+        onRetryQueuedMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
         rpcHandlerManager: {
             registerHandler: vi.fn()

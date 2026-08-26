@@ -10,6 +10,7 @@ export const RPC_METHODS = {
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',
+    AgentAvailability: 'agent-availability',
     CursorChatStoreStatus: 'cursor-chat-store-status',
     GitStatus: 'git-status',
     GitDiffNumstat: 'git-diff-numstat',

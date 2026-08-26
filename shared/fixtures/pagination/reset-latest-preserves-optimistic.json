@@ -1,0 +1,152 @@
+{
+    "description": "A tail sync that gets page.reset:true replaces every server row from before the request but keeps optimistic rows (id === localId): the not-yet-echoed send survives the epoch bump and the window adopts the new epoch and cursors.",
+    "expectedState": {
+        "epoch": 2,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1500,
+                "id": "local-1",
+                "invokedAt": null,
+                "localId": "local-1",
+                "optimistic": true,
+                "queued": true,
+                "seq": null,
+                "status": "sending"
+            },
+            {
+                "createdAt": 2000,
+                "id": "fresh-2",
+                "invokedAt": 2000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 2
+            }
+        ],
+        "newestCursor": {
+            "at": 2000,
+            "seq": 2
+        },
+        "olderCursor": {
+            "at": 2000,
+            "seq": 2
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "reset-latest-preserves-optimistic",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "old-1",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 1000,
+                            "id": "old-1",
+                            "invokedAt": 1000,
+                            "localId": null,
+                            "seq": 1
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 1,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 1000,
+                        "snapshotHeadSeq": 1
+                    }
+                }
+            ]
+        },
+        {
+            "message": {
+                "content": {
+                    "content": {
+                        "text": "optimistic send",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1500,
+                "id": "local-1",
+                "invokedAt": null,
+                "localId": "local-1",
+                "seq": null,
+                "status": "sending"
+            },
+            "op": "append-optimistic"
+        },
+        {
+            "expectedRequests": [
+                {
+                    "afterAt": 1000,
+                    "afterSeq": 1,
+                    "epoch": 1,
+                    "limit": 200,
+                    "untilAt": null,
+                    "untilSeq": null
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "fresh-2",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 2000,
+                            "id": "fresh-2",
+                            "invokedAt": 2000,
+                            "localId": null,
+                            "seq": 2
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 2,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 2000,
+                        "nextBeforeSeq": 2,
+                        "reset": true,
+                        "snapshotHeadAt": 2000,
+                        "snapshotHeadSeq": 2
+                    }
+                }
+            ]
+        }
+    ]
+}

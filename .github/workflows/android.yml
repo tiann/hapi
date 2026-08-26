@@ -1,0 +1,42 @@
+name: android
+
+on:
+    push:
+        branches:
+            - main
+        paths:
+            - 'android/**'
+            - 'shared/fixtures/**'
+            - '.github/workflows/android.yml'
+    pull_request:
+        paths:
+            - 'android/**'
+            - 'shared/fixtures/**'
+            - '.github/workflows/android.yml'
+
+permissions:
+    contents: read
+
+concurrency:
+    group: android-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: android
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-java@v4
+              with:
+                  distribution: temurin
+                  java-version: '21'
+            # Android SDK is preinstalled on GitHub ubuntu runners (licenses
+            # accepted); AGP auto-installs any missing platform/build-tools.
+            - uses: gradle/actions/setup-gradle@v4
+            - name: Protocol tests (pure JVM, fixtures-driven)
+              run: ./gradlew :core:protocol:test
+            - name: Assemble debug APK
+              run: ./gradlew :app:assembleDebug

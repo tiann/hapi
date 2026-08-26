@@ -1,0 +1,299 @@
+{
+    "description": "Codex exploration grouping family: consecutive CodexBash calls whose command_actions are all read/listFiles/search (and command_source is not userShell) collapse into one tool-group in visibleBlocks — a family boundary distinct from the default read/search grouping.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-571",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Where is the pagination cursor built?"
+            },
+            {
+                "createdAt": 1755000001500,
+                "id": "call_expl_read01",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call_expl_read01",
+                    "input": {
+                        "command": [
+                            "bash",
+                            "-lc",
+                            "cat package.json"
+                        ],
+                        "command_actions": [
+                            {
+                                "command": "cat package.json",
+                                "name": "package.json",
+                                "path": "/repo/package.json",
+                                "type": "read"
+                            }
+                        ],
+                        "command_source": "agent",
+                        "cwd": "/repo"
+                    },
+                    "name": "CodexBash",
+                    "result": {
+                        "exit_code": 0,
+                        "stdout": "{\n  \"name\": \"hapi\",\n  \"workspaces\": [\"cli\", \"hub\", \"web\", \"shared\"]\n}"
+                    },
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000003300,
+                "id": "call_expl_search01",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call_expl_search01",
+                    "input": {
+                        "command": [
+                            "bash",
+                            "-lc",
+                            "rg buildCursor web/src"
+                        ],
+                        "command_actions": [
+                            {
+                                "command": "rg buildCursor web/src",
+                                "path": "web/src",
+                                "query": "buildCursor",
+                                "type": "search"
+                            }
+                        ],
+                        "command_source": "agent",
+                        "cwd": "/repo"
+                    },
+                    "name": "CodexBash",
+                    "result": {
+                        "exit_code": 0,
+                        "stdout": "web/src/lib/message-window-store.ts:412:function buildCursor(page) {"
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-571",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Where is the pagination cursor built?"
+            },
+            {
+                "createdAt": 1755000001500,
+                "firstToolId": "call_expl_read01",
+                "id": "tool-group:call_expl_read01",
+                "kind": "tool-group",
+                "lastToolId": "call_expl_search01",
+                "tools": [
+                    {
+                        "createdAt": 1755000001500,
+                        "id": "call_expl_read01",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "call_expl_read01",
+                            "input": {
+                                "command": [
+                                    "bash",
+                                    "-lc",
+                                    "cat package.json"
+                                ],
+                                "command_actions": [
+                                    {
+                                        "command": "cat package.json",
+                                        "name": "package.json",
+                                        "path": "/repo/package.json",
+                                        "type": "read"
+                                    }
+                                ],
+                                "command_source": "agent",
+                                "cwd": "/repo"
+                            },
+                            "name": "CodexBash",
+                            "result": {
+                                "exit_code": 0,
+                                "stdout": "{\n  \"name\": \"hapi\",\n  \"workspaces\": [\"cli\", \"hub\", \"web\", \"shared\"]\n}"
+                            },
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000003300,
+                        "id": "call_expl_search01",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "call_expl_search01",
+                            "input": {
+                                "command": [
+                                    "bash",
+                                    "-lc",
+                                    "rg buildCursor web/src"
+                                ],
+                                "command_actions": [
+                                    {
+                                        "command": "rg buildCursor web/src",
+                                        "path": "web/src",
+                                        "query": "buildCursor",
+                                        "type": "search"
+                                    }
+                                ],
+                                "command_source": "agent",
+                                "cwd": "/repo"
+                            },
+                            "name": "CodexBash",
+                            "result": {
+                                "exit_code": 0,
+                                "stdout": "web/src/lib/message-window-store.ts:412:function buildCursor(page) {"
+                            },
+                            "state": "completed"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Where is the pagination cursor built?",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-571",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call_expl_read01",
+                            "id": "d1a3c4e5-8ce9-4f5a-9bc1-b5c6d7e8f572",
+                            "input": {
+                                "command": [
+                                    "bash",
+                                    "-lc",
+                                    "cat package.json"
+                                ],
+                                "command_actions": [
+                                    {
+                                        "command": "cat package.json",
+                                        "name": "package.json",
+                                        "path": "/repo/package.json",
+                                        "type": "read"
+                                    }
+                                ],
+                                "command_source": "agent",
+                                "cwd": "/repo"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001500,
+                "id": "msg-codex-572",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call_expl_read01",
+                            "id": "e2b4d5f6-9dfa-4a6b-8cd2-c6d7e8f9a573",
+                            "is_error": false,
+                            "output": {
+                                "exit_code": 0,
+                                "stdout": "{\n  \"name\": \"hapi\",\n  \"workspaces\": [\"cli\", \"hub\", \"web\", \"shared\"]\n}"
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002400,
+                "id": "msg-codex-573",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call_expl_search01",
+                            "id": "f3c5e6a7-0eab-4b7c-9de3-d7e8f9a0b574",
+                            "input": {
+                                "command": [
+                                    "bash",
+                                    "-lc",
+                                    "rg buildCursor web/src"
+                                ],
+                                "command_actions": [
+                                    {
+                                        "command": "rg buildCursor web/src",
+                                        "path": "web/src",
+                                        "query": "buildCursor",
+                                        "type": "search"
+                                    }
+                                ],
+                                "command_source": "agent",
+                                "cwd": "/repo"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003300,
+                "id": "msg-codex-574",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call_expl_search01",
+                            "id": "a4d6f7b8-1fbc-4c8d-8ef4-e8f9a0b1c575",
+                            "is_error": false,
+                            "output": {
+                                "exit_code": 0,
+                                "stdout": "web/src/lib/message-window-store.ts:412:function buildCursor(page) {"
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004100,
+                "id": "msg-codex-575",
+                "localId": null,
+                "seq": 5
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-exploration-tool-group"
+}

@@ -1,0 +1,82 @@
+{
+    "description": "A metadata wrapper with version strictly greater than the cached metadataVersion replaces the value and stores the version; the accompanying newer updatedAt advances.",
+    "expectedPatchResults": [
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project",
+            "summary": {
+                "text": "Add retry to upload path",
+                "updatedAt": 1755000009000
+            }
+        },
+        "metadataVersion": 4,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000010000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "metadata-newer-version-applied",
+    "patches": [
+        {
+            "metadata": {
+                "value": {
+                    "flavor": "claude",
+                    "host": "devbox",
+                    "name": "project",
+                    "path": "/home/dev/project",
+                    "summary": {
+                        "text": "Add retry to upload path",
+                        "updatedAt": 1755000009000
+                    }
+                },
+                "version": 4
+            },
+            "updatedAt": 1755000010000
+        }
+    ]
+}

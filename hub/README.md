@@ -116,7 +116,9 @@ See `src/web/routes/` for all endpoints.
 ### Machines (`src/web/routes/machines.ts`)
 
 - `GET /api/machines` - List online machines.
+- `GET /api/machines/:id/agent-availability` - List installed/configured Agents.
 - `POST /api/machines/:id/spawn` - Spawn new session on machine.
+- `POST /api/machines/:id/list-directory` - Browse runner-scoped directories.
 - `POST /api/machines/:id/paths/exists` - Check if path exists.
 
 ### Usage (`src/web/routes/usage.ts`)

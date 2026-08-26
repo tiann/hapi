@@ -12,6 +12,8 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 import type { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 // TODO(cursor-acp): remove legacy stream-json resume path after migration window.
 // New Cursor sessions use ACP only. This path exists because pre-ACP Cursor
 // session_id values are not loadable via ACP session/load.
@@ -138,6 +140,14 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             onSwitch: () => this.handleSwitchRequest()
         });
 
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async () => ({
+                steered: false,
+                error: 'Mid-turn steering requires a Cursor ACP session'
+            })
+        );
+
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
@@ -257,7 +267,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
     ): Promise<{ exitCode: number | null; stderr: string }> {
         return new Promise((resolve, reject) => {
-            const child = spawn('agent', args, {
+            const child = spawn(getAgentLaunchCommand('cursor'), args, {
                 cwd,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],

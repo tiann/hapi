@@ -1,0 +1,175 @@
+{
+    "description": "Completed request approved with decision approved_for_session + mode + allowTools: the permission (from agentState.completedRequests, keyed by the tool_use id) attaches to the tool-call block; wire key allowTools projects as permission.allowedTools; the paired tool_result completes the tool.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-401",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Install zod and use it for the config schema."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "toolu_01PermBash0001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01PermBash0001",
+                    "input": {
+                        "command": "bun add zod",
+                        "description": "Install zod"
+                    },
+                    "name": "Bash",
+                    "permission": {
+                        "allowedTools": [
+                            "Bash"
+                        ],
+                        "decision": "approved_for_session",
+                        "mode": "acceptEdits",
+                        "status": "approved"
+                    },
+                    "result": "installed zod@4.2.1",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-401",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Install zod and use it for the config schema."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "toolu_01PermBash0001",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_01PermBash0001",
+                    "input": {
+                        "command": "bun add zod",
+                        "description": "Install zod"
+                    },
+                    "name": "Bash",
+                    "permission": {
+                        "allowedTools": [
+                            "Bash"
+                        ],
+                        "decision": "approved_for_session",
+                        "mode": "acceptEdits",
+                        "status": "approved"
+                    },
+                    "result": "installed zod@4.2.1",
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "toolu_01PermBash0001": {
+                    "allowTools": [
+                        "Bash"
+                    ],
+                    "arguments": {
+                        "command": "bun add zod",
+                        "description": "Install zod"
+                    },
+                    "completedAt": 1755000006500,
+                    "createdAt": 1755000002200,
+                    "decision": "approved_for_session",
+                    "mode": "acceptEdits",
+                    "status": "approved",
+                    "tool": "Bash"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Install zod and use it for the config schema.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-401",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_01PermBash0001",
+                                        "input": {
+                                            "command": "bun add zod",
+                                            "description": "Install zod"
+                                        },
+                                        "name": "Bash",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "model": "claude-opus-4-1-20250805",
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "2b0c1d3e-7d9e-4faa-8c1b-c4d5e6f7a402"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "msg-agent-402",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "installed zod@4.2.1",
+                                        "is_error": false,
+                                        "tool_use_id": "toolu_01PermBash0001",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "2b0c1d3e-7d9e-4faa-8c1b-c4d5e6f7a402",
+                            "type": "user",
+                            "uuid": "3c1d2e4f-8eaf-4abb-9d2c-d5e6f7a8b403"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000014000,
+                "id": "msg-agent-403",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-approved-for-session"
+}

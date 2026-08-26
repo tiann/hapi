@@ -1,0 +1,144 @@
+{
+    "description": "An older page answering with a different epoch invalidates every cursor: the load stops with epoch-reset, the window is discarded, and a fresh latest request (issued by the store within the same operation) replaces it wholesale.",
+    "expectedState": {
+        "epoch": 2,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 20000,
+                "id": "f-20",
+                "invokedAt": 20000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 20
+            }
+        ],
+        "newestCursor": {
+            "at": 20000,
+            "seq": 20
+        },
+        "olderCursor": {
+            "at": 20000,
+            "seq": 20
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "older-page-epoch-mismatch-resets",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-10",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 10000,
+                            "id": "a-10",
+                            "invokedAt": 10000,
+                            "localId": null,
+                            "seq": 10
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 1,
+                        "hasMore": true,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 10000,
+                        "nextBeforeSeq": 10,
+                        "reset": false,
+                        "snapshotHeadAt": 10000,
+                        "snapshotHeadSeq": 10
+                    }
+                }
+            ]
+        },
+        {
+            "expectedOutcome": {
+                "kind": "stopped",
+                "reason": "epoch-reset"
+            },
+            "expectedRequests": [
+                {
+                    "beforeAt": 10000,
+                    "beforeSeq": 10,
+                    "limit": 200
+                },
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "fetch-older",
+            "responses": [
+                {
+                    "messages": [],
+                    "page": {
+                        "direction": "before",
+                        "epoch": 2,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": null,
+                        "nextBeforeSeq": null,
+                        "reset": false,
+                        "snapshotHeadAt": null,
+                        "snapshotHeadSeq": null
+                    }
+                },
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "f-20",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 20000,
+                            "id": "f-20",
+                            "invokedAt": 20000,
+                            "localId": null,
+                            "seq": 20
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 2,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 20000,
+                        "nextBeforeSeq": 20,
+                        "reset": false,
+                        "snapshotHeadAt": 20000,
+                        "snapshotHeadSeq": 20
+                    }
+                }
+            ]
+        }
+    ]
+}

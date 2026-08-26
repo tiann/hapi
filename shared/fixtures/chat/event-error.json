@@ -1,0 +1,83 @@
+{
+    "description": "Event family: an error event renders as an agent-event block with {type: error, message} carried verbatim.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-321",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Try resuming the run."
+            },
+            {
+                "createdAt": 1755000001400,
+                "event": {
+                    "message": "Claude Code process exited unexpectedly (code 1)",
+                    "type": "error"
+                },
+                "id": "msg-event-322",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-321",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Try resuming the run."
+            },
+            {
+                "createdAt": 1755000001400,
+                "event": {
+                    "message": "Claude Code process exited unexpectedly (code 1)",
+                    "type": "error"
+                },
+                "id": "msg-event-322",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Try resuming the run.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-321",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Claude Code process exited unexpectedly (code 1)",
+                            "type": "error"
+                        },
+                        "id": "2b6d8c3e-13f4-4a59-8d7c-e8f9a0b1c322",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001400,
+                "id": "msg-event-322",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-error"
+}

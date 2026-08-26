@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pi logo (web's inline PiLogo SVG): currentColor; tint at the call site.
+     Brand SVG via @lobehub/icons v5.4.0 - same source as
+     web/src/components/AgentFlavorIcon.tsx. Mono glyph ships black; the
+     AgentFlavorIcon composable applies the tint so dark mode works. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="800"
+    android:viewportHeight="800">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 165.29 165.29 h 352.07 V 400 H 400 v 117.36 H 282.65 v 117.36 H 165.29 z M 282.65 282.65 V 400 H 400 V 282.65 z"
+        android:fillType="evenOdd" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 517.36 400 h 117.36 v 234.72 H 517.36 z" />
+</vector>

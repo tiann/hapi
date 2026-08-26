@@ -55,7 +55,16 @@ describe('normalizeDecryptedMessage', () => {
                     type: 'system',
                     subtype: 'turn_duration',
                     uuid: 'sys-2',
-                    durationMs: 1200
+                    isSidechain: true,
+                    parentToolUseId: 'toolu-agent-1',
+                    durationMs: 1200,
+                    resultSummary: {
+                        usage: { input_tokens: 10, output_tokens: 2 },
+                        modelUsage: { 'claude-opus-5': { inputTokens: 10, outputTokens: 2 } },
+                        total_cost_usd: 0.028029,
+                        num_turns: 9,
+                        duration_ms: 1200
+                    }
                 }
             }
         })
@@ -63,10 +72,99 @@ describe('normalizeDecryptedMessage', () => {
         expect(normalizeDecryptedMessage(message)).toMatchObject({
             id: 'msg-1',
             role: 'event',
-            isSidechain: false,
+            isSidechain: true,
+            parentToolUseId: 'toolu-agent-1',
             content: {
-                type: 'turn-duration',
-                durationMs: 1200
+                type: 'turn-summary',
+                summary: {
+                    usage: { input_tokens: 10, output_tokens: 2 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 10, outputTokens: 2 } },
+                    totalCostUsd: 0.028029,
+                    numTurns: 9,
+                    durationMs: 1200
+                }
+            }
+        })
+    })
+
+    it('falls back to aggregate usage and drops malformed or zero-only result fields', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'turn_duration',
+                    uuid: 'sys-fallback',
+                    resultSummary: {
+                        usage: { input_tokens: 20, output_tokens: 4 },
+                        modelUsage: { 'claude-opus-5': { contextWindow: 200_000 } },
+                        total_cost_usd: 0,
+                        num_turns: 'bad',
+                        duration_ms: -1
+                    }
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'turn-summary',
+                summary: {
+                    usage: { input_tokens: 20, output_tokens: 4 },
+                    modelUsage: {},
+                    totalCostUsd: undefined,
+                    numTurns: undefined,
+                    durationMs: undefined
+                }
+            }
+        })
+    })
+
+    it('drops fractional and unsafe token counters and turn counts while retaining valid model fields', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'turn_duration',
+                    uuid: 'sys-integers',
+                    resultSummary: {
+                        usage: { input_tokens: 20.5, output_tokens: 4 },
+                        modelUsage: {
+                            'claude-opus-5': {
+                                inputTokens: 100.5,
+                                outputTokens: 10,
+                                cacheReadInputTokens: 9_007_199_254_740_992
+                            },
+                            'claude-haiku-4-5': { inputTokens: 10, outputTokens: 4 },
+                            'claude-empty-5': { contextWindow: 200_000 }
+                        },
+                        total_cost_usd: 0.00002,
+                        num_turns: 1.5,
+                        duration_ms: 12.5
+                    }
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'turn-summary',
+                summary: {
+                    usage: undefined,
+                    modelUsage: {
+                        'claude-opus-5': { outputTokens: 10 },
+                        'claude-haiku-4-5': { inputTokens: 10, outputTokens: 4 },
+                        'claude-empty-5': {}
+                    },
+                    totalCostUsd: 0.00002,
+                    numTurns: undefined,
+                    durationMs: 12.5
+                }
             }
         })
     })

@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -82,7 +83,7 @@ export async function cursorLocal(opts: {
     }
 
     await spawnWithTerminalGuard({
-        command: 'agent',
+        command: getAgentLaunchCommand('cursor'),
         args,
         cwd: opts.path,
         env: process.env,

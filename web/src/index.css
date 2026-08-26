@@ -672,3 +672,26 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
   bottom: 50% !important;
   transform: translateY(50%);
 }
+
+/* Composer attachment controls stay discoverable on touch, but stay quiet
+   until the attachment is targeted on mouse-driven layouts. */
+@media (hover: hover) and (pointer: fine) {
+  .hapi-composer-attachment-control {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms ease;
+  }
+
+  [data-hapi-composer-attachment-id]:hover .hapi-composer-attachment-control,
+  [data-hapi-composer-attachment-id]:focus-within .hapi-composer-attachment-control,
+  [data-hapi-composer-attachment-dragging] .hapi-composer-attachment-control {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .hapi-composer-attachment-control.hapi-composer-attachment-file-control {
+    opacity: 1;
+    pointer-events: auto;
+    transition: none;
+  }
+}

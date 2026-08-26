@@ -1,4 +1,5 @@
 import { AcpSdkBackend } from '@/agent/backends/acp'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { assertSafeWindowsShellArg } from './windowsShellArgs'
 
 const ANSI_SGR_PATTERN = /\u001b\[[0-9;]*m/g
@@ -42,7 +43,7 @@ export function createGrokBackend(opts: {
     effort?: string
 }): AcpSdkBackend {
     return new AcpSdkBackend({
-        command: 'grok',
+        command: getAgentLaunchCommand('grok'),
         args: buildGrokAgentArgs(opts),
         env: filterEnv(process.env)
     })

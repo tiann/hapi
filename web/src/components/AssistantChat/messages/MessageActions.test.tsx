@@ -6,6 +6,7 @@ import {
     MessageActions,
     selectThreadIsRunning,
 } from './MessageActions'
+import { MESSAGE_ACTION_BUTTON_CLASS } from './MessageActionButton'
 
 const copy = vi.fn()
 const onShareTurn = vi.fn()
@@ -359,6 +360,45 @@ describe('MessageActions', () => {
             'Fork',
             'Copy'
         ])
+    })
+
+    it('uses the shared compact style and matching accessible hover labels', () => {
+        renderActions({
+            align: 'end',
+            copyText: 'body',
+            messageElementId: 'message-1',
+            showFork: true,
+            showRewind: true,
+            onFork: async () => {},
+            onRewind: async () => {}
+        })
+
+        const buttons = ['Share turn as image', 'Rewind', 'Fork', 'Copy'].map((name) =>
+            screen.getByRole('button', { name })
+        )
+        expect(new Set(buttons.map((button) => button.className))).toEqual(new Set([MESSAGE_ACTION_BUTTON_CLASS]))
+        for (const button of buttons) {
+            expect(button).toHaveAttribute('title', button.getAttribute('aria-label'))
+        }
+        expect(buttons[0].querySelector('svg')).toHaveAttribute('class', 'h-3.5 w-3.5')
+    })
+
+    it('localizes every message action hover label in Simplified Chinese', () => {
+        localStorage.setItem('hapi-lang', 'zh-CN')
+
+        renderActions({
+            align: 'end',
+            copyText: 'body',
+            messageElementId: 'message-1',
+            showFork: true,
+            showRewind: true,
+            onFork: async () => {},
+            onRewind: async () => {}
+        })
+
+        for (const name of ['将本轮对话分享为图片', '回退', '分叉', '复制']) {
+            expect(screen.getByRole('button', { name })).toHaveAttribute('title', name)
+        }
     })
 
     it('shows Fork confirm dialog and calls onFork only after confirm', async () => {

@@ -1,0 +1,91 @@
+{
+    "description": "DELETE answered status:invoked (the agent consumed the message before the cancel landed): the queued snapshot must NOT be resurrected — the returned authoritative row is ingested with its server invokedAt and client status sent, landing in the thread at its invocation position.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "srv-1",
+                "invokedAt": 5000,
+                "localId": "local-1",
+                "optimistic": false,
+                "queued": false,
+                "seq": 1,
+                "status": "sent"
+            }
+        ],
+        "newestCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "cancel-too-late-ingests-invoked-row",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "text": "race with the agent",
+                                    "type": "text"
+                                },
+                                "role": "user"
+                            },
+                            "createdAt": 1000,
+                            "id": "srv-1",
+                            "invokedAt": null,
+                            "localId": "local-1",
+                            "seq": 1
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 1000,
+                        "snapshotHeadSeq": 1
+                    }
+                }
+            ]
+        },
+        {
+            "localId": "local-1",
+            "message": {
+                "content": {
+                    "content": {
+                        "text": "race with the agent",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1000,
+                "id": "srv-1",
+                "invokedAt": 5000,
+                "localId": "local-1",
+                "seq": 1
+            },
+            "op": "cancel-invoked"
+        }
+    ]
+}

@@ -1,0 +1,68 @@
+{
+    "description": "Event family open catch-all: an event whose type is not a known AgentEvent member passes through the pipeline untouched and renders as an agent-event block with every payload field carried verbatim (forward compatibility).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "note": "clients must pass unknown event types through verbatim",
+                    "quota": {
+                        "limit": 500000,
+                        "used": 123456
+                    },
+                    "type": "quota-sync"
+                },
+                "id": "msg-event-391",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "note": "clients must pass unknown event types through verbatim",
+                    "quota": {
+                        "limit": 500000,
+                        "used": 123456
+                    },
+                    "type": "quota-sync"
+                },
+                "id": "msg-event-391",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "note": "clients must pass unknown event types through verbatim",
+                            "quota": {
+                                "limit": 500000,
+                                "used": 123456
+                            },
+                            "type": "quota-sync"
+                        },
+                        "id": "1afb0b2d-6c8d-4e9c-9b0f-b3c4d5e6f391",
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-event-391",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-unknown-type"
+}

@@ -1,0 +1,106 @@
+{
+    "description": "messages-consumed stamps invokedAt and flips status to sent: the row leaves the queued bar and moves to its invocation position (after the agent row), while the newest cursor does NOT advance from this out-of-band update.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 2000,
+                "id": "a-2",
+                "invokedAt": 2000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 2
+            },
+            {
+                "createdAt": 1000,
+                "id": "q-1",
+                "invokedAt": 3000,
+                "localId": "local-1",
+                "optimistic": false,
+                "queued": false,
+                "seq": 1,
+                "status": "sent"
+            }
+        ],
+        "newestCursor": {
+            "at": 2000,
+            "seq": 2
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "messages-consumed-stamps-invoked-at",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "text": "queued question",
+                                    "type": "text"
+                                },
+                                "role": "user"
+                            },
+                            "createdAt": 1000,
+                            "id": "q-1",
+                            "invokedAt": null,
+                            "localId": "local-1",
+                            "seq": 1
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-2",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 2000,
+                            "id": "a-2",
+                            "invokedAt": 2000,
+                            "localId": null,
+                            "seq": 2
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 2000,
+                        "snapshotHeadSeq": 2
+                    }
+                }
+            ]
+        },
+        {
+            "invokedAt": 3000,
+            "localIds": [
+                "local-1"
+            ],
+            "op": "messages-consumed"
+        }
+    ]
+}

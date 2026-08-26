@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { MessageService } from './messageService'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
+import { SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
 import type { Session, SyncEvent } from '@hapi/protocol/types'
 
 // ---------------------------------------------------------------------------
@@ -175,21 +176,39 @@ describe('MessageService goal status filtering', () => {
         expect(result.payload.messages.map((message) => message.id)).toEqual([normal.id, scheduled.id])
     })
 
-    it('returns too-large instead of truncating an export over the cap', () => {
-        const store = makeStore()
-        const session = makeSession(store, 'session-export-cap')
-
-        store.messages.addMessage(session.id, { role: 'user', content: 'One' })
-        store.messages.addMessage(session.id, { role: 'agent', content: 'Two' })
+    it('warns above the recommended threshold and exports the full history after confirmation', () => {
+        const sessionStore = makeStore()
+        const session = makeSession(sessionStore, 'session-export-warning')
+        const rows = Array.from({ length: SESSION_EXPORT_MESSAGE_LIMIT + 1 }, (_, index) => ({
+            id: `message-${index}`,
+            sessionId: session.id,
+            content: { role: 'user', content: `Message ${index}` },
+            createdAt: index + 1,
+            seq: index + 1,
+            localId: null,
+            invokedAt: index + 1,
+            scheduledAt: null
+        })) as ReturnType<Store['messages']['getAllMessages']>
+        const store = {
+            messages: { getAllMessages: () => rows },
+            scratchlist: { list: () => [] }
+        } as unknown as Store
 
         const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
-        const result = service.getSessionExport(session.id, toProtocolSession(session), 1)
+        const warning = service.getSessionExport(session.id, toProtocolSession(session))
 
-        expect(result).toEqual({
-            type: 'too-large',
-            count: 2,
-            limit: 1
+        if (warning.type !== 'warning') throw new Error('Expected export warning')
+        expect(typeof warning.estimatedBytes).toBe('number')
+        expect(warning).toMatchObject({
+            type: 'warning',
+            count: SESSION_EXPORT_MESSAGE_LIMIT + 1,
+            limit: SESSION_EXPORT_MESSAGE_LIMIT
         })
+
+        const confirmed = service.getSessionExport(session.id, toProtocolSession(session), { force: true })
+        expect(confirmed.type).toBe('success')
+        if (confirmed.type !== 'success') throw new Error('Expected confirmed export')
+        expect(confirmed.payload.messages).toHaveLength(SESSION_EXPORT_MESSAGE_LIMIT + 1)
     })
 
     it('includes scratchlist text and attachment metadata in chronological order (tiann/hapi#1235)', () => {
@@ -497,16 +516,64 @@ describe('MessageService.getQueuedState', () => {
             'local-other'
         ])).toEqual({
             queuedLocalIds: ['local-queued', 'local-future'],
+            indeterminateLocalIds: [],
             invokedLocalMessages: [{ localId: 'local-invoked', invokedAt: 1_000 }]
         })
         expect(service.getQueuedState(session.id, [])).toEqual({
             queuedLocalIds: [],
+            indeterminateLocalIds: [],
             invokedLocalMessages: []
         })
     })
 })
 
 describe('MessageService.cancelQueuedMessage race scenarios', () => {
+    describe('indeterminate cancel recheck', () => {
+        it('returns invoked when consumption wins during the cancel ACK wait', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-indeterminate-cancel')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-indeterminate-cancel'
+            )
+            store.messages.markMessagesIndeterminate(session.id, [msg.localId!])
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                store.messages.markMessagesInvoked(session.id, [msg.localId!], 2_000)
+                callback(null, [{ removed: false }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            expect(publisher.events.some((event) => event.type === 'message-cancelled')).toBe(false)
+        })
+    })
+
+    describe('indeterminate explicit cancel', () => {
+        it('releases and deletes a held reservation after confirmed removal', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'indeterminate-cancel')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'discard' } },
+                'local-indeterminate'
+            )
+            store.messages.markMessagesIndeterminate(session.id, [msg.localId!])
+            const publisher = makePublisher()
+            const service = new MessageService(store, makeIo((callback) => {
+                callback(null, [{ removed: true }])
+            }), publisher as any)
+
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+            expect(result).toEqual({ status: 'cancelled', localId: 'local-indeterminate' })
+            expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toEqual({ status: 'absent' })
+            expect(publisher.events.some((event) => event.type === 'message-cancelled')).toBe(true)
+        })
+    })
+
     describe('Race-A: CLI ack removed:true → DELETE + status=cancelled', () => {
         it('returns cancelled and emits message-cancelled SSE after CLI confirms removal', async () => {
             const store = makeStore()

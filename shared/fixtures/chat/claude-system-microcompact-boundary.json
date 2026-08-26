@@ -1,0 +1,92 @@
+{
+    "description": "Claude output family: system subtype microcompact_boundary becomes an agent-event block with type microcompact; trigger/preTokens/tokensSaved come from data.microcompactMetadata.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-211",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Keep going with the audit."
+            },
+            {
+                "createdAt": 1755000002100,
+                "event": {
+                    "preTokens": 145200,
+                    "tokensSaved": 38700,
+                    "trigger": "auto",
+                    "type": "microcompact"
+                },
+                "id": "msg-agent-212",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-user-211",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Keep going with the audit."
+            },
+            {
+                "createdAt": 1755000002100,
+                "event": {
+                    "preTokens": 145200,
+                    "tokensSaved": 38700,
+                    "trigger": "auto",
+                    "type": "microcompact"
+                },
+                "id": "msg-agent-212",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Keep going with the audit.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-211",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "microcompactMetadata": {
+                                "preTokens": 145200,
+                                "tokensSaved": 38700,
+                                "trigger": "auto"
+                            },
+                            "subtype": "microcompact_boundary",
+                            "type": "system",
+                            "uuid": "b3c4d5e6-2f3a-4b4c-9d5e-f6a7b8c9d212"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002100,
+                "id": "msg-agent-212",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-system-microcompact-boundary"
+}
