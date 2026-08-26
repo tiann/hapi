@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,6 +58,19 @@ export async function setup() {
     const token = randomBytes(20).toString('base64url')
     const bunExec = findBunExec()
 
+    // The runner integration suite spawns sessions whose agent-availability
+    // preflight requires an installable Claude CLI. CI runners have none, so
+    // provide a stub binary and point workers at it (see setup.ts). POSIX
+    // only: the shebang stub is meaningless on Windows, and the integration
+    // suite is not part of any Windows path anyway.
+    let stubClaudePath: string | undefined
+    if (process.platform !== 'win32') {
+        const stubBin = join(tmpHome, 'bin')
+        mkdirSync(stubBin, { recursive: true })
+        stubClaudePath = join(stubBin, 'claude')
+        writeFileSync(stubClaudePath, '#!/bin/sh\nexec sleep 300\n', { mode: 0o755 })
+    }
+
     // Use a minimal env whitelist to prevent shell credentials (DB_PATH,
     // TELEGRAM_BOT_TOKEN, ELEVENLABS_API_KEY, etc.) from leaking into the
     // test hub and triggering real notifications or opening a production DB.
@@ -77,7 +90,7 @@ export async function setup() {
     }
 
     // Write config so setupFile.ts can inject env vars into each test worker
-    writeFileSync(TEST_CONFIG_FILE, JSON.stringify({ port, token, tmpHome, bunExec }))
+    writeFileSync(TEST_CONFIG_FILE, JSON.stringify({ port, token, tmpHome, bunExec, stubClaudePath }))
 
     const hubEntry = join(
         dirname(fileURLToPath(import.meta.url)),

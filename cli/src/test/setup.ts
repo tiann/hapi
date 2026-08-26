@@ -14,7 +14,7 @@ if (!existsSync(CONFIG_FILE)) {
     )
 }
 
-let config: { port: number; token: string; tmpHome: string; bunExec: string }
+let config: { port: number; token: string; tmpHome: string; bunExec: string; stubClaudePath?: string }
 try {
     config = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
 } catch (err) {
@@ -25,6 +25,9 @@ process.env.HAPI_API_URL = `http://127.0.0.1:${config.port}`
 process.env.CLI_API_TOKEN = config.token
 process.env.HAPI_HOME = config.tmpHome
 process.env.HAPI_BUN_EXEC = config.bunExec
+// The runner agent-availability preflight must see an installable Claude CLI
+// even on machines (CI) without one; globalSetup provides a stub binary.
+if (config.stubClaudePath) process.env.HAPI_CLAUDE_PATH = config.stubClaudePath
 // The stress test starts 20 real CLI children. On slower/loaded machines their
 // session webhooks can take longer than the production control-client default.
 process.env.HAPI_RUNNER_HTTP_TIMEOUT ??= '60000'
