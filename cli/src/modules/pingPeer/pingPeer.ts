@@ -9,6 +9,7 @@
  */
 
 import axios, { type AxiosInstance } from 'axios'
+import { randomUUID } from 'node:crypto'
 import { extractAssistantPlainText, isObject } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
@@ -349,7 +350,16 @@ async function sendMessage(
 ): Promise<void> {
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message },
+        {
+            text: message,
+            // A localId makes the row queue-shaped (invokedAt null) so the
+            // receiving UI can render it in the waiting bar, and deliveryMode
+            // 'steer' asks the peer CLI to inject it into an active turn
+            // instead of waiting for turn end (flavors that cannot steer
+            // store an ordinary queue row; hub + CLI both downgrade safely).
+            localId: `ping-peer-${randomUUID()}`,
+            deliveryMode: 'steer'
+        },
         {
             headers: authHeaders(jwt),
             timeout: 30_000,
