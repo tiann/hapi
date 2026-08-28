@@ -27,6 +27,7 @@ export const INSPECT_PEER_TOOL_DESCRIPTION =
 /** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
 export const PING_PEER_TOOL_DESCRIPTION =
     'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs on the same hub/namespace. ' +
+    'Delivery is steer-tagged: on steerable flavors (codex / pi / cursor) the message is injected into the peer\'s running turn when one is active, otherwise it becomes the peer\'s next prompt. ' +
     'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
     'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
     'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.'

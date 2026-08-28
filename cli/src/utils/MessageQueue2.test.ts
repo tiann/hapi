@@ -692,4 +692,23 @@ describe('MessageQueue2', () => {
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
     });
+
+    it('should pass the queued item with steerHint to the onMessage handler', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const seen: Array<{ message: string; steerHint?: boolean }> = [];
+
+        queue.setOnMessage((_message, _mode, item) => {
+            seen.push({ message: item.message, steerHint: item.steerHint });
+        });
+
+        queue.push('plain', 'local', 'lid-1');
+        queue.push('nudge', 'local', 'lid-2', true);
+        queue.pushIsolateAndClear('command', 'local', 'lid-3');
+
+        expect(seen).toEqual([
+            { message: 'plain', steerHint: undefined },
+            { message: 'nudge', steerHint: true },
+            { message: 'command', steerHint: undefined }
+        ]);
+    });
 });
