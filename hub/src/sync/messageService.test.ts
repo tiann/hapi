@@ -1249,11 +1249,17 @@ describe('MessageService.sendMessage deliveryMode', () => {
         })
     })
 
-    it('persists steer for steering-capable flavors and downgrades it for claude', async () => {
+    it('persists steer for arrival-steerable flavors and downgrades it for cursor and claude', async () => {
         const store = makeStore()
         const codexSession = store.sessions.getOrCreateSession(
             'delivery-mode-codex',
             { path: '/tmp/delivery-mode-codex', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const cursorSession = store.sessions.getOrCreateSession(
+            'delivery-mode-cursor',
+            { path: '/tmp/delivery-mode-cursor', host: 'localhost', flavor: 'cursor' },
             null,
             'default'
         )
@@ -1276,12 +1282,21 @@ describe('MessageService.sendMessage deliveryMode', () => {
             localId: 'claude-steer',
             deliveryMode: 'steer'
         })
+        await service.sendMessage(cursorSession.id, {
+            text: 'cursor steers only via the manual button',
+            localId: 'cursor-steer',
+            deliveryMode: 'steer'
+        })
 
         expect(store.messages.getUninvokedLocalMessages(codexSession.id)[0]?.content).toMatchObject({
             role: 'user',
             meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
         })
         expect(store.messages.getUninvokedLocalMessages(claudeSession.id)[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
+        })
+        expect(store.messages.getUninvokedLocalMessages(cursorSession.id)[0]?.content).toMatchObject({
             role: 'user',
             meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
         })

@@ -11,7 +11,7 @@ import {
     isRedundantGoalStatusEventContent,
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
-import { isObject, isSteeringSupportedForSession } from '@hapi/protocol'
+import { isObject } from '@hapi/protocol'
 import type { MessageDeliveryMode, MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
@@ -124,10 +124,12 @@ function getNormalizedDeliveryMode(
         return 'queue'
     }
 
-    // Steer provenance is only meaningful for flavors whose CLI can act on it
-    // (codex turn/steer, pi native steer, cursor ACP soft-send). Everything
-    // else (claude, unknown flavors) stores an ordinary queue row.
-    return isObject(metadata) && isSteeringSupportedForSession(metadata as Parameters<typeof isSteeringSupportedForSession>[0])
+    // Persist steer provenance only for flavors whose CLI consumes the hint on
+    // arrival (codex turn/steer, pi native steer). Cursor ACP steers only via
+    // the manual button today — its inbound path drops the hint, so keep its
+    // rows queued rather than advertising an inject that never happens.
+    return isObject(metadata)
+        && ((metadata.flavor === 'pi' || metadata.flavor === 'codex'))
         ? 'steer'
         : 'queue'
 }
