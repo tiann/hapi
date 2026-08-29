@@ -56,6 +56,7 @@ See `src/router.tsx` for route definitions.
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
+- Composer send shortcut: Alt+S (independent of the Enter behavior setting).
 - Permission mode toggle (default/acceptEdits/auto/bypassPermissions/plan).
 - Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
 - Session abort and mode switch controls.

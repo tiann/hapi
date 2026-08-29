@@ -1251,6 +1251,23 @@ export function HappyComposer(props: {
             return
         }
 
+        // Alt+S is an explicit send shortcut, independent of the Enter setting.
+        // Match the logical key so keyboard layouts can map Alt+S to another physical key.
+        const isAltSShortcut =
+            (e.key === 's' || e.key === 'S')
+            && e.altKey
+            && !e.ctrlKey
+            && !e.metaKey
+            && !e.shiftKey
+        if (isAltSShortcut) {
+            e.preventDefault()
+            if (canSend) {
+                flushAndSend()
+                setShowContinueHint(false)
+            }
+            return
+        }
+
         // Shift+Enter inserts a newline (textarea default; rich path inserts <br>).
         if (key === 'Enter' && e.shiftKey) {
             return
