@@ -1688,3 +1688,83 @@ describe('updateSessionAgentState: updated_at (#1855)', () => {
         expect(update({}, 3).result).toBe('version-mismatch')
     })
 })
+
+describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
+    function seed(store: Store) {
+        return store.sessions.getOrCreateSession(
+            `notify-${randomUUID()}`,
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+    }
+
+    it('persists the footer and reads it back', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 2000, note: 'needs creds' },
+            'default'
+        )).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyStatus).toBe('blocked')
+        expect(row?.lastNotifyAt).toBe(2000)
+        expect(row?.lastNotifyNote).toBe('needs creds')
+    })
+
+    it('does not let a replayed older message resurrect a superseded status', () => {
+        const store = makeStore()
+        const session = seed(store)
+        store.sessions.setSessionLastNotify(session.id, { status: 'done', at: 3000, note: null }, 'default')
+
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 1000, note: 'stale' },
+            'default'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('done')
+    })
+
+    it('leaves updated_at alone so stamping never re-sorts the session list', () => {
+        const store = makeStore()
+        const session = seed(store)
+        const before = store.sessions.getSession(session.id)?.updatedAt
+
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: Date.now() + 60_000, note: null },
+            'default'
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(before!)
+    })
+
+    it('clears on a new turn, and reports no-op when nothing was stored', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default')).toBe(false)
+
+        store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 2000, note: 'x' }, 'default')
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default')).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyStatus).toBeNull()
+        expect(row?.lastNotifyAt).toBeNull()
+        expect(row?.lastNotifyNote).toBeNull()
+    })
+
+    it('is namespace scoped', () => {
+        const store = makeStore()
+        const session = seed(store)
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 2000, note: null },
+            'other'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+    })
+})

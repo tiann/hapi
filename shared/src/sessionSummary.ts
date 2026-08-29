@@ -2,6 +2,7 @@ import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem,
 import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
+import type { SessionNotifySignal } from './notifyAttention'
 import type { AgentFlavor } from './modes'
 
 export type ForkSessionSummary = {
@@ -128,6 +129,10 @@ export type SessionSummary = {
      * Optional because older hubs never send it.
      */
     derivedToolWork?: boolean
+    /** Last `AGENT_NOTIFY_SUMMARY` footer. Orthogonal to `pendingRequestKinds`:
+     *  pending requests mean "live, waiting on a click", this means "the turn
+     *  ended and the agent said it is stuck". See `./notifyAttention`. */
+    lastNotify?: SessionNotifySignal | null
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
@@ -320,6 +325,7 @@ export function toSessionSummary(
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         derivedToolWork: session.derivedToolWork === true,
+        lastNotify: session.lastNotify ?? null,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
         attachedJob,

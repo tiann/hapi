@@ -7,6 +7,7 @@ import { SessionCache } from './sessionCache'
 import {
     WORK_AD_DEFAULT_TTL_MS,
     buildWorkAdFromNotify,
+    extractSessionNotifySignal,
     ingestNotifySummaryFromMessage,
     mapNotifyStatusToWorkAdStatus
 } from './workGraphNotifyIngest'
@@ -1201,5 +1202,49 @@ describe('notify cause consumption watermark', () => {
         const next = ingestNotify(store, session.id, 'default', nextAssistant.content, nextAssistant.id)
         expect(next?.event.payloadJson).toMatchObject({ causeMessageId: nextUser.id, causeText: 'new prompt' })
         expect((next?.event.payloadJson as { causeSeq?: number })?.causeSeq).toBe(nextUser.seq)
+    })
+})
+
+describe('extractSessionNotifySignal (#1717 blocked session-list chrome)', () => {
+    const ts = 1_700_000_000_000
+
+    it('lowercases the status and carries the action as the operator note', () => {
+        const signal = extractSessionNotifySignal(
+            assistantOutput('Stuck.\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"BLOCKED","action":"need prod creds","summary":"cannot deploy"}'),
+            ts
+        )
+        expect(signal).toEqual({ status: 'blocked', at: ts, note: 'need prod creds' })
+    })
+
+    it('falls back to summary when the footer carries no action', () => {
+        const signal = extractSessionNotifySignal(
+            assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"status":"stalled","summary":"waiting on review"}'),
+            ts
+        )
+        expect(signal).toEqual({ status: 'stalled', at: ts, note: 'waiting on review' })
+    })
+
+    it('keeps non-blocking statuses but stores no note for them', () => {
+        // `done` must still be recorded: it is what clears a stale `blocked`.
+        const signal = extractSessionNotifySignal(
+            assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","action":"nothing","summary":"shipped"}'),
+            ts
+        )
+        expect(signal).toEqual({ status: 'done', at: ts, note: null })
+    })
+
+    it('ignores user messages and footerless agent prose', () => {
+        expect(extractSessionNotifySignal(
+            userInbound('AGENT_NOTIFY_SUMMARY {"version":1,"status":"blocked"}'),
+            ts
+        )).toBeNull()
+        expect(extractSessionNotifySignal(assistantOutput('just some prose'), ts)).toBeNull()
+    })
+
+    it('ignores a footer with no status', () => {
+        expect(extractSessionNotifySignal(
+            assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"summary":"no status here"}'),
+            ts
+        )).toBeNull()
     })
 })

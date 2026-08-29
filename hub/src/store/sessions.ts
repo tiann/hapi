@@ -283,6 +283,9 @@ type DbSessionRow = {
     todos_updated_at: number | null
     team_state: string | null
     team_state_updated_at: number | null
+    last_notify_status: string | null
+    last_notify_at: number | null
+    last_notify_note: string | null
     active: number
     active_at: number | null
     seq: number
@@ -313,6 +316,9 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
         teamStateUpdatedAt: row.team_state_updated_at,
+        lastNotifyStatus: row.last_notify_status,
+        lastNotifyAt: row.last_notify_at,
+        lastNotifyNote: row.last_notify_note,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -691,6 +697,69 @@ function hasNewAgentStateRequest(prior: unknown, next: unknown): boolean {
     }
     const priorRequests = isPlainObject(prior) && isPlainObject(prior.requests) ? prior.requests : {}
     return Object.keys(nextRequests).some((requestId) => !Object.hasOwn(priorRequests, requestId))
+}
+
+/**
+ * Persist the last `AGENT_NOTIFY_SUMMARY` footer for a session (#1717).
+ *
+ * Monotonic on `last_notify_at` so a replayed or out-of-order older message
+ * cannot resurrect a stale `blocked` over a newer `done`.
+ *
+ * Deliberately does NOT touch `updated_at`: the message that carried the
+ * footer already advanced the session clock, and moving it again here would
+ * re-sort the session list and re-trigger the unread watermark for a write
+ * that carries no new conversation.
+ */
+export function setSessionLastNotify(
+    db: Database,
+    id: string,
+    signal: { status: string; at: number; note: string | null },
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_status = @status,
+                last_notify_at = @at,
+                last_notify_note = @note,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (last_notify_at IS NULL OR last_notify_at <= @at)
+        `).run({
+            id,
+            status: signal.status,
+            at: signal.at,
+            note: signal.note,
+            namespace
+        })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Drop the stored notify footer — the agent started a new turn, so its last
+ * self-report no longer describes the present. No-op (returns false) when
+ * nothing was stored, so callers can guard cheap.
+ */
+export function clearSessionLastNotify(db: Database, id: string, namespace: string): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_status = NULL,
+                last_notify_at = NULL,
+                last_notify_note = NULL,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND last_notify_status IS NOT NULL
+        `).run({ id, namespace })
+        return result.changes === 1
+    } catch {
+        return false
+    }
 }
 
 export function setSessionTodos(

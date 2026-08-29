@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
+import { BLOCKED_NOTIFY_STALE_MS } from '@hapi/protocol'
 import {
     classifySessionAttention,
+    getSessionBlockedState,
     sessionIsUnread,
 } from './sessionAttention'
 import { followSessionTail } from './sessionLastSeen'
@@ -240,5 +242,55 @@ describe('sessionIsUnread', () => {
             }),
             { lastSeenAt: 1000 }
         )).toBe(true)
+    })
+})
+
+describe('getSessionBlockedState', () => {
+    const now = 5_000_000
+
+    it('flags a blocked footer and carries its note', () => {
+        const state = getSessionBlockedState(
+            makeSummary({ id: 'a', lastNotify: { status: 'blocked', at: now, note: 'needs a token' } }),
+            { now }
+        )
+        expect(state).toEqual({ status: 'blocked', at: now, note: 'needs a token', stale: false })
+    })
+
+    it('treats a self-reported stall as blocked, matching the hub work_ad fold', () => {
+        const state = getSessionBlockedState(
+            makeSummary({ id: 'a', lastNotify: { status: 'stalled', at: now, note: null } }),
+            { now }
+        )
+        expect(state?.status).toBe('stalled')
+    })
+
+    it('ignores non-blocking statuses', () => {
+        for (const status of ['done', 'in_progress', 'needs_review', 'failed']) {
+            expect(getSessionBlockedState(
+                makeSummary({ id: 'a', lastNotify: { status, at: now, note: null } }),
+                { now }
+            )).toBeNull()
+        }
+    })
+
+    it('suppresses blocked chrome while the agent is thinking again', () => {
+        // The hub clears lastNotify on the same transition; this guards the
+        // window before that patch lands.
+        expect(getSessionBlockedState(
+            makeSummary({ id: 'a', thinking: true, lastNotify: { status: 'blocked', at: now, note: null } }),
+            { now }
+        )).toBeNull()
+    })
+
+    it('marks a footer older than the loud window stale rather than dropping it', () => {
+        const state = getSessionBlockedState(
+            makeSummary({ id: 'a', lastNotify: { status: 'blocked', at: now - BLOCKED_NOTIFY_STALE_MS - 1, note: null } }),
+            { now }
+        )
+        expect(state?.stale).toBe(true)
+    })
+
+    it('returns null when no footer has been seen', () => {
+        expect(getSessionBlockedState(makeSummary({ id: 'a' }), { now })).toBeNull()
     })
 })

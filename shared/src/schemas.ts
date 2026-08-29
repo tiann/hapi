@@ -542,6 +542,13 @@ export const TeamStateSchema = z.object({
 
 export type TeamState = z.infer<typeof TeamStateSchema>
 
+/** Last `AGENT_NOTIFY_SUMMARY` footer the agent emitted (see `notifyAttention`). */
+export const SessionNotifySignalSchema = z.object({
+    status: z.string(),
+    at: z.number(),
+    note: z.string().nullable().default(null)
+})
+
 export const ThreadGoalStatusSchema = z.enum([
     'active',
     'paused',
@@ -642,6 +649,9 @@ export const SessionSchema = z.object({
     // full-session payloads and hand-built Session literals stay valid.
     todosUpdatedAt: z.number().optional(),
     teamStateUpdatedAt: z.number().optional(),
+    /** Last agent notify footer. Drives the session list's blocked chrome;
+     *  nullish on hubs that have not seen a footer for this session yet. */
+    lastNotify: SessionNotifySignalSchema.nullish(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),

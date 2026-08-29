@@ -457,6 +457,13 @@ export class SessionCache {
             teamState,
             todosUpdatedAt: stored.todosUpdatedAt ?? 0,
             teamStateUpdatedAt: stored.teamStateUpdatedAt ?? 0,
+            lastNotify: stored.lastNotifyStatus !== null && stored.lastNotifyAt !== null
+                ? {
+                    status: stored.lastNotifyStatus,
+                    at: stored.lastNotifyAt,
+                    note: stored.lastNotifyNote
+                }
+                : null,
             model: stored.model,
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
@@ -496,6 +503,44 @@ export class SessionCache {
         if (!session) throw new Error('Session not found')
         this.store.sessions.setSessionPinMode(sessionId, mode, session.namespace)
         this.refreshSession(sessionId)
+    }
+
+    /**
+     * Record the agent's latest `AGENT_NOTIFY_SUMMARY` footer (#1717).
+     * Refreshes so SSE carries the new `lastNotify` to session lists.
+     */
+    setSessionLastNotify(
+        sessionId: string,
+        signal: { status: string; at: number; note: string | null }
+    ): void {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return
+        // Unchanged status for the same turn: skip the write + SSE fan-out.
+        // The list only renders status/note, so a repeated footer is a no-op.
+        if (session.lastNotify
+            && session.lastNotify.status === signal.status
+            && session.lastNotify.note === signal.note
+            && session.lastNotify.at >= signal.at
+        ) {
+            return
+        }
+        if (this.store.sessions.setSessionLastNotify(sessionId, signal, session.namespace)) {
+            this.refreshSession(sessionId)
+        }
+    }
+
+    /**
+     * Forget the stored footer — a new turn started, so the agent's last
+     * self-report no longer describes the present.
+     */
+    clearSessionLastNotify(sessionId: string): void {
+        const session = this.sessions.get(sessionId)
+        // Guard on the cached value so the common (nothing stored) case costs
+        // no SQL: this runs on every thinking transition.
+        if (!session?.lastNotify) return
+        if (this.store.sessions.clearSessionLastNotify(sessionId, session.namespace)) {
+            this.refreshSession(sessionId)
+        }
     }
 
     markSessionActive(sessionId: string, time: number = Date.now()): void {
@@ -610,6 +655,12 @@ export class SessionCache {
         }
         if (patch.thinking === false) this.forgetInterruptedTurn(session.id)
         this.recordTurn(session, wasThinking, Date.now(), 'patch', 'idle')
+
+        // #1717: last, because clearing re-seats the cached Session object and
+        // would strand the in-place mutations above.
+        if (!wasThinking && session.thinking) {
+            this.clearSessionLastNotify(session.id)
+        }
 
         return true
     }
@@ -745,6 +796,14 @@ export class SessionCache {
                 } satisfies SessionPatch
             })
         }
+
+        // #1717: a new turn invalidates the agent's last self-report — whatever
+        // it said it was blocked on, it is now working. Done last because
+        // `clearSessionLastNotify` re-seats the cached Session object, which
+        // would strand the in-place mutations above.
+        if (!wasThinking && session.thinking) {
+            this.clearSessionLastNotify(session.id)
+        }
     }
 
     /**
@@ -795,6 +854,13 @@ export class SessionCache {
                     updatedAt: session.updatedAt
                 } satisfies SessionPatch
             })
+        }
+
+        // #1717: this is the operator-answered-a-blocked-agent path, and it
+        // sets `thinking` before any CLI keep-alive lands — so the rising edge
+        // in `handleSessionAlive` would never see one.
+        if (!wasThinking) {
+            this.clearSessionLastNotify(session.id)
         }
     }
 
