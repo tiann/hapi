@@ -26,6 +26,7 @@ import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/u
 import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { usePinActiveSessions } from '@/hooks/usePinActiveSessions'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
@@ -73,13 +74,15 @@ const RUNNING_BUCKETS = [
 type RunningBucketKey = (typeof RUNNING_BUCKETS)[number]['key']
 
 /**
- * Sessions that warrant the optional pinned top sections.
- * Any connected session floats — a session that just finished executing stays
- * visible at the top (Active tier) because the operator usually continues the
- * conversation; only disconnected sessions fall into directory groups.
+ * Sessions that warrant the existing in-progress pinned section. Quiet active
+ * sessions are only floated when the broader active-session setting is on.
  */
 function isPinnedInProgressSession(session: SessionSummary): boolean {
-    return session.active
+    return session.active && (
+        session.thinking
+        || (session.backgroundTaskCount ?? 0) > 0
+        || (session.pendingRequestsCount ?? 0) > 0
+    )
 }
 
 export type SessionTimeRange = {
@@ -1208,6 +1211,7 @@ export function SessionList(props: {
     // Transient unread lens — not a Settings preference. Cleared on reload; rows drop as they're seen.
     const [showUnreadOnly, setShowUnreadOnly] = useState(false)
     const { pinInProgressSessions } = usePinInProgressSessions()
+    const { pinActiveSessions } = usePinActiveSessions()
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
@@ -1323,7 +1327,7 @@ export function SessionList(props: {
             pending: [],
             active: [],
         }
-        if (!pinInProgressSessions) {
+        if (!pinInProgressSessions && !pinActiveSessions) {
             return buckets
         }
         for (const session of machineFilteredSessions) {
@@ -1337,7 +1341,7 @@ export function SessionList(props: {
                 buckets.working.push(session)
             } else if ((session.pendingRequestsCount ?? 0) > 0) {
                 buckets.pending.push(session)
-            } else {
+            } else if (pinActiveSessions) {
                 // Quiet but connected: finished executing, operator will continue.
                 buckets.active.push(session)
             }
@@ -1347,7 +1351,7 @@ export function SessionList(props: {
             buckets[key].sort(byRecent)
         }
         return buckets
-    }, [machineFilteredSessions, pinInProgressSessions])
+    }, [machineFilteredSessions, pinActiveSessions, pinInProgressSessions])
     const runningSessionTotal = runningSessions.working.length
         + runningSessions.pending.length
     const activeSessionTotal = runningSessions.active.length
@@ -1355,11 +1359,14 @@ export function SessionList(props: {
         () => groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => {
                 if (session.globalPinned) return false
-                if (pinInProgressSessions && !session.pinned && isPinnedInProgressSession(session)) return false
+                if (!session.pinned && (
+                    (pinActiveSessions && session.active)
+                    || (pinInProgressSessions && isPinnedInProgressSession(session))
+                )) return false
                 return true
             })
         ),
-        [machineFilteredSessions, pinInProgressSessions]
+        [machineFilteredSessions, pinActiveSessions, pinInProgressSessions]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -1373,12 +1380,12 @@ export function SessionList(props: {
         [machineFilteredSessions]
     )
     const actionOnlyGroups = useMemo(() => {
-        if (!pinInProgressSessions) {
+        if (!pinInProgressSessions && !pinActiveSessions) {
             return []
         }
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
-    }, [groups, allDirectoryGroups, pinInProgressSessions])
+    }, [groups, allDirectoryGroups, pinActiveSessions, pinInProgressSessions])
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
@@ -2053,7 +2060,7 @@ export function SessionList(props: {
                     collapsed: activeSectionCollapsed,
                     onToggle: () => setActiveSectionCollapsed((value) => !value),
                     pulse: false,
-                    count: activeSessionTotal,
+                    count: pinActiveSessions || pinInProgressSessions ? activeSessionTotal : 0,
                     bucketKeys: ['active'],
                 })}
                 {groups.map(renderDirectoryGroup)}
