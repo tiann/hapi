@@ -1413,7 +1413,14 @@ export function NewSession(props: {
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
     async function handleCreate() {
-        if (!machineId || !trimmedDirectory || createInFlightRef.current) return
+        if (!machineId || createInFlightRef.current) return
+
+        // When importing a Codex session, prefer that session's recorded workspace cwd.
+        const spawnDirectory = (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
+
+        if (!spawnDirectory) return
 
         createInFlightRef.current = true
         setIsCreating(true)
@@ -1424,13 +1431,13 @@ export function NewSession(props: {
                 setError(t('newSession.agentUnavailable'))
                 return
             }
-            const existsResult = await checkPathsExists([trimmedDirectory])
-            if (existsResult.outsideWorkspaceRoots?.includes(trimmedDirectory)) {
+            const existsResult = await checkPathsExists([spawnDirectory])
+            if (existsResult.outsideWorkspaceRoots?.includes(spawnDirectory)) {
                 haptic.notification('error')
                 setError(t('newSession.directoryOutsideWorkspaceRoots'))
                 return
             }
-            const directoryExists = existsResult.exists[trimmedDirectory]
+            const directoryExists = existsResult.exists[spawnDirectory]
 
             if (sessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
@@ -1552,7 +1559,7 @@ export function NewSession(props: {
 
             const result = await spawnSession({
                 machineId,
-                directory: trimmedDirectory,
+                directory: spawnDirectory,
                 agent,
                 model: resolvedModel,
                 effort: resolvedEffort,
@@ -1576,7 +1583,7 @@ export function NewSession(props: {
                 savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
-                addRecentPath(machineId, trimmedDirectory)
+                addRecentPath(machineId, spawnDirectory)
                 props.onSuccess(result.sessionId)
                 return
             }
@@ -1630,9 +1637,14 @@ export function NewSession(props: {
     const fastModeSelectionPending = agent === 'codex'
         && serviceTier === 'fast'
         && codexModelsState.isLoading
+    const hasSpawnDirectory = Boolean(
+        (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
+    )
     const canCreate = Boolean(
         machineId
-        && trimmedDirectory
+        && hasSpawnDirectory
         && !isFormDisabled
         && !missingWorktreeDirectory
         && !directoryOutsideWorkspaceRoots

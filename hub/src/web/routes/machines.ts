@@ -107,7 +107,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,
-            undefined, // resumeSessionId
+            parsed.data.resumeSessionId,
             parsed.data.effort,
             parsed.data.permissionMode,
             parsed.data.serviceTier,

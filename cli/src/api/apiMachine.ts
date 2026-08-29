@@ -44,6 +44,7 @@ import {
     type ListCopilotModelsForCwdRequest,
     type ListCopilotModelsForCwdResponse
 } from '../modules/common/copilotModels'
+import { findCodexSessionPath } from '../modules/common/codexSessions'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
@@ -373,6 +374,13 @@ export class ApiMachineClient {
                     type: 'error',
                     errorMessage: 'Directory is outside this machine\'s workspace roots',
                     code: 'outside_workspace_roots',
+                }
+            }
+
+            if (agent === 'codex' && resumeSessionId) {
+                const codexSessionPath = await findCodexSessionPath(resumeSessionId)
+                if (!(await this.isLocalSessionWithinWorkspaceRoots({ cwd: codexSessionPath }))) {
+                    return { type: 'error', errorMessage: 'Codex session path is unavailable or outside workspace roots' }
                 }
             }
 

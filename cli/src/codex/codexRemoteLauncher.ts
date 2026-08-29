@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 
 import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
@@ -15,6 +16,9 @@ import type { QueueReservation } from '@/utils/MessageQueue2';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
+import { convertCodexEvent } from './utils/codexEventConverter';
+import { createCodexSessionScanner, readLatestCodexUsageFromTail, type CodexSessionScanner } from './utils/codexSessionScanner';
+import { emptyLiveUsageDimensions, filterTranscriptUsageForLive, markLiveUsageDimensions, type LiveUsageDimensions } from './utils/codexUsage';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -22,6 +26,7 @@ import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { extractErrorInfo } from '@/utils/errorUtils';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { findCodexSessionFile } from '@/modules/common/codexSessions';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -236,6 +241,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private currentTurnId: string | null = null;
     private readonly activeChildTurns = new Map<string, string>();
     readonly conversationHistory = new CodexConversationHistory(() => this.appServerClient);
+    private usageScanner: CodexSessionScanner | null = null;
+    private usageScannerThreadId: string | null = null;
+    private usageScannerSetup: Promise<void> | null = null;
+    private readonly liveUsageByThread = new Map<string, LiveUsageDimensions>();
+    /** Account-scoped rate limits can arrive before any thread id exists. */
+    private liveAccountRateLimits = false;
+    private shuttingDown = false;
+
+    private liveUsageForThread(threadId: string): LiveUsageDimensions {
+        const threadLive = this.liveUsageByThread.get(threadId) ?? emptyLiveUsageDimensions();
+        return {
+            tokens: threadLive.tokens,
+            rateLimits: threadLive.rateLimits || this.liveAccountRateLimits
+        };
+    }
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -329,6 +349,168 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         this.exitReason = 'switch';
         this.shouldExit = true;
         await this.handleAbort();
+    }
+
+    private async ensureUsageScanner(threadId: string): Promise<void> {
+        if (this.usageScannerThreadId === threadId && (this.usageScanner || this.usageScannerSetup)) {
+            return this.usageScannerSetup ?? Promise.resolve();
+        }
+
+        const setupTask = this.replaceUsageScanner(threadId).finally(() => {
+            if (this.usageScannerSetup === setupTask) {
+                this.usageScannerSetup = null;
+            }
+        });
+        this.usageScannerSetup = setupTask;
+        return setupTask;
+    }
+
+    private async replaceUsageScanner(threadId: string): Promise<void> {
+        const previousScanner = this.usageScanner;
+        this.usageScanner = null;
+        this.usageScannerThreadId = threadId;
+        if (previousScanner) {
+            await previousScanner.cleanup();
+        }
+
+        const transcriptPath = await this.findTranscriptWithRetry(threadId);
+        if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
+            return;
+        }
+        if (!transcriptPath) {
+            logger.debug(`[Codex] No transcript found for remote thread ${threadId}; usage unavailable`);
+            return;
+        }
+
+        let transcriptSize = 0;
+        try {
+            transcriptSize = (await stat(transcriptPath)).size;
+        } catch (error) {
+            // Resume can race the first transcript flush; still attach at offset 0 and
+            // seed from whatever the tail reader can see.
+            logger.debug(`[Codex] Failed to stat transcript for remote thread ${threadId}:`, error);
+        }
+        if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
+            return;
+        }
+
+        // Attach the live watcher before the (bounded) historical seed so a fast
+        // session exit cannot skip scanner registration after an extra await.
+        const scanner = await createCodexSessionScanner({
+            transcriptPath,
+            initialCursor: transcriptSize,
+            replayExistingHistory: false,
+            onEvent: (event) => {
+                const converted = convertCodexEvent(event);
+                for (const message of converted?.messages ?? []) {
+                    if (message.type !== 'token_count') {
+                        continue;
+                    }
+                    const scopeRole = message.scopeRole ?? message.scope_role;
+                    if (scopeRole === 'child') {
+                        continue;
+                    }
+                    const eventThreadId = message.threadId ?? message.thread_id;
+                    if (eventThreadId && eventThreadId !== threadId) {
+                        continue;
+                    }
+                    if (
+                        this.currentThreadId !== threadId
+                        || this.usageScannerThreadId !== threadId
+                    ) {
+                        continue;
+                    }
+                    const live = this.liveUsageForThread(threadId);
+                    const filtered = filterTranscriptUsageForLive(message, live);
+                    if (filtered) {
+                        this.session.recordCodexUsage(filtered);
+                    }
+                }
+            }
+        });
+        if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
+            await scanner.cleanup();
+            return;
+        }
+        this.usageScanner = scanner;
+
+        const latestUsage = await readLatestCodexUsageFromTail(transcriptPath, {
+            maxBytes: 4 * 1024 * 1024,
+            chunkBytes: 64 * 1024,
+            threadId
+        });
+        if (
+            this.shuttingDown
+            || this.usageScannerThreadId !== threadId
+            || this.currentThreadId !== threadId
+        ) {
+            return;
+        }
+        const live = this.liveUsageForThread(threadId);
+        for (const payload of latestUsage) {
+            const filtered = filterTranscriptUsageForLive(payload, live);
+            if (filtered) {
+                this.session.recordCodexUsage(filtered);
+            }
+        }
+    }
+
+    private async findTranscriptWithRetry(threadId: string): Promise<string | null> {
+        const attempts = 6;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
+                return null;
+            }
+            try {
+                const transcriptPath = findCodexSessionFile(threadId);
+                if (transcriptPath) {
+                    return transcriptPath;
+                }
+            } catch (error) {
+                logger.debug(`[Codex] Failed to find transcript for remote thread ${threadId}:`, error);
+                return null;
+            }
+            if (attempt < attempts - 1) {
+                await this.sleep(250);
+            }
+        }
+        return null;
+    }
+
+    private async sleep(ms: number): Promise<void> {
+        await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, ms);
+            timer.unref?.();
+        });
+    }
+
+    private async detachUsageScanner(): Promise<void> {
+        this.usageScannerThreadId = null;
+        this.liveUsageByThread.clear();
+        const setup = this.usageScannerSetup;
+        this.usageScannerSetup = null;
+        const scanner = this.usageScanner;
+        this.usageScanner = null;
+        if (setup) {
+            try {
+                await setup;
+            } catch (error) {
+                logger.debug('[Codex] Remote usage scanner setup failed during detach:', error);
+            }
+        }
+        // In-flight setup sees usageScannerThreadId mismatch and cleans its own scanner.
+        if (scanner) {
+            try {
+                await scanner.cleanup();
+            } catch (error) {
+                logger.debug('[Codex] Remote usage scanner detach failed:', error);
+            }
+        }
+    }
+
+    private async cleanupUsageScanner(): Promise<void> {
+        this.shuttingDown = true;
+        await this.detachUsageScanner();
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -2706,6 +2888,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         this.conversationHistory.setThreadId(threadId);
                         void this.conversationHistory.probeCapabilities().catch(() => {});
                         session.onSessionFound(threadId);
+                        await this.ensureUsageScanner(threadId).catch((error) => {
+                            logger.debug(`[Codex] Failed to start remote usage scanner for ${threadId}:`, error);
+                        });
                     } else {
                         logger.debug(
                             `[Codex] Ignoring thread_started for non-active thread; ` +
@@ -2763,11 +2948,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (!eventThreadId && this.currentThreadId && isScopeSensitiveCodexEvent(msgType) && hasKnownChildAgents()) {
-                logger.debug(
-                    `[Codex] Dropping unscoped scope-sensitive event while child agents are active; ` +
-                    `type=${msgType}, activeThread=${this.currentThreadId}`
-                );
-                return;
+                const isAccountUsage = msgType === 'token_count'
+                    && (msg.usage_scope === 'account' || msg.usageScope === 'account');
+                if (!isAccountUsage) {
+                    logger.debug(
+                        `[Codex] Dropping unscoped scope-sensitive event while child agents are active; ` +
+                        `type=${msgType}, activeThread=${this.currentThreadId}`
+                    );
+                    return;
+                }
             }
 
             if (msgType === 'thread_goal_updated') {
@@ -3227,7 +3416,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (msgType === 'token_count') {
+                const isAccountUsage = msg.usage_scope === 'account' || msg.usageScope === 'account';
+                if (!isAccountUsage && eventThreadId && eventThreadId !== this.currentThreadId) {
+                    return;
+                }
+                if (isAccountUsage) {
+                    this.liveAccountRateLimits = true;
+                }
                 const threadId = eventThreadId ?? this.currentThreadId;
+                if (threadId) {
+                    this.liveUsageByThread.set(
+                        threadId,
+                        markLiveUsageDimensions(this.liveUsageByThread.get(threadId), msg)
+                    );
+                }
+                session.recordCodexUsage(msg);
                 session.sendAgentMessage({
                     ...addCodexEventScope(msg, 'parent', threadId),
                     model: asString(msg.model) ?? usageModel,
@@ -3950,6 +4153,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (specialCommand.type === 'clear') {
                 await interruptActiveTurn();
                 resetCurrentTurnState();
+                await this.detachUsageScanner();
                 this.currentThreadId = null;
                 invalidThreadId = null;
                 hasThread = false;
@@ -4130,6 +4334,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     this.conversationHistory.setThreadId(threadId);
                     void this.conversationHistory.probeCapabilities().catch(() => {});
                     session.onSessionFound(threadId);
+                    await this.ensureUsageScanner(threadId).catch((error) => {
+                        logger.debug(`[Codex] Failed to start remote usage scanner for ${threadId}:`, error);
+                    });
                     hasThread = true;
                 } else {
                     if (!this.currentThreadId) {
@@ -4286,6 +4493,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         logger.debug('[codex-remote]: cleanup start');
         this.appServerClient.setTransportAbandonedHandler(null);
         this.appServerClient.setStderrHandler(null);
+        await this.cleanupUsageScanner();
         try {
             await this.appServerClient.disconnect();
         } catch (error) {

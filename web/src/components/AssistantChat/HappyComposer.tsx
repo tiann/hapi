@@ -29,6 +29,7 @@ import {
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary } from '@/types/api'
+import type { CodexUsage } from '@hapi/protocol/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -300,6 +301,7 @@ export function HappyComposer(props: {
     contextWindow?: number | null
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
+    codexUsage?: CodexUsage | null
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
@@ -406,6 +408,7 @@ export function HappyComposer(props: {
         contextCacheRead,
         contextWindow,
         contextModel,
+        codexUsage,
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
@@ -2367,6 +2370,7 @@ export function HappyComposer(props: {
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}
+                            codexUsage={agentFlavor === 'codex' ? codexUsage : undefined}
                         />
                     </div>
                 </ComposerPrimitive.Root>
