@@ -461,6 +461,7 @@ export default function FilePage() {
                                 src={imagePreviewUrl}
                                 fileName={fileName}
                                 label={t('file.page.imagePreviewAlt', { name: fileName })}
+                                fileSize={fileContentResult?.size}
                             />
                         ) : binaryFile ? (
                             <div className="text-sm text-[var(--app-hint)]">
