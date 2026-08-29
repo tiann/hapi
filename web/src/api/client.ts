@@ -17,9 +17,14 @@ import type {
     PermissionMode,
     PiImportSessionsResponse,
     PiLocalSessionsResponse,
+    NotificationCopyConfig,
+    NotificationCopyResponse,
+    NotificationPreferences,
+    NotificationPreferencesUpdate,
     PushSubscriptionPayload,
     PushUnsubscribePayload,
     PushVapidPublicKeyResponse,
+    TestPushResponse,
     SlashCommandsResponse,
     SkillsResponse,
     SpawnResponse,
@@ -269,6 +274,37 @@ export class ApiClient {
         await this.request('/api/push/subscribe', {
             method: 'POST',
             body: JSON.stringify(payload)
+        })
+    }
+
+    async getNotificationPreferences(): Promise<NotificationPreferences> {
+        return await this.request<NotificationPreferences>('/api/notification-preferences')
+    }
+
+    async updateNotificationPreferences(
+        update: NotificationPreferencesUpdate
+    ): Promise<NotificationPreferences> {
+        return await this.request<NotificationPreferences>('/api/notification-preferences', {
+            method: 'PUT',
+            body: JSON.stringify(update)
+        })
+    }
+
+    async sendTestPush(): Promise<TestPushResponse> {
+        return await this.request<TestPushResponse>('/api/push/test', {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
+    async getNotificationCopy(): Promise<NotificationCopyResponse> {
+        return await this.request<NotificationCopyResponse>('/api/notification-copy')
+    }
+
+    async updateNotificationCopy(copy: NotificationCopyConfig): Promise<NotificationCopyResponse> {
+        return await this.request<NotificationCopyResponse>('/api/notification-copy', {
+            method: 'PUT',
+            body: JSON.stringify(copy)
         })
     }
 

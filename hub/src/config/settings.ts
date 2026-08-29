@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 
+import type { NotificationCopyConfig } from '../push/notificationCopy'
+
 export interface Settings {
     machineId?: string
     machineIdConfirmedByServer?: boolean
@@ -50,6 +52,8 @@ export interface Settings {
      * Env vars still win when set at process start (ops override).
      */
     providerCredentials?: Partial<Record<string, string>>
+    /** Custom push notification copy templates (web push only). Empty fields fall back to defaults. */
+    notificationCopy?: NotificationCopyConfig
 }
 
 export function getSettingsFile(dataDir: string): string {
