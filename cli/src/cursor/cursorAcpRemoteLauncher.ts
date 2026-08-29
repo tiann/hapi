@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
@@ -38,8 +39,9 @@ import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
-    cursorHapiMcpServerId,
+    CURSOR_HAPI_MCP_SERVER_ID,
     installCursorMcpOverlay,
+    resolveCursorMcpConfigDir,
     type CursorMcpOverlayHandle,
 } from './utils/cursorMcpOverlay';
 import {
@@ -111,18 +113,28 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.happyServer = happyServer;
 
         const hapiBridge = mcpServers.hapi;
+        let overlayInstalled = false;
         if (hapiBridge) {
             try {
                 this.cursorMcpOverlay = installCursorMcpOverlay(session.path, {
                     command: hapiBridge.command,
                     args: hapiBridge.args,
                 }, {
-                    serverId: cursorHapiMcpServerId(session.client.sessionId),
+                    serverId: CURSOR_HAPI_MCP_SERVER_ID,
+                    overlaySessionId: session.client.sessionId,
+                    mcpConfigDir: join(session.path, '.cursor'),
+                    userMcpConfigDir: resolveCursorMcpConfigDir(),
                 });
+                overlayInstalled = true;
             } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
                 logger.warn(
                     '[cursor-acp] failed to install HAPI MCP overlay; continuing without inline media',
                     error,
+                );
+                messageBuffer.addMessage(
+                    `HAPI MCP overlay unavailable (${detail}). Inline media / peer MCP tools disabled for this session.`,
+                    'status',
                 );
                 this.cursorMcpOverlay = { cleanup: () => {} };
             }
@@ -235,8 +247,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         );
 
         const resumeSessionId = session.sessionId;
-        // Cursor ACP ignores session/new|load mcpServers; native ~/.cursor/mcp.json is wired above.
-        const mcpServerList: McpServerStdio[] = [];
+        // Overlay isolates one project `hapi` mailbox. Also pass ACP mcpServers so a
+        // Cursor build that honors session/new attaches the same HappyServer (same name).
+        // Fail closed on overlay install failure: do not attach ACP MCP either — otherwise
+        // a same-cwd collision can still bridge while project `hapi` belongs to another session.
+        const mcpServerList: McpServerStdio[] = (!hapiBridge || overlayInstalled)
+            ? Object.entries(mcpServers).map(([name, entry]) => ({
+                name,
+                command: entry.command,
+                args: entry.args,
+                env: [],
+            }))
+            : [];
         let acpSessionId: string | undefined;
 
         for (let loadAttempt = 0; loadAttempt < 2; loadAttempt += 1) {
