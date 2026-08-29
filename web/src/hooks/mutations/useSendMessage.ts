@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
@@ -12,6 +12,14 @@ import {
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { getRetryDeliveryMode } from '@/lib/messageDelivery'
+import {
+    consumeComposerSendSettlement,
+    getComposerDraftRevision,
+    getComposerProgrammaticEditRevision,
+    getComposerSendSettlement,
+    publishComposerSendSettlement,
+    subscribeComposerSendState,
+} from '@/lib/composer-send-state'
 
 type SendMessageInput = {
     sessionId: string
@@ -21,15 +29,22 @@ type SendMessageInput = {
     attachments?: AttachmentMetadata[]
     scheduledAt?: number | null
     deliveryMode: MessageDeliveryMode
+    source: 'send' | 'retry'
 }
 
 export type SendMessageAcceptance = {
-    attemptId: string
+    attemptId: string | null
+    sessionId: string
+    programmaticEditRevision: number
+    draftRevision: number
 }
 
 export type SendMessageSettlement = {
     attemptId: string
+    sessionId: string
+    text: string
     status: 'success' | 'error'
+    source: 'send' | 'retry'
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
@@ -101,7 +116,7 @@ type UseSendMessageOptions = {
         context: SessionResolvedContext,
     ) => void | Promise<void | SessionResolution>
     onBlocked?: (reason: BlockedReason) => void
-    onSuccess?: (sessionId: string) => void
+    onSuccess?: (sessionId: string, text: string) => void
     onError?: (info: SendErrorInfo) => void
     isSessionThinking?: boolean
 }
@@ -203,10 +218,19 @@ export function useSendMessage(
     retryMessage: (localId: string) => boolean
     isSending: boolean
     sendSettlement: SendMessageSettlement | null
+    consumeSendSettlement: (attemptId: string) => void
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
-    const [sendSettlement, setSendSettlement] = useState<SendMessageSettlement | null>(null)
+    const sendSettlement = useSyncExternalStore(
+        subscribeComposerSendState,
+        () => getComposerSendSettlement(sessionId),
+        () => null,
+    )
+    const consumeSendSettlement = useCallback((attemptId: string) => {
+        if (!sessionId) return
+        consumeComposerSendSettlement(sessionId, attemptId)
+    }, [sessionId])
     const resolveGuardRef = useRef(false)
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
@@ -231,17 +255,29 @@ export function useSendMessage(
             return { successStatus }
         },
         onSuccess: (_, input, context) => {
-            setSendSettlement({ attemptId: input.localId, status: 'success' })
+            publishComposerSendSettlement({
+                attemptId: input.localId,
+                sessionId: input.sessionId,
+                text: input.text,
+                status: 'success',
+                source: input.source,
+            })
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
                 context?.successStatus ?? 'sent'
             )
             haptic.notification('success')
-            options?.onSuccess?.(input.sessionId)
+            options?.onSuccess?.(input.sessionId, input.text)
         },
         onError: (error, input) => {
-            setSendSettlement({ attemptId: input.localId, status: 'error' })
+            publishComposerSendSettlement({
+                attemptId: input.localId,
+                sessionId: input.sessionId,
+                text: input.text,
+                status: 'error',
+                source: input.source,
+            })
             // Attachment sends keep the legacy failed-bubble UX: the
             // composer-restore path can only re-seat text + scheduledAt,
             // not the uploaded attachment metadata.  Removing the row
@@ -298,12 +334,18 @@ export function useSendMessage(
         const createdAt = Date.now()
         let targetSessionId = sessionId
         let sendAttachments = attachments
+        let programmaticEditRevision = getComposerProgrammaticEditRevision(targetSessionId)
+        let draftRevision = getComposerDraftRevision(targetSessionId)
         if (options?.resolveSessionId) {
             resolveGuardRef.current = true
             setIsResolving(true)
             try {
                 const resolved = await options.resolveSessionId(sessionId)
                 targetSessionId = resolved.sessionId
+                // Capture before resume navigation can mount the target
+                // composer and let a same-text programmatic edit advance it.
+                programmaticEditRevision = getComposerProgrammaticEditRevision(targetSessionId)
+                draftRevision = getComposerDraftRevision(targetSessionId)
                 if (resolved.resumed) {
                     // Await draft transfer / navigation before the mutation so
                     // hidden inactive attachments move with the resumed id
@@ -355,8 +397,9 @@ export function useSendMessage(
             attachments: sendAttachments,
             scheduledAt,
             deliveryMode,
+            source: 'send',
         })
-        return { attemptId: localId }
+        return { attemptId: localId, sessionId: targetSessionId, programmaticEditRevision, draftRevision }
     }
 
     const retryMessage = (localId: string): boolean => {
@@ -388,6 +431,7 @@ export function useSendMessage(
             attachments: getMessageAttachments(message),
             scheduledAt: message.scheduledAt ?? null,
             deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
+            source: 'retry',
         })
         return true
     }
@@ -397,5 +441,6 @@ export function useSendMessage(
         retryMessage,
         isSending: mutation.isPending || isResolving,
         sendSettlement,
+        consumeSendSettlement,
     }
 }
