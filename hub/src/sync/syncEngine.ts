@@ -1196,7 +1196,7 @@ export class SyncEngine {
     private async waitForExactNativeForkBound(
         childId: string,
         expectedNativeSessionId: string,
-        metadataKey: 'grokSessionId' | 'piSessionId',
+        metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId',
         requireSessionReady: boolean,
         timeoutMs: number = 60_000
     ): Promise<boolean> {
@@ -1542,6 +1542,18 @@ export class SyncEngine {
                 )
                 if (!bound) {
                     throw new Error('Pi fork could not load the exact native session before ready')
+                }
+            }
+
+            if (flavor === 'opencode') {
+                // The CLI seeds opencodeSessionId from the resume id before ACP
+                // initialize, so only the validated session-ready fence proves
+                // the forked native session actually loaded.
+                const bound = await this.waitForExactNativeForkBound(
+                    childId, rpcResult.nativeSessionId, 'opencodeSessionId', true
+                )
+                if (!bound) {
+                    throw new Error('OpenCode fork could not load the forked native session')
                 }
             }
 

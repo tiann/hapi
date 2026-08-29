@@ -139,6 +139,37 @@ describe('Pi conversation-history hub integration', () => {
         }
     })
 
+    it('requires exact native binding before an opencode fork reports success', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('oc-source', {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'opencode',
+                capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+            store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
+            store.messages.markMessagesInvoked(source.id, ['local1'], Date.now())
+
+            ;(engine as any).rpcGateway.forkConversation = async () => ({ nativeSessionId: 'oc-clone-native' })
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => ({ type: 'success', sessionId: args[12] })
+            ;(engine as any).rpcGateway.stopSession = async () => true
+            const exactBinds: unknown[][] = []
+            ;(engine as any).waitForExactNativeForkBound = async (...args: unknown[]) => {
+                exactBinds.push(args)
+                return true
+            }
+
+            const result = await engine.forkConversation(source.id, 'default')
+            if (result.type !== 'success') throw new Error(result.message)
+            expect(exactBinds).toEqual([[result.sessionId, 'oc-clone-native', 'opencodeSessionId', true]])
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('scrubs Pi entry-id locators when rewind truncates their HAPI messages', () => {
         const { store, engine } = createEngine()
         try {

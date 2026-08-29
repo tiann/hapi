@@ -24,6 +24,7 @@ import {
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
+import { OpencodeConversationHistory } from './conversationHistory';
 
 type OpencodeRemoteLauncherOptions = {
     onReasoningEffortRollback?: (effort: string | null) => void;
@@ -134,6 +135,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    /** Next native user-message index for fork points; null until the first successful count. */
+    private nativeUserIndexCursor: number | null = null;
+    /** Cancels the detached capability probe when remote mode is left. */
+    private readonly historyProbeAbortController = new AbortController();
+    /** Guards the one-shot native history count attempt (failure must not retry every turn). */
+    private nativeUserCountAttempted = false;
+    private readonly conversationHistory = new OpencodeConversationHistory(() => ({
+        baseUrl: this.baseUrl,
+        sessionId: this.activeAcpSessionId
+    }));
 
     constructor(
         session: OpencodeSession,
@@ -190,6 +201,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         await backend.initialize();
 
         const resumeSessionId = session.sessionId;
+        // A fork child's transcript already lives on the hub; silently
+        // falling back to a blank native session would show inherited
+        // messages the model cannot actually see (same fence as grok).
+        const currentMetadata = typeof session.client.getMetadata === 'function'
+            ? session.client.getMetadata()
+            : undefined;
+        const strictForkResume = currentMetadata?.forkedFrom != null;
+        // A resume that fell back to a blank native session invalidates every
+        // persisted history locator: old local ids would resolve to unrelated
+        // native turns. History stays disabled for such sessions.
+        let startedFreshAfterResumeFailure = false;
         const mcpServerList = toAcpMcpServers(mcpServers);
         let acpSessionId: string;
         if (resumeSessionId) {
@@ -200,7 +222,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: mcpServerList
                 });
             } catch (error) {
+                if (strictForkResume) {
+                    throw error;
+                }
                 logger.warn('[opencode-remote] resume failed, starting new session', error);
+                startedFreshAfterResumeFailure = true;
                 session.sendSessionEvent({
                     type: 'message',
                     message: 'OpenCode resume failed; starting a new session.'
@@ -216,7 +242,21 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: mcpServerList
             });
         }
+
+        // Fire the validated session-ready fence only now (after the actual
+        // load/new below): loop.ts seeds onSessionFound with the resume id
+        // before ACP initialize, so the hub's exact-binding wait must not
+        // succeed until this point (same fence as Pi).
+        if (strictForkResume && resumeSessionId && acpSessionId !== resumeSessionId) {
+            // OpenCode replaced the forked native id — binding readiness to a
+            // different session would report a successful fork for context
+            // the child never loaded.
+            throw new Error('OpenCode fork loaded a different native session');
+        }
         session.onSessionFound(acpSessionId);
+        if ((resumeSessionId || strictForkResume) && typeof session.client.emitSessionReady === 'function') {
+            session.client.emitSessionReady();
+        }
         this.activeAcpSessionId = acpSessionId;
 
         // Upstream retries are announced only on the agent's own event
@@ -240,6 +280,78 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             sessionId: acpSessionId,
             onRetry: (retry) => this.surfaceUpstreamRetry(retry)
         });
+
+        this.conversationHistory.setPublishCapabilities(async () => {
+            const conversationHistory = this.conversationHistory.getCapabilitiesForMetadata()?.conversationHistory;
+            try {
+                session.client.updateMetadata((metadata) => {
+                    const capabilities = { ...metadata?.capabilities };
+                    delete capabilities.conversationHistory;
+                    if (conversationHistory) {
+                        capabilities.conversationHistory = conversationHistory;
+                    }
+                    return {
+                        ...metadata,
+                        path: metadata?.path ?? session.path,
+                        host: metadata?.host ?? 'unknown',
+                        capabilities,
+                        conversationHistoryPoints: {
+                            ...metadata?.conversationHistoryPoints,
+                            ...this.conversationHistory.getHistoryPoints()
+                        },
+                        conversationHistoryIndexes: {
+                            ...metadata?.conversationHistoryIndexes,
+                            ...this.conversationHistory.getHistoryIndexes()
+                        }
+                    };
+                });
+            } catch {
+                // best-effort; transient hub disconnects must not crash the loop
+            }
+        });
+        // A persisted divergence flag must survive later launches too — the
+        // hub rejects history actions for diverged sessions, so republished
+        // capabilities would only surface controls that cannot succeed.
+        const historyDiverged = startedFreshAfterResumeFailure
+            || currentMetadata?.conversationHistoryDiverged === true;
+        if (historyDiverged) {
+            // Drop stale locators and hide history affordances: the native
+            // session no longer corresponds to the persisted HAPI transcript.
+            // The CLI refuses forks too (defense in depth alongside the hub's
+            // conversationHistoryDiverged gate).
+            void this.conversationHistory.disableFork().catch(() => {});
+            try {
+                session.client.updateMetadata((metadata) => {
+                    const capabilities = { ...metadata?.capabilities };
+                    delete capabilities.conversationHistory;
+                    return {
+                        ...metadata,
+                        capabilities,
+                        conversationHistoryPoints: undefined,
+                        conversationHistoryIndexes: undefined,
+                        conversationHistoryDiverged: true
+                    };
+                });
+            } catch {
+                // best-effort; transient hub disconnects must not crash the loop
+            }
+        } else {
+            this.conversationHistory.restorePromptIndexes(
+                typeof session.client.getMetadata === 'function'
+                    ? session.client.getMetadata()?.conversationHistoryIndexes
+                    : undefined
+            );
+        }
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
+            const messageLocalId = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+                && typeof (payload as Record<string, unknown>).messageLocalId === 'string'
+                ? (payload as Record<string, unknown>).messageLocalId as string
+                : undefined;
+            return await this.conversationHistory.fork(messageLocalId);
+        });
+        if (!historyDiverged) {
+            void this.conversationHistory.probeCapabilities(this.historyProbeAbortController.signal).catch(() => {});
+        }
 
         // Seed currentBackendModel from the ACP session metadata so the first
         // batch — whose model the hub mirrors from the just-discovered session —
@@ -334,295 +446,372 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            // /clear is deliberately a queue operation rather than a direct
-            // slash side effect: every prompt and /compact ahead of it has
-            // completed before this point. In particular, do not route this
-            // through handleAbort(true): that method exists to interrupt an
-            // in-flight compact, while clear can only run after one finishes.
-            if (batch.mode.operation === 'clear') {
-                await this.options.onClearRequested?.();
-                this.clearRequested = true;
-                await this.requestExit('exit', async () => {})
-                break;
-            }
+            // Hold the fork busy guard across the whole dequeued batch —
+            // collectBatch() already acked the rows, so the hub can briefly see an
+            // empty queue + thinking=false while model/effort setup or native
+            // mutations are still in flight (same fence as grok).
+            this.conversationHistory.setBusy(true);
+            try {
 
-            // Created here — before the model/effort switch below — rather
-            // than inside runCompactOperation(), so it already exists for
-            // handleAbort() to act on during that switch. backend.setModel()/
-            // setConfigOption() are real async ACP round-trips that yield to
-            // the event loop; a hostile-review whole-feature sweep found
-            // that an abort landing in that window used to hit a still-null
-            // compactAbortController (a no-op) and then get silently
-            // forgotten once runCompactOperation() created a *fresh*
-            // controller afterward — the compact's unbounded REST call would
-            // then run to completion with no way to interrupt it, despite
-            // the user having already pressed Stop/switch/exit.
-            const isCompactBatch = batch.mode.operation === 'compact';
-            const compactAbortController = isCompactBatch ? new AbortController() : null;
-            if (compactAbortController) {
-                this.compactAbortController = compactAbortController;
-                this.compactOperationPhase = 'idle';
-                // Reset here (as early as the controller itself — see its
-                // sibling field's doc comment for why that timing matters)
-                // rather than inside runCompactOperation(), so a plain Stop
-                // landing during the model/effort switch below already has
-                // something to suppress.
-                this.compactResultSuppressed = false;
-            }
-
-            // Inline model change via ACP RPC (session/set_model — see ACP SDK
-            // schema `x-method: session/set_model`). Mirrors the Gemini pattern
-            // from PR #543: if the running OpenCode build does not implement the
-            // RPC, we learn that from the first method-not-found response and stop
-            // attempting it for the rest of this session.
-            //
-            // `batch.mode.model` semantics: a string is a specific model id;
-            // `null` means "reset to whatever model the backend launched with"
-            // (emitted by `/model default`); `undefined` means "no change".
-            const requestedModel = batch.mode.model === null
-                ? this.defaultBackendModel
-                : batch.mode.model;
-            // The very first batch seeds currentBackendModel — the OpenCode CLI was
-            // launched with that model via --model and there is nothing to switch yet.
-            if (requestedModel && this.currentBackendModel === null) {
-                this.currentBackendModel = requestedModel;
-            } else if (requestedModel && requestedModel !== this.currentBackendModel) {
-                if (!backend.setModel || this.setModelSupported === false) {
-                    batch.mode.model = this.currentBackendModel ?? undefined;
-                } else {
-                    logger.debug(`[opencode-remote] Switching model inline: ${this.currentBackendModel} -> ${requestedModel}`);
-                    try {
-                        await backend.setModel(acpSessionId, requestedModel, { flavor: 'opencode' });
-                        this.currentBackendModel = requestedModel;
-                        this.setModelSupported = true;
-                        // Reflect the resolved model back into the batch so
-                        // downstream display logic sees the concrete id rather
-                        // than a `null` placeholder.
-                        batch.mode.model = requestedModel;
-                    } catch (error) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        const methodNotFound = /method not found/i.test(message);
-                        if (methodNotFound && this.setModelSupported === undefined) {
-                            this.setModelSupported = false;
-                            logger.warn('[opencode-remote] OpenCode build does not support session/set_model; inline switching disabled for this session');
-                            session.sendSessionEvent({
-                                type: 'message',
-                                message: 'This OpenCode build does not support inline model switching. Restart the session to apply a different model.'
-                            });
-                        } else {
-                            logger.warn('[opencode-remote] Inline model switch failed', error);
-                            session.sendSessionEvent({
-                                type: 'message',
-                                message: `Failed to switch model to ${requestedModel}. Continuing with ${this.currentBackendModel ?? '(default)'}.`
-                            });
-                        }
-                        batch.mode.model = this.currentBackendModel ?? undefined;
-                    }
+                // /clear is deliberately a queue operation rather than a direct
+                // slash side effect: every prompt and /compact ahead of it has
+                // completed before this point. In particular, do not route this
+                // through handleAbort(true): that method exists to interrupt an
+                // in-flight compact, while clear can only run after one finishes.
+                if (batch.mode.operation === 'clear') {
+                    await this.options.onClearRequested?.();
+                    this.clearRequested = true;
+                    await this.requestExit('exit', async () => {})
+                    break;
                 }
-            }
 
-            const requestedEffort = batch.mode.modelReasoningEffort ?? this.defaultBackendEffort;
-            if (requestedEffort && requestedEffort !== this.currentBackendEffort) {
-                const thoughtLevelOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
-                if (!backend.setConfigOption || !thoughtLevelOption || this.setEffortSupported === false) {
-                    this.rollbackReasoningEffort(batch, this.currentBackendEffort);
-                } else {
-                    const resolvedEffort = resolveThoughtLevelEffort(
-                        requestedEffort,
-                        thoughtLevelOption,
-                        this.currentBackendEffort ?? this.defaultBackendEffort
-                    );
-                    if (!resolvedEffort || resolvedEffort === this.currentBackendEffort) {
-                        if (requestedEffort !== resolvedEffort) {
-                            logger.warn(
-                                `[opencode-remote] Unsupported reasoning effort "${requestedEffort}"; continuing with ${resolvedEffort ?? this.currentBackendEffort ?? '(default)'}`
-                            );
-                            this.rollbackReasoningEffort(batch, resolvedEffort ?? this.currentBackendEffort);
-                        }
+                // Created here — before the model/effort switch below — rather
+                // than inside runCompactOperation(), so it already exists for
+                // handleAbort() to act on during that switch. backend.setModel()/
+                // setConfigOption() are real async ACP round-trips that yield to
+                // the event loop; a hostile-review whole-feature sweep found
+                // that an abort landing in that window used to hit a still-null
+                // compactAbortController (a no-op) and then get silently
+                // forgotten once runCompactOperation() created a *fresh*
+                // controller afterward — the compact's unbounded REST call would
+                // then run to completion with no way to interrupt it, despite
+                // the user having already pressed Stop/switch/exit.
+                const isCompactBatch = batch.mode.operation === 'compact';
+                const compactAbortController = isCompactBatch ? new AbortController() : null;
+                if (compactAbortController) {
+                    this.compactAbortController = compactAbortController;
+                    this.compactOperationPhase = 'idle';
+                    // Reset here (as early as the controller itself — see its
+                    // sibling field's doc comment for why that timing matters)
+                    // rather than inside runCompactOperation(), so a plain Stop
+                    // landing during the model/effort switch below already has
+                    // something to suppress.
+                    this.compactResultSuppressed = false;
+                }
+
+                // Inline model change via ACP RPC (session/set_model — see ACP SDK
+                // schema `x-method: session/set_model`). Mirrors the Gemini pattern
+                // from PR #543: if the running OpenCode build does not implement the
+                // RPC, we learn that from the first method-not-found response and stop
+                // attempting it for the rest of this session.
+                //
+                // `batch.mode.model` semantics: a string is a specific model id;
+                // `null` means "reset to whatever model the backend launched with"
+                // (emitted by `/model default`); `undefined` means "no change".
+                const requestedModel = batch.mode.model === null
+                    ? this.defaultBackendModel
+                    : batch.mode.model;
+                // The very first batch seeds currentBackendModel — the OpenCode CLI was
+                // launched with that model via --model and there is nothing to switch yet.
+                if (requestedModel && this.currentBackendModel === null) {
+                    this.currentBackendModel = requestedModel;
+                } else if (requestedModel && requestedModel !== this.currentBackendModel) {
+                    if (!backend.setModel || this.setModelSupported === false) {
+                        batch.mode.model = this.currentBackendModel ?? undefined;
                     } else {
-                        logger.debug(`[opencode-remote] Switching effort inline: ${this.currentBackendEffort ?? '(default)'} -> ${resolvedEffort}`);
+                        logger.debug(`[opencode-remote] Switching model inline: ${this.currentBackendModel} -> ${requestedModel}`);
                         try {
-                            await backend.setConfigOption(acpSessionId, thoughtLevelOption.id, resolvedEffort);
-                            this.currentBackendEffort = resolvedEffort;
-                            this.setEffortSupported = true;
-                            if (requestedEffort !== resolvedEffort) {
-                                this.rollbackReasoningEffort(batch, resolvedEffort);
-                            }
+                            await backend.setModel(acpSessionId, requestedModel, { flavor: 'opencode' });
+                            this.currentBackendModel = requestedModel;
+                            this.setModelSupported = true;
+                            // Reflect the resolved model back into the batch so
+                            // downstream display logic sees the concrete id rather
+                            // than a `null` placeholder.
+                            batch.mode.model = requestedModel;
                         } catch (error) {
                             const message = error instanceof Error ? error.message : String(error);
                             const methodNotFound = /method not found/i.test(message);
-                            if (methodNotFound && this.setEffortSupported === undefined) {
-                                this.setEffortSupported = false;
-                                logger.warn('[opencode-remote] OpenCode build does not support session/set_config_option; inline effort switching disabled for this session');
+                            if (methodNotFound && this.setModelSupported === undefined) {
+                                this.setModelSupported = false;
+                                logger.warn('[opencode-remote] OpenCode build does not support session/set_model; inline switching disabled for this session');
                                 session.sendSessionEvent({
                                     type: 'message',
-                                    message: 'This OpenCode build does not support inline reasoning effort switching.'
+                                    message: 'This OpenCode build does not support inline model switching. Restart the session to apply a different model.'
                                 });
                             } else {
-                                logger.warn('[opencode-remote] Inline effort switch failed', error);
+                                logger.warn('[opencode-remote] Inline model switch failed', error);
                                 session.sendSessionEvent({
                                     type: 'message',
-                                    message: `Failed to switch reasoning effort to ${resolvedEffort}. Continuing with ${this.currentBackendEffort ?? '(default)'}.`
+                                    message: `Failed to switch model to ${requestedModel}. Continuing with ${this.currentBackendModel ?? '(default)'}.`
                                 });
                             }
-                            this.rollbackReasoningEffort(batch, this.currentBackendEffort);
+                            batch.mode.model = this.currentBackendModel ?? undefined;
                         }
                     }
                 }
-            }
 
-            this.applyDisplayMode(batch.mode.permissionMode);
-            messageBuffer.addMessage(batch.message, 'user');
-
-            // /compact reaches here through the exact same dequeue loop as
-            // any prompt — it was pushed via messageQueue.pushIsolated(...)
-            // in runOpencode.ts, so it occupies its real FIFO position
-            // relative to prompts queued before or after it (fixes a prior
-            // design where /compact ran via an externally-invoked trigger
-            // and could execute ahead of an already-queued prompt). The
-            // model/effort switch above already ran for this batch just like
-            // any other, so compaction runs under whatever model this batch
-            // resolved to.
-            if (isCompactBatch && compactAbortController) {
-                // A compact batch is always a single isolated item (pushed
-                // via pushIsolated), so its own localId is exactly
-                // batch.items[0]?.localId.
-                const compactLocalId = batch.items[0]?.localId;
-
-                // A 7th PR-review round found that a plain Stop landing
-                // *during the model/effort switch above* — before this
-                // compact's REST request has ever actually been sent — was
-                // silently ignored here. Plain Stop's handleAbort(false) only
-                // sets `compactResultSuppressed = true`; it deliberately
-                // leaves compactAbortController.signal alone (see that
-                // field's doc comment — Round 6 needs the real HTTP request
-                // to keep running so the dequeue loop can wait for genuine
-                // server-side completion). But that logic assumed a request
-                // was already in flight to wait for. Here, mid-switch, none
-                // has been sent yet — so this branch used to call
-                // runCompactOperation() unconditionally once the switch
-                // resolved anyway, starting a brand new REST request the
-                // instant a cancelled compact's turn came up and blocking
-                // the dequeue loop for however long that takes.
-                //
-                // The fix is narrow on purpose: skip starting the operation
-                // only when a plain Stop landed (compactResultSuppressed)
-                // AND the controller was never actually aborted. If the
-                // controller WAS aborted, that means switch/exit's
-                // handleAbort(true) ran instead — and Round 5's test
-                // (below) established that runCompactOperation() must still
-                // be called in that case, threading the pre-aborted signal
-                // through so the fetch call rejects immediately without any
-                // network I/O, rather than being skipped here.
-                //
-                // An 8th PR-review round found this same reasoning also
-                // applies to isLocalIdCancelled, which round 7 had
-                // deliberately left out of this check (see runOpencode.ts's
-                // preparingLocalIds/cancelledBeforeEnqueue doc comment for
-                // the full mechanism): the localId-keyed cancel Set it reads
-                // can *only* ever be populated during the brief network
-                // round trip between the CLI emitting the /compact item's
-                // "invoked" ack and the hub recording it — never while a
-                // compact REST call is actually running. So if
-                // isLocalIdCancelled(compactLocalId) is already true here,
-                // that unconditionally means this compact was cancelled
-                // before its REST request was ever sent, exactly like the
-                // compactResultSuppressed case above — there's no
-                // in-flight server-side work to preserve by starting the
-                // operation anyway. (isLocalIdCancelled is a delete-and-
-                // return, one-shot callback, so checking it here consumes
-                // the same entry runCompactOperation()'s own isCancelled()
-                // would otherwise have consumed — it isn't checked twice.)
-                const compactCancelledByLocalId = compactLocalId
-                    ? (this.options.isLocalIdCancelled?.(compactLocalId) ?? false)
-                    : false;
-                const cancelledBeforeStart =
-                    (this.compactResultSuppressed && !compactAbortController.signal.aborted)
-                    || compactCancelledByLocalId;
-                if (cancelledBeforeStart) {
-                    if (this.compactAbortController === compactAbortController) {
-                        this.compactAbortController = null;
-                        this.compactOperationPhase = 'idle';
+                const requestedEffort = batch.mode.modelReasoningEffort ?? this.defaultBackendEffort;
+                if (requestedEffort && requestedEffort !== this.currentBackendEffort) {
+                    const thoughtLevelOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
+                    if (!backend.setConfigOption || !thoughtLevelOption || this.setEffortSupported === false) {
+                        this.rollbackReasoningEffort(batch, this.currentBackendEffort);
+                    } else {
+                        const resolvedEffort = resolveThoughtLevelEffort(
+                            requestedEffort,
+                            thoughtLevelOption,
+                            this.currentBackendEffort ?? this.defaultBackendEffort
+                        );
+                        if (!resolvedEffort || resolvedEffort === this.currentBackendEffort) {
+                            if (requestedEffort !== resolvedEffort) {
+                                logger.warn(
+                                    `[opencode-remote] Unsupported reasoning effort "${requestedEffort}"; continuing with ${resolvedEffort ?? this.currentBackendEffort ?? '(default)'}`
+                                );
+                                this.rollbackReasoningEffort(batch, resolvedEffort ?? this.currentBackendEffort);
+                            }
+                        } else {
+                            logger.debug(`[opencode-remote] Switching effort inline: ${this.currentBackendEffort ?? '(default)'} -> ${resolvedEffort}`);
+                            try {
+                                await backend.setConfigOption(acpSessionId, thoughtLevelOption.id, resolvedEffort);
+                                this.currentBackendEffort = resolvedEffort;
+                                this.setEffortSupported = true;
+                                if (requestedEffort !== resolvedEffort) {
+                                    this.rollbackReasoningEffort(batch, resolvedEffort);
+                                }
+                            } catch (error) {
+                                const message = error instanceof Error ? error.message : String(error);
+                                const methodNotFound = /method not found/i.test(message);
+                                if (methodNotFound && this.setEffortSupported === undefined) {
+                                    this.setEffortSupported = false;
+                                    logger.warn('[opencode-remote] OpenCode build does not support session/set_config_option; inline effort switching disabled for this session');
+                                    session.sendSessionEvent({
+                                        type: 'message',
+                                        message: 'This OpenCode build does not support inline reasoning effort switching.'
+                                    });
+                                } else {
+                                    logger.warn('[opencode-remote] Inline effort switch failed', error);
+                                    session.sendSessionEvent({
+                                        type: 'message',
+                                        message: `Failed to switch reasoning effort to ${resolvedEffort}. Continuing with ${this.currentBackendEffort ?? '(default)'}.`
+                                    });
+                                }
+                                this.rollbackReasoningEffort(batch, this.currentBackendEffort);
+                            }
+                        }
                     }
-                    // A 10th PR-review round found this skip path never
-                    // calls session.onThinkingChange(true) (that's the
-                    // whole point of skipping) but also never told the hub
-                    // this queued item is done, leaving the web UI spinner
-                    // stuck: markMessageQueued's 15s "queued thinking"
-                    // grace (hub/src/sync/sessionCache.ts) keeps thinking
-                    // pinned true regardless of keepalives until either the
-                    // grace expires or a messages-consumed ack with
-                    // `clearQueuedThinkingGrace` arrives. Same situation,
-                    // same fix, as the synchronous slash.kind === 'handled'
-                    // path in runOpencode.ts (e.g. /model — see its
-                    // `clearQueuedThinkingGrace` comment there): ack with
-                    // the grace-clearing flag, then push an immediate
-                    // thinking=false keepalive so the spinner clears
-                    // without waiting on the grace. (This is on top of, not
-                    // instead of, the queue's own unflagged
-                    // onBatchConsumed ack — a second ack for an
-                    // already-invoked localId is a no-op on the hub's
-                    // first-write-wins queued-message protocol, and
-                    // clearQueuedThinkingGrace itself is keyed by session,
-                    // not by localId, so it's idempotent too.)
-                    if (compactLocalId) {
-                        session.client.emitMessagesConsumed([compactLocalId], { clearQueuedThinkingGrace: true });
+                }
+
+                this.applyDisplayMode(batch.mode.permissionMode);
+                messageBuffer.addMessage(batch.message, 'user');
+
+                // /compact reaches here through the exact same dequeue loop as
+                // any prompt — it was pushed via messageQueue.pushIsolated(...)
+                // in runOpencode.ts, so it occupies its real FIFO position
+                // relative to prompts queued before or after it (fixes a prior
+                // design where /compact ran via an externally-invoked trigger
+                // and could execute ahead of an already-queued prompt). The
+                // model/effort switch above already ran for this batch just like
+                // any other, so compaction runs under whatever model this batch
+                // resolved to.
+                if (isCompactBatch && compactAbortController) {
+                    // A compact batch is always a single isolated item (pushed
+                    // via pushIsolated), so its own localId is exactly
+                    // batch.items[0]?.localId.
+                    const compactLocalId = batch.items[0]?.localId;
+
+                    // A 7th PR-review round found that a plain Stop landing
+                    // *during the model/effort switch above* — before this
+                    // compact's REST request has ever actually been sent — was
+                    // silently ignored here. Plain Stop's handleAbort(false) only
+                    // sets `compactResultSuppressed = true`; it deliberately
+                    // leaves compactAbortController.signal alone (see that
+                    // field's doc comment — Round 6 needs the real HTTP request
+                    // to keep running so the dequeue loop can wait for genuine
+                    // server-side completion). But that logic assumed a request
+                    // was already in flight to wait for. Here, mid-switch, none
+                    // has been sent yet — so this branch used to call
+                    // runCompactOperation() unconditionally once the switch
+                    // resolved anyway, starting a brand new REST request the
+                    // instant a cancelled compact's turn came up and blocking
+                    // the dequeue loop for however long that takes.
+                    //
+                    // The fix is narrow on purpose: skip starting the operation
+                    // only when a plain Stop landed (compactResultSuppressed)
+                    // AND the controller was never actually aborted. If the
+                    // controller WAS aborted, that means switch/exit's
+                    // handleAbort(true) ran instead — and Round 5's test
+                    // (below) established that runCompactOperation() must still
+                    // be called in that case, threading the pre-aborted signal
+                    // through so the fetch call rejects immediately without any
+                    // network I/O, rather than being skipped here.
+                    //
+                    // An 8th PR-review round found this same reasoning also
+                    // applies to isLocalIdCancelled, which round 7 had
+                    // deliberately left out of this check (see runOpencode.ts's
+                    // preparingLocalIds/cancelledBeforeEnqueue doc comment for
+                    // the full mechanism): the localId-keyed cancel Set it reads
+                    // can *only* ever be populated during the brief network
+                    // round trip between the CLI emitting the /compact item's
+                    // "invoked" ack and the hub recording it — never while a
+                    // compact REST call is actually running. So if
+                    // isLocalIdCancelled(compactLocalId) is already true here,
+                    // that unconditionally means this compact was cancelled
+                    // before its REST request was ever sent, exactly like the
+                    // compactResultSuppressed case above — there's no
+                    // in-flight server-side work to preserve by starting the
+                    // operation anyway. (isLocalIdCancelled is a delete-and-
+                    // return, one-shot callback, so checking it here consumes
+                    // the same entry runCompactOperation()'s own isCancelled()
+                    // would otherwise have consumed — it isn't checked twice.)
+                    const compactCancelledByLocalId = compactLocalId
+                        ? (this.options.isLocalIdCancelled?.(compactLocalId) ?? false)
+                        : false;
+                    const cancelledBeforeStart =
+                        (this.compactResultSuppressed && !compactAbortController.signal.aborted)
+                        || compactCancelledByLocalId;
+                    if (cancelledBeforeStart) {
+                        if (this.compactAbortController === compactAbortController) {
+                            this.compactAbortController = null;
+                            this.compactOperationPhase = 'idle';
+                        }
+                        // A 10th PR-review round found this skip path never
+                        // calls session.onThinkingChange(true) (that's the
+                        // whole point of skipping) but also never told the hub
+                        // this queued item is done, leaving the web UI spinner
+                        // stuck: markMessageQueued's 15s "queued thinking"
+                        // grace (hub/src/sync/sessionCache.ts) keeps thinking
+                        // pinned true regardless of keepalives until either the
+                        // grace expires or a messages-consumed ack with
+                        // `clearQueuedThinkingGrace` arrives. Same situation,
+                        // same fix, as the synchronous slash.kind === 'handled'
+                        // path in runOpencode.ts (e.g. /model — see its
+                        // `clearQueuedThinkingGrace` comment there): ack with
+                        // the grace-clearing flag, then push an immediate
+                        // thinking=false keepalive so the spinner clears
+                        // without waiting on the grace. (This is on top of, not
+                        // instead of, the queue's own unflagged
+                        // onBatchConsumed ack — a second ack for an
+                        // already-invoked localId is a no-op on the hub's
+                        // first-write-wins queued-message protocol, and
+                        // clearQueuedThinkingGrace itself is keyed by session,
+                        // not by localId, so it's idempotent too.)
+                        if (compactLocalId) {
+                            session.client.emitMessagesConsumed([compactLocalId], { clearQueuedThinkingGrace: true });
+                        }
+                        // Plain Stop before summarize already emitted this
+                        // keepalive in handleAbort(); localId cancellation did not.
+                        if (!this.compactResultSuppressed) {
+                            session.onThinkingChange(false);
+                        }
+                        if (session.queue.size() === 0 && !this.shouldExit) {
+                            sendReady();
+                        }
+                        continue;
                     }
-                    // Plain Stop before summarize already emitted this
-                    // keepalive in handleAbort(); localId cancellation did not.
-                    if (!this.compactResultSuppressed) {
+
+                    session.onThinkingChange(true);
+                    let nativeHistoryMayHaveChanged = false;
+                    try {
+                        await this.runCompactOperation(
+                            acpSessionId,
+                            compactAbortController,
+                            compactLocalId,
+                            () => { nativeHistoryMayHaveChanged = true; }
+                        );
+                        if (!nativeHistoryMayHaveChanged) continue;
+                        // Compaction can reindex native history: old absolute
+                        // indexes and their locators are invalid afterwards.
+                        this.conversationHistory.clearPromptIndexes();
+                        this.nativeUserIndexCursor = null;
+                        this.nativeUserCountAttempted = false;
+                        try {
+                            session.client.updateMetadata((metadata) => ({
+                                ...metadata,
+                                conversationHistoryPoints: undefined,
+                                conversationHistoryIndexes: undefined
+                            }));
+                        } catch {
+                            // best-effort; transient hub disconnects must not crash the loop
+                        }
+                    } finally {
                         session.onThinkingChange(false);
-                    }
-                    if (session.queue.size() === 0 && !this.shouldExit) {
-                        sendReady();
+                        if (session.queue.size() === 0 && !this.shouldExit) {
+                            sendReady();
+                        }
                     }
                     continue;
                 }
 
+                // Inject title instructions on first prompt
+                let messageText = batch.message;
+                if (batch.mode.permissionMode === 'plan') {
+                    messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
+                }
+                if (!this.instructionsSent) {
+                    messageText = `${getOpencodeNativeToolInstruction()}\n\n${messageText}`;
+                    this.instructionsSent = true;
+                }
+
+                const promptContent: PromptContent[] = [{
+                    type: 'text',
+                    text: messageText,
+                }];
+
+                this.stallErrorReportedForPrompt = false;
                 session.onThinkingChange(true);
-                try {
-                    await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
+
+            try {
+                // Derive the fork-point index from native history rather than a
+                // launcher-local counter: resumes and local→remote handoffs can
+                // hold native prompts this process never indexed. The count is
+                // fetched once and then advanced locally — re-reading the full
+                // transcript before every prompt would cost quadratic transfer
+                // on long sessions. When native history is unavailable, record
+                // nothing rather than guessing: a synthetic index would fork at
+                // the wrong boundary forever.
+                let nativeUserCount = this.nativeUserIndexCursor;
+                if (nativeUserCount === null && !this.nativeUserCountAttempted) {
+                    // Try the native count exactly once: an endpoint that stalls
+                    // or fails must not re-add its timeout to every turn. The
+                    // lookup also honours the batch abort signal so a Stop that
+                    // lands mid-lookup still cancels the turn.
+                    this.nativeUserCountAttempted = true;
+                    nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
+                }
+                if (waitSignal.aborted || this.shouldExit) {
+                    // The aborted turn persisted nothing; allow a fresh count
+                    // attempt on the next prompt instead of staying locked out.
+                    this.nativeUserIndexCursor = null;
+                    this.nativeUserCountAttempted = false;
+                    continue;
+                }
+                if (nativeUserCount === null) {
+                    logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
+                }
+                logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
+                // Record the locator and advance the cursor only after OpenCode
+                // accepted the prompt — a rejected turn persists no user message,
+                // so committing earlier would leave a forkable locator at an
+                // index that belongs to no prompt.
+                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
+                    this.handleAgentMessage(message);
+                });
+                if (nativeUserCount !== null) {
+                    // Multi-message batches are joined into one native prompt, so
+                    // only the first item's localId becomes a fork point (same
+                    // merge semantics as grok); the cursor advances by one
+                    // because natively exactly one user message was added.
+                    this.nativeUserIndexCursor = nativeUserCount + 1;
+                    this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
+                    void this.conversationHistory.publish().catch(() => {});
+                }
+                void backend.refreshSessionInfo(acpSessionId, session.path);
+                } catch (error) {
+                    // The cursor is intentionally not advanced on failure; reset
+                    // it so the next turn re-derives the index from native
+                    // history instead of trusting a possibly stale count.
+                    this.nativeUserIndexCursor = null;
+                    this.nativeUserCountAttempted = false;
+                    logger.warn('[opencode-remote] prompt failed', error);
+                    this.reportPromptFailure(error);
                 } finally {
                     session.onThinkingChange(false);
+                    await this.permissionHandler?.cancelAll('Prompt finished');
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         sendReady();
                     }
                 }
-                continue;
-            }
-
-            // Inject title instructions on first prompt
-            let messageText = batch.message;
-            if (batch.mode.permissionMode === 'plan') {
-                messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
-            }
-            if (!this.instructionsSent) {
-                messageText = `${getOpencodeNativeToolInstruction()}\n\n${messageText}`;
-                this.instructionsSent = true;
-            }
-
-            const promptContent: PromptContent[] = [{
-                type: 'text',
-                text: messageText,
-            }];
-
-            this.stallErrorReportedForPrompt = false;
-            session.onThinkingChange(true);
-
-            try {
-                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    this.handleAgentMessage(message);
-                });
-                void backend.refreshSessionInfo(acpSessionId, session.path);
-            } catch (error) {
-                logger.warn('[opencode-remote] prompt failed', error);
-                this.reportPromptFailure(error);
             } finally {
-                session.onThinkingChange(false);
-                await this.permissionHandler?.cancelAll('Prompt finished');
-                if (session.queue.size() === 0 && !this.shouldExit) {
-                    sendReady();
-                }
+                this.conversationHistory.setBusy(false);
             }
         }
     }
@@ -642,7 +831,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * comment on RemoteLauncherBase for exactly when this fires.
      */
     protected onLeavingRemote(): void {
+        this.historyProbeAbortController.abort();
         this.options.onCompactAvailabilityChange?.(false);
+        // Withdraw history affordances for the teardown window and any
+        // subsequent local mode: the loopback server is going away, so forks
+        // can no longer be served (same lifecycle as /compact above).
+        this.conversationHistory.setBusy(true);
+        void this.conversationHistory.disableFork().catch(() => {});
     }
 
     protected async cleanup(): Promise<void> {
@@ -845,7 +1040,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private async runCompactOperation(
         acpSessionId: string,
         compactAbortController: AbortController,
-        localId?: string
+        localId?: string,
+        onMutationIssued?: () => void
     ): Promise<void> {
         const session = this.session;
         session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
@@ -910,6 +1106,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // client abort, so a plain Stop deliberately waits only in this
             // phase. It has no deadline because real compaction can take minutes.
             this.compactOperationPhase = 'summarize';
+            onMutationIssued?.();
             const requestResult = await backend.suppressUpdatesDuring(async () => {
                 try {
                     return await triggerOpencodeCompact({
