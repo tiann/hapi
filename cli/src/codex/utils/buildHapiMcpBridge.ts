@@ -46,6 +46,7 @@ export interface HapiMcpBridge {
 export interface HapiMcpBridgeOptions {
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    onChangeTitle?: (title: string) => void;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -80,6 +81,7 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        onChangeTitle: options.onChangeTitle,
         skillLookup: options.skillLookup
     });
     const bridgeCommand = getHappyCliCommand([

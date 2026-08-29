@@ -57,6 +57,10 @@ export const MetadataSchema = z.object({
     version: z.string().optional(),
     name: z.string().optional(),
     os: z.string().optional(),
+    // Set when the title was chosen via the hapi change_title MCP tool. ACP
+    // native session-title sync must not overwrite it, including after
+    // launcher recreation or session resume.
+    acpManualTitle: z.boolean().optional(),
     summary: MetadataSummarySchema.optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),

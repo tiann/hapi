@@ -1,6 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
@@ -158,8 +158,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
+        const titleSync = createAcpSessionTitleSync(session.client);
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'opencode' }
         });
         this.happyServer = happyServer;
@@ -181,7 +182,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             hostname
         });
         this.backend = backend;
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, titleSync);
 
         backend.onStderrError((error) => {
             this.handleAcpStderrError(error);
