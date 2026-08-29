@@ -72,6 +72,25 @@ function ProgrammaticEditHarness() {
     )
 }
 
+function MentionHarness() {
+    const [value, setValue] = useState('')
+    const ref = useRef<RichComposerInputHandle>(null)
+
+    return (
+        <>
+            <button
+                type="button"
+                onClick={() =>
+                    ref.current?.insertSessionMention({ id: 'sid-1', title: '아주 긴 데모 세션 이름 예시 말줄임표 필요' })
+                }
+            >
+                Insert mention
+            </button>
+            <RichComposerInput ref={ref} value={value} onValueChange={setValue} onMirrorChange={() => {}} />
+        </>
+    )
+}
+
 function LineBreakDeletionHarness() {
     const [value, setValue] = useState('hello')
 
@@ -88,6 +107,22 @@ function LineBreakDeletionHarness() {
         </>
     )
 }
+
+describe('RichComposerInput session mention pill', () => {
+    it('renders the mention pill with working text ellipsis clipping', () => {
+        render(<MentionHarness />)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Insert mention' }))
+
+        const pill = screen.getByText('@아주 긴 데모 세션 이름 예시 말줄임표 필요')
+        // Ellipsis lives on the inner label; the pill itself centers it vertically.
+        expect(pill.className).toContain('truncate')
+        expect(pill.parentElement?.dataset.composerMention).toBe('session')
+        expect(pill.parentElement?.className).toContain('inline-flex')
+        expect(pill.parentElement?.className).toContain('align-baseline')
+        expect(pill.parentElement?.className).not.toContain('overflow-hidden')
+    })
+})
 
 describe('RichComposerInput responsive placeholder', () => {
     it('calculates a smaller font that fits overflowing text', () => {
