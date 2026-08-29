@@ -1535,7 +1535,9 @@ export function SessionList(props: {
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
                                             projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
-                                            machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            machineLabel={showMachineFilterBar && activeMachineFilter === null
+                                                ? resolveMachineLabel(s.metadata?.machineId ?? null)
+                                                : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                         />
                                     ))}
@@ -2028,7 +2030,9 @@ export function SessionList(props: {
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
                                             projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
-                                            machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            machineLabel={showMachineFilterBar && activeMachineFilter === null
+                                                ? resolveMachineLabel(s.metadata?.machineId ?? null)
+                                                : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                         />
                                     ))}
