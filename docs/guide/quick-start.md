@@ -40,6 +40,6 @@ Enter your access token to log in.
 
 - [Seamless Handoff](./how-it-works.md#seamless-handoff) - Switch between terminal and phone seamlessly
 - [Hub setup](./installation.md#hub-setup) - Access HAPI from anywhere
-- [Notifications](./notifications.md#telegram-setup) - Set up Telegram or ServerChan notifications
+- [Notifications](./notifications.md#telegram-setup) - Set up Telegram, ServerChan, or WxPusher notifications
 - [Deployment](./deployment.md) - Run HAPI as a persistent background service
 - [Install the App](./pwa.md) - Add HAPI to your home screen

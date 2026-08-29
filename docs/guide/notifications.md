@@ -1,6 +1,6 @@
 # Notifications
 
-Get notified when sessions need input, request permissions, fail, or complete — via Telegram, Server酱 (ServerChan), Web Push, or voice.
+Get notified when sessions need input, request permissions, fail, or complete — via Telegram, Server酱 (ServerChan), Web Push, or voice. WxPusher App can optionally deliver session completion notifications.
 
 Web Push works out of the box once you [install the PWA](./pwa.md); no configuration needed. The channels below are optional.
 
@@ -54,6 +54,42 @@ Related environment variables:
 When `SERVERCHAN_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses ServerChan for the entire namespace. Hidden, disconnected, or closed HAPI pages do not count as visible, so ServerChan can act as a background fallback. This is namespace-wide and does not select a particular device.
 
 These values can also be set in `settings.json` (`serverChanSendKey`, `serverChanNotification`, `serverChanBackgroundOnly`).
+
+## WxPusher App Setup
+
+WxPusher sends notifications to its own Android, iOS, and desktop clients. This integration targets the standard WxPusher App/client delivery path, not the separate WeChat ClawBot channel.
+
+1. Create a WxPusher application and copy its `appToken`
+2. Install a WxPusher client, subscribe to the application, and copy your UID
+3. Set the token and recipient before starting the hub:
+
+```bash
+export WXPUSHER_APP_TOKEN="AT_your-app-token"
+export WXPUSHER_UIDS="UID_your-uid"
+export HAPI_PUBLIC_URL="https://your-public-url"
+
+hapi hub
+```
+
+Multiple UIDs can be separated by commas. Topic recipients can be configured with `WXPUSHER_TOPIC_IDS` instead:
+
+```bash
+export WXPUSHER_TOPIC_IDS="123,456"
+```
+
+The current WxPusher channel sends session completion notifications only. It remains disabled unless an app token and at least one UID or topic ID are configured.
+
+Related environment variables:
+
+- `WXPUSHER_APP_TOKEN` - WxPusher application token
+- `WXPUSHER_UIDS` - Comma-separated recipient UIDs
+- `WXPUSHER_TOPIC_IDS` - Comma-separated topic IDs
+- `WXPUSHER_NOTIFICATION` - Enable/disable WxPusher notifications (default: `true`)
+- `WXPUSHER_BACKGROUND_ONLY` - Only send WxPusher notifications when the namespace has no visible HAPI connection (default: `false`)
+
+When `WXPUSHER_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses WxPusher for the entire namespace. Hidden, disconnected, or closed HAPI pages do not count as visible, so WxPusher can act as a background fallback. This is namespace-wide and does not select a particular device.
+
+These values can also be set in `settings.json` (`wxPusherAppToken`, `wxPusherUids`, `wxPusherTopicIds`, `wxPusherNotification`, `wxPusherBackgroundOnly`).
 
 ## Voice assistant setup
 
