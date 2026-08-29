@@ -59,6 +59,28 @@ function renderWithProviders(children: ReactNode) {
 }
 
 describe('SessionList directory action', () => {
+    it('only makes mentionable session rows draggable', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({ id: 'named', updatedAt: 2, metadata: { path: '/work', name: 'Named' } }),
+                    makeSession({ id: 'husk', updatedAt: 1, metadata: { path: '/work', agentSessionId: 'thread-husk' } }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const rows = document.querySelectorAll<HTMLButtonElement>('.session-list-item')
+        expect(rows[0].draggable).toBe(true)
+        expect(rows[1].draggable).toBe(false)
+    })
+
     it('starts a new session with the project machine and directory', () => {
         const onNewSessionInDirectory = vi.fn()
         const session = makeSession({
