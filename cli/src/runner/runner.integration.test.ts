@@ -219,7 +219,10 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     expect(spawnedSession.happySessionId).toBeDefined();
     expect(await stopRunnerSession(spawnedSession.happySessionId)).toBe('stopped');
     expect(await stopRunnerSession(spawnedSession.happySessionId)).toBe('already_gone');
-    expect(await stopRunnerSession('unknown-session-id')).toBe('still_alive');
+    // Distinct from 'still_alive': no PID matched this id and there is no
+    // verified-exit tombstone, so the runner has no basis to call it either
+    // alive or dead (see cli/src/runner/run.ts's stopSession fallback).
+    expect(await stopRunnerSession('unknown-session-id')).toBe('unknown');
   });
 
   it.skipIf(process.env.HAPI_RUN_STRESS_TESTS !== 'true')(

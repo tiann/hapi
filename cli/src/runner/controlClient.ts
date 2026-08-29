@@ -96,9 +96,9 @@ export async function listRunnerSessions(): Promise<any[]> {
   return result.children || [];
 }
 
-export async function stopRunnerSession(sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> {
+export async function stopRunnerSession(sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
   const result = await runnerPost('/stop-session', { sessionId });
-  return result.status === 'stopped' || result.status === 'already_gone' || result.status === 'still_alive'
+  return result.status === 'stopped' || result.status === 'already_gone' || result.status === 'still_alive' || result.status === 'unknown'
     ? result.status
     : 'still_alive';
 }

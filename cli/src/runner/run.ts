@@ -937,7 +937,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
+    const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
       // Try to find by sessionId first
@@ -1046,8 +1046,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
         return 'already_gone';
       }
+      // Distinct from 'still_alive': no PID matched this id anywhere (not
+      // tracked, not persisted, no verified-exit tombstone), so there is
+      // nothing here to confirm as alive OR dead. Callers that already have
+      // concrete knowledge of this session (e.g. one they just spawned) should
+      // treat this the same as 'still_alive' defensively; callers reconciling
+      // an old/stale row this runner instance never knew about should not be
+      // blocked forever by a status that never actually confirmed a live process.
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
-      return 'still_alive';
+      return 'unknown';
     };
 
     // Handle child process exit

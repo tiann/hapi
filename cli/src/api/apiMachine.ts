@@ -60,7 +60,7 @@ export { normalizeWindowsDriveRoot } from './machinePathPolicy'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
-    stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive'>
+    stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
 
