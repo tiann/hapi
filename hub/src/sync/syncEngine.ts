@@ -1394,7 +1394,22 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
-        if (!rpcResult?.nativeSessionId) {
+        if (
+            rpcResult &&
+            typeof rpcResult === 'object' &&
+            'error' in rpcResult &&
+            typeof rpcResult.error === 'string' &&
+            rpcResult.error.trim()
+        ) {
+            return { type: 'error', message: rpcResult.error }
+        }
+
+        if (
+            !rpcResult ||
+            typeof rpcResult !== 'object' ||
+            !('nativeSessionId' in rpcResult) ||
+            !rpcResult.nativeSessionId
+        ) {
             return { type: 'error', message: 'Native fork did not return a session id' }
         }
 

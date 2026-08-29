@@ -370,6 +370,9 @@ export async function bootstrapExistingSession(options: {
 
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
+    if (!await session.flushMetadata()) {
+        throw new Error('Unable to persist existing-session metadata')
+    }
 
     exportHapiSessionEnv(sessionInfo.id)
 

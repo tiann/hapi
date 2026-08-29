@@ -147,7 +147,13 @@ describe('runCodex', () => {
 
         expect(harness.bootstrapArgs[0]).toEqual(expect.objectContaining({
             sessionId: 'hapi-session-1',
-            workingDirectory: '/tmp/project'
+            workingDirectory: '/tmp/project',
+            metadataOverrides: {
+                capabilities: {
+                    terminal: true,
+                    conversationHistory: undefined
+                }
+            }
         }))
         expect(harness.loopArgs[0]).toEqual(expect.objectContaining({
             resumeSessionId: 'codex-thread-1',

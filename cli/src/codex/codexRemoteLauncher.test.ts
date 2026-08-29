@@ -1110,11 +1110,17 @@ function createMode(): EnhancedMode {
     };
 }
 
+type SessionStubOptions = {
+    deferMetadataUpdates?: boolean;
+};
+
 function createSessionStub(
     messages = ['hello from launcher test'],
     mode = createMode(),
     isolateMessages = false,
-    closeQueue = true
+    closeQueue = true,
+    initialMetadata: Record<string, unknown> = {},
+    options: SessionStubOptions = {}
 ) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
     messages.forEach((message, index) => {
@@ -1145,6 +1151,16 @@ function createSessionStub(
         requests: {},
         completedRequests: {}
     };
+    let metadata = initialMetadata;
+    let pendingMetadata: Record<string, unknown> | null = null;
+    let resolveMetadataFlushStarted: (() => void) | null = null;
+    let releaseMetadataFlush: (() => void) | null = null;
+    const metadataFlushStarted = options.deferMetadataUpdates
+        ? new Promise<void>((resolve) => {
+            resolveMetadataFlushStarted = resolve;
+        })
+        : null;
+    const metadataUpdates: Record<string, unknown>[] = [];
 
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const client = {
@@ -1153,7 +1169,33 @@ function createSessionStub(
                 rpcHandlers.set(method, handler);
             }
         },
-        updateMetadata(_handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {},
+        getMetadata() {
+            return metadata;
+        },
+        updateMetadata(handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {
+            const updated = handler(pendingMetadata ?? metadata);
+            metadataUpdates.push(updated);
+            if (options.deferMetadataUpdates) {
+                pendingMetadata = updated;
+            } else {
+                metadata = updated;
+            }
+        },
+        async flushMetadata() {
+            if (!options.deferMetadataUpdates) {
+                return true;
+            }
+            resolveMetadataFlushStarted?.();
+            resolveMetadataFlushStarted = null;
+            await new Promise<void>((resolve) => {
+                releaseMetadataFlush = resolve;
+            });
+            if (pendingMetadata) {
+                metadata = pendingMetadata;
+                pendingMetadata = null;
+            }
+            return true;
+        },
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
             agentState = handler(agentState);
         },
@@ -1232,6 +1274,10 @@ function createSessionStub(
         foundSessionIds,
         resetThreadCalls,
         rpcHandlers,
+        getMetadata: () => metadata,
+        metadataUpdates,
+        metadataFlushStarted,
+        releaseMetadataFlush: () => releaseMetadataFlush?.(),
         emitMessagesConsumed: client.emitMessagesConsumed,
         emitSteerIndeterminate: client.emitSteerIndeterminate,
         setPermissionMode: (nextMode: EnhancedMode['permissionMode']) => {
@@ -1478,6 +1524,62 @@ describe('codexRemoteLauncher', () => {
         harness.emitCompletedChildTurnBeforeSuppressedParent = false;
         harness.emitTurnAbortedOnInterrupt = false;
         harness.bridgeOptions = [];
+    });
+
+    it('clears stale history capabilities until a resumed native thread is ready', async () => {
+        const { session, getMetadata } = createSessionStub([], createMode(), false, true, {
+            capabilities: {
+                conversationHistory: {
+                    forkCurrent: true,
+                    forkAtMessage: true,
+                    rewindToMessage: true
+                },
+                otherCapability: true
+            }
+        });
+        session.sessionId = 'native-thread';
+
+        await codexRemoteLauncher(session as never);
+
+        expect(getMetadata()).toMatchObject({
+            capabilities: { otherCapability: true }
+        });
+        expect(getMetadata().capabilities).not.toHaveProperty('conversationHistory');
+    });
+
+    it('waits for stale history capability removal to persist before registering history RPC handlers', async () => {
+        const { session, getMetadata, rpcHandlers, metadataFlushStarted, releaseMetadataFlush } = createSessionStub(
+            [],
+            createMode(),
+            false,
+            true,
+            {
+                capabilities: {
+                    conversationHistory: {
+                        forkCurrent: true,
+                        forkAtMessage: true,
+                        rewindToMessage: true
+                    },
+                    otherCapability: true
+                }
+            },
+            { deferMetadataUpdates: true }
+        );
+        session.sessionId = 'native-thread';
+
+        const launcherPromise = codexRemoteLauncher(session as never);
+        await metadataFlushStarted!;
+
+        expect(getMetadata().capabilities).toHaveProperty('conversationHistory');
+        expect(rpcHandlers.has(RPC_METHODS.ForkConversation)).toBe(false);
+        expect(rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(false);
+
+        releaseMetadataFlush();
+        await launcherPromise;
+
+        expect(getMetadata().capabilities).not.toHaveProperty('conversationHistory');
+        expect(rpcHandlers.has(RPC_METHODS.ForkConversation)).toBe(true);
+        expect(rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(true);
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
