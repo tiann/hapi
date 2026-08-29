@@ -70,7 +70,10 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
 
     const round: string[] = []
     if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(`${(summary.durationMs / 1000).toFixed(1)}s`)
-    if (summary.numTurns !== undefined && summary.numTurns > 0) round.push(`${summary.numTurns} internal turn${summary.numTurns === 1 ? '' : 's'}`)
+    if (summary.numTurns !== undefined && summary.numTurns > 0) {
+        const turnLabel = summary.provider === 'codex' ? 'turn' : 'internal turn'
+        round.push(`${summary.numTurns} ${turnLabel}${summary.numTurns === 1 ? '' : 's'}`)
+    }
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts
 }

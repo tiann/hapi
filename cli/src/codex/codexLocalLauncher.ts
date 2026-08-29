@@ -221,12 +221,13 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         : primarySessionId
                             ? {
                                 ...message,
+                                flavor: 'codex',
                                 model: transcriptModel,
                                 threadId: primarySessionId,
                                 thread_id: primarySessionId,
                                 hapiUsageScope: 'managed'
                             }
-                            : { ...message, model: transcriptModel };
+                            : { ...message, flavor: 'codex', model: transcriptModel };
                 session.sendAgentMessage(scopedMessage);
             }
         }

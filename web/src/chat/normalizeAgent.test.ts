@@ -253,3 +253,30 @@ describe('normalizeAgentRecord — imported pi compact-summary (codex envelope)'
         expect((normalized as { content: { tokensBefore?: number } }).content.tokensBefore).toBeUndefined()
     })
 })
+
+describe('normalizeAgentRecord — Codex usage provenance', () => {
+    it('preserves the Codex marker and model on token-count events', () => {
+        const normalized = normalizeAgentRecord('codex-token-count', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                flavor: 'codex',
+                model: 'gpt-5.4',
+                info: {
+                    last_token_usage: { input_tokens: 321, output_tokens: 12 },
+                    model_context_window: 200_000
+                }
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'token-count',
+                provider: 'codex',
+                model: 'gpt-5.4'
+            },
+            usage: { input_tokens: 321, output_tokens: 12 }
+        })
+    })
+})

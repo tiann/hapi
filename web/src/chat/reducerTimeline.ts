@@ -70,6 +70,26 @@ function mapAgentRunStatusToToolState(status: string | null): ToolCallBlock['too
     return 'running'
 }
 
+function attachCodexRoundSummaryToLatestGroup(blocks: ChatBlock[], summary: RoundSummary): void {
+    type SummaryTargetBlock = Exclude<ChatBlock, UserTextBlock | AgentEventBlock>
+    const isSummaryTarget = (block: ChatBlock): block is SummaryTargetBlock =>
+        block.kind !== 'user-text'
+        && block.kind !== 'agent-event'
+        && !(block.kind === 'cli-output' && block.source === 'user')
+
+    let firstIndex = -1
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+        if (!isSummaryTarget(blocks[index])) break
+        firstIndex = index
+    }
+    if (firstIndex === -1) return
+
+    const firstBlock = blocks[firstIndex]
+    if (isSummaryTarget(firstBlock)) {
+        firstBlock.roundSummary = summary
+    }
+}
+
 function isTerminalAgentRunState(state: ToolCallBlock['tool']['state']): boolean {
     return state === 'completed' || state === 'error'
 }
@@ -476,6 +496,38 @@ export function reduceTimeline(
                 continue
             }
             if (msg.content.type === 'token-count') {
+                const tokenCount = msg.content as {
+                    type: 'token-count'
+                    provider?: 'codex'
+                    model?: string | null
+                }
+                if (
+                    tokenCount.provider === 'codex'
+                    && msg.usage
+                    && msg.usage.scope_role !== 'child'
+                ) {
+                    const model = tokenCount.model ?? undefined
+                    const displayUsage = model
+                        ? msg.usage
+                        : {
+                            ...msg.usage,
+                            cache_creation_input_tokens: undefined,
+                            cache_read_input_tokens: undefined
+                        }
+                    attachCodexRoundSummaryToLatestGroup(blocks, {
+                        provider: 'codex',
+                        usage: displayUsage,
+                        modelUsage: model
+                            ? {
+                                [model]: {
+                                    inputTokens: msg.usage.input_tokens,
+                                    outputTokens: msg.usage.output_tokens
+                                }
+                            }
+                            : {},
+                        numTurns: 1
+                    })
+                }
                 continue
             }
             // abort-restore is a side-effect signal for the web composer,

@@ -2962,6 +2962,7 @@ describe('codexRemoteLauncher', () => {
 
         expect(codexMessages).toContainEqual(expect.objectContaining({
             type: 'token_count',
+            flavor: 'codex',
             thread_id: 'thread-1',
             usageSchema: 'hapi.usage.v1',
             inputTokenSemantics: 'includes-cache',

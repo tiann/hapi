@@ -22,6 +22,7 @@ export type RoundModelUsage = {
 }
 
 export type RoundSummary = {
+    provider?: 'codex'
     usage?: UsageData
     modelUsage: Record<string, RoundModelUsage>
     totalCostUsd?: number
@@ -40,6 +41,7 @@ export type AgentEvent =
     | { type: 'api-error'; retryAttempt: number; maxRetries: number; error: unknown }
     | { type: 'turn-duration'; durationMs: number; targetMessageId?: string }
     | { type: 'turn-summary'; summary: RoundSummary }
+    | { type: 'token-count'; info: unknown; provider?: 'codex'; model?: string | null }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
     | { type: 'compact'; trigger: string; preTokens: number }
     // Structured result of Pi's compact RPC; rendered as a dedicated chat block.
