@@ -361,7 +361,7 @@ export class ApiMachineClient {
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
+            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, codexProfile, codexProvider, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -387,6 +387,8 @@ export class ApiMachineClient {
                 model,
                 effort,
                 modelReasoningEffort,
+                codexProfile,
+                codexProvider,
                 yolo,
                 permissionMode,
                 serviceTier,

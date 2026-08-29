@@ -1,13 +1,103 @@
-import { homedir } from 'node:os';
 import type { CodexModelsResponse, CodexModelSummary } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import { getErrorMessage } from './rpcResponses';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export interface ListCodexModelsRequest {
     includeHidden?: boolean;
 }
 
 export type ListCodexModelsResponse = CodexModelsResponse;
+
+function readTomlRecord(path: string): Record<string, unknown> | null {
+    try {
+        const source = readFileSync(path, 'utf8');
+        const value = typeof Bun !== 'undefined' && Bun.TOML
+            ? Bun.TOML.parse(source)
+            : parseTomlCompatibility(source);
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value as Record<string, unknown>
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function parseTomlCompatibility(source: string): Record<string, unknown> {
+    const root: Record<string, unknown> = {};
+    let table: Record<string, unknown> = root;
+
+    for (const rawLine of source.split(/\r?\n/)) {
+        const line = rawLine.replace(/\s+#.*$/, '').trim();
+        if (!line) continue;
+
+        const tableMatch = line.match(/^\[([^\]]+)\]$/);
+        if (tableMatch) {
+            const parts = tableMatch[1].match(/(?:[^.\"]+|\"[^\"]*\")+/g)
+                ?.map((part) => part.trim().replace(/^\"|\"$/g, ''))
+                .filter(Boolean) ?? [];
+            table = root;
+            for (const part of parts) {
+                const child = table[part];
+                if (!child || typeof child !== 'object' || Array.isArray(child)) {
+                    table[part] = {};
+                }
+                table = table[part] as Record<string, unknown>;
+            }
+            continue;
+        }
+
+        const assignment = line.match(/^([A-Za-z0-9_-]+)\s*=\s*\"([^\"]*)\"/);
+        if (assignment) table[assignment[1]] = assignment[2];
+    }
+
+    return root;
+}
+
+export function listCodexProfiles(codexHome = process.env.CODEX_HOME || join(homedir(), '.codex')): string[] {
+    const profiles = new Set<string>();
+    if (!existsSync(codexHome)) return [];
+
+    for (const entry of readdirSync(codexHome, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.config.toml')) continue;
+        const name = entry.name.slice(0, -'.config.toml'.length).trim();
+        if (name) profiles.add(name);
+    }
+
+    const mainConfigPath = join(codexHome, 'config.toml');
+    const mainConfig = readTomlRecord(mainConfigPath);
+    const legacyProfiles = mainConfig?.profiles;
+    if (legacyProfiles && typeof legacyProfiles === 'object' && !Array.isArray(legacyProfiles)) {
+        for (const name of Object.keys(legacyProfiles)) {
+            if (name.trim()) profiles.add(name.trim());
+        }
+    }
+
+    return [...profiles].sort((a, b) => a.localeCompare(b));
+}
+
+export function listCodexProviders(codexHome = process.env.CODEX_HOME || join(homedir(), '.codex')): string[] {
+    const providers = new Set<string>();
+    if (!existsSync(codexHome)) return [];
+
+    const mainConfig = readTomlRecord(join(codexHome, 'config.toml'));
+    const configuredProviders = mainConfig?.model_providers;
+    if (configuredProviders && typeof configuredProviders === 'object' && !Array.isArray(configuredProviders)) {
+        for (const name of Object.keys(configuredProviders)) {
+            if (name.trim()) providers.add(name.trim());
+        }
+    }
+
+    for (const entry of readdirSync(codexHome, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
+        const config = readTomlRecord(join(codexHome, entry.name));
+        const provider = typeof config?.model_provider === 'string' ? config.model_provider.trim() : '';
+        if (provider) providers.add(provider);
+    }
+    return [...providers].sort((a, b) => a.localeCompare(b));
+}
 
 function asNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;

@@ -79,6 +79,24 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes Codex profile through as -p', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            codexProfile: 'fast',
+        })
+        expect(args).toContain('-p')
+        expect(args).toContain('fast')
+    })
+
+    it('does not pass Codex profile through for non-Codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            codexProfile: 'fast',
+        })
+        expect(args).not.toContain('-p')
+        expect(args).not.toContain('fast')
+    })
+
     it('passes --service-tier through for codex (resume preserves Fast/Standard)', () => {
         const args = buildCliArgs('codex', {
             directory: '/tmp',

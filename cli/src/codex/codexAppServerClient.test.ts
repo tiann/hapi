@@ -62,6 +62,24 @@ describe('CodexAppServerClient process cwd', () => {
         await client.disconnect();
     });
 
+    it('passes profile and provider as native Codex global options', async () => {
+        spawnMock.mockReturnValue(fakeChild());
+        const client = new CodexAppServerClient({
+            cwd: '/neutral-home',
+            codexProfile: 'work',
+            codexProvider: 'custom-provider'
+        });
+
+        await client.connect();
+
+        expect(spawnMock).toHaveBeenCalledWith(
+            'codex',
+            ['-p', 'work', '-c', 'model_provider="custom-provider"', 'app-server'],
+            expect.objectContaining({ cwd: '/neutral-home' })
+        );
+        await client.disconnect();
+    });
+
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {
         const child = fakeChild();
         child.stdin.write = vi.fn((_data: unknown, cb?: (error?: Error | null) => void) => {

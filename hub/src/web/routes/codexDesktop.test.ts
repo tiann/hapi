@@ -433,6 +433,36 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('stores the selected Codex profile and provider on an imported history session', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-profile-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '23232323-2323-4232-8232-232323232323'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null,
+                codexProfile: 'work',
+                codexProvider: 'custom-proxy'
+            })
+
+            expect(result.success).toBe(true)
+            expect(store.sessions.getSessionsByNamespace('default')[0]?.metadata).toMatchObject({
+                codexSessionId,
+                codexProfile: 'work',
+                codexProvider: 'custom-proxy'
+            })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
     it('updates an existing forked import when syncing the original Codex session id', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
         const store = new Store(':memory:')
