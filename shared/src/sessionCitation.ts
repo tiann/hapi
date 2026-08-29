@@ -124,6 +124,33 @@ export function normalizeSessionIdPrefix(raw: string): string {
     return ids.length === 1 ? ids[0]! : ''
 }
 
+function unescapeCitationQuotes(value: string): string {
+    return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
+}
+
+/**
+ * Display title from a pasted citation blob, for name fallback when the cited id
+ * was merged/deleted. Returns null when the paste carries no title.
+ */
+export function extractSessionCitationLabel(raw: string): string | null {
+    const trimmed = raw.trim()
+    if (!trimmed) return null
+
+    const markdown = /^\[([^\]]+)\]\(\s*(?:[^)]*\/)?sessions\/[^)]+\s*\)/.exec(trimmed)
+    if (markdown?.[1]) {
+        const label = unescapeCitationQuotes(markdown[1])
+        return label.length > 0 ? label : null
+    }
+
+    const titledCopy = /^See session "((?:\\.|[^"\\])*)"/.exec(trimmed)
+    if (titledCopy?.[1]) {
+        const label = unescapeCitationQuotes(titledCopy[1])
+        return label.length > 0 ? label : null
+    }
+
+    return null
+}
+
 export type SessionCitationSteerTools = {
     /** Flavor-specific inspect tool name, e.g. `mcp__hapi__inspect_peer`. */
     inspectTool: string

@@ -6,7 +6,8 @@ import {
     assignThreadMessageIdsWithStableWrappers,
     findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
-    getResponseGroupTimestamps
+    getResponseGroupTimestamps,
+    toThreadMessageLike
 } from './assistant-runtime'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import { buildVisibleChatBlocks, type ToolGroupBlock, type VisibleChatBlock } from '@/chat/toolGroups'
@@ -843,5 +844,32 @@ describe('aggregateResponseGroups', () => {
 
         expect(group.roundSummary).toEqual(summary)
         expect(aggregateResponseGroups(visible).get(group.id)?.roundSummary).toEqual(summary)
+    })
+})
+
+describe('toThreadMessageLike peer provenance', () => {
+    it('maps user-text peer meta into custom.sentFrom / custom.peer', () => {
+        const message = toThreadMessageLike(
+            userText('u-peer', {
+                text: 'handoff',
+                meta: {
+                    sentFrom: 'peer',
+                    peer: {
+                        sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+                        sourceName: 'Orchestrator'
+                    }
+                }
+            }),
+            'user-text:u-peer',
+            1_000
+        )
+        expect(message.metadata?.custom).toMatchObject({
+            kind: 'user',
+            sentFrom: 'peer',
+            peer: {
+                sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+                sourceName: 'Orchestrator'
+            }
+        })
     })
 })

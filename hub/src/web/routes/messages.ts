@@ -1,8 +1,45 @@
 import { Hono } from 'hono'
-import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema } from '@hapi/protocol'
+import {
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE,
+    MessagesQuerySchema,
+    QueuedStateRequestSchema,
+    SendMessageRequestSchema,
+    type PeerDeliveryMeta
+} from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+
+function isPeerDeliveryRequest(c: { req: { header: (name: string) => string | undefined } }): boolean {
+    const raw = c.req.header(HAPI_PEER_DELIVERY_HEADER)
+    return (raw?.trim().toLowerCase() ?? '') === HAPI_PEER_DELIVERY_HEADER_VALUE
+}
+
+/**
+ * Soft nametag fields from a hub session row (CLI path param).
+ * Web JWT bodies must not supply sourceSessionId (#1203); that path stays
+ * unattributed. `sourceName` is a delivery-time title snapshot only.
+ */
+export function resolvePeerMetaFromSourceSession(
+    engine: SyncEngine,
+    namespace: string,
+    sourceSessionId: string
+): PeerDeliveryMeta | undefined {
+    const claimedId = sourceSessionId.trim()
+    if (!claimedId) {
+        return undefined
+    }
+    const access = engine.resolveSessionAccess(claimedId, namespace)
+    if (!access.ok) {
+        return undefined
+    }
+    const sourceName = access.session.metadata?.name?.trim() ?? ''
+    return {
+        sourceSessionId: access.sessionId,
+        ...(sourceName ? { sourceName: sourceName.slice(0, 255) } : {})
+    }
+}
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -141,11 +178,16 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
+        // Peer header = outside-session / unattributed peer delivery.
+        // Ignore body `peer` / sourceSessionId on this JWT path (#1203) —
+        // named-source soft nametags use /cli/.../peer-messages instead.
+        const peerDelivery = isPeerDeliveryRequest(c)
         await engine.sendMessage(sessionId, {
             text: parsed.data.text,
             localId: parsed.data.localId,
             attachments: parsed.data.attachments,
-            sentFrom: 'webapp',
+            sentFrom: peerDelivery ? 'peer' : 'webapp',
+            peer: undefined,
             scheduledAt: parsed.data.scheduledAt,
             deliveryMode: parsed.data.deliveryMode
         })

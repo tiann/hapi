@@ -3,7 +3,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { AgentState } from '@/api/types'
@@ -47,7 +47,11 @@ export async function runDsh(opts: {
 
     session.onUserMessage((message, localId) => {
         queue.push(
-            formatMessageWithAttachments(message.content.text, message.content.attachments),
+            formatUserMessageForAgent(
+                message.content.text,
+                message.content.attachments,
+                message.meta
+            ),
             'dsh',
             localId
         )

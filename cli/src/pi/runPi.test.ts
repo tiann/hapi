@@ -507,7 +507,7 @@ describe('Pi abort queue boundary', () => {
 
         const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage> & {
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage(userMessage('late preflight'), 'late-id');
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'late preflight' })));
@@ -660,7 +660,7 @@ describe('Pi abort queue boundary', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage({
             role: 'user',
@@ -885,7 +885,7 @@ describe('Pi native steering delivery mode', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage({
             role: 'user',
@@ -941,7 +941,7 @@ describe('Pi native steering delivery mode', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         onUserMessage({
             role: 'user',
@@ -1033,6 +1033,39 @@ describe('Pi prompt preparation', () => {
                 expect(symlinkEscape).toMatchObject({ message: '', images: [] });
                 expect(symlinkEscape.imageReadErrors[0]).toContain('Could not attach image escape.png');
             }
+
+            const peerAttributed = await preparePiUserMessage('handoff body', [], [], {
+                authorizeImagePath: () => true,
+                authorizeOpenedImage: () => true,
+                meta: {
+                    sentFrom: 'peer',
+                    peer: { sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4', sourceName: 'Orchestrator' },
+                },
+            });
+            expect(peerAttributed.message).toBe(
+                'From: /sessions/6212dae5-8a60-4284-b7a5-c09aa3571ce4\nName: Orchestrator\n\nhandoff body'
+            );
+
+            const peerSkill = await preparePiUserMessage('$brave-search explain', [], [{ name: 'skill:brave-search', source: 'skill' }], {
+                authorizeImagePath: () => true,
+                authorizeOpenedImage: () => true,
+                meta: {
+                    sentFrom: 'peer',
+                    peer: { sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4' },
+                },
+            });
+            // Prefix + no skill rewrite: first line is From:, body keeps $skill literal.
+            expect(peerSkill.message.startsWith('From: /sessions/')).toBe(true);
+            expect(peerSkill.message.startsWith('/')).toBe(false);
+            expect(peerSkill.message).toContain('$brave-search explain');
+            expect(peerSkill.message).not.toContain('/skill:brave-search');
+
+            const peerUnattributed = await preparePiUserMessage('cli ping', [], [], {
+                authorizeImagePath: () => true,
+                authorizeOpenedImage: () => true,
+                meta: { sentFrom: 'peer' },
+            });
+            expect(peerUnattributed.message).toBe('From: peer (unattributed)\n\ncli ping');
         } finally {
             await rm(imagePath, { force: true });
             if (outsidePath) await rm(outsidePath, { force: true });
@@ -1283,7 +1316,7 @@ describe('Pi built-in slash commands', () => {
         onUserMessage: (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
     }> {
         const running = runPi({ workingDirectory: '/work' });
@@ -1300,7 +1333,7 @@ describe('Pi built-in slash commands', () => {
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: {
             role: 'user';
             content: { type: 'text'; text: string };
-            meta?: { deliveryMode?: 'queue' | 'steer' };
+            meta?: { deliveryMode?: 'queue' | 'steer'; sentFrom?: 'peer' };
         }, localId: string) => void;
         return { running, onUserMessage };
     }
@@ -1908,6 +1941,27 @@ describe('Pi built-in slash commands', () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'compact' }));
         expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalledWith(['discover-cancel-id'], expect.anything());
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('does not execute peer /compact as a receiver special command (#1203)', async () => {
+        const { running, onUserMessage } = await startReadySession();
+        onUserMessage({
+            role: 'user',
+            content: { type: 'text', text: '/compact steal context' },
+            meta: { sentFrom: 'peer' },
+        }, 'peer-compact-id');
+
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({
+            type: 'prompt',
+        })));
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'compact' }));
+        const prompt = harness.sent.find((item) => (item as { type?: string }).type === 'prompt') as { message: string };
+        expect(prompt.message.startsWith('From: peer (unattributed)')).toBe(true);
+        expect(prompt.message).toContain('/compact steal context');
+        expect(prompt.message.startsWith('/')).toBe(false);
 
         harness.onError?.(new Error('finish test'));
         await running;
