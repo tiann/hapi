@@ -20,8 +20,12 @@ function formatCompactTokenCount(value: number): string {
     return `${(Math.round((value / divisor) * 10) / 10).toString()}${suffix}`
 }
 
-function formatPercentage(value: number): string {
+function formatOneDecimal(value: number): string {
     return (Math.round(value * 10) / 10).toString()
+}
+
+function formatPercentage(value: number): string {
+    return formatOneDecimal(value)
 }
 
 function formatUsd(value: number): string {
@@ -69,7 +73,7 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
     }
 
     const round: string[] = []
-    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(`${(summary.durationMs / 1000).toFixed(1)}s`)
+    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(`${formatOneDecimal(summary.durationMs / 1000)}s`)
     if (summary.numTurns !== undefined && summary.numTurns > 0) round.push(`${summary.numTurns} internal turn${summary.numTurns === 1 ? '' : 's'}`)
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts

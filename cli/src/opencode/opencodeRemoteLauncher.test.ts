@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { getOpencodeNativeToolInstruction } from './utils/systemPrompt';
 
 const harness = vi.hoisted(() => ({
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
@@ -247,6 +249,40 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
     })
 }));
 
+const roundSummaryHarness = vi.hoisted(() => ({
+    snapshotCalls: [] as Array<{ baseUrl: string; sessionId: string }>,
+    summaryCalls: [] as Array<{ promptText: string; durationMs: number; snapshot: { messageIds: string[] } }>,
+    snapshot: { messageIds: [] } as { messageIds: string[] } | null,
+    snapshotImpl: null as null | (() => Promise<unknown>),
+    summary: {
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+        modelUsage: { 'openai/gpt-5.4': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+        numTurns: 1,
+        durationMs: 10
+    } as unknown | null,
+    summaryImpl: null as null | (() => Promise<unknown>)
+}));
+
+vi.mock('./utils/opencodeRoundSummary', () => ({
+    captureOpencodeRoundSnapshot: vi.fn(async (opts: { baseUrl: string; sessionId: string }) => {
+        roundSummaryHarness.snapshotCalls.push(opts);
+        if (roundSummaryHarness.snapshotImpl) return roundSummaryHarness.snapshotImpl();
+        return roundSummaryHarness.snapshot;
+    }),
+    fetchOpencodeRoundSummary: vi.fn(async (opts: { promptText: string; durationMs: number; snapshot: { messageIds: string[] } }) => {
+        roundSummaryHarness.summaryCalls.push(opts);
+        const summary = roundSummaryHarness.summaryImpl
+            ? await roundSummaryHarness.summaryImpl()
+            : harness.events.lastIndexOf('prompt:start') > harness.events.lastIndexOf('prompt:end')
+                ? null
+                : roundSummaryHarness.summary;
+        return {
+            snapshot: { messageIds: [...opts.snapshot.messageIds, 'post-' + roundSummaryHarness.summaryCalls.length] },
+            summary
+        };
+    })
+}));
+
 vi.mock('@/ui/logger', () => ({
     logger: {
         debug: vi.fn(),
@@ -307,6 +343,7 @@ function createSessionStub(
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const sentAgentMessages: unknown[] = [];
+    const deliveryEvents: string[] = [];
     const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
@@ -327,6 +364,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {},
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
+            deliveryEvents.push('ready');
         },
         emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }) {
             emitMessagesConsumedCalls.push({ localIds, options });
@@ -355,6 +393,7 @@ function createSessionStub(
         },
         sendAgentMessage(message: unknown) {
             sentAgentMessages.push(message);
+            deliveryEvents.push('agent');
         },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
@@ -362,7 +401,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
+    return { session, sessionEvents, sentAgentMessages, deliveryEvents, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -416,6 +455,17 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.serverStopError = null;
         harness.eventStreamOptions = [];
         harness.eventStreamCloseCount = 0;
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        roundSummaryHarness.snapshot = { messageIds: [] };
+        roundSummaryHarness.snapshotImpl = null;
+        roundSummaryHarness.summary = {
+            usage: { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            modelUsage: { 'openai/gpt-5.4': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+            numTurns: 1,
+            durationMs: 10
+        };
+        roundSummaryHarness.summaryImpl = null;
         inkHarness.lastRenderProps = null;
     });
 
@@ -2281,4 +2331,162 @@ describe('selectAbortStatusMessage', () => {
 
         expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
     });
+
+    it('sends the round summary before ready after a prompt settles', async () => {
+        const { session, sentAgentMessages, sessionEvents, deliveryEvents } = createSessionStub([{ message: 'round prompt', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1);
+        expect(roundSummaryHarness.summaryCalls).toEqual([expect.objectContaining({ promptText: expect.stringContaining('round prompt') })]);
+        expect(sentAgentMessages).toEqual([expect.objectContaining({ type: 'round-summary' })]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+        expect(deliveryEvents).toEqual(['agent', 'ready']);
+    });
+
+    it('reuses the previous post-fetch snapshot instead of blocking a second prompt on another pre-fetch', async () => {
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        const { session } = createSessionStub([
+            { message: 'first round', mode: createMode() },
+            { message: 'second round', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.summaryCalls.map((call) => call.snapshot.messageIds)).toEqual([[], ['post-1']]);
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1);
+        expect(roundSummaryHarness.summaryCalls).toHaveLength(2);
+    });
+
+    it('recaptures after an explicit compact invalidates the previous post-fetch snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([
+            { message: 'first round', mode: createMode('ollama/x') },
+            { message: '', mode: createCompactMode('ollama/x') },
+            { message: 'second round', mode: createMode('ollama/x') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(compactHarness.calls).toHaveLength(1);
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(2);
+        expect(roundSummaryHarness.summaryCalls.map((call) => call.snapshot.messageIds)).toEqual([[], []]);
+    });
+
+    it('keeps prompt completion and ready when post-fetch summary aggregation fails', async () => {
+        roundSummaryHarness.summary = null;
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'no summary', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+    it('keeps ready unblocked when a summary fetch never settles', async () => {
+        roundSummaryHarness.summaryImpl = () => new Promise<unknown>(() => {});
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'stalled summary', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+    it('attempts and delivers a summary after a caught prompt error', async () => {
+        harness.promptImpl = async () => { throw new Error('fixture prompt failure'); };
+        roundSummaryHarness.summaryImpl = async () => ({
+            usage: { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            modelUsage: { 'openai/gpt-5.4': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+            numTurns: 1,
+            durationMs: 10
+        });
+        const { session, agentMessages, sessionEvents } = createSessionStub([{ message: 'error summary', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+        expect(roundSummaryHarness.snapshotCalls.length).toBeGreaterThan(0);
+        expect(roundSummaryHarness.summaryCalls.length).toBeGreaterThan(0);
+
+        expect(agentMessages).toEqual([
+            expect.objectContaining({ type: 'error' }),
+            expect.objectContaining({ type: 'round-summary' })
+        ]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+
+    it('keeps native instructions for the first actual prompt after a snapshot Abort', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        harness.promptContents = []
+        let snapshotCount = 0
+        let releaseFirstSnapshot: ((value: unknown) => void) | null = null
+        roundSummaryHarness.snapshotImpl = () => {
+            snapshotCount += 1
+            return snapshotCount === 1
+                ? new Promise<unknown>((resolve) => { releaseFirstSnapshot = resolve })
+                : Promise.resolve({ messageIds: [] })
+        }
+        const { session, rpcHandlers } = createSessionStub([{ message: 'aborted before prompt', mode: createMode() }], { keepOpen: true })
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+
+        const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined
+        expect(abortHandler).toBeDefined()
+        await abortHandler!()
+        session.queue.push('actual second prompt', createMode())
+        releaseFirstSnapshot!({ messageIds: [] })
+        session.queue.close()
+        await launchPromise
+
+        expect(harness.promptCount).toBe(1)
+        const text = (harness.promptContents[0] as Array<{ type: string; text?: string }>)[0]?.text
+        expect(text).toContain(getOpencodeNativeToolInstruction())
+        expect(text).toContain('actual second prompt')
+    })
+
+    it('does not start a backend prompt when Switch arrives during the blocking pre-prompt snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        let releaseSnapshot: ((value: unknown) => void) | null = null
+        roundSummaryHarness.snapshotImpl = () => new Promise<unknown>((resolve) => { releaseSnapshot = resolve })
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([{ message: 'snapshot switch', mode: createMode() }])
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+
+        const switchHandler = rpcHandlers.get(RPC_METHODS.Switch) as (() => Promise<void>) | undefined
+        expect(switchHandler).toBeDefined()
+        await switchHandler!()
+        releaseSnapshot!({ messageIds: [] })
+        session.queue.close()
+        await launchPromise
+
+        expect(harness.promptCount).toBe(0)
+        expect(sessionEvents).toEqual([])
+    })
+
+    it('does not start a backend prompt when Abort arrives during the blocking pre-prompt snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        let releaseSnapshot: ((value: unknown) => void) | null = null
+        roundSummaryHarness.snapshotImpl = () => new Promise<unknown>((resolve) => { releaseSnapshot = resolve })
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([{ message: 'snapshot abort', mode: createMode() }])
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined
+        expect(abortHandler).toBeDefined()
+        await abortHandler!()
+        releaseSnapshot!({ messageIds: [] })
+        session.queue.close()
+        await launchPromise
+
+        expect(harness.promptCount).toBe(0)
+        expect(sessionEvents).toEqual([{ type: 'ready' }])
+    })
 });
