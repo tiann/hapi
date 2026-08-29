@@ -24,6 +24,29 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
     private nativeSkillNames = new Set<string>();
+    /**
+     * Set by the remote launcher while it is running. Invoking it aborts the
+     * current SDK attempt so the main loop respawns Claude with fresh args
+     * (used by rewind, which requires a process restart). Cleared on cleanup.
+     */
+    requestRemoteRestart: (() => Promise<void>) | null = null;
+    /**
+     * Set by the remote launcher when a user turn completes natively (result
+     * reached). Reports the hub localIds of the completed batch so rewind
+     * locators are only recorded for turns that really happened.
+     */
+    onUserTurnCompleted: ((localIds: string[]) => void) | null = null;
+    /** Invoked when the native session id is dropped (/clear); rewind tracking must reset. */
+    onNativeSessionReset: (() => void) | null = null;
+    /**
+     * Armed by the RewindConversation handler before it requests a restart.
+     * The remote launcher resolves it with `true` once the respawned process
+     * reports its session (system/init with the resume flags accepted), or
+     * `false` when the attempt fails while rewinding. The handler must not
+     * report success to the hub before this resolves — the native transcript
+     * is only guaranteed truncated after the new process actually started.
+     */
+    rewindAck: ((applied: boolean, error?: string) => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -118,6 +141,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      */
     clearSessionId = (): void => {
         this.sessionId = null;
+        this.onNativeSessionReset?.();
         logger.debug('[Session] Session ID cleared');
     };
 
@@ -151,6 +175,12 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                 }
             } else if (this.claudeArgs[i] === '--fork-session') {
                 logger.debug('[Session] Consumed --fork-session flag');
+            } else if (
+                (this.claudeArgs[i] === '--resume-session-at' || this.claudeArgs[i] === '--resume-drops-turn')
+                && i + 1 < this.claudeArgs.length
+            ) {
+                logger.debug(`[Session] Consumed ${this.claudeArgs[i]} flag`);
+                i++; // Skip the uuid value
             } else {
                 filteredArgs.push(this.claudeArgs[i]);
             }

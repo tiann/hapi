@@ -90,6 +90,28 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
+    // One-shot rewind flags (set by the RewindConversation handler) pass through
+    // claudeArgs; filterCatalogAffectingClaudeArgs strips them from additionalArgs,
+    // so they must be parsed here into first-class SDK options.
+    let resumeSessionAt: string | undefined;
+    const resumeDropsTurn: string[] = [];
+    if (opts.claudeArgs) {
+        for (let i = 0; i < opts.claudeArgs.length; i++) {
+            if (opts.claudeArgs[i] === '--resume-session-at' && i + 1 < opts.claudeArgs.length) {
+                resumeSessionAt = opts.claudeArgs[++i];
+            } else if (opts.claudeArgs[i] === '--resume-drops-turn' && i + 1 < opts.claudeArgs.length) {
+                resumeDropsTurn.push(opts.claudeArgs[++i]);
+            }
+        }
+    }
+    // A rewind restart must spawn Claude immediately (no user prompt yet):
+    // the native truncation only materializes once the new process starts with
+    // the resume flags, and the launcher waits for that before reporting
+    // success to the hub. Like --fork-session, start query() without waiting
+    // for an initial child prompt; stream-json input stays open for later turns.
+    let awaitingRewindInit = resumeSessionAt !== undefined;
+    const REWIND_READY_DELAY_MS = 4_000;
+
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
     const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
@@ -163,6 +185,8 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         forkSession,
+        resumeSessionAt,
+        resumeDropsTurn: resumeDropsTurn.length > 0 ? resumeDropsTurn : undefined,
         mcpServers: opts.mcpServers,
         permissionMode: bootstrapMode.permissionMode,
         model: bootstrapMode.model,
@@ -185,7 +209,7 @@ export async function claudeRemote(opts: {
         additionalDirectories: [getHapiBlobsDir()],
     }
 
-    if (!awaitingForkInit) {
+    if (!awaitingForkInit && !awaitingRewindInit) {
         const first = await applyInitialTurn();
         if (!first) {
             return;
@@ -277,7 +301,27 @@ export async function claudeRemote(opts: {
         })();
     };
 
-    updateThinking(true);
+    // A rewind respawn starts with no running turn: booting into "thinking"
+    // would leave the session permanently generating. Report idle once the
+    // process has survived long enough to prove the resume flags were accepted
+    // (a rejected resume exits almost immediately). The timer must not outlive
+    // this attempt — a rejected resume exits before it fires, and a stale
+    // callback would steal the queue waiter from the launcher's next attempt.
+    let rewindReadyTimer: ReturnType<typeof setTimeout> | null = null;
+    if (awaitingRewindInit) {
+        rewindReadyTimer = setTimeout(() => {
+            rewindReadyTimer = null;
+            awaitingRewindInit = false;
+            updateThinking(false);
+            void opts.onReady?.();
+            // No result message will ever arrive for the skipped initial turn,
+            // so the queue consumer must be started here or user messages
+            // sent after the rewind would never reach Claude.
+            scheduleNextMessage();
+        }, REWIND_READY_DELAY_MS);
+    } else {
+        updateThinking(true);
+    }
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
@@ -320,6 +364,17 @@ export async function claudeRemote(opts: {
                         return;
                     }
                     initial = first;
+                }
+
+                // Rewind restart: no child prompt was fed, so nothing is running.
+                // Clear the boot-time thinking state and report ready — otherwise
+                // the session looks permanently "generating" until the next turn.
+                if (awaitingRewindInit) {
+                    awaitingRewindInit = false;
+                    updateThinking(false);
+                    if (opts.onReady) {
+                        await opts.onReady();
+                    }
                 }
             }
 
@@ -398,6 +453,10 @@ export async function claudeRemote(opts: {
             `${debugPrefix} finally ` +
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
+        if (rewindReadyTimer) {
+            clearTimeout(rewindReadyTimer);
+            rewindReadyTimer = null;
+        }
         updateThinking(false);
     }
 }
