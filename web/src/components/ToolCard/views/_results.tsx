@@ -370,7 +370,7 @@ function extractReadFileContent(result: unknown): { filePath: string | null; con
 }
 
 function isReadFileToolCall(toolName: string, input: unknown): boolean {
-    if (toolName === 'Read' || toolName === 'NotebookRead') return true
+    if (toolName === 'Read' || toolName === 'NotebookRead' || toolName === 'read') return true
 
     const normalizedName = toolName.toLowerCase()
     if (normalizedName.includes('read_file') || normalizedName.includes('readfile')) return true
@@ -386,7 +386,7 @@ function isReadFileToolCall(toolName: string, input: unknown): boolean {
 function extractReadPathFromInput(input: unknown): string | null {
     if (!isObject(input)) return null
 
-    const directPath = getInputStringAny(input, ['file_path', 'path', 'name'])
+    const directPath = getInputStringAny(input, ['file_path', 'filePath', 'path', 'name'])
     if (directPath) return directPath
 
     if (Array.isArray(input.parsed_cmd)) {
@@ -424,6 +424,16 @@ export function parseNumberedFileLines(text: string): { startLine: number; body:
         body.push(match[2])
     }
     return startLine === null ? null : { startLine, body: body.join('\n') }
+}
+
+export function unwrapOpencodeReadOutput(text: string): { path: string | null; body: string; isOpencodeRead: boolean } {
+    const wrapper = text.match(/^<path>([\s\S]*?)<\/path>\s*<type>file<\/type>\s*<content>\n?([\s\S]*)<\/content>\s*$/)
+    if (!wrapper) return { path: null, body: text, isOpencodeRead: false }
+    return {
+        path: wrapper[1].trim(),
+        body: wrapper[2].replace(/\n\(End of file[^)]*\)\n?$/, ''),
+        isOpencodeRead: true
+    }
 }
 
 function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface'], parseNumberedLines: boolean) {
@@ -665,11 +675,12 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
 
     const text = extractTextFromResult(result)
     if (text) {
-        const path = extractReadPathFromInput(props.block.tool.input)
+        const unwrapped = unwrapOpencodeReadOutput(text)
+        const path = unwrapped.path ?? extractReadPathFromInput(props.block.tool.input)
         const displayPath = path ? resolveDisplayPath(path, props.metadata) : null
         return (
             <>
-                {renderReadTextResult(text, displayPath, props.surface, props.block.tool.nativeKind === 'agy-numbered-read')}
+                {renderReadTextResult(unwrapped.body, displayPath, props.surface, unwrapped.isOpencodeRead || props.block.tool.nativeKind === 'agy-numbered-read')}
                 <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
@@ -1020,7 +1031,15 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 {isReadFileToolCall(props.block.tool.name, props.block.tool.input)
-                    ? renderReadTextResult(text, extractReadPathFromInput(props.block.tool.input), props.surface, props.block.tool.nativeKind === 'agy-numbered-read')
+                    ? (() => {
+                        const unwrapped = unwrapOpencodeReadOutput(text)
+                        return renderReadTextResult(
+                            unwrapped.body,
+                            unwrapped.path ?? extractReadPathFromInput(props.block.tool.input),
+                            props.surface,
+                            unwrapped.isOpencodeRead || props.block.tool.nativeKind === 'agy-numbered-read'
+                        )
+                    })()
                     : renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
                 {typeof result === 'object' ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
             </>
@@ -1041,6 +1060,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     Grep: LineListResultView,
     LS: LineListResultView,
     Read: ReadResultView,
+    read: ReadResultView,
     Edit: MutationResultView,
     MultiEdit: MutationResultView,
     Write: MutationResultView,

@@ -2,6 +2,78 @@ import { isObject } from '@hapi/protocol';
 
 type ToolNameSource = 'title' | 'raw_input_name' | 'raw_input_tool' | 'kind' | 'default';
 
+export type CanonicalDiffToolInput =
+    | { name: 'Edit'; input: { file_path: string; old_string: string; new_string: string; replace_all?: boolean } }
+    | { name: 'Write'; input: { file_path: string; content: string } };
+
+function firstString(value: unknown, keys: readonly string[]): string | null {
+    if (!isObject(value)) return null;
+    for (const key of keys) {
+        const candidate = value[key];
+        if (typeof candidate === 'string') return candidate;
+    }
+    return null;
+}
+
+/**
+ * Detects diff/write-shaped tool inputs emitted by ACP agents that keep their
+ * native argument shapes (OpenCode: `{filePath, oldString, newString}` for
+ * edit and `{filePath, content}` for write) and normalizes them to the
+ * Claude-shaped inputs the web Edit/Write views render.
+ *
+ * Gated on the tool's semantic name/kind: only known edit/write aliases are
+ * canonicalized. The Edit shape (path + both old/new strings) is unambiguous on
+ * its own, but Write is just `{path, content}` — a shape many non-edit MCP
+ * tools also accept — so without the gate those tools would be renamed to
+ * Write and their extra args dropped. The gate keeps the OpenCode native-shape
+ * cases (OpenCode maps both edit and write to kind 'edit', which is in the
+ * allow-list) while avoiding that misclassification.
+ *
+ * Returns null when the semantic hint is missing/unknown, or the input shape
+ * doesn't match, so callers keep their existing fallback.
+ */
+export function canonicalizeDiffToolInput(rawInput: unknown, semanticHint: string | null): CanonicalDiffToolInput | null {
+    const kind = semanticHint?.trim().toLowerCase() ?? null;
+    if (!kind || !['edit', 'write', 'write_file', 'replace', 'modify', 'file_edit'].includes(kind)) {
+        return null;
+    }
+
+    const filePath = firstString(rawInput, ['filePath', 'file_path']);
+    if (filePath === null || filePath.length === 0) return null;
+
+    const oldString = firstString(rawInput, ['oldString', 'old_string']);
+    const newString = firstString(rawInput, ['newString', 'new_string']);
+    if (oldString !== null && newString !== null) {
+        // OpenCode streams camelCase replaceAll; already-canonical inputs may
+        // carry snake_case replace_all. Accept both so the execution argument
+        // survives every call site.
+        let replaceAll: boolean | undefined;
+        if (isObject(rawInput)) {
+            if (typeof rawInput.replaceAll === 'boolean') {
+                replaceAll = rawInput.replaceAll;
+            } else if (typeof rawInput.replace_all === 'boolean') {
+                replaceAll = rawInput.replace_all;
+            }
+        }
+        return {
+            name: 'Edit',
+            input: {
+                file_path: filePath,
+                old_string: oldString,
+                new_string: newString,
+                ...(replaceAll === undefined ? {} : { replace_all: replaceAll }),
+            },
+        };
+    }
+
+    const content = firstString(rawInput, ['content']);
+    if (content !== null) {
+        return { name: 'Write', input: { file_path: filePath, content } };
+    }
+
+    return null;
+}
+
 function normalizeToolName(value: unknown): string | null {
     if (typeof value !== 'string') {
         return null;
