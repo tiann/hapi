@@ -202,7 +202,7 @@ Source: `hub/src/web/routes/usage.ts`, `hub/src/web/routes/storage.ts`. Both `40
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/usage/summary` | Query: `range=7d\|30d\|all` (default 7d), `timeZone` (IANA, validated) | `UsageSummaryResponse` `{range, totals, daily[], byAgent[], byModel[], updatedAt}` |
+| `GET /api/usage/summary` | Query: `range=7d\|30d\|all` (default 7d), `timeZone` (IANA, validated) | `UsageSummaryResponse` `{range, totals: {..., costs[]}, daily[], byAgent[], byModel[], agents[], updatedAt}` |
 | `GET /api/storage/sqlite` | — | `{path, databaseBytes, walBytes, shmBytes, totalBytes}` |
 
 ### Devices (FCM push)
