@@ -77,6 +77,7 @@ export class AgentSessionBase<Mode> {
         this.queue.onBatchConsumed = opts.acknowledgeMessagesOnDequeue === false
             ? null
             : (localIds) => this.client.emitMessagesConsumed(localIds);
+        this.queue.onBatchIndeterminate = (localIds) => this.client.emitSteerIndeterminate(localIds);
 
         this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         this.keepAliveInterval = setInterval(() => {

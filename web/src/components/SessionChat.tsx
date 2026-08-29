@@ -1875,7 +1875,8 @@ function SessionChatInner(props: SessionChatProps) {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                canSteer={isSteeringSupportedForSession(props.session.metadata)
+                                canSteer={props.session.active
+                                    && isSteeringSupportedForSession(props.session.metadata)
                                     && (agentFlavor === 'pi'
                                         ? props.session.thinking
                                         : props.session.agentState?.steeringActive === true)
