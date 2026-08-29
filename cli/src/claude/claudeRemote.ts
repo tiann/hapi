@@ -1,6 +1,7 @@
 import { EnhancedMode, PermissionMode } from "./loop";
 import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
+import { getLiveAgentKind } from "./utils/getLiveAgentKind";
 import { join } from 'node:path';
 import { parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
@@ -75,7 +76,13 @@ export async function claudeRemote(opts: {
         }
     }
 
-    // Set environment variables for Claude Code SDK
+    // Set environment variables for Claude Code SDK.
+    // Apply these BEFORE the liveness probe below: `getLiveAgentKind` execs
+    // `claude agents --json` using `process.env` (e.g. CLAUDE_CONFIG_DIR,
+    // HAPI_CLAUDE_PATH), so the probe must see the same claude env the real
+    // launch will use. Otherwise it queries the default config/home, misses the
+    // live session, picks `forkSession=false`, and the resume hits the
+    // "currently running as a background agent" failure path.
     if (opts.claudeEnvVars) {
         Object.entries(opts.claudeEnvVars).forEach(([key, value]) => {
             process.env[key] = value;
@@ -84,9 +91,19 @@ export async function claudeRemote(opts: {
     process.env.DISABLE_AUTOUPDATER = '1';
 
     // Message-level Fork current passes `--fork-session` via claudeArgs from the runner.
-    const forkSession = Boolean(opts.claudeArgs?.includes('--fork-session'));
+    // Also auto-fork when resuming a session still held by a live background/interactive
+    // agent (plain `--resume` is rejected with "currently running as a background agent").
+    // `getLiveAgentKind` degrades to null (treat as dead -> plain resume) when the
+    // daemon roster is unavailable, so this never blocks the resume path.
+    let forkSession = Boolean(opts.claudeArgs?.includes('--fork-session'));
     if (forkSession) {
         logger.debug(`[claudeRemote] --fork-session requested via claudeArgs`);
+    } else if (startFrom) {
+        const liveKind = getLiveAgentKind(startFrom);
+        if (liveKind) {
+            forkSession = true;
+            logger.debug(`[claudeRemote] Session ${startFrom} is live as ${liveKind} agent; resuming with --fork-session`);
+        }
     }
     const forkedFrom = forkSession ? startFrom : null;
 
@@ -306,6 +323,9 @@ export async function claudeRemote(opts: {
                     const projectDir = getProjectPath(opts.path);
                     const found = await awaitFileExist(join(projectDir, `${systemInit.session_id}.jsonl`));
                     logger.debug(`[claudeRemote] Session file found: ${systemInit.session_id} ${found}`);
+                    // When forked, the new session_id is a branched copy: record its
+                    // origin so the web list can mark it as "forked from ..." instead
+                    // of surfacing two unrelated-looking sessions.
                     const extras = forkedFrom && forkedFrom !== systemInit.session_id
                         ? { forkedFrom }
                         : undefined;
