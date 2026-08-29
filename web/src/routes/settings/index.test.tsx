@@ -90,6 +90,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
         preferences: {
             showLabels: true,
             agent: true,
+            project: true,
             model: true,
             reasoning: true,
             fastMode: true,
@@ -259,6 +260,7 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('radio', { name: '120%' })).toBeInTheDocument()
         expect(screen.getByRole('spinbutton', { name: 'Sessions Before Folding' })).toHaveValue(8)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()

@@ -5,6 +5,7 @@ import { getShareTurnReasoningLabel, selectShareTurnMetadata } from './shareTurn
 describe('selectShareTurnMetadata', () => {
     const available = {
         agent: { text: 'codex', flavor: 'codex' },
+        project: { text: 'Project: coding/hapi' },
         machine: { text: 'Machine: workstation' },
         lastActive: { text: '2 minutes ago' },
         model: { text: 'Model: gpt-5.6-sol' },
@@ -17,7 +18,7 @@ describe('selectShareTurnMetadata', () => {
 
     it('uses the desktop session-header order and default visibility', () => {
         expect(selectShareTurnMetadata(DEFAULT_SESSION_HEADER_METADATA, available).map((item) => item.key)).toEqual([
-            'agent', 'machine', 'lastActive', 'model', 'reasoning', 'fastMode', 'worktree',
+            'agent', 'project', 'machine', 'lastActive', 'model', 'reasoning', 'fastMode', 'worktree',
         ])
     })
 
