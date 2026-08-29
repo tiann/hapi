@@ -274,6 +274,44 @@ export type PiLocalSessionWithMessages = z.infer<typeof PiLocalSessionWithMessag
 export type ListPiSessionsRpcRequest = z.infer<typeof ListPiSessionsRpcRequestSchema>
 export type ListPiSessionsRpcResponse = z.infer<typeof ListPiSessionsRpcResponseSchema>
 
+export const OpencodeImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const OpencodeImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    createdAt: z.number(),
+    content: OpencodeImportedMessageContentSchema
+})
+
+export const OpencodeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number()
+})
+
+export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummarySchema.extend({
+    messages: z.array(OpencodeImportedMessageSchema)
+})
+
+export const ListOpencodeSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).optional()
+})
+
+export const ListOpencodeSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(z.union([OpencodeLocalSessionWithMessagesSchema, OpencodeLocalSessionSummarySchema])) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type OpencodeImportedMessageContent = z.infer<typeof OpencodeImportedMessageContentSchema>
+export type OpencodeImportedMessage = z.infer<typeof OpencodeImportedMessageSchema>
+export type OpencodeLocalSessionSummary = z.infer<typeof OpencodeLocalSessionSummarySchema>
+export type OpencodeLocalSessionWithMessages = z.infer<typeof OpencodeLocalSessionWithMessagesSchema>
+export type ListOpencodeSessionsRpcRequest = z.infer<typeof ListOpencodeSessionsRpcRequestSchema>
+export type ListOpencodeSessionsRpcResponse = z.infer<typeof ListOpencodeSessionsRpcResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })

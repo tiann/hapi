@@ -276,6 +276,42 @@ export type PiImportSessionsResponse = {
     error?: string
 }
 
+export type OpencodeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    hapiSessionId?: string
+}
+
+export type OpencodeLocalSessionsResponse = {
+    success: true
+    sessions: OpencodeLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type OpencodeImportResult = {
+    opencodeSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type OpencodeImportSessionsResponse = {
+    success: boolean
+    results: OpencodeImportResult[]
+    machineId?: string
+    error?: string
+}
+
 
 export type CodexArchiveSessionResponse = {
     success: true

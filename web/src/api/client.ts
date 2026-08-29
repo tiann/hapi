@@ -14,6 +14,8 @@ import type {
     FileSearchResponse,
     MachinesResponse,
     MessagesResponse,
+    OpencodeImportSessionsResponse,
+    OpencodeLocalSessionsResponse,
     PermissionMode,
     PiImportSessionsResponse,
     PiLocalSessionsResponse,
@@ -298,6 +300,21 @@ export class ApiClient {
 
     async importPiSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<PiImportSessionsResponse> {
         return await this.request<PiImportSessionsResponse>('/api/pi/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getOpencodeSessions(cwd?: string | null, machineId?: string | null): Promise<OpencodeLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<OpencodeLocalSessionsResponse>(`/api/opencode/sessions${query}`)
+    }
+
+    async importOpencodeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; modelReasoningEffort?: string | null; permissionMode?: PermissionMode }): Promise<OpencodeImportSessionsResponse> {
+        return await this.request<OpencodeImportSessionsResponse>('/api/opencode/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
