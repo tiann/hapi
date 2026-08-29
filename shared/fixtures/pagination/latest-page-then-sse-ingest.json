@@ -42,7 +42,7 @@
         },
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "latest-page-then-sse-ingest",
     "ops": [
         {

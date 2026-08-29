@@ -20,6 +20,55 @@ func parseAgentTimestampMs(_ value: JSONValue?) -> Int? {
     return Int((date.timeIntervalSince1970 * 1000).rounded())
 }
 
+/// Port of shared `isDisplayableHttpHref` (fail-closed; http/https only).
+func isDisplayableHttpHref(_ href: String) -> Bool {
+    let trimmed = href.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= 2048 else { return false }
+    guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else { return false }
+    return scheme == "http" || scheme == "https"
+}
+
+/// Port of shared `safeParseDisplayLinksInput`.
+func parseDisplayLinksInput(_ value: JSONValue?) -> [DisplayLinkItem] {
+    guard let items = value?.arrayValue else { return [] }
+    var urls: [DisplayLinkItem] = []
+    for item in items.prefix(20) {
+        if let href = item.stringValue {
+            let trimmed = href.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isDisplayableHttpHref(trimmed) else { continue }
+            urls.append(DisplayLinkItem(href: trimmed))
+            continue
+        }
+        guard let object = item.objectValue else { continue }
+        let rawHref = asString(jsCoalesce(object["href"], object["url"]))
+        guard let href = rawHref?.trimmingCharacters(in: .whitespacesAndNewlines),
+              isDisplayableHttpHref(href) else { continue }
+        let title = asString(object["title"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        urls.append(DisplayLinkItem(href: href, title: (title?.isEmpty == false) ? title : nil))
+    }
+    return urls
+}
+
+/// Port of shared `safeParseDisplayTextsInput`.
+func parseDisplayTextsInput(_ value: JSONValue?) -> [DisplayTextItem] {
+    guard let items = value?.arrayValue else { return [] }
+    var texts: [DisplayTextItem] = []
+    for item in items.prefix(20) {
+        if let raw = item.stringValue {
+            guard !raw.isEmpty, raw.count <= 8192, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            texts.append(DisplayTextItem(value: raw))
+            continue
+        }
+        guard let object = item.objectValue else { continue }
+        let rawValue = asString(jsCoalesce(object["value"], object["text"]))
+        guard let value = rawValue, !value.isEmpty, value.count <= 8192,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+        let title = asString(object["title"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        texts.append(DisplayTextItem(value: value, title: (title?.isEmpty == false) ? title : nil))
+    }
+    return texts
+}
+
 /// Port of `normalizeToolResultPermissions`.
 func normalizeToolResultPermissions(_ value: JSONValue?) -> ToolResultPermission? {
     guard let object = value?.objectValue else { return nil }
@@ -1013,6 +1062,26 @@ func normalizeAgentRecord(
                 localId: localId,
                 createdAt: createdAt,
                 content: .event(AgentEvent(object: data)),
+                isSidechain: false,
+                meta: meta
+            )
+        }
+
+        if dataType == "display-links" {
+            let urls = parseDisplayLinksInput(data["urls"])
+            let texts = parseDisplayTextsInput(data["texts"])
+            if urls.isEmpty && texts.isEmpty { return nil }
+            let uuid = asString(data["id"]) ?? messageId
+            return NormalizedMessage(
+                id: messageId,
+                localId: localId,
+                createdAt: createdAt,
+                content: .agent([.displayLinks(DisplayLinksContent(
+                    urls: urls,
+                    texts: texts,
+                    uuid: uuid,
+                    parentUUID: nil
+                ))]),
                 isSidechain: false,
                 meta: meta
             )

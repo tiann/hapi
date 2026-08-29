@@ -5,6 +5,8 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Port of `web/scripts/fixtures/projection.ts` — the NORMATIVE projection of
@@ -118,6 +120,23 @@ fun projectChatBlock(block: ChatBlock): JsonObject {
             projected["imageId"] = JsonPrimitive(block.imageId)
             projected["fileName"] = JsonPrimitive(block.fileName)
             projected["mimeType"] = nullableString(block.mimeType)
+        }
+        is DisplayLinksBlock -> {
+            projected["localId"] = nullableString(block.localId)
+            projected["urls"] = JsonArray(block.urls.map { url ->
+                buildJsonObject {
+                    put("href", url.href)
+                    if (url.title != null) put("title", url.title)
+                }
+            })
+            if (block.texts.isNotEmpty()) {
+                projected["texts"] = JsonArray(block.texts.map { text ->
+                    buildJsonObject {
+                        put("value", text.value)
+                        if (text.title != null) put("title", text.title)
+                    }
+                })
+            }
         }
         is AgentEventBlock -> {
             projected["event"] = block.event.raw

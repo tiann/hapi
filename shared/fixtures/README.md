@@ -121,6 +121,7 @@ that carry it.
 | `cli-output` | `localId`, `text`, `source` (`'user' \| 'assistant'`) |
 | `codex-review` | `localId`, `review` (verbatim normalized review object) |
 | `generated-image` | `localId`, `imageId`, `fileName`, `mimeType` |
+| `display-links` | `localId`, `urls` (`{ href, title? }[]`), `texts?` (`{ value, title? }[]`) |
 | `agent-event` | `event` — the normalized AgentEvent object verbatim (`type` + typed payload fields) |
 | `tool-call` | `localId`, `tool`, `children?` (recursively projected; omitted when empty) |
 | `tool-group` (visibleBlocks only) | `firstToolId`, `lastToolId`, `tools` (projected `tool-call` blocks in order; membership + order + count) |

@@ -1,0 +1,85 @@
+{
+    "description": "Cursor display_links payload becomes a display-links block keeping {urls, texts}; exact-copy values are normative for native card rendering (web Share Turn / markdown export redact separately).",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-cursor-links:0",
+                "kind": "display-links",
+                "localId": null,
+                "texts": [
+                    {
+                        "title": "token",
+                        "value": "exact-value"
+                    }
+                ],
+                "urls": [
+                    {
+                        "href": "https://example.com",
+                        "title": "Example"
+                    }
+                ]
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-cursor-links:0",
+                "kind": "display-links",
+                "localId": null,
+                "texts": [
+                    {
+                        "title": "token",
+                        "value": "exact-value"
+                    }
+                ],
+                "urls": [
+                    {
+                        "href": "https://example.com",
+                        "title": "Example"
+                    }
+                ]
+            }
+        ]
+    },
+    "fixtureVersion": 2,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "display-links-1",
+                            "texts": [
+                                {
+                                    "title": "token",
+                                    "value": "exact-value"
+                                }
+                            ],
+                            "type": "display-links",
+                            "urls": [
+                                {
+                                    "href": "https://example.com",
+                                    "title": "Example"
+                                }
+                            ]
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-cursor-links",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "cursor-display-links"
+}

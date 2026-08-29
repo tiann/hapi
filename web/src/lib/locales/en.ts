@@ -1178,4 +1178,11 @@ export default {
   'session.summary.status.needsDecision': 'Needs decision',
   'session.summary.status.failed': 'Failed',
   'session.summary.status.stalled': 'Stalled',
+  'displayLinks.heading.links': 'Links',
+  'displayLinks.heading.texts': 'Exact copy',
+  'displayLinks.heading.both': 'Links and exact copy',
+  'displayLinks.tapToCopy': 'Tap to copy',
+  'displayLinks.copied': 'Copied',
+  'displayLinks.exactString': 'exact string',
+  'displayLinks.copyAria': 'Copy {label}',
 } as const

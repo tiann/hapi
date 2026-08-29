@@ -36,6 +36,68 @@ private fun normalizeToolResultPermissions(value: JsonElement?): ToolResultPermi
     )
 }
 
+/** Port of shared `isDisplayableHttpHref` (http/https only). */
+internal fun isDisplayableHttpHref(href: String): Boolean {
+    val trimmed = href.trim()
+    if (trimmed.isEmpty() || trimmed.length > 2048) return false
+    return try {
+        val uri = java.net.URI(trimmed)
+        val scheme = uri.scheme?.lowercase()
+        scheme == "http" || scheme == "https"
+    } catch (_: Exception) {
+        false
+    }
+}
+
+/** Port of shared `safeParseDisplayLinksInput`. */
+internal fun parseDisplayLinksInput(value: JsonElement?): List<NormalizedAgentContent.DisplayLinkItem> {
+    val items = value as? JsonArray ?: return emptyList()
+    val urls = mutableListOf<NormalizedAgentContent.DisplayLinkItem>()
+    for (item in items.take(20)) {
+        when (item) {
+            is JsonPrimitive -> {
+                if (!item.isString) continue
+                val href = item.content.trim()
+                if (!isDisplayableHttpHref(href)) continue
+                urls.add(NormalizedAgentContent.DisplayLinkItem(href = href))
+            }
+            is JsonObject -> {
+                val rawHref = asString(item["href"].orNull() ?: item["url"]) ?: continue
+                val href = rawHref.trim()
+                if (!isDisplayableHttpHref(href)) continue
+                val title = asString(item["title"])?.trim()?.takeIf { it.isNotEmpty() }
+                urls.add(NormalizedAgentContent.DisplayLinkItem(href = href, title = title))
+            }
+            else -> Unit
+        }
+    }
+    return urls
+}
+
+/** Port of shared `safeParseDisplayTextsInput`. */
+internal fun parseDisplayTextsInput(value: JsonElement?): List<NormalizedAgentContent.DisplayTextItem> {
+    val items = value as? JsonArray ?: return emptyList()
+    val texts = mutableListOf<NormalizedAgentContent.DisplayTextItem>()
+    for (item in items.take(20)) {
+        when (item) {
+            is JsonPrimitive -> {
+                if (!item.isString) continue
+                val raw = item.content
+                if (raw.isEmpty() || raw.length > 8192 || raw.trim().isEmpty()) continue
+                texts.add(NormalizedAgentContent.DisplayTextItem(value = raw))
+            }
+            is JsonObject -> {
+                val rawValue = asString(item["value"].orNull() ?: item["text"]) ?: continue
+                if (rawValue.isEmpty() || rawValue.length > 8192 || rawValue.trim().isEmpty()) continue
+                val title = asString(item["title"])?.trim()?.takeIf { it.isNotEmpty() }
+                texts.add(NormalizedAgentContent.DisplayTextItem(value = rawValue, title = title))
+            }
+            else -> Unit
+        }
+    }
+    return texts
+}
+
 private fun normalizeAgentEvent(value: JsonElement?): AgentEvent? {
     val record = asObject(value) ?: return null
     if (asString(record["type"]) == null) return null
@@ -806,6 +868,28 @@ fun normalizeAgentRecord(
 
         if (dataType == "agent-run-start" || dataType == "agent-run-update" || dataType == "agent-run-trace") {
             return eventMessage(messageId, localId, createdAt, data, meta)
+        }
+
+        if (dataType == "display-links") {
+            val urls = parseDisplayLinksInput(data["urls"])
+            val texts = parseDisplayTextsInput(data["texts"])
+            if (urls.isEmpty() && texts.isEmpty()) return null
+            val uuid = asString(data["id"]) ?: messageId
+            return NormalizedMessage.Agent(
+                id = messageId,
+                localId = localId,
+                createdAt = createdAt,
+                isSidechain = false,
+                content = listOf(
+                    NormalizedAgentContent.DisplayLinks(
+                        urls = urls,
+                        texts = texts,
+                        uuid = uuid,
+                        parentUUID = null,
+                    )
+                ),
+                meta = meta,
+            )
         }
 
         if (dataType == "generated-image") {

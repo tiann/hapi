@@ -8,6 +8,7 @@ import app.hapi.companion.feature.chat.blocks.AgentReasoningBlockView
 import app.hapi.companion.feature.chat.blocks.AgentTextBlockView
 import app.hapi.companion.feature.chat.blocks.CliOutputBlockView
 import app.hapi.companion.feature.chat.blocks.CodexReviewBlockView
+import app.hapi.companion.feature.chat.blocks.DisplayLinksBlockView
 import app.hapi.companion.feature.chat.blocks.GeneratedImageBlockView
 import app.hapi.companion.feature.chat.blocks.ToolCallBlockView
 import app.hapi.companion.feature.chat.blocks.ToolGroupBlockView
@@ -18,6 +19,7 @@ import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.ChatBlock
 import app.hapi.protocol.chat.CliOutputBlock
 import app.hapi.protocol.chat.CodexReviewBlock
+import app.hapi.protocol.chat.DisplayLinksBlock
 import app.hapi.protocol.chat.GeneratedImageBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupBlock
@@ -70,6 +72,7 @@ fun ChatBlockCard(
         is AgentEventBlock -> AgentEventBlockView(block, modifier)
         is CliOutputBlock -> CliOutputBlockView(block, modifier)
         is GeneratedImageBlock -> GeneratedImageBlockView(block, modifier)
+        is DisplayLinksBlock -> DisplayLinksBlockView(block, modifier)
         is CodexReviewBlock -> CodexReviewBlockView(block, modifier)
         is ToolCallBlock -> ToolCallBlockView(block, basePath, modifier)
         is ToolGroupBlock -> ToolGroupBlockView(block, basePath, modifier)

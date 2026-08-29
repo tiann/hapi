@@ -253,3 +253,66 @@ describe('normalizeAgentRecord — imported pi compact-summary (codex envelope)'
         expect((normalized as { content: { tokensBefore?: number } }).content.tokensBefore).toBeUndefined()
     })
 })
+
+describe('normalizeAgentRecord — display-links', () => {
+    it('round-trips a concatenated landmine href as agent content, not a user turn', () => {
+        const href = 'https://github.com/tia' + 'nn' + '/hapi/issues/1516'
+        const normalized = normalizeAgentRecord('msg-links', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'display-links',
+                id: 'link-1',
+                urls: [{ href, title: 'Issue 1516' }]
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'display-links',
+                urls: [{ href: 'https://github.com/tiann/hapi/issues/1516', title: 'Issue 1516' }]
+            }]
+        })
+        expect(normalized?.role).not.toBe('user')
+        const urls = normalized && normalized.role === 'agent'
+            ? normalized.content.filter((c) => c.type === 'display-links')
+            : []
+        expect(urls[0] && urls[0].type === 'display-links' ? urls[0].urls[0]?.href : null).toBe(href)
+    })
+
+    it('round-trips concatenated exact-copy bytes as agent content', () => {
+        const value = 'VK' + 'K'
+        const normalized = normalizeAgentRecord('msg-text', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'display-links',
+                id: 'text-1',
+                texts: [{ value, title: 'gate' }]
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'display-links',
+                urls: [],
+                texts: [{ value: 'VKK', title: 'gate' }]
+            }]
+        })
+        const blocks = normalized && normalized.role === 'agent'
+            ? normalized.content.filter((c) => c.type === 'display-links')
+            : []
+        expect(blocks[0] && blocks[0].type === 'display-links' ? blocks[0].texts[0]?.value : null).toBe(value)
+    })
+
+    it('drops display-links payloads that contain only denied schemes', () => {
+        const normalized = normalizeAgentRecord('msg-evil', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'display-links',
+                urls: [{ href: 'javascript:alert(1)' }]
+            }
+        })
+        expect(normalized).toBeNull()
+    })
+})
