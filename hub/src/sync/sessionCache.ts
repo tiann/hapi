@@ -7,6 +7,11 @@ import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+// `archivedBy` attribution for sessions the reaper (reaper.ts) archives.
+// Owned here, not in reaper.ts, so the dependency between the two modules
+// stays one-directional (reaper.ts imports this, sessionCache.ts imports
+// nothing back from reaper.ts).
+export const REAPER_ARCHIVED_BY = 'hub-reaper'
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
 // restoreSessionArchiveMetadata) retry on version-mismatch with a fresh cache
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
@@ -235,14 +240,108 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    /**
+     * Self-heal path for the "reaped session reconnects but stays looking
+     * archived" gap: a session `SessionReaper` archived while disconnected
+     * must resume looking `'running'` the instant its CLI actually
+     * reconnects, or the web UI keeps showing it as archived forever despite
+     * it being live again - until some unrelated manual `/reopen`.
+     *
+     * This is the single throat point for that heal, called from both
+     * `markSessionActive` (the resume-on-respawn path) and
+     * `handleSessionAlive` (every CLI keepAlive - effectively every
+     * reconnect a running CLI process makes flows through this one). Both
+     * call it before doing their own active-flag bookkeeping, so no
+     * reconnect route can bypass the check by construction; if a future
+     * third "became active" entrypoint is ever added it must call this too.
+     *
+     * Deliberately scoped to `archivedBy === REAPER_ARCHIVED_BY`: a session
+     * archived by a human or by the CLI's own archive-on-exit path meant
+     * it, and reconnecting must not silently undo that.
+     *
+     * Idempotent by construction, not by a separate guard flag: the check
+     * re-reads *current* metadata on every call, so once healed (or if the
+     * session was never reaper-archived) the condition is false and every
+     * subsequent call is a no-op read - safe to call unconditionally on
+     * every heartbeat without double-writing.
+     *
+     * Uses the same versioned-write + retry-on-conflict + broadcast pattern
+     * as `markSessionArchivedFromHub` (the write this is undoing), so the
+     * two ends of the archive/revive cycle share one consistency mechanism.
+     * Unlike that method, failures here are swallowed rather than thrown:
+     * this runs inline in the hot keepAlive path, and a failure to heal
+     * must not take down the connection - worst case the session stays
+     * visibly archived until the next heartbeat's retry succeeds, or the
+     * user falls back to a manual `/reopen`.
+     */
+    private healReaperArchivedSession(sessionId: string): void {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) return
+            const current = session.metadata
+            if (!current) return
+            if (current.lifecycleState !== 'archived' || current.archivedBy !== REAPER_ARCHIVED_BY) {
+                return
+            }
+
+            const next: Record<string, unknown> = {
+                ...current,
+                lifecycleState: 'running',
+                lifecycleStateSince: Date.now()
+            }
+            delete next.archivedBy
+            delete next.archiveReason
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                next,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') {
+                // Best-effort (see doc comment above): swallow rather than
+                // throw into the keepAlive hot path.
+                return
+            }
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    data: {
+                        metadata: { version: result.version, value: result.value as Session['metadata'] }
+                    } satisfies SessionPatch
+                })
+                return
+            }
+
+            this.refreshSession(sessionId)
+        }
+        // Exhausted retries under genuine contention: best-effort, leave the
+        // row as-is for now - a subsequent heartbeat will retry the heal.
+    }
+
     markSessionActive(sessionId: string, time: number = Date.now()): void {
         const t = clampAliveTime(time) ?? Date.now()
+        this.healReaperArchivedSession(sessionId)
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
 
         const wasActive = session.active
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
+
+        if (!wasActive) {
+            // Mirror the active=false convergence point (expireInactive /
+            // handleSessionEnd below): persist the reactivation to the store,
+            // not just the in-memory cache. Gated on the false->true edge
+            // only, so a running session's frequent keepalives don't hit the
+            // DB on every heartbeat.
+            this.store.sessions.setSessionActive(session.id, true, session.activeAt, session.namespace)
+        }
 
         this.lastBroadcastAtBySessionId.set(session.id, Date.now())
         this.publisher.emit({
@@ -357,6 +456,7 @@ export class SessionCache {
         const t = clampAliveTime(payload.time)
         if (!t) return
 
+        this.healReaperArchivedSession(payload.sid)
         const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
         if (!session) return
 
@@ -379,6 +479,13 @@ export class SessionCache {
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
+        if (!wasActive) {
+            // Same reactivation-persistence rule as markSessionActive: only
+            // write on the false->true edge so the frequent (every-few-
+            // seconds) keepalive heartbeat that drives this method doesn't
+            // hit the DB while the session is already active.
+            this.store.sessions.setSessionActive(session.id, true, session.activeAt, session.namespace)
+        }
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
         if (!requestedThinking && preserveQueuedThinking && hasUnconsumedPrompt) {
@@ -624,6 +731,18 @@ export class SessionCache {
         })
     }
 
+    /**
+     * Flips `active` to `false` for sessions whose heartbeat has been silent
+     * past `sessionTimeoutMs` (30s). Deliberately only touches `active` -
+     * never `metadata.lifecycleState` - because a short network blip that
+     * misses a couple of heartbeats must not escalate into an archive; the
+     * two concerns run on very different clocks by design. Reconciling
+     * `lifecycleState` for a session that never comes back is the
+     * long-threshold job of `SessionReaper` (reaper.ts, tens of minutes by
+     * default), backstopped by the reconnect self-heal
+     * (`healReaperArchivedSession`) if the CLI does come back after the
+     * reaper already archived it.
+     */
     expireInactive(now: number = Date.now()): string[] {
         const sessionTimeoutMs = 30_000
         const expired: string[] = []
@@ -775,7 +894,7 @@ export class SessionCache {
      * `archiveSession` flow still marks the session inactive in cache via
      * `handleSessionEnd`, just without flipping the persisted lifecycle.
      */
-    markSessionArchivedFromHub(sessionId: string, reason: string): void {
+    markSessionArchivedFromHub(sessionId: string, reason: string, archivedBy: string = 'hub'): void {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session) return
@@ -789,7 +908,7 @@ export class SessionCache {
                 ...current,
                 lifecycleState: 'archived',
                 lifecycleStateSince: Date.now(),
-                archivedBy: 'hub',
+                archivedBy,
                 archiveReason: reason
             }
 
@@ -810,6 +929,12 @@ export class SessionCache {
             }
 
             if (result.result === 'success') {
+                // `refreshSession` re-reads the row we just wrote from the
+                // store, rebuilds the in-memory `Session`, and already emits
+                // a full `session-updated` broadcast itself (see its tail
+                // above) - already-open web UI tabs pick up the archive on
+                // that broadcast alone. A second, hand-rolled metadata-patch
+                // emit here would just double-fire the same update.
                 this.refreshSession(sessionId)
                 return
             }

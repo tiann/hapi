@@ -50,6 +50,8 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `HAPI_RELAY_AUTH` - Explicit relay auth key. By default the hub obtains and persists an individually revocable key from the relay. A persisted key rejected with HTTP 403 is discarded and reissued once; an explicitly configured environment key must be updated manually.
 - `HAPI_RELAY_FORCE_TCP` - Force TCP relay mode (true/1).
 - `VAPID_SUBJECT` - Contact email/URL for Web Push.
+- `HAPI_REAPER_INTERVAL_MS` - Sweep interval for the session reaper, which archives sessions whose CLI connection dropped without a chance to exit cleanly. Default: `0` (disabled). A dropped connection plus a stale heartbeat is a suspicion the CLI process is dead, not proof - a client riding out a long network partition looks identical to a killed one from the hub's side, and archiving it while the CLI is still alive lets the reopen flow spawn a second agent on the same session before it reconnects. Set this to opt in (e.g. `300000` for 5 minutes) once you're confident that risk doesn't apply to your environment.
+- `HAPI_REAPER_STALE_MS` - How long a disconnected session must go without a heartbeat before the reaper (once enabled) considers it a candidate. Default: `1800000` (30 minutes). Only takes effect when `HAPI_REAPER_INTERVAL_MS` is also set.
 
 ## Running
 
