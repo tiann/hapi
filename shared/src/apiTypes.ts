@@ -320,7 +320,6 @@ export const SessionServiceTierRequestSchema = z.object({
 
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
-/** Select a Codex model provider; null/empty selects Codex's default provider. */
 export const RenameSessionRequestSchema = z.object({
     name: z.string().min(1).max(255)
 })
