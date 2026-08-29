@@ -13,6 +13,15 @@ import {
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type {
+    EmptyRecycleBinResponse,
+    MoveFileToRecycleBinResponse,
+    PurgeRecycleBinEntryResponse,
+    ReadRecycleBinEntryResponse,
+    RecycleBinListResponse,
+    RecycleBinRestoreConflict,
+    RestoreRecycleBinEntryResponse,
+} from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -91,6 +100,15 @@ export type {
     RpcReadFileResponse,
     RpcUploadFileResponse
 } from './rpcGateway'
+export type {
+    EmptyRecycleBinResponse,
+    MoveFileToRecycleBinResponse,
+    PurgeRecycleBinEntryResponse,
+    ReadRecycleBinEntryResponse,
+    RecycleBinListResponse,
+    RecycleBinRestoreConflict,
+    RestoreRecycleBinEntryResponse,
+} from '@hapi/protocol/apiTypes'
 
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
@@ -3877,6 +3895,34 @@ export class SyncEngine {
 
     async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
         return await this.rpcGateway.statFiles(sessionId, paths)
+    }
+
+    async moveFileToRecycleBin(sessionId: string, path: string): Promise<MoveFileToRecycleBinResponse> {
+        return await this.rpcGateway.moveFileToRecycleBin(sessionId, path)
+    }
+
+    async listRecycleBin(sessionId: string): Promise<RecycleBinListResponse> {
+        return await this.rpcGateway.listRecycleBin(sessionId)
+    }
+
+    async readRecycleBinEntry(sessionId: string, entryId: string): Promise<ReadRecycleBinEntryResponse> {
+        return await this.rpcGateway.readRecycleBinEntry(sessionId, entryId)
+    }
+
+    async restoreRecycleBinEntry(
+        sessionId: string,
+        entryId: string,
+        conflict: RecycleBinRestoreConflict,
+    ): Promise<RestoreRecycleBinEntryResponse> {
+        return await this.rpcGateway.restoreRecycleBinEntry(sessionId, entryId, conflict)
+    }
+
+    async purgeRecycleBinEntry(sessionId: string, entryId: string): Promise<PurgeRecycleBinEntryResponse> {
+        return await this.rpcGateway.purgeRecycleBinEntry(sessionId, entryId)
+    }
+
+    async emptyRecycleBin(sessionId: string, entryIds: string[]): Promise<EmptyRecycleBinResponse> {
+        return await this.rpcGateway.emptyRecycleBin(sessionId, entryIds)
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {

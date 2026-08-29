@@ -50,9 +50,9 @@ When no `code` is present, branch on status alone and treat the failure generica
 
 ## RPC-wrapped endpoints
 
-Many endpoints do not answer from hub state — the hub relays the request over Socket.IO to the session's CLI process (or the machine's runner) and forwards the result: git/file/directory/search, generated images, uploads, model catalogs, Agent availability, slash-commands, skills, spawn, list-directory, paths/exists. (The mode/model/effort config endpoints are RPC-backed too, but map apply-failures to 409 with a message.) Their failure modes differ from plain endpoints:
+Many endpoints do not answer from hub state — the hub relays the request over Socket.IO to the session's CLI process (or the machine's runner) and forwards the result: git/file/directory/search, Recycle Bin operations, generated images, uploads, model catalogs, Agent availability, slash-commands, skills, spawn, list-directory, paths/exists. (The mode/model/effort config endpoints are RPC-backed too, but map apply-failures to 409 with a message.) Their failure modes differ from plain endpoints:
 
-1. **CLI reachable, command failed** → HTTP **200** with `{success: false, error}` (e.g. `runRpc` in `hub/src/web/routes/git.ts` catches RPC errors, including the 30 s RPC timeout, and returns them as a JSON envelope). Clients must check the `success` field on every RPC-shaped response; HTTP 200 alone means nothing.
+1. **CLI reachable, command failed** → HTTP **200** with `{success: false, error}` (e.g. `runRpc` in `hub/src/web/routes/git.ts` catches RPC errors, including the method-specific RPC timeout: 30 seconds by default and 10 minutes for Recycle Bin mutations, and returns them as a JSON envelope). Clients must check the `success` field on every RPC-shaped response; HTTP 200 alone means nothing.
 2. **CLI offline / handler missing** → depends on the route: the model-catalog routes in `machines.ts` map `RpcTargetMissingError` to **503 `rpc_target_missing`**; `git.ts`-style routes fold it into the 200 `{success: false}` envelope; resume/reopen surface **503 `no_machine_online`**.
 3. **Hub subsystems not up** → **503 `Not connected`** from `requireSyncEngine` (brief startup/shutdown window).
 

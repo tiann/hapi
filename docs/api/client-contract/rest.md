@@ -144,6 +144,12 @@ Source: `hub/src/web/routes/git.ts`. Git endpoints return the **raw command outp
 | `GET /api/sessions/:id/file` | Query: `path` (required) | `{success, content?, size?, modified?, error?}` — `content` is **base64** (decode before display; web ref: `web/src/routes/sessions/file.tsx`) |
 | `GET /api/sessions/:id/files` | Query: `query?`, `limit?` (1–500, default 200) | `{success, files: [{fileName, filePath, fullPath, fileType: 'file', size?, modified?}]}` (ripgrep-backed search) |
 | `GET /api/sessions/:id/directory` | Query: `path?` (empty = session root) | `{success, entries?: [{name, type: 'file'\|'directory'\|'other', size?, modified?}], error?}` |
+| `GET /api/sessions/:id/recycle-bin` | — | `{success, entries?: [{id, name, originalPath, type: 'file', size, deletedAt, expiresAt}], retentionDays?, error?}` |
+| `POST /api/sessions/:id/recycle-bin/move` | `{path}` | `{success, entry?, retentionDays?, error?}`; active session required |
+| `GET /api/sessions/:id/recycle-bin/:entryId` | — | `{success, name?, content?, size?, modified?, error?}`; `content` is **base64** |
+| `POST /api/sessions/:id/recycle-bin/restore` | `{entryId, conflict?: 'fail'\|'cancel'\|'overwrite'\|'new-name'}` | `{success, restoredPath?, cancelled?, code?: 'target_exists'\|'entry_not_found', targetPath?, error?}` |
+| `POST /api/sessions/:id/recycle-bin/purge` | `{entryId}` | `{success, error?}`; permanently deletes one entry |
+| `POST /api/sessions/:id/recycle-bin/empty` | `{entryIds}` | `{success, deletedCount?, error?}`; permanently deletes only the confirmed entry IDs |
 
 When the session has no `metadata.path` yet, these return HTTP 200 `{success: false, error: 'Session path not available'}`.
 

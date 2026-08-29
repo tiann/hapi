@@ -39,6 +39,7 @@ import type {
     CursorChatStoreStatus,
     CursorModelsResponse,
     DeleteUploadResponse,
+    EmptyRecycleBinResponse,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
@@ -47,11 +48,17 @@ import type {
     ListDirectoryResponse,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
+    MoveFileToRecycleBinResponse,
     OpencodeModelsResponse,
     OpencodeReasoningEffortResponse,
     PiModelsResponse,
     QueuedStateResponse,
+    PurgeRecycleBinEntryResponse,
+    ReadRecycleBinEntryResponse,
+    RecycleBinListResponse,
+    RecycleBinRestoreConflict,
     ReopenSessionResponse,
+    RestoreRecycleBinEntryResponse,
     SqliteStorageUsageResponse,
     HubSettingsResponse,
     UpdateHubSettingsRequest,
@@ -473,6 +480,50 @@ export class ApiClient {
         const params = new URLSearchParams()
         params.set('path', path)
         return await this.request<FileReadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/file?${params.toString()}`)
+    }
+
+    async listRecycleBin(sessionId: string): Promise<RecycleBinListResponse> {
+        return await this.request<RecycleBinListResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/recycle-bin`
+        )
+    }
+
+    async moveFileToRecycleBin(sessionId: string, path: string): Promise<MoveFileToRecycleBinResponse> {
+        return await this.request<MoveFileToRecycleBinResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/recycle-bin/move`,
+            { method: 'POST', body: JSON.stringify({ path }) }
+        )
+    }
+
+    async readRecycleBinEntry(sessionId: string, entryId: string): Promise<ReadRecycleBinEntryResponse> {
+        return await this.request<ReadRecycleBinEntryResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/recycle-bin/${encodeURIComponent(entryId)}`
+        )
+    }
+
+    async restoreRecycleBinEntry(
+        sessionId: string,
+        entryId: string,
+        conflict: RecycleBinRestoreConflict = 'fail',
+    ): Promise<RestoreRecycleBinEntryResponse> {
+        return await this.request<RestoreRecycleBinEntryResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/recycle-bin/restore`,
+            { method: 'POST', body: JSON.stringify({ entryId, conflict }) }
+        )
+    }
+
+    async purgeRecycleBinEntry(sessionId: string, entryId: string): Promise<PurgeRecycleBinEntryResponse> {
+        return await this.request<PurgeRecycleBinEntryResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/recycle-bin/purge`,
+            { method: 'POST', body: JSON.stringify({ entryId }) }
+        )
+    }
+
+    async emptyRecycleBin(sessionId: string, entryIds: string[]): Promise<EmptyRecycleBinResponse> {
+        return await this.request<EmptyRecycleBinResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/recycle-bin/empty`,
+            { method: 'POST', body: JSON.stringify({ entryIds }) }
+        )
     }
 
     async listSessionDirectory(sessionId: string, path?: string): Promise<ListDirectoryResponse> {

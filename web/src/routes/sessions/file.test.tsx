@@ -8,6 +8,15 @@ import FilePage from './file'
 
 const goBackMock = vi.fn()
 const copyMock = vi.hoisted(() => vi.fn())
+const listRecycleBinMock = vi.hoisted(() => vi.fn(async () => ({
+    success: true,
+    entries: [],
+    retentionDays: 30,
+})))
+const moveFileToRecycleBinMock = vi.hoisted(() => vi.fn(async () => ({
+    success: true,
+    retentionDays: 30,
+})))
 
 const sampleMarkdown = '# Heading\n\n| Col A | Col B |\n| --- | --- |\n| one | two |'
 const filePath = 'docs/README.md'
@@ -34,6 +43,8 @@ vi.mock('@/lib/app-context', () => ({
                 size: fileSize,
                 modified: fileModified,
             })),
+            listRecycleBin: listRecycleBinMock,
+            moveFileToRecycleBin: moveFileToRecycleBinMock,
         },
     }),
 }))
@@ -78,6 +89,8 @@ function renderWithProviders() {
 describe('FilePage markdown preview', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        listRecycleBinMock.mockResolvedValue({ success: true, entries: [], retentionDays: 30 })
+        moveFileToRecycleBinMock.mockResolvedValue({ success: true, retentionDays: 30 })
         window.localStorage.clear()
         window.sessionStorage.clear()
     })
@@ -133,5 +146,28 @@ describe('FilePage markdown preview', () => {
         })
         const secondScrollRegion = document.querySelector('[data-hapi-file-scroll="true"]') as HTMLElement
         expect(secondScrollRegion.scrollTop).toBe(123)
+    })
+
+    it('moves the previewed file to the Recycle Bin after confirmation', async () => {
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
+        })
+
+        expect(listRecycleBinMock).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole('button', { name: 'Move file to Recycle Bin' }))
+        await waitFor(() => {
+            expect(listRecycleBinMock).toHaveBeenCalledWith('session-1')
+        })
+        expect(screen.getByRole('heading', { name: 'Move file to Recycle Bin?' })).toBeInTheDocument()
+        expect(screen.getByRole('dialog')).toHaveTextContent(filePath)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Move' }))
+
+        await waitFor(() => {
+            expect(moveFileToRecycleBinMock).toHaveBeenCalledWith('session-1', filePath)
+            expect(goBackMock).toHaveBeenCalled()
+        })
     })
 })

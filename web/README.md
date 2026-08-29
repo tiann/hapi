@@ -70,12 +70,14 @@ See `src/router.tsx` for route definitions.
 
 - Git status view (staged/unstaged files).
 - File search with ripgrep.
+- HAPI Recycle Bin access for recoverable deleted files.
 - Navigate to file viewer.
 
 ### File viewer (`src/routes/sessions/file.tsx`)
 
 - File content display with syntax highlighting.
 - Staged/unstaged diff view.
+- Move the current file to the HAPI Recycle Bin after confirmation.
 
 ### Terminal (`src/routes/sessions/terminal.tsx`)
 

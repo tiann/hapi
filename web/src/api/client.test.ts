@@ -260,6 +260,48 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/voice/backend')
     })
 
+    it('calls the HAPI Recycle Bin endpoints with encoded session and entry ids', async () => {
+        fetchMock
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, entries: [], retentionDays: 30 }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, retentionDays: 30 }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, name: 'note.md', content: 'bm90ZQ==' }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, restoredPath: '/workspace/note.md' }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, deletedCount: 0 }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        const sessionId = 'session /?#'
+        const entryId = '00000000-0000-4000-8000-000000000001'
+
+        await api.listRecycleBin(sessionId)
+        await api.moveFileToRecycleBin(sessionId, 'src/note.md')
+        await api.readRecycleBinEntry(sessionId, entryId)
+        await api.restoreRecycleBinEntry(sessionId, entryId, 'new-name')
+        await api.purgeRecycleBinEntry(sessionId, entryId)
+        await api.emptyRecycleBin(sessionId, [entryId])
+
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            '/api/sessions/session%20%2F%3F%23/recycle-bin',
+            '/api/sessions/session%20%2F%3F%23/recycle-bin/move',
+            `/api/sessions/session%20%2F%3F%23/recycle-bin/${entryId}`,
+            '/api/sessions/session%20%2F%3F%23/recycle-bin/restore',
+            '/api/sessions/session%20%2F%3F%23/recycle-bin/purge',
+            '/api/sessions/session%20%2F%3F%23/recycle-bin/empty',
+        ])
+        expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ path: 'src/note.md' }),
+        })
+        expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ entryId, conflict: 'new-name' }),
+        })
+        expect(fetchMock.mock.calls[5]?.[1]).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ entryIds: [entryId] }),
+        })
+    })
+
     it('reads and updates masked transcription credentials', async () => {
         const status = {
             openai: { configured: true, source: 'settings', hint: '••••cret', editable: true },

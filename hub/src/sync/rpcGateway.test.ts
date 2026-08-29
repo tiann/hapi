@@ -114,6 +114,30 @@ describe('RpcGateway RPC timeouts', () => {
     })
 })
 
+describe('RpcGateway Recycle Bin methods', () => {
+    it('uses session-scoped RPC names and forwards recycle-bin payloads', async () => {
+        const { gateway, calls, timeouts } = createGateway()
+        const entryId = '00000000-0000-4000-8000-000000000001'
+
+        await gateway.moveFileToRecycleBin('session-1', 'src/notes.md')
+        await gateway.listRecycleBin('session-1')
+        await gateway.readRecycleBinEntry('session-1', entryId)
+        await gateway.restoreRecycleBinEntry('session-1', entryId, 'overwrite')
+        await gateway.purgeRecycleBinEntry('session-1', entryId)
+        await gateway.emptyRecycleBin('session-1', [entryId])
+
+        expect(calls).toEqual([
+            { method: 'session-1:moveFileToRecycleBin', params: JSON.stringify({ path: 'src/notes.md' }) },
+            { method: 'session-1:listRecycleBin', params: JSON.stringify({}) },
+            { method: 'session-1:readRecycleBinEntry', params: JSON.stringify({ entryId }) },
+            { method: 'session-1:restoreRecycleBinEntry', params: JSON.stringify({ entryId, conflict: 'overwrite' }) },
+            { method: 'session-1:purgeRecycleBinEntry', params: JSON.stringify({ entryId }) },
+            { method: 'session-1:emptyRecycleBin', params: JSON.stringify({ entryIds: [entryId] }) },
+        ])
+        expect(timeouts).toEqual([600_000, 30_000, 30_000, 600_000, 600_000, 600_000])
+    })
+})
+
 // tiann/hapi#916: rpcCall throws a typed `RpcTargetMissingError` when the
 // target CLI is unreachable, so syncEngine.archiveSession can narrow on it
 // and treat the kill as a benign no-op.

@@ -26,6 +26,7 @@ import { useTranslation } from '@/lib/use-translation'
 import * as Popover from '@radix-ui/react-popover'
 import { CheckIcon, CloseIcon } from '@/components/icons'
 import { Button } from '@/components/ui/button'
+import { RecycleBinDialog } from '@/components/RecycleBinDialog'
 import {
     DEFAULT_DIRECTORY_SORT,
     type DirectorySort,
@@ -50,6 +51,28 @@ function RefreshIcon(props: { className?: string }) {
         >
             <path d="M21 12a9 9 0 1 1-3-6.7" />
             <polyline points="21 3 21 9 15 9" />
+        </svg>
+    )
+}
+
+function TrashIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="m19 6-1 14H6L5 6" />
+            <path d="M10 11v5M14 11v5" />
         </svg>
     )
 }
@@ -320,6 +343,7 @@ export default function FilesPage() {
 
     const initialTab = search.tab === 'directories' ? 'directories' : 'changes'
     const [activeTab, setActiveTab] = useState<'changes' | 'directories'>(initialTab)
+    const [recycleBinOpen, setRecycleBinOpen] = useState(false)
     const [directorySort, setDirectorySort] = useState<DirectorySort>(readDirectorySort)
     const searchQuery = search.query ?? ''
 
@@ -430,6 +454,14 @@ export default function FilesPage() {
         void refetchGit()
     }, [activeTab, queryClient, refetchGit, searchQuery, sessionId])
 
+    const handleRecycleBinChanged = useCallback(async () => {
+        await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['session-directory', sessionId] }),
+            queryClient.invalidateQueries({ queryKey: ['session-files', sessionId] }),
+            queryClient.invalidateQueries({ queryKey: queryKeys.gitStatus(sessionId) }),
+        ])
+    }, [queryClient, sessionId])
+
     const handleTabChange = useCallback((nextTab: 'changes' | 'directories') => {
         setActiveTab(nextTab)
         navigate({
@@ -533,6 +565,16 @@ export default function FilesPage() {
                         aria-label={t('files.page.refreshFilesystem')}
                     >
                         <RefreshIcon />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        type="button"
+                        onClick={() => setRecycleBinOpen(true)}
+                        className="h-9 w-9 shrink-0 px-0"
+                        title={t('files.page.openRecycleBin')}
+                        aria-label={t('files.page.openRecycleBin')}
+                    >
+                        <TrashIcon />
                     </Button>
                 </div>
             </div>
@@ -675,6 +717,14 @@ export default function FilesPage() {
                     )}
                 </div>
             </div>
+
+            <RecycleBinDialog
+                api={api}
+                sessionId={sessionId}
+                isOpen={recycleBinOpen}
+                onClose={() => setRecycleBinOpen(false)}
+                onChanged={handleRecycleBinChanged}
+            />
         </div>
     )
 }

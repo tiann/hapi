@@ -13,6 +13,7 @@ Run official Claude Code / Codex / Cursor Agent / Grok Build / OpenCode / Kimi /
 - **Terminal Anywhere** - Run commands from your phone or browser, directly connected to the working machine.
 - **Voice Control** - Talk to your AI agent hands-free using the built-in voice assistant.
 - **Workspace Browser** - Opt-in via one or more `hapi runner start --workspace-root <path>` flags: browse scoped file trees from the web and start sessions in allowed subdirectories.
+- **Recoverable File Deletion** - Move files from the file preview into a machine-local HAPI Recycle Bin and restore them before expiry.
 
 ## Demo
 

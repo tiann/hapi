@@ -199,6 +199,7 @@ On first run, HAPI:
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
 | `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |
+| - | `30` | `recycleBinRetentionDays` | Runner-local HAPI Recycle Bin retention period in days |
 | `ELEVENLABS_API_KEY` | - | Settings / env | ElevenLabs API key for voice + dictation |
 | `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |
 | `OPENAI_API_KEY` | - | Settings / env | OpenAI API key for dictation (`gpt-transcribe` / `gpt-live-transcribe`) |
@@ -220,6 +221,10 @@ called only on demand; the existing manual rename flow does not require these
 variables. Each request sends recent visible user/assistant conversation text
 (up to 200 stored messages and a bounded prompt) to that configured provider.
 
+Runner-owned HAPI Recycle Bin retention is configured separately in the
+Runner's `$HAPI_HOME/settings.json` with `recycleBinRetentionDays`. It defaults
+to 30 days and applies to files managed by that Runner.
+
 <details>
 <summary>settings.json example</summary>
 
@@ -234,6 +239,7 @@ When ENV values are set and not present in settings.json, they are automatically
   "listenHost": "0.0.0.0",
   "listenPort": 3006,
   "publicUrl": "https://your-domain.com",
+  "recycleBinRetentionDays": 30,
   "extraHeaders": {
     "Cookie": "CF_Authorization=..."
   }

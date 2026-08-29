@@ -18,8 +18,10 @@ import type {
     CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
+    EmptyRecycleBinResponse,
     FileReadResponse,
     GeneratedImageResponse,
+    MoveFileToRecycleBinResponse,
     CopilotModelsResponse,
     GrokModelsResponse,
     GrokReasoningEffortResponse,
@@ -32,6 +34,11 @@ import type {
     OpencodeReasoningEffortResponse,
     PathExistsResponse,
     PiModelsResponse,
+    PurgeRecycleBinEntryResponse,
+    ReadRecycleBinEntryResponse,
+    RecycleBinListResponse,
+    RecycleBinRestoreConflict,
+    RestoreRecycleBinEntryResponse,
     SlashCommandsResponse,
     StatFilesResponse,
     UploadFileResponse
@@ -41,6 +48,7 @@ import type { RpcRegistry } from '../socket/rpcRegistry'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
+const RECYCLE_BIN_MUTATION_RPC_TIMEOUT_MS = 10 * 60_000
 
 /**
  * tiann/hapi#916: thrown by {@link RpcGateway.rpcCall} when the target CLI is
@@ -345,6 +353,54 @@ export class RpcGateway {
 
     async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.StatFiles, { paths }) as RpcStatFilesResponse
+    }
+
+    async moveFileToRecycleBin(sessionId: string, path: string): Promise<MoveFileToRecycleBinResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.MoveFileToRecycleBin,
+            { path },
+            RECYCLE_BIN_MUTATION_RPC_TIMEOUT_MS,
+        ) as MoveFileToRecycleBinResponse
+    }
+
+    async listRecycleBin(sessionId: string): Promise<RecycleBinListResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListRecycleBin, {}) as RecycleBinListResponse
+    }
+
+    async readRecycleBinEntry(sessionId: string, entryId: string): Promise<ReadRecycleBinEntryResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ReadRecycleBinEntry, { entryId }) as ReadRecycleBinEntryResponse
+    }
+
+    async restoreRecycleBinEntry(
+        sessionId: string,
+        entryId: string,
+        conflict: RecycleBinRestoreConflict,
+    ): Promise<RestoreRecycleBinEntryResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.RestoreRecycleBinEntry,
+            { entryId, conflict },
+            RECYCLE_BIN_MUTATION_RPC_TIMEOUT_MS,
+        ) as RestoreRecycleBinEntryResponse
+    }
+
+    async purgeRecycleBinEntry(sessionId: string, entryId: string): Promise<PurgeRecycleBinEntryResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.PurgeRecycleBinEntry,
+            { entryId },
+            RECYCLE_BIN_MUTATION_RPC_TIMEOUT_MS,
+        ) as PurgeRecycleBinEntryResponse
+    }
+
+    async emptyRecycleBin(sessionId: string, entryIds: string[]): Promise<EmptyRecycleBinResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.EmptyRecycleBin,
+            { entryIds },
+            RECYCLE_BIN_MUTATION_RPC_TIMEOUT_MS,
+        ) as EmptyRecycleBinResponse
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {

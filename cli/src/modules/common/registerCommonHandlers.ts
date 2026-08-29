@@ -12,11 +12,17 @@ import { registerDifftasticHandlers } from './handlers/difftastic'
 import { registerFileHandlers } from './handlers/files'
 import { registerGitHandlers } from './handlers/git'
 import { registerRipgrepHandlers } from './handlers/ripgrep'
+import { registerRecycleBinHandlers } from './handlers/recycleBin'
 import { registerSlashCommandHandlers } from './handlers/slashCommands'
 import { registerSkillsHandlers } from './handlers/skills'
 import { registerUploadHandlers } from './handlers/uploads'
+import { RecycleBinManager } from './recycleBin'
 
-export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string): void {
+export function registerCommonHandlers(
+    rpcHandlerManager: RpcHandlerManager,
+    workingDirectory: string,
+    options: { enableRecycleBin?: boolean; recycleBinNamespace?: string } = {},
+): void {
     registerAgyModelHandlers(rpcHandlerManager)
     registerBashHandlers(rpcHandlerManager, workingDirectory)
     registerCodexModelHandlers(rpcHandlerManager)
@@ -33,4 +39,11 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
     registerSkillsHandlers(rpcHandlerManager, workingDirectory)
     registerGitHandlers(rpcHandlerManager, workingDirectory)
     registerUploadHandlers(rpcHandlerManager)
+    if (options.enableRecycleBin) {
+        registerRecycleBinHandlers(
+            rpcHandlerManager,
+            workingDirectory,
+            new RecycleBinManager(undefined, undefined, undefined, options.recycleBinNamespace),
+        )
+    }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useSearch } from '@tanstack/react-router'
 import type { GitCommandResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
@@ -22,6 +22,7 @@ import {
     type MarkdownPreviewMode,
 } from '@/lib/file-markdown-preview'
 import { downloadBase64File } from '@/lib/file-download'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
 const FILE_SCROLL_KEY_PREFIX = 'hapi-file-scroll-'
@@ -67,6 +68,28 @@ function DownloadIcon(props: { className?: string }) {
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+    )
+}
+
+function TrashIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="m19 6-1 14H6L5 6" />
+            <path d="M10 11v5M14 11v5" />
         </svg>
     )
 }
@@ -206,6 +229,7 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
 export default function FilePage() {
     const { api } = useAppContext()
     const { t, locale } = useTranslation()
+    const queryClient = useQueryClient()
     const { copied: pathCopied, copy: copyPath } = useCopyToClipboard()
     const { copied: contentCopied, copy: copyContent } = useCopyToClipboard()
     const goBack = useAppGoBack()
@@ -218,6 +242,8 @@ export default function FilePage() {
     const fileName = filePath.split('/').pop() || filePath || t('file.page.fallbackName')
     const imageMimeType = useMemo(() => resolveImageMimeType(filePath), [filePath])
     const markdownFile = useMemo(() => isMarkdownFile(filePath), [filePath])
+    const [recycleBinConfirmOpen, setRecycleBinConfirmOpen] = useState(false)
+    const [isMovingToRecycleBin, setIsMovingToRecycleBin] = useState(false)
 
     const diffQuery = useQuery({
         queryKey: queryKeys.gitFileDiff(sessionId, filePath, staged),
@@ -239,6 +265,17 @@ export default function FilePage() {
             return await api.readSessionFile(sessionId, filePath)
         },
         enabled: Boolean(api && sessionId && filePath)
+    })
+
+    const recycleBinQuery = useQuery({
+        queryKey: queryKeys.recycleBin(sessionId),
+        queryFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            return await api.listRecycleBin(sessionId)
+        },
+        enabled: Boolean(api && sessionId && recycleBinConfirmOpen),
     })
 
     const diffContent = diffQuery.data?.success ? (diffQuery.data.stdout ?? '') : ''
@@ -275,6 +312,39 @@ export default function FilePage() {
         && contentSizeBytes <= MAX_COPYABLE_FILE_BYTES
 
     const canDownload = fileContentResult?.success === true && Boolean(fileContentResult.content)
+    const canMoveToRecycleBin = fileContentResult?.success === true && Boolean(filePath)
+    const recycleBinRetentionDays = recycleBinQuery.data?.success
+        ? recycleBinQuery.data.retentionDays ?? null
+        : null
+
+    const handleMoveToRecycleBin = useCallback(async () => {
+        if (!api || !sessionId || !filePath) return
+        setIsMovingToRecycleBin(true)
+        try {
+            const result = await api.moveFileToRecycleBin(sessionId, filePath)
+            if (!result.success) {
+                throw new Error(result.error ?? t('recycleBin.error.move'))
+            }
+            await Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['session-directory', sessionId] }),
+                queryClient.invalidateQueries({ queryKey: ['session-files', sessionId] }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.gitStatus(sessionId) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.recycleBin(sessionId) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.sessionFile(sessionId, filePath) }),
+            ])
+            setRecycleBinConfirmOpen(false)
+            goBack()
+        } finally {
+            setIsMovingToRecycleBin(false)
+        }
+    }, [api, filePath, goBack, queryClient, sessionId, t])
+
+    const recycleBinMoveDescription = recycleBinRetentionDays === null
+        ? t('recycleBin.moveConfirmDescriptionUnknown', { path: filePath })
+        : t('recycleBin.moveConfirmDescription', {
+            path: filePath,
+            days: recycleBinRetentionDays,
+        })
 
     const [displayMode, setDisplayMode] = useState<'diff' | 'file'>('diff')
     const fileScrollRef = useRef<HTMLDivElement>(null)
@@ -389,6 +459,18 @@ export default function FilePage() {
                             title={t('file.page.download')}
                         >
                             <DownloadIcon className="h-3.5 w-3.5" />
+                        </button>
+                    ) : null}
+                    {canMoveToRecycleBin ? (
+                        <button
+                            type="button"
+                            onClick={() => setRecycleBinConfirmOpen(true)}
+                            disabled={isMovingToRecycleBin}
+                            className="shrink-0 rounded p-1 text-[var(--app-hint)] transition-colors hover:bg-red-500/10 hover:text-red-600 disabled:opacity-50"
+                            title={t('file.page.moveToRecycleBin')}
+                            aria-label={t('file.page.moveToRecycleBin')}
+                        >
+                            <TrashIcon className="h-3.5 w-3.5" />
                         </button>
                     ) : null}
                 </div>
@@ -509,6 +591,19 @@ export default function FilePage() {
                     )}
                 </div>
             </div>
+
+            <ConfirmDialog
+                isOpen={recycleBinConfirmOpen}
+                onClose={() => setRecycleBinConfirmOpen(false)}
+                title={t('recycleBin.moveConfirmTitle')}
+                description={recycleBinMoveDescription}
+                confirmLabel={t('recycleBin.moveConfirm')}
+                confirmingLabel={t('recycleBin.moveConfirming')}
+                onConfirm={handleMoveToRecycleBin}
+                isPending={isMovingToRecycleBin}
+                destructive
+                centerTitle
+            />
         </div>
     )
 }

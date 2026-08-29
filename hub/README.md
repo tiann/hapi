@@ -132,6 +132,12 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/sessions/:id/git-diff-file` - File-specific diff.
 - `GET /api/sessions/:id/file` - Read file content.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
+- `GET /api/sessions/:id/recycle-bin` - List HAPI Recycle Bin entries.
+- `POST /api/sessions/:id/recycle-bin/move` - Move one session file into the Recycle Bin.
+- `GET /api/sessions/:id/recycle-bin/:entryId` - Read a Recycle Bin entry for preview.
+- `POST /api/sessions/:id/recycle-bin/restore` - Restore an entry to its original path.
+- `POST /api/sessions/:id/recycle-bin/purge` - Permanently delete one entry.
+- `POST /api/sessions/:id/recycle-bin/empty` - Permanently delete the confirmed entry IDs.
 
 ### Events (`src/web/routes/events.ts`)
 

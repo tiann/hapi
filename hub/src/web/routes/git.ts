@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { isWildcardSearch, matchesSearchQuery, toSearchGlob } from '@hapi/protocol'
+import { EmptyRecycleBinRequestSchema, RecycleBinRestoreConflictSchema } from '@hapi/protocol/apiTypes'
 import { z } from 'zod'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -20,6 +21,15 @@ const filePathSchema = z.object({
 
 const generatedImageSchema = z.object({
     imageId: z.string().min(1)
+})
+
+const recycleBinEntrySchema = z.object({
+    entryId: z.string().uuid()
+})
+
+const recycleBinRestoreSchema = z.object({
+    entryId: z.string().uuid(),
+    conflict: RecycleBinRestoreConflictSchema.default('fail')
 })
 
 function normalizeFileSearchPath(path: string): string {
@@ -155,6 +165,129 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const result = await runRpc(() => engine.readSessionFile(sessionResult.sessionId, parsed.data.path))
+        return c.json(result)
+    })
+
+    app.get('/sessions/:id/recycle-bin', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const result = await runRpc(() => engine.listRecycleBin(sessionResult.sessionId))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/recycle-bin/move', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = filePathSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid file path' }, 400)
+        }
+
+        const result = await runRpc(() => engine.moveFileToRecycleBin(sessionResult.sessionId, parsed.data.path))
+        return c.json(result)
+    })
+
+    app.get('/sessions/:id/recycle-bin/:entryId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const parsed = recycleBinEntrySchema.safeParse(c.req.param())
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid recycle-bin entry id' }, 400)
+        }
+
+        const result = await runRpc(() => engine.readRecycleBinEntry(sessionResult.sessionId, parsed.data.entryId))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/recycle-bin/restore', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = recycleBinRestoreSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid restore request' }, 400)
+        }
+
+        const result = await runRpc(() => engine.restoreRecycleBinEntry(
+            sessionResult.sessionId,
+            parsed.data.entryId,
+            parsed.data.conflict,
+        ))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/recycle-bin/purge', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = recycleBinEntrySchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid recycle-bin entry id' }, 400)
+        }
+
+        const result = await runRpc(() => engine.purgeRecycleBinEntry(sessionResult.sessionId, parsed.data.entryId))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/recycle-bin/empty', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = EmptyRecycleBinRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid empty recycle-bin request' }, 400)
+        }
+
+        const result = await runRpc(() => engine.emptyRecycleBin(sessionResult.sessionId, parsed.data.entryIds))
         return c.json(result)
     })
 

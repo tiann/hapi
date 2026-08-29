@@ -139,6 +139,13 @@ controls for DSH.
 - `HAPI_RUNNER_HEARTBEAT_INTERVAL` - Heartbeat interval in ms (default: 60000).
 - `HAPI_RUNNER_HTTP_TIMEOUT` - HTTP timeout for runner control in ms (default: 10000).
 
+### HAPI Recycle Bin
+
+The Runner stores deleted session files in a machine-local HAPI Recycle Bin.
+Set `recycleBinRetentionDays` in `$HAPI_HOME/settings.json` to configure the
+retention period; the default is 30 days. The Runner performs expiry cleanup
+when the Recycle Bin is accessed.
+
 ### Worktree (set by runner)
 
 - `HAPI_WORKTREE_BASE_PATH` - Base repository path.

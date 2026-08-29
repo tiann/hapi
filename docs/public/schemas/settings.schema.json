@@ -98,6 +98,13 @@
       "type": "boolean",
       "description": "Auto-start runner when running hapi command."
     },
+    "recycleBinRetentionDays": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650,
+      "default": 30,
+      "description": "Runner-local HAPI Recycle Bin retention period in days."
+    },
     "providerCredentials": {
       "type": "object",
       "additionalProperties": {
