@@ -31,6 +31,17 @@ export default {
   'shareTurn.sharing': 'Sharing…',
   'shareTurn.download': 'Download',
   'shareTurn.saving': 'Saving…',
+  'common.save': 'Save',
+  'common.cancel': 'Cancel',
+  'message.jumpToPrompt': 'Jump to turn input',
+  'message.jumpToConversationStart': 'Jump to conversation start',
+  'message.loadingConversationStart': 'Loading earlier messages…',
+  'message.reachedConversationStart': 'Reached conversation start',
+  'message.loadConversationStartFailed': 'Could not load earlier messages. Try again.',
+  'message.loadingPrompt': 'Loading turn input…',
+  'message.reachedPrompt': 'Reached turn input',
+  'message.loadPromptFailed': 'Could not load turn input. Try again.',
+  'message.historyGap': 'Some history is not loaded',
 
   // Login / Auth
   'login.title': 'HAPI',
