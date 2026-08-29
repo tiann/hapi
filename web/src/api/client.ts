@@ -40,6 +40,7 @@ import type {
     CursorModelsResponse,
     DeleteUploadResponse,
     FileReadResponse,
+    GeneratedImageResponse,
     GitCommandResponse,
     GrokModelsResponse,
     CopilotModelsResponse,
@@ -467,6 +468,13 @@ export class ApiClient {
             throw new ApiError(`HTTP ${res.status}`, res.status, undefined, await res.text().catch(() => undefined))
         }
         return await res.blob()
+    }
+
+    async getGeneratedImageMetadata(sessionId: string, imageId: string): Promise<GeneratedImageResponse> {
+        const params = new URLSearchParams({ metadata: '1' })
+        return await this.request<GeneratedImageResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}?${params.toString()}`
+        )
     }
 
     async readSessionFile(sessionId: string, path: string): Promise<FileReadResponse> {

@@ -681,6 +681,7 @@ export type FileReadResponse = {
 export type GeneratedImageResponse = {
     success: boolean
     content?: string
+    size?: number
     mimeType?: string
     fileName?: string
     error?: string

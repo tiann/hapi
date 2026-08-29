@@ -16,6 +16,7 @@ import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { ImagePreview } from '@/components/ImagePreview'
 import { FileIcon } from '@/components/FileIcon'
+import { formatFileSize } from '@/lib/file-metadata'
 import { useTranslation } from '@/lib/use-translation'
 import { inlineMediaLabelKey, isInlineAudioMimeType, isInlineImageMimeType, isInlineVideoMimeType } from '@/lib/generatedInlineMedia'
 
@@ -53,6 +54,7 @@ function isGeneratedImageBlock(value: unknown): value is GeneratedImageBlock {
 }
 
 const MIN_INLINE_IMAGE_DIMENSION = 64
+const MEDIA_ACTION_CLASS_NAME = 'flex w-full items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-4 py-3 text-left text-sm font-medium text-[var(--app-fg)]'
 
 /** Scale tiny icons up for readability without exploding skinny/tall images. */
 export function computeTinyImageScale(width: number, height: number): number {
@@ -70,6 +72,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     const [objectUrl, setObjectUrl] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [imageStyle, setImageStyle] = useState<CSSProperties | undefined>(undefined)
+    const [fileSize, setFileSize] = useState<number | undefined>(undefined)
     const [loadMedia, setLoadMedia] = useState(false)
     const objectUrlRef = useRef<string | null>(null)
     const isVideo = isInlineVideoMimeType(props.block.mimeType)
@@ -78,6 +81,10 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     const isFile = !isVideo && !isAudio && !isImage
     const mediaLabel = t(inlineMediaLabelKey(props.block.mimeType))
     const mediaHeader = t('media.displayed.header', { label: mediaLabel, fileName: props.block.fileName })
+    const formattedFileSize = formatFileSize(fileSize) ?? '0 B'
+    const prepareDownloadLabel = fileSize === undefined
+        ? t('media.displayed.prepareDownload')
+        : t('media.displayed.prepareDownloadWithSize', { size: formattedFileSize })
     // Non-image media can be tens of MB; wait for explicit user intent before downloading.
     const shouldFetch = isImage || loadMedia
 
@@ -89,6 +96,24 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
             }
         }
     }, [])
+
+    useEffect(() => {
+        if (!isFile) return
+
+        let disposed = false
+        void ctx.api.getGeneratedImageMetadata(ctx.sessionId, props.block.imageId)
+            .then((metadata) => {
+                if (disposed || !metadata.success || typeof metadata.size !== 'number') return
+                setFileSize(metadata.size)
+            })
+            .catch(() => {
+                // Metadata is an optional enhancement; keep the deferred action usable if it fails.
+            })
+
+        return () => {
+            disposed = true
+        }
+    }, [ctx.api, ctx.sessionId, isFile, props.block.imageId])
 
     useEffect(() => {
         if (!shouldFetch) {
@@ -103,6 +128,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
         }
         setObjectUrl(null)
         setImageStyle(undefined)
+        setFileSize(undefined)
         setError(null)
 
         void ctx.api.getGeneratedImageBlob(ctx.sessionId, props.block.imageId)
@@ -114,6 +140,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                 }
                 objectUrlRef.current = nextObjectUrl
                 setObjectUrl(nextObjectUrl)
+                setFileSize(blob.size)
                 if (isImage) {
                     setImageStyle(undefined)
                     const probe = new Image()
@@ -161,10 +188,16 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                     <a
                         href={objectUrl}
                         download={props.block.fileName}
-                        className="flex items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-4 py-3 text-sm font-medium text-[var(--app-fg)]"
+                        aria-label={t('media.displayed.downloadFile', {
+                            fileName: props.block.fileName,
+                            size: formattedFileSize,
+                        })}
+                        className={MEDIA_ACTION_CLASS_NAME}
                     >
                         <FileIcon fileName={props.block.fileName} size={24} />
-                        <span className="min-w-0 truncate">Download {props.block.fileName}</span>
+                        <span className="min-w-0 truncate">
+                            {t('media.displayed.download', { size: formattedFileSize })}
+                        </span>
                     </a>
                 ) : (
                     <div className="flex min-h-32 min-w-[12rem] items-center justify-center rounded-xl bg-[var(--app-subtle-bg)]">
@@ -186,12 +219,19 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                 <button
                     type="button"
                     onClick={() => setLoadMedia(true)}
-                    className="flex h-48 w-72 max-w-full items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-sm font-medium text-[var(--app-fg)]"
+                    className={MEDIA_ACTION_CLASS_NAME}
                 >
-                    {isVideo ? 'Load video' : isAudio ? 'Load audio' : 'Prepare download'}
+                    <FileIcon fileName={props.block.fileName} size={24} />
+                    <span className="min-w-0 truncate">
+                        {isVideo
+                            ? t('media.displayed.loadVideo')
+                            : isAudio
+                                ? t('media.displayed.loadAudio')
+                                : prepareDownloadLabel}
+                    </span>
                 </button>
             ) : (
-                <div className="h-48 w-72 max-w-full animate-pulse rounded-xl bg-[var(--app-subtle-bg)]" />
+                <div className="h-12 w-full max-w-full animate-pulse rounded-xl bg-[var(--app-subtle-bg)]" />
             )}
         </div>
     )
