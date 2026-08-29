@@ -1108,6 +1108,7 @@ export default {
   'misc.typeMessage': "输入 'continue' 继续...",
   'misc.typeAMessage': '输入消息...',
   'misc.typeAMessageWithMentions': '输入想让智能体做的事，或用 @ 提及另一个会话以提供上下文或移交',
+  'composerHistory.attachmentsNotRestored': '附件（{count} 个）不会恢复',
   'misc.offline': 'offline',
   'misc.permissionRequired': '需要权限',
   'misc.online': 'online',
