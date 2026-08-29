@@ -3518,7 +3518,16 @@ export function SessionList(props: {
     useEffect(() => {
         const container = scrollContainerRef.current
         if (!container || blockedCount === 0) {
-            setBlockedOffscreen({ above: 0, below: 0 })
+            // Functional + bail-out. A fresh `{above:0,below:0}` here would be a
+            // new identity every run, and this effect's deps churn on each
+            // render (the `machineLabelsById = {}` prop default cascades
+            // through the filter memos) — so an unconditional set becomes an
+            // infinite render loop.
+            setBlockedOffscreen((previous) => (
+                previous.above === 0 && previous.below === 0
+                    ? previous
+                    : { above: 0, below: 0 }
+            ))
             return
         }
         let frame = 0

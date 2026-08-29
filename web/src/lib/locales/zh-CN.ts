@@ -159,7 +159,7 @@ export default {
   'sessions.blockedSection': '已阻塞',
   'sessions.blocked.jump': '{count} 个已阻塞 — 跳到下一个',
   'sessions.blockedFilter.showingOnly': '仅显示 {count} 个已阻塞',
-  'sessions.blockedFilter.hint': '长按仅显示已阻塞',
+  'sessions.blockedFilter.hint': '仅显示已阻塞',
   'sessions.group.expand': '展开 {n} 个',
   'sessions.group.collapse': '收起 {n} 个',
   'sessions.runningSection': '进行中',
