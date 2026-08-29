@@ -1,4 +1,6 @@
 import {
+    AttachedJobPatchSchema,
+    AttachedJobUpsertSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
@@ -116,8 +118,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
+        // Watermark BEFORE reading jobs. If a mutation lands between read and
+        // allocate, SSE gets version V with the new value while this response
+        // would return the older value labeled V+1 — useSSE then rejects the
+        // real patch as stale. Allocate first so concurrent emits always win.
+        const sessionIds = sessionRecords.map((session) => session.id)
+        const attachedJobVersions = new Map(
+            sessionIds.map((id) => [id, engine.allocateAttachedJobVersion(id)])
+        )
+        const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionIds)
         const sessions = sessionRecords.map((session) => {
-            const summary = toSessionSummary(session)
+            const summary = toSessionSummary(session, {
+                attachedJob: attachedJobs.get(session.id) ?? null,
+                // Same allocator as SSE emits — equal-ms terminal patches stay applyable.
+                attachedJobUpdatedAt: attachedJobVersions.get(session.id) ?? 0
+            })
             return {
                 ...summary,
                 futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
@@ -893,13 +908,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Cannot delete active session. Archive it first.' }, 409)
         }
 
+        // Attached jobs outlive active=false; CASCADE would erase the live meter and
+        // leave supervisors PATCHing a deleted session (404 forever).
+        if (engine.getPrimaryAttachedJob(sessionResult.sessionId)) {
+            return c.json({
+                error: 'Cannot delete a session while an attached job is running. Complete or clear it first.'
+            }, 409)
+        }
+
         try {
             await engine.deleteSession(sessionResult.sessionId)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to delete session'
-            // Map "active session" error to 409 conflict (race condition: session became active)
-            if (message.includes('active')) {
+            // Map lifecycle conflicts to 409 (active race, or running attached job)
+            if (message.includes('active') || message.includes('attached job')) {
                 return c.json({ error: message }, 409)
             }
             return c.json({ error: message }, 500)
@@ -1242,6 +1265,175 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const removed = engine.deleteScratchlistEntry(sessionResult.sessionId, entryId)
         if (!removed) {
             return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ ok: true })
+    })
+
+    // tiann/hapi#1404 — session-attached long-running jobs (works while agent idle).
+    const JOB_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+    function resolveJobOwnerSession(
+        c: Context<WebAppEnv>,
+        engine: SyncEngine
+    ): { requestedSessionId: string; sessionId: string; session: Session } | Response {
+        const rawId = c.req.param('id') ?? ''
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            // Session may already be deleted after merge — still try acceptor redirect.
+            const namespace = c.get('namespace')
+            const redirected = engine.resolveAttachedJobSessionId(rawId, namespace)
+            if (redirected !== rawId) {
+                const access = engine.resolveSessionAccess(redirected, namespace)
+                if (access.ok) {
+                    return {
+                        requestedSessionId: rawId,
+                        sessionId: access.sessionId,
+                        session: access.session,
+                    }
+                }
+            }
+            return sessionResult
+        }
+        const namespace = c.get('namespace')
+        const ownerId = engine.resolveAttachedJobSessionId(sessionResult.sessionId, namespace)
+        if (ownerId === sessionResult.sessionId) {
+            return {
+                requestedSessionId: sessionResult.sessionId,
+                sessionId: sessionResult.sessionId,
+                session: sessionResult.session,
+            }
+        }
+        const access = engine.resolveSessionAccess(ownerId, namespace)
+        if (!access.ok) {
+            return {
+                requestedSessionId: sessionResult.sessionId,
+                sessionId: sessionResult.sessionId,
+                session: sessionResult.session,
+            }
+        }
+        return {
+            requestedSessionId: sessionResult.sessionId,
+            sessionId: access.sessionId,
+            session: access.session,
+        }
+    }
+
+    function resolveJobKey(
+        c: Context<WebAppEnv>,
+        engine: SyncEngine,
+        owner: { requestedSessionId: string; sessionId: string },
+        jobKey: string
+    ): string {
+        return engine.resolveAttachedJobKey(
+            owner.requestedSessionId,
+            owner.sessionId,
+            jobKey,
+            c.get('namespace')
+        )
+    }
+
+    app.get('/sessions/:id/jobs', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = resolveJobOwnerSession(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        return c.json({
+            jobs: engine.listSessionJobs(sessionResult.sessionId),
+            primary: engine.getPrimaryAttachedJob(sessionResult.sessionId)
+        })
+    })
+
+    app.put('/sessions/:id/jobs/:jobKey', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = resolveJobOwnerSession(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const rawJobKey = c.req.param('jobKey')
+        if (!rawJobKey || !JOB_KEY_RE.test(rawJobKey)) {
+            return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
+        }
+        const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
+        const body = await c.req.json().catch(() => null)
+        const parsed = AttachedJobUpsertSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+        const result = engine.upsertSessionJob(sessionResult.sessionId, jobKey, parsed.data)
+        if (result.outcome === 'session-not-found') {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+        return c.json({ job: result.job })
+    })
+
+    app.patch('/sessions/:id/jobs/:jobKey', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = resolveJobOwnerSession(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const rawJobKey = c.req.param('jobKey')
+        if (!rawJobKey || !JOB_KEY_RE.test(rawJobKey)) {
+            return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
+        }
+        const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
+        const body = await c.req.json().catch(() => null)
+        const parsed = AttachedJobPatchSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+        const result = engine.patchSessionJob(sessionResult.sessionId, jobKey, parsed.data)
+        if (result.outcome === 'not-found') {
+            return c.json({ error: 'Job not found' }, 404)
+        }
+        if (result.outcome === 'run-mismatch') {
+            return c.json({
+                error: 'Job run mismatch: expectedRunId does not match the current run (key was reused).'
+            }, 409)
+        }
+        return c.json({ job: result.job })
+    })
+
+    app.delete('/sessions/:id/jobs/:jobKey', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = resolveJobOwnerSession(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const rawJobKey = c.req.param('jobKey')
+        if (!rawJobKey || !JOB_KEY_RE.test(rawJobKey)) {
+            return c.json({ error: 'Invalid jobKey (1-128 chars: alnum, . _ -)' }, 400)
+        }
+        const jobKey = resolveJobKey(c, engine, sessionResult, rawJobKey)
+        const expectedRunIdRaw = c.req.query('expectedRunId')
+        const expectedRunId = expectedRunIdRaw && expectedRunIdRaw.trim()
+            ? expectedRunIdRaw.trim()
+            : undefined
+        const result = engine.deleteSessionJob(
+            sessionResult.sessionId,
+            jobKey,
+            expectedRunId
+        )
+        if (result.outcome === 'not-found') {
+            return c.json({ error: 'Job not found' }, 404)
+        }
+        if (result.outcome === 'run-mismatch') {
+            return c.json({
+                error: 'Job run mismatch: expectedRunId does not match the current run (key was reused).'
+            }, 409)
         }
         return c.json({ ok: true })
     })

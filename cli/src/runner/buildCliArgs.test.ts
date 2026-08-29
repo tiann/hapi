@@ -165,13 +165,15 @@ describe('buildCliArgs', () => {
     })
 
     it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
+        // Child `hapi cursor --existing-session-id <hub-row>` must bootstrap that
+        // same id into HAPI_SESSION_ID (sessionFactory) so job run can target it.
         const args = buildCliArgs('cursor', {
             directory: '/tmp',
             resumeSessionId: 'cursor-csid-1',
             sessionId: 'hapi-session-991',
         })
         expect(args).toContain('--existing-session-id')
-        expect(args).toContain('hapi-session-991')
+        expect(args[args.indexOf('--existing-session-id') + 1]).toBe('hapi-session-991')
         expect(args).toContain('--resume')
         expect(args).toContain('cursor-csid-1')
     })
