@@ -95,6 +95,8 @@ export type SessionMetadataSummary = {
     machineId?: string
     tools?: string[]
     flavor?: string | null
+    codexProfile?: string
+    codexProvider?: string
     startingMode?: 'local' | 'remote' | 'pty' | null
     capabilities?: {
         terminal?: boolean
@@ -294,6 +296,8 @@ export type CodexDesktopSyncRequest = {
     machineId?: string | null
     model?: string | null
     modelReasoningEffort?: string | null
+    codexProfile?: string | null
+    codexProvider?: string | null
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
     yolo?: boolean

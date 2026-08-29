@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
     spawnSession: vi.fn(),
     onSuccess: vi.fn(),
     notification: vi.fn(),
+    getCodexSessions: vi.fn(),
+    syncCodexSession: vi.fn(),
+    resumeSession: vi.fn(),
     checkPathsExists: vi.fn(),
     availableAgents: [
         'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
@@ -100,6 +103,7 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
                 supportedReasoningEfforts: ['low', 'high', 'max']
             }
         ],
+        profiles: ['fast', 'work'],
         isLoading: mocks.codexModelsLoading,
         error: null
     })
@@ -161,7 +165,15 @@ vi.mock('../../utils/formatRunnerSpawnError', () => ({
     formatRunnerSpawnError: () => null
 }))
 vi.mock('@/components/CodexSessionSyncDialog', () => ({
-    CodexSessionSyncDialog: () => null
+    CodexSessionSyncDialog: (props: {
+        isOpen: boolean
+        sessions: Array<{ id: string; title: string; cwd?: string | null }>
+        onConfirm: (sessionIds: string[]) => Promise<void>
+    }) => props.isOpen && props.sessions[0] ? (
+        <button type="button" data-testid="select-history" onClick={() => void props.onConfirm([props.sessions[0]!.id])}>
+            select history
+        </button>
+    ) : null
 }))
 vi.mock('@/components/PiSessionImportDialog', () => ({
     PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onClose: () => void; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
@@ -255,7 +267,12 @@ vi.mock('./ActionButtons', () => ({
 import { NewSession } from './index'
 
 const machine = { id: 'machine-1' } as Machine
-const api = {} as ApiClient
+const api = {
+    getCodexSessions: mocks.getCodexSessions,
+    syncCodexSession: mocks.syncCodexSession,
+    resumeSession: mocks.resumeSession,
+    archiveCodexSession: vi.fn()
+} as unknown as ApiClient
 
 describe('NewSession launch preferences', () => {
     beforeEach(() => {
@@ -264,6 +281,9 @@ describe('NewSession launch preferences', () => {
         mocks.spawnSession.mockReset()
         mocks.onSuccess.mockReset()
         mocks.notification.mockReset()
+        mocks.getCodexSessions.mockReset()
+        mocks.syncCodexSession.mockReset()
+        mocks.resumeSession.mockReset()
         mocks.checkPathsExists.mockReset()
         mocks.checkPathsExists.mockImplementation(async () => ({
             exists: { 'C:\\repo': mocks.directoryExists }
@@ -553,6 +573,75 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'max',
             permissionMode: 'yolo'
         })
+    })
+
+    it('passes a scanned Codex profile and provider when creating a new session', async () => {
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-profile' })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.change(screen.getByLabelText('newSession.codexProfile'), { target: { value: 'work' } })
+        fireEvent.change(screen.getByLabelText(/newSession\.codexProvider/), { target: { value: 'custom-proxy' } })
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            codexProfile: 'work',
+            codexProvider: 'custom-proxy'
+        })))
+    })
+
+    it('stores the selected profile before resuming an imported Codex history session', async () => {
+        mocks.getCodexSessions.mockResolvedValue({
+            success: true,
+            machineId: 'machine-1',
+            sessions: [{
+                id: 'codex-history-1',
+                title: 'History session',
+                cwd: 'C:\\repo',
+                file: 'transcript.jsonl',
+                modifiedAt: 1
+            }]
+        })
+        mocks.syncCodexSession.mockResolvedValue({
+            success: true,
+            hapiSessionIds: ['hapi-imported-1']
+        })
+        mocks.resumeSession.mockResolvedValue('hapi-imported-1')
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.change(screen.getByLabelText('newSession.codexProfile'), { target: { value: 'work' } })
+        fireEvent.change(screen.getByLabelText(/newSession\.codexProvider/), { target: { value: 'custom-proxy' } })
+        fireEvent.click(screen.getByText('codexSync.newSessionInline.choose'))
+        await waitFor(() => expect(screen.getByTestId('select-history')).toBeInTheDocument())
+        fireEvent.click(screen.getByTestId('select-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({
+            sessionIds: ['codex-history-1'],
+            codexProfile: 'work',
+            codexProvider: 'custom-proxy'
+        })))
+        expect(mocks.resumeSession).toHaveBeenCalledWith('hapi-imported-1', undefined)
+        expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-imported-1')
     })
 
     it('restores the AGY model from a browse-return draft', async () => {

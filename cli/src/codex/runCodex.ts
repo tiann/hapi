@@ -30,6 +30,8 @@ export async function runCodex(opts: {
     resumeSessionId?: string;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    codexProfile?: string;
+    codexProvider?: string;
     serviceTier?: string;
     collaborationMode?: EnhancedMode['collaborationMode'];
     existingSessionId?: string;
@@ -43,13 +45,18 @@ export async function runCodex(opts: {
     let state: AgentState = {
         controlledByUser: false
     };
+    const codexMetadataOverrides = {
+        ...(opts.codexProfile ? { codexProfile: opts.codexProfile } : {}),
+        ...(opts.codexProvider ? { codexProvider: opts.codexProvider } : {})
+    };
     const useLazyBootstrap = !opts.existingSessionId && startedBy === 'terminal';
     const bootstrap = opts.existingSessionId
         ? await bootstrapExistingSession({
             sessionId: opts.existingSessionId,
             flavor: 'codex',
             startedBy,
-            workingDirectory
+            workingDirectory,
+            metadataOverrides: codexMetadataOverrides
         })
         : await (useLazyBootstrap ? bootstrapLazySession : bootstrapSession)({
             flavor: 'codex',
@@ -57,7 +64,8 @@ export async function runCodex(opts: {
             workingDirectory,
             agentState: state,
             model: opts.model,
-            modelReasoningEffort: opts.modelReasoningEffort
+            modelReasoningEffort: opts.modelReasoningEffort,
+            metadataOverrides: codexMetadataOverrides
         });
     const { api, session, sessionInfo } = bootstrap;
     const codexSourceSessionId = typeof sessionInfo.metadata?.codexSourceSessionId === 'string'
@@ -427,6 +435,8 @@ export async function runCodex(opts: {
             api,
             session,
             codexArgs: opts.codexArgs,
+            codexProfile: opts.codexProfile,
+            codexProvider: opts.codexProvider,
             codexCliOverrides,
             startedBy,
             permissionMode: currentPermissionMode,

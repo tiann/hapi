@@ -79,6 +79,8 @@ export function isIndeterminateError(error: unknown): boolean {
 
 type CodexAppServerClientOptions = {
     cwd?: string;
+    codexProfile?: string;
+    codexProvider?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -211,7 +213,14 @@ export class CodexAppServerClient extends JsonLineParser {
 
         const codexCommand = resolveCodexAppServerCommand();
         logger.debug(`[CodexAppServer] Starting ${codexCommand} app-server`);
-        const child = spawn(codexCommand, ['app-server'], {
+        const args = [
+            ...(this.options.codexProfile ? ['-p', this.options.codexProfile] : []),
+            ...(this.options.codexProvider
+                ? ['-c', `model_provider=${JSON.stringify(this.options.codexProvider)}`]
+                : []),
+            'app-server'
+        ];
+        const child = spawn(codexCommand, args, {
             cwd: this.options.cwd,
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];

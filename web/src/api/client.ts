@@ -835,7 +835,9 @@ export class ApiClient {
         serviceTier?: 'fast' | 'standard',
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
-        startingMode?: 'remote' | 'pty'
+        startingMode?: 'remote' | 'pty',
+        codexProfile?: string,
+        codexProvider?: string
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
@@ -852,7 +854,9 @@ export class ApiClient {
                 serviceTier,
                 collaborationMode,
                 copilotAgentMode,
-                startingMode
+                startingMode,
+                codexProfile,
+                codexProvider
             })
         })
     }

@@ -174,6 +174,23 @@ export function SessionRowSummary(props: {
                     >
                         {sessionName}
                     </div>
+                    {s.metadata?.flavor === 'codex' && s.metadata.codexProfile?.trim() ? (
+                        <span
+                            data-testid={`session-list-profile-${s.id}`}
+                            className="shrink-0 rounded-full bg-[var(--app-secondary-bg)] px-1.5 py-0.5 text-[10px] text-[var(--app-hint)]"
+                        >
+                            {s.metadata.codexProfile}
+                        </span>
+                    ) : null}
+                    {s.metadata?.flavor === 'codex' && s.metadata.codexProvider?.trim() ? (
+                        <span
+                            data-testid={`session-list-provider-${s.id}`}
+                            title={`${t('session.provider')}: ${s.metadata.codexProvider}`}
+                            className="shrink-0 rounded-full bg-[var(--app-secondary-bg)] px-1.5 py-0.5 text-[10px] text-[var(--app-hint)]"
+                        >
+                            {s.metadata.codexProvider}
+                        </span>
+                    ) : null}
                     {attention?.kind === 'unread' && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator
                             attention={attention}

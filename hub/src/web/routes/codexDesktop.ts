@@ -133,6 +133,8 @@ type SyncSessionRequestParseResult = {
     machineId?: string | null
     model?: string | null
     modelReasoningEffort?: string | null
+    codexProfile?: string | null
+    codexProvider?: string | null
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
     yolo?: boolean
@@ -976,7 +978,9 @@ function buildImportedSessionMetadata(
     data: CodexTranscriptImportData,
     existingMetadata?: Record<string, unknown> | null,
     resolvedMachineId?: string,
-    permissionMode?: string
+    permissionMode?: string,
+    codexProfile?: string | null,
+    codexProvider?: string | null
 ): Record<string, unknown> {
     const now = Date.now()
     const path = data.cwd ?? (typeof existingMetadata?.path === 'string' ? existingMetadata.path : dirname(data.file))
@@ -990,7 +994,7 @@ function buildImportedSessionMetadata(
         ? existingMetadata.codexSessionId
         : data.id
 
-    return {
+    const metadata: Record<string, unknown> = {
         ...(existingMetadata ?? {}),
         path,
         host,
@@ -1016,6 +1020,17 @@ function buildImportedSessionMetadata(
             ? existingMetadata.lifecycleStateSince
             : now
     }
+    if (codexProfile === null) {
+        delete metadata.codexProfile
+    } else if (codexProfile) {
+        metadata.codexProfile = codexProfile
+    }
+    if (codexProvider === null) {
+        delete metadata.codexProvider
+    } else if (codexProvider) {
+        metadata.codexProvider = codexProvider
+    }
+    return metadata
 }
 
 function stableSerialize(value: unknown): string {
@@ -1866,7 +1881,7 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         return { sessionIds: [] }
     }
 
-    const bodyRecord = body as { sessionIds?: unknown; cwd?: unknown; machineId?: unknown; model?: unknown; modelReasoningEffort?: unknown; serviceTier?: unknown; collaborationMode?: unknown; yolo?: unknown }
+    const bodyRecord = body as { sessionIds?: unknown; cwd?: unknown; machineId?: unknown; model?: unknown; modelReasoningEffort?: unknown; codexProfile?: unknown; codexProvider?: unknown; serviceTier?: unknown; collaborationMode?: unknown; yolo?: unknown }
     const rawSessionIds = bodyRecord.sessionIds
     if (!Array.isArray(rawSessionIds)) {
         return { sessionIds: [], error: 'Invalid sessionIds' }
@@ -1885,6 +1900,8 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
 
     const hasModel = Object.prototype.hasOwnProperty.call(bodyRecord, 'model')
     const hasModelReasoningEffort = Object.prototype.hasOwnProperty.call(bodyRecord, 'modelReasoningEffort')
+    const hasCodexProfile = Object.prototype.hasOwnProperty.call(bodyRecord, 'codexProfile')
+    const hasCodexProvider = Object.prototype.hasOwnProperty.call(bodyRecord, 'codexProvider')
     const hasServiceTier = Object.prototype.hasOwnProperty.call(bodyRecord, 'serviceTier')
     const hasCollaborationMode = Object.prototype.hasOwnProperty.call(bodyRecord, 'collaborationMode')
     if (hasServiceTier && bodyRecord.serviceTier !== null && bodyRecord.serviceTier !== 'fast' && bodyRecord.serviceTier !== 'standard') {
@@ -1901,6 +1918,8 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         machineId: typeof bodyRecord.machineId === 'string' && bodyRecord.machineId.trim() ? bodyRecord.machineId.trim() : null,
         model: hasModel ? (typeof bodyRecord.model === 'string' && bodyRecord.model.trim() ? bodyRecord.model.trim() : null) : undefined,
         modelReasoningEffort: hasModelReasoningEffort ? (typeof bodyRecord.modelReasoningEffort === 'string' && bodyRecord.modelReasoningEffort.trim() ? bodyRecord.modelReasoningEffort.trim() : null) : undefined,
+        codexProfile: hasCodexProfile ? (typeof bodyRecord.codexProfile === 'string' && bodyRecord.codexProfile.trim() ? bodyRecord.codexProfile.trim() : null) : undefined,
+        codexProvider: hasCodexProvider ? (typeof bodyRecord.codexProvider === 'string' && bodyRecord.codexProvider.trim() ? bodyRecord.codexProvider.trim() : null) : undefined,
         serviceTier: hasServiceTier ? bodyRecord.serviceTier as 'fast' | 'standard' | null : undefined,
         collaborationMode: hasCollaborationMode ? bodyRecord.collaborationMode as CodexCollaborationMode : undefined,
         yolo: bodyRecord.yolo === true
@@ -1979,6 +1998,8 @@ function importSingleCodexSession(options: {
     getSyncEngine?: () => SyncEngine | null
     model?: string | null
     modelReasoningEffort?: string | null
+    codexProfile?: string | null
+    codexProvider?: string | null
     yolo?: boolean
     machineId?: string | null
 }): ScriptLaunchResponse {
@@ -2026,7 +2047,9 @@ function importSingleCodexSession(options: {
             transcript,
             asRecord(existingStored?.metadata),
             options.machineId ?? resolveImportMachineId(transcript.cwd, options.namespace, engine) ?? undefined,
-            options.yolo ? 'yolo' : undefined
+            options.yolo ? 'yolo' : undefined,
+            options.codexProfile,
+            options.codexProvider
         )
 
         let sessionId = existingStored?.id ?? null
@@ -2127,6 +2150,8 @@ export async function importSelectedCodexSessions(options: {
     localSessions?: RemoteCodexSession[]
     model?: string | null
     modelReasoningEffort?: string | null
+    codexProfile?: string | null
+    codexProvider?: string | null
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
     yolo?: boolean
@@ -2148,6 +2173,8 @@ export async function importSelectedCodexSessions(options: {
             getSyncEngine: options.getSyncEngine,
             model: options.model,
             modelReasoningEffort: options.modelReasoningEffort,
+            codexProfile: options.codexProfile,
+            codexProvider: options.codexProvider,
             yolo: options.yolo,
             machineId: options.machineId
         })
@@ -2304,6 +2331,8 @@ export function createCodexDesktopRoutes(options: {
             machineId: remote.machineId ?? null,
             model: parsed.model,
             modelReasoningEffort: parsed.modelReasoningEffort,
+            codexProfile: parsed.codexProfile,
+            codexProvider: parsed.codexProvider,
             serviceTier: parsed.serviceTier,
             collaborationMode: parsed.collaborationMode,
             yolo: parsed.yolo

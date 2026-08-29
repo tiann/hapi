@@ -109,6 +109,8 @@ export function NewSession(props: {
     const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<LaunchEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
+    const [codexProfile, setCodexProfile] = useState('')
+    const [codexProvider, setCodexProvider] = useState('')
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null | undefined>(undefined)
     const [serviceTier, setServiceTier] = useState<NewSessionServiceTier>('standard')
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
@@ -169,6 +171,10 @@ export function NewSession(props: {
         }
         setEffort('auto')
         setModelReasoningEffort('default')
+        if (agent !== 'codex') {
+            setCodexProfile('')
+            setCodexProvider('')
+        }
         setGrokPermissionMode('default')
         setCodexFamilyPermissionMode('default')
         setServiceTier('standard')
@@ -236,6 +242,8 @@ export function NewSession(props: {
         setCursorSelectedBase(draft.cursorSelectedBase)
         setEffort(draft.effort)
         setModelReasoningEffort(draft.modelReasoningEffort)
+        setCodexProfile(draft.codexProfile ?? '')
+        setCodexProvider(draft.codexProvider ?? '')
         setOpencodeSelectedModel(
             draft.agent === 'opencode' && draft.model !== 'auto' ? draft.model : null
         )
@@ -1317,6 +1325,8 @@ export function NewSession(props: {
             machineId,
             effort,
             modelReasoningEffort,
+            codexProfile,
+            codexProvider,
             serviceTier,
             collaborationMode,
             copilotAgentMode,
@@ -1337,6 +1347,8 @@ export function NewSession(props: {
         machineId,
         effort,
         modelReasoningEffort,
+        codexProfile,
+        codexProvider,
         serviceTier,
         collaborationMode,
         copilotAgentMode,
@@ -1466,6 +1478,12 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
+            const resolvedCodexProvider = agent === 'codex' && codexProvider.trim()
+                ? codexProvider.trim()
+                : undefined
+            const resolvedCodexProfile = agent === 'codex' && codexProfile.trim()
+                ? codexProfile.trim()
+                : undefined
             const usesCodexFamilyPermissions = usesCodexFamilyPermissionModes(agent)
             const preferredLaunchSettings = {
                 model: agent === 'agy'
@@ -1493,6 +1511,8 @@ export function NewSession(props: {
                     machineId: codexImportMachineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
+                    codexProfile: resolvedCodexProfile ?? null,
+                    codexProvider: resolvedCodexProvider ?? null,
                     serviceTier: resolvedServiceTier,
                     collaborationMode: resolvedCollaborationMode ?? 'default',
                     yolo: codexFamilyPermissionMode === 'yolo'
@@ -1557,6 +1577,8 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
+                codexProfile: resolvedCodexProfile,
+                codexProvider: resolvedCodexProvider,
                 yolo: agent === 'dsh' || agent === 'grok' || usesCodexFamilyPermissions ? undefined : yoloMode,
                 permissionMode: agent === 'grok'
                     ? grokPermissionMode
@@ -1834,6 +1856,56 @@ export function NewSession(props: {
                     />
                 )
             )}
+            {agent === 'codex' ? (
+                <div className="flex flex-col gap-1.5 px-3 py-3">
+                    <label htmlFor="new-session-codex-profile" className="text-xs font-medium text-[var(--app-hint)]">
+                        {t('newSession.codexProfile')}
+                    </label>
+                    <select
+                        id="new-session-codex-profile"
+                        value={codexProfile}
+                        onChange={(event) => setCodexProfile(event.target.value)}
+                        disabled={isFormDisabled}
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
+                    >
+                        <option value="">{t('newSession.codexProfile.default')}</option>
+                        {codexProfile && !(codexModelsState.profiles ?? []).includes(codexProfile) ? (
+                            <option value={codexProfile}>{codexProfile}</option>
+                        ) : null}
+                        {(codexModelsState.profiles ?? []).map((profile) => (
+                            <option key={profile} value={profile}>{profile}</option>
+                        ))}
+                    </select>
+                    <div className="text-xs text-[var(--app-hint)]">
+                        {t('newSession.codexProfile.help')}
+                    </div>
+                </div>
+            ) : null}
+            {agent === 'codex' ? (
+                <div className="flex flex-col gap-1.5 px-3 py-3">
+                    <label htmlFor="new-session-codex-provider" className="text-xs font-medium text-[var(--app-hint)]">
+                        {t('newSession.codexProvider')}{' '}
+                        <span className="font-normal">({t('newSession.model.optional')})</span>
+                    </label>
+                    <input
+                        id="new-session-codex-provider"
+                        value={codexProvider}
+                        onChange={(event) => setCodexProvider(event.target.value)}
+                        disabled={isFormDisabled}
+                        placeholder={t('newSession.codexProvider.placeholder')}
+                        list="new-session-codex-provider-options"
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
+                    />
+                    <datalist id="new-session-codex-provider-options">
+                        {(codexModelsState.providers ?? []).map((provider) => (
+                            <option key={provider} value={provider} />
+                        ))}
+                    </datalist>
+                    <div className="text-xs text-[var(--app-hint)]">
+                        {t('newSession.codexProvider.help')}
+                    </div>
+                </div>
+            ) : null}
             {showPiLaunchConfig ? (
                 <EffortField
                     agent={agent}

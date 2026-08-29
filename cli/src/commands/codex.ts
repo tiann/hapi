@@ -43,6 +43,8 @@ export const codexCommand: CommandDefinition = {
                 existingSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
+                codexProfile?: string
+                codexProvider?: string
                 serviceTier?: string
                 collaborationMode?: 'default' | 'plan'
             } = {}
@@ -63,6 +65,11 @@ export const codexCommand: CommandDefinition = {
                 }
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--hapi-starting-mode') {
+                    const mode = commandArgs[++i]
+                    if (mode !== 'local' && mode !== 'remote') {
+                        throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
+                    }
                 } else if (arg === '--existing-session-id') {
                     const sessionId = commandArgs[++i]
                     if (!sessionId) {
@@ -79,6 +86,20 @@ export const codexCommand: CommandDefinition = {
                 } else if ((arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
                     unknownArgs.push(arg)
+                } else if (arg === '-p' || arg === '--profile') {
+                    const profile = commandArgs[++i]
+                    if (!profile) {
+                        throw new Error('Missing profile value')
+                    }
+                    options.codexProfile = profile
+                    unknownArgs.push(arg, profile)
+                } else if (arg === '--codex-provider') {
+                    const provider = commandArgs[++i]
+                    if (!provider) {
+                        throw new Error('Missing --codex-provider value')
+                    }
+                    options.codexProvider = provider
+                    unknownArgs.push('-c', `model_provider=${JSON.stringify(provider)}`)
                 } else if (arg === '--model') {
                     const model = commandArgs[++i]
                     if (!model) {

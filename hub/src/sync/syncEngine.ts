@@ -1507,7 +1507,9 @@ export class SyncEngine {
                 source.collaborationMode,
                 undefined,
                 undefined,
-                rpcResult.forkSession === true
+                rpcResult.forkSession === true,
+                flavor === 'codex' ? source.metadata?.codexProfile : undefined,
+                flavor === 'codex' ? source.metadata?.codexProvider : undefined
             )
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
@@ -1944,7 +1946,9 @@ export class SyncEngine {
         existingSessionId?: string,
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
-        startingMode?: 'remote' | 'pty'
+        startingMode?: 'remote' | 'pty',
+        codexProfile?: string,
+        codexProvider?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -1962,7 +1966,10 @@ export class SyncEngine {
             existingSessionId,
             collaborationMode,
             copilotAgentMode,
-            startingMode
+            startingMode,
+            undefined,
+            codexProfile,
+            codexProvider
         )
     }
 
@@ -2936,6 +2943,8 @@ export class SyncEngine {
             : opts?.permissionMode
                 ?? session.permissionMode
                 ?? metadataPermissionMode
+        const storedCodexProfile = flavor === 'codex' ? metadata.codexProfile : undefined
+        const storedCodexProvider = flavor === 'codex' ? metadata.codexProvider : undefined
         const resumedStartingMode =
             (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
                 ? 'pty'
@@ -2980,7 +2989,10 @@ export class SyncEngine {
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,
-                resumedStartingMode
+                resumedStartingMode,
+                undefined,
+                storedCodexProfile,
+                storedCodexProvider
             )
 
             if (spawnResult.type !== 'success') {
