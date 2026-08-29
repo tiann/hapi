@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { createContext, useContext } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import type { SessionMetadataSummary } from '@/types/api'
 
 export type OlderHistoryLoadResult = 'loaded' | 'transient-stop' | 'terminal-stop'

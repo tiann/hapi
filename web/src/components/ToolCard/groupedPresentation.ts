@@ -1,4 +1,4 @@
-import type { ToolGroupBlock } from '@/chat/toolGroups'
+import { getToolGroupActionKind, type ToolGroupBlock } from '@/chat/toolGroups'
 import type { ToolCallBlock } from '@/chat/types'
 import { isCodexExplorationTool } from '@/chat/codexCommandPresentation'
 import { getInputStringAny } from '@/lib/toolInputUtils'
@@ -99,23 +99,14 @@ function getIntentLabel(intent: GroupedSummaryIntent, t: Translator): string {
 }
 
 export function inferGroupedSummaryIntent(tool: ToolCallBlock): GroupedSummaryIntent {
-    const toolName = tool.tool.name
+    const kind = getToolGroupActionKind(tool)
     const command = getCommandText(tool.tool.input)
 
-    if (toolName === 'Read' || toolName === 'LS' || toolName === 'NotebookRead') {
-        return 'inspect-files'
-    }
-    if (toolName === 'Grep' || toolName === 'Glob') {
-        return 'search-content'
-    }
-    if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'Write' || toolName === 'NotebookEdit' || toolName === 'CodexPatch' || toolName === 'CodexDiff') {
-        return 'modify-files'
-    }
-    if (toolName === 'WebFetch' || toolName === 'WebSearch') {
-        return 'open-web'
-    }
-
-    if (toolName === 'Bash' || toolName === 'CodexBash' || toolName === 'shell_command' || toolName === 'run_shell_command') {
+    if (kind === 'read') return 'inspect-files'
+    if (kind === 'search') return 'search-content'
+    if (kind === 'mutation') return 'modify-files'
+    if (kind === 'web') return 'open-web'
+    if (kind === 'command') {
         if (command && FILE_INSPECTION_COMMAND_RE.test(command)) {
             return 'inspect-files'
         }

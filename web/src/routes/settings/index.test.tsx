@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import SettingsHubPage from './index'
@@ -41,7 +41,10 @@ vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
 }))
 
-vi.mock('@hapi/protocol', () => ({ PROTOCOL_VERSION: 1 }))
+vi.mock('@hapi/protocol', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@hapi/protocol')>(),
+    PROTOCOL_VERSION: 1,
+}))
 
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance }),
@@ -104,6 +107,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
 }))
 
 vi.mock('@/hooks/useSessionPreviewLimit', () => ({
+    DEFAULT_SESSION_PREVIEW_LIMIT: 8,
     MIN_SESSION_PREVIEW_LIMIT: 1,
     MAX_SESSION_PREVIEW_LIMIT: 99,
     normalizeSessionPreviewLimit: (value: number) => Math.max(1, Math.min(99, Math.round(value))),
@@ -127,14 +131,6 @@ vi.mock('@/hooks/useComposerEnterBehavior', () => ({
     getComposerEnterBehaviorOptions: () => [
         { value: 'send', labelKey: 'settings.chat.enterBehavior.send' },
         { value: 'newline', labelKey: 'settings.chat.enterBehavior.newline' },
-    ],
-}))
-
-vi.mock('@/hooks/useTerminalToolDisplayMode', () => ({
-    useTerminalToolDisplayMode: () => ({ terminalToolDisplayMode: 'compact', setTerminalToolDisplayMode: vi.fn() }),
-    getTerminalToolDisplayModeOptions: () => [
-        { value: 'compact', labelKey: 'settings.chat.terminalToolDisplay.compact' },
-        { value: 'detailed', labelKey: 'settings.chat.terminalToolDisplay.detailed' },
     ],
 }))
 
@@ -278,17 +274,54 @@ describe('responsive settings pages', () => {
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
-    it('keeps chat enum choices inline', () => {
+    it('shows one three-level tool card control with a persistent live preview', () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
         expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
-        expect(screen.getByText('Grouped Tool Use Background')).toBeInTheDocument()
+
+        expect(screen.getByRole('radiogroup', { name: 'Display Style' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Combined' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Combined' })).toBeChecked()
+        expect(screen.getByRole('radio', { name: 'Compact' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Detailed' })).toBeInTheDocument()
+        expect(screen.getByText('Combine consecutive tool calls into one card')).toBeInTheDocument()
+        expect(screen.getByText('Edit project files')).toBeInTheDocument()
+        expect(screen.getByText('Edit 2')).toBeInTheDocument()
+        const groupedPreview = screen.getByTestId('tool-card-display-preview')
+        const groupedPreviewContent = screen.getByTestId('tool-card-display-preview-content')
+        expect(groupedPreview.className).toContain('bg-[var(--app-bg)]')
+        expect(groupedPreviewContent.className).not.toContain('min-h-')
+        expect(groupedPreviewContent).not.toHaveAttribute('inert')
+        expect(groupedPreviewContent).not.toHaveAttribute('aria-hidden')
+
+        fireEvent.click(within(groupedPreviewContent).getByText('Edit project files'))
+        expect(within(groupedPreviewContent).getAllByText('Apply changes')).toHaveLength(2)
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Compact' }))
+        expect(screen.getByText('Show each tool separately; terminal cards show commands only')).toBeInTheDocument()
+        expect(screen.getByText('bun run test:web -- toolGroups.test.ts')).toBeInTheDocument()
+        expect(screen.getByText('git diff --stat')).toBeInTheDocument()
+        expect(screen.queryByText('12 tests passed')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Detailed' }))
+        expect(screen.getByText('Show each tool separately; terminal cards include an output preview')).toBeInTheDocument()
+        const detailedPreview = within(screen.getByTestId('tool-card-display-preview-content'))
+        expect(detailedPreview.getByText('Input')).toBeInTheDocument()
+        expect(detailedPreview.getByText('Result')).toBeInTheDocument()
+        expect(detailedPreview.getByText('12 tests passed')).toBeInTheDocument()
+        expect(screen.getByText('Combined Tool Use Background')).toBeInTheDocument()
     })
 
-    it('renders the default-collapse switch for Codex exploration groups', () => {
+    it('only enables the Codex exploration collapse switch outside grouped mode', () => {
         renderPage(<SettingsChatPage />)
-        const toggle = screen.getByRole('checkbox', { name: 'Collapse explored tool groups by default' })
+
+        const toggle = screen.getByRole('checkbox', { name: 'Collapse explored tool groups' })
         expect(toggle).toBeChecked()
+        expect(toggle).toBeDisabled()
+        expect(screen.getByText('Collapse Codex read and search activity; click to view details.')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Compact' }))
+        expect(toggle).toBeEnabled()
         fireEvent.click(toggle)
         expect(setCodexExplorationCollapsed).toHaveBeenCalledWith(false)
     })
