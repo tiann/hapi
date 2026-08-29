@@ -5,6 +5,7 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
+import type { TitleProviderSettings } from '../config/settings'
 import type { Store, StoredMessage } from '../store'
 
 export const TITLE_SUGGESTION_MESSAGE_LIMIT = 200
@@ -13,8 +14,12 @@ export const TITLE_SUGGESTION_MAX_TITLE_CHARS = 80
 export const TITLE_SUGGESTION_RATE_LIMIT = 5
 export const TITLE_SUGGESTION_RATE_WINDOW_MS = 10 * 60 * 1000
 export const TITLE_SUGGESTION_TIMEOUT_MS = 10_000
+const TITLE_PROVIDER_RESPONSE_MAX_CHARS = 16_000
 const TITLE_SUGGESTION_RATE_LIMIT_ENV = 'HAPI_TITLE_SUGGESTION_RATE_LIMIT'
 const TITLE_SUGGESTION_RATE_WINDOW_ENV = 'HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS'
+const TITLE_PROVIDER_TIMEOUT_ENV = 'HAPI_TITLE_PROVIDER_TIMEOUT_MS'
+export const TITLE_SUGGESTION_UNAVAILABLE_MESSAGE =
+    'Title suggestions are not configured on this Hub. Configure titleProvider.baseUrl, titleProvider.apiKey, and titleProvider.model in $HAPI_HOME/settings.json (default ~/.hapi/settings.json), or set HAPI_TITLE_PROVIDER_BASE_URL, HAPI_TITLE_PROVIDER_API_KEY, and HAPI_TITLE_PROVIDER_MODEL in the Hub environment, then restart the Hub.'
 
 type TitleSuggestionErrorCode = 'unavailable' | 'empty' | 'rate-limited' | 'provider'
 
@@ -44,11 +49,18 @@ type TitleProviderFetch = (
 ) => Promise<Response>
 
 export function readTitleProviderConfig(
-    env: TitleProviderEnvironment = process.env
+    env: TitleProviderEnvironment = process.env,
+    settings?: TitleProviderSettings | null
 ): OpenAICompatibleTitleProviderConfig | null {
-    const baseUrl = env.HAPI_TITLE_PROVIDER_BASE_URL?.trim()
-    const apiKey = env.HAPI_TITLE_PROVIDER_API_KEY?.trim()
-    const model = env.HAPI_TITLE_PROVIDER_MODEL?.trim()
+    const readValue = (envValue: string | undefined, fileValue: unknown): string | undefined => {
+        const fromEnv = envValue?.trim()
+        if (fromEnv) return fromEnv
+        return typeof fileValue === 'string' && fileValue.trim() ? fileValue.trim() : undefined
+    }
+
+    const baseUrl = readValue(env.HAPI_TITLE_PROVIDER_BASE_URL, settings?.baseUrl)
+    const apiKey = readValue(env.HAPI_TITLE_PROVIDER_API_KEY, settings?.apiKey)
+    const model = readValue(env.HAPI_TITLE_PROVIDER_MODEL, settings?.model)
     if (!baseUrl || !apiKey || !model) return null
 
     try {
@@ -58,10 +70,18 @@ export function readTitleProviderConfig(
         return null
     }
 
-    return { baseUrl, apiKey, model }
+    return {
+        baseUrl,
+        apiKey,
+        model,
+        timeoutMs: readPositiveInteger(
+            env[TITLE_PROVIDER_TIMEOUT_ENV],
+            settings?.timeoutMs ?? TITLE_SUGGESTION_TIMEOUT_MS
+        )
+    }
 }
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
+function readPositiveInteger(value: unknown, fallback: number): number {
     const parsed = Number(value)
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
 }
@@ -219,6 +239,50 @@ function extractProviderText(value: unknown): string | null {
     return extractChatText(choice.message.content)
 }
 
+const TITLE_PROVIDER_HTTP_REASONS: Record<number, string> = {
+    400: 'request rejected',
+    401: 'authentication failed',
+    403: 'access denied',
+    404: 'endpoint or model not found',
+    408: 'request timed out',
+    429: 'rate limited'
+}
+
+function titleProviderHttpError(status: number): string {
+    const reason = TITLE_PROVIDER_HTTP_REASONS[status]
+        ?? (status >= 500 ? 'provider service unavailable' : 'request rejected')
+    return `Title provider request failed (HTTP ${status}): ${reason}`
+}
+
+async function readTitleProviderResponseBody(response: Response): Promise<unknown> {
+    let text: string
+    try {
+        text = await response.text()
+    } catch (error) {
+        if (isAbortError(error)) throw error
+        return null
+    }
+    const boundedText = text.slice(0, TITLE_PROVIDER_RESPONSE_MAX_CHARS)
+    if (!boundedText.trim()) return null
+
+    try {
+        return JSON.parse(boundedText) as unknown
+    } catch {
+        return boundedText
+    }
+}
+
+function isAbortError(error: unknown): boolean {
+    return isObject(error) && error.name === 'AbortError'
+}
+
+class TitleProviderRequestError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'TitleProviderRequestError'
+    }
+}
+
 export class OpenAICompatibleTitleProvider {
     private readonly timeoutMs: number
 
@@ -255,14 +319,23 @@ export class OpenAICompatibleTitleProvider {
                 signal: controller.signal
             })
 
-            const body: unknown = await response.json().catch(() => null)
             if (!response.ok) {
-                throw new Error(`Title provider returned HTTP ${response.status}`)
+                throw new TitleProviderRequestError(titleProviderHttpError(response.status))
             }
 
+            const body = await readTitleProviderResponseBody(response)
             const text = extractProviderText(body)
-            if (!text) throw new Error('Title provider returned no text')
+            if (!text) throw new TitleProviderRequestError('Title provider returned no text')
             return text
+        } catch (error) {
+            if (error instanceof TitleProviderRequestError) throw error
+            if (isAbortError(error)) {
+                throw new TitleProviderRequestError(
+                    `Title provider request timed out after ${this.timeoutMs} ms`
+                )
+            }
+
+            throw new TitleProviderRequestError('Title provider request failed')
         } finally {
             clearTimeout(timeout)
         }
@@ -298,7 +371,7 @@ export class TitleSuggestionService {
         if (!this.provider) {
             throw new TitleSuggestionError(
                 'unavailable',
-                'Title suggestions are not configured on this Hub',
+                TITLE_SUGGESTION_UNAVAILABLE_MESSAGE,
                 503
             )
         }
@@ -336,9 +409,12 @@ export class TitleSuggestionService {
             return title
         } catch (error) {
             if (error instanceof TitleSuggestionError) throw error
+            const detail = error instanceof TitleProviderRequestError
+                ? error.message
+                : null
             throw new TitleSuggestionError(
                 'provider',
-                'The title suggestion provider failed',
+                detail ?? 'The title suggestion provider failed',
                 502
             )
         } finally {
@@ -347,8 +423,10 @@ export class TitleSuggestionService {
     }
 }
 
-export function createTitleSuggestionService(store: Store): TitleSuggestionService {
-    const config = readTitleProviderConfig()
+export function createTitleSuggestionService(
+    store: Store,
+    config: OpenAICompatibleTitleProviderConfig | null = readTitleProviderConfig()
+): TitleSuggestionService {
     const limits = readTitleSuggestionLimits()
     return new TitleSuggestionService(
         store,

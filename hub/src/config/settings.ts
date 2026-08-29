@@ -4,6 +4,13 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 
+export interface TitleProviderSettings {
+    baseUrl?: string
+    apiKey?: string
+    model?: string
+    timeoutMs?: number
+}
+
 export interface Settings {
     machineId?: string
     machineIdConfirmedByServer?: boolean
@@ -50,6 +57,11 @@ export interface Settings {
      * Env vars still win when set at process start (ops override).
      */
     providerCredentials?: Partial<Record<string, string>>
+    /**
+     * OpenAI-compatible provider used for on-demand session title suggestions.
+     * Environment variables still take precedence per field.
+     */
+    titleProvider?: TitleProviderSettings
 }
 
 export function getSettingsFile(dataDir: string): string {

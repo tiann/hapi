@@ -826,7 +826,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ title })
         } catch (error) {
             if (error instanceof TitleSuggestionError) {
-                return c.json({ error: error.message }, error.status)
+                return c.json({ error: error.message, code: error.code }, error.status)
             }
             return c.json({ error: 'Failed to generate a session title' }, 502)
         }
@@ -850,7 +850,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text)
+            await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text, {
+                clearName: parsed.data.clearName
+            })
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to update session summary'

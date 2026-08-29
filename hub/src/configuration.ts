@@ -16,6 +16,7 @@
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
  * - CORS_ORIGINS: Comma-separated CORS origins
+ * - HAPI_TITLE_PROVIDER_TIMEOUT_MS: Title provider request timeout in milliseconds (default: 10000)
  * - HAPI_RELAY_API: Relay API domain for tunwg (default: relay.hapi.run)
  * - HAPI_RELAY_AUTH: Relay auth key override (default: per-hub key issued by the relay)
  * - HAPI_RELAY_FORCE_TCP: Force TCP relay mode when UDP is unavailable (true/1)
@@ -37,6 +38,7 @@ import { getOrCreateCliApiToken } from './config/cliApiToken'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
 import { getSettingsFile } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
+import { readTitleProviderConfig, type OpenAICompatibleTitleProviderConfig } from './sync/titleSuggestion'
 
 export type ConfigSource = 'env' | 'file' | 'default'
 
@@ -110,6 +112,8 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
+    /** Effective on-demand session title provider configuration. */
+    public readonly titleProviderConfig: OpenAICompatibleTitleProviderConfig | null
     // Push delivery (FCM + iOS/APNs) — nullable strings interpreted by
     // fcm/fcmConfig.ts and push-ios/iosPushConfig.ts.
     public readonly fcmServiceAccountPath: string | null
@@ -146,6 +150,7 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.titleProviderConfig = readTitleProviderConfig(process.env, serverSettings.titleProvider)
         this.fcmServiceAccountPath = serverSettings.fcmServiceAccountPath
         this.iosPushMode = serverSettings.iosPushMode
         this.iosPushRelayUrl = serverSettings.iosPushRelayUrl

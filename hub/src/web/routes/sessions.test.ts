@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
+import { TitleSuggestionError } from '../../sync/titleSuggestion'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
 
@@ -191,22 +192,58 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ title: 'Generated title' })
     })
 
-    it('writes generated titles through the summary metadata endpoint', async () => {
-        const updates: Array<[string, string]> = []
+    it('preserves title suggestion error codes for the web client', async () => {
         const { app } = createApp(createSession(), {
-            updateSessionSummary: async (sessionId, text) => {
-                updates.push([sessionId, text])
+            suggestSessionTitle: async () => {
+                throw new TitleSuggestionError('unavailable', 'Title provider is not configured', 503)
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/title-suggestion', { method: 'POST' })
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            error: 'Title provider is not configured',
+            code: 'unavailable'
+        })
+    })
+
+    it('preserves the safe provider error reason for the web client', async () => {
+        const { app } = createApp(createSession(), {
+            suggestSessionTitle: async () => {
+                throw new TitleSuggestionError(
+                    'provider',
+                    'Title provider request failed (HTTP 404): endpoint or model not found',
+                    502
+                )
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/title-suggestion', { method: 'POST' })
+
+        expect(response.status).toBe(502)
+        expect(await response.json()).toEqual({
+            error: 'Title provider request failed (HTTP 404): endpoint or model not found',
+            code: 'provider'
+        })
+    })
+
+    it('writes generated titles through the summary metadata endpoint', async () => {
+        const updates: Array<[string, string, { clearName?: boolean }]> = []
+        const { app } = createApp(createSession(), {
+            updateSessionSummary: async (sessionId, text, options) => {
+                updates.push([sessionId, text, options ?? {}])
             }
         })
 
         const response = await app.request('/api/sessions/session-1/summary', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: '  Generated title  ' })
+            body: JSON.stringify({ text: '  Generated title  ', clearName: true })
         })
 
         expect(response.status).toBe(200)
-        expect(updates).toEqual([['session-1', 'Generated title']])
+        expect(updates).toEqual([['session-1', 'Generated title', { clearName: true }]])
     })
 
     it('rejects an empty summary', async () => {
