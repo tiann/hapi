@@ -35,6 +35,7 @@ import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
 import { ToastProvider, useToast } from '@/lib/toast-context'
+import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -100,6 +101,24 @@ function AppInner() {
         initializeThemeColors()
         initializeChatSurfaceColors()
     }, [])
+
+    useEffect(() => {
+        if (!('serviceWorker' in navigator)) {
+            return
+        }
+
+        const handleServiceWorkerMessage = (event: MessageEvent<unknown>) => {
+            const href = getNotificationClickHref(event.data, window.location.origin)
+            if (!href) return
+            router.history.push(href)
+            event.ports[0]?.postMessage({ type: NOTIFICATION_CLICK_ACK_TYPE })
+        }
+
+        navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage)
+        return () => {
+            navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage)
+        }
+    }, [router])
 
     // Track visual viewport height for mobile keyboard avoidance (see useViewportHeight.ts)
     useViewportHeight()
