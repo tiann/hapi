@@ -188,6 +188,23 @@ describe('appServerConfig', () => {
         });
     });
 
+    it('passes effective Codex context management settings via thread config', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default' },
+            mcpServers,
+            contextManagementConfig: {
+                modelContextWindow: 400_000,
+                modelAutoCompactTokenLimit: 300_000
+            }
+        });
+
+        expect(params.config).toMatchObject({
+            model_context_window: 400_000,
+            model_auto_compact_token_limit: 300_000
+        });
+    });
+
     it('translates Fast to the advertised app-server tier (priority) in thread params', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',

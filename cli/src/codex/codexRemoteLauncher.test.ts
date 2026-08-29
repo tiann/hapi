@@ -8,6 +8,9 @@ const harness = vi.hoisted(() => ({
     registerRequestCalls: [] as string[],
     requestHandlers: new Map<string, (params: unknown) => Promise<unknown> | unknown>(),
     initializeCalls: [] as unknown[],
+    configReadCalls: [] as unknown[],
+    configReadResponse: { config: {} } as { config: Record<string, unknown> },
+    failConfigRead: false,
     setFeatureEnablementCalls: [] as unknown[],
     failSetFeatureEnablement: false,
     listCollaborationModeCalls: 0,
@@ -114,6 +117,14 @@ vi.mock('./codexAppServerClient', () => {
         async initialize(params: unknown): Promise<{ protocolVersion: number }> {
             harness.initializeCalls.push(params);
             return { protocolVersion: 1 };
+        }
+
+        async readConfig(params: unknown): Promise<{ config: Record<string, unknown> }> {
+            harness.configReadCalls.push(params);
+            if (harness.failConfigRead) {
+                throw new Error('config/read unsupported');
+            }
+            return harness.configReadResponse;
         }
 
         setNotificationHandler(handler: ((method: string, params: unknown) => void) | null): void {
@@ -1393,6 +1404,9 @@ describe('codexRemoteLauncher', () => {
         harness.registerRequestCalls = [];
         harness.requestHandlers = new Map();
         harness.initializeCalls = [];
+        harness.configReadCalls = [];
+        harness.configReadResponse = { config: {} };
+        harness.failConfigRead = false;
         harness.setFeatureEnablementCalls = [];
         harness.failSetFeatureEnablement = false;
         harness.listCollaborationModeCalls = 0;
@@ -1505,6 +1519,10 @@ describe('codexRemoteLauncher', () => {
                 experimentalApi: true
             }
         }]);
+        expect(harness.configReadCalls).toEqual([{
+            cwd: '/tmp/hapi-update',
+            includeLayers: false
+        }]);
         expect(harness.setFeatureEnablementCalls).toEqual([{ enablement: { goals: true } }]);
         expect(harness.notifications.map((entry) => entry.method)).toEqual([
             'turn/started',
@@ -1515,6 +1533,40 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('forwards effective Codex context settings for fresh and resumed threads', async () => {
+        harness.configReadResponse = {
+            config: {
+                model_context_window: 400_000,
+                model_auto_compact_token_limit: 300_000
+            }
+        };
+
+        const fresh = createSessionStub();
+        await codexRemoteLauncher(fresh.session as never);
+        expect(harness.startThreadParams[0]?.config).toMatchObject({
+            model_context_window: 400_000,
+            model_auto_compact_token_limit: 300_000
+        });
+
+        harness.startThreadParams = [];
+        const resumed = createSessionStub();
+        resumed.session.sessionId = 'thread-existing';
+        await codexRemoteLauncher(resumed.session as never);
+        expect(harness.resumeThreadParams[0]?.config).toMatchObject({
+            model_context_window: 400_000,
+            model_auto_compact_token_limit: 300_000
+        });
+    });
+
+    it('keeps remote sessions working when config/read is unavailable', async () => {
+        harness.failConfigRead = true;
+        const { session } = createSessionStub();
+
+        await expect(codexRemoteLauncher(session as never)).resolves.toBe('exit');
+        expect(harness.startThreadParams[0]?.config).not.toHaveProperty('model_context_window');
+        expect(harness.startThreadParams[0]?.config).not.toHaveProperty('model_auto_compact_token_limit');
     });
 
     it('uses the native skill catalog for completion and structured turn input', async () => {

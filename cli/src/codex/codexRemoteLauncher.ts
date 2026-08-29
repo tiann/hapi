@@ -16,7 +16,11 @@ import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
-import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
+import {
+    buildThreadStartParams,
+    buildTurnStartParams,
+    type CodexContextManagementConfig
+} from './utils/appServerConfig';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
@@ -3566,6 +3570,31 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         });
 
+        let contextManagementConfig: CodexContextManagementConfig | undefined;
+        try {
+            const effectiveConfig = (await appServerClient.readConfig({
+                cwd: session.path,
+                includeLayers: false
+            })).config;
+            const modelContextWindow = effectiveConfig.model_context_window;
+            const modelAutoCompactTokenLimit = effectiveConfig.model_auto_compact_token_limit;
+            contextManagementConfig = {
+                ...(typeof modelContextWindow === 'number' && Number.isInteger(modelContextWindow) && modelContextWindow > 0
+                    ? { modelContextWindow }
+                    : {}),
+                ...(typeof modelAutoCompactTokenLimit === 'number'
+                    && Number.isInteger(modelAutoCompactTokenLimit)
+                    && modelAutoCompactTokenLimit > 0
+                    ? { modelAutoCompactTokenLimit }
+                    : {})
+            };
+            if (Object.keys(contextManagementConfig).length === 0) {
+                contextManagementConfig = undefined;
+            }
+        } catch (error) {
+            logger.debug('[Codex] Failed to read effective context management config; using app-server defaults', error);
+        }
+
         const publishConversationHistoryCapabilities = async () => {
             const conversationHistory = this.conversationHistory.getCapabilitiesForMetadata()?.conversationHistory
             try {
@@ -3716,7 +3745,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 cwd: session.path,
                 mode,
                 mcpServers,
-                cliOverrides: session.codexCliOverrides
+                cliOverrides: session.codexCliOverrides,
+                contextManagementConfig
             });
 
             try {
@@ -3781,7 +3811,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cwd: session.path,
                     mode,
                     mcpServers,
-                    cliOverrides: session.codexCliOverrides
+                    cliOverrides: session.codexCliOverrides,
+                    contextManagementConfig
                 });
                 try {
                     const resumeResponse = await appServerClient.resumeThread({
@@ -3812,7 +3843,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cwd: session.path,
                     mode,
                     mcpServers,
-                    cliOverrides: session.codexCliOverrides
+                    cliOverrides: session.codexCliOverrides,
+                    contextManagementConfig
                 });
                 const threadResponse = await appServerClient.startThread({
                     ...threadParams,
@@ -4063,7 +4095,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cwd: session.path,
                         mode: message.mode,
                         mcpServers,
-                        cliOverrides: session.codexCliOverrides
+                        cliOverrides: session.codexCliOverrides,
+                        contextManagementConfig
                     });
 
                     const resumeCandidate = session.sessionId ?? null;
