@@ -289,3 +289,106 @@ describe('cli lazy session creation', () => {
         expect(response.status).toBe(409)
     })
 })
+
+describe('cli durable attachment delivery', () => {
+    it('serves an owned original through the authenticated CLI endpoint', async () => {
+        const readAttachment = mock(async () => ({
+            attachment: { filename: 'document.pdf' } as never,
+            variant: 'original' as const,
+            data: Buffer.from([1, 2, 3, 4]),
+            mimeType: 'application/pdf',
+            size: 4,
+            sha256: 'hash-2'
+        }))
+        const app = createApp({
+            resolveSessionAccess: () => ({
+                ok: true as const,
+                sessionId: 'session-1',
+                session: {} as never
+            }),
+            readAttachment
+        } as never)
+
+        const response = await app.request('/cli/sessions/session-1/attachments/attachment-1/original', {
+            headers: authHeaders()
+        })
+
+        expect(response.status).toBe(200)
+        expect(readAttachment).toHaveBeenCalledWith('session-1', 'default', 'attachment-1')
+        expect(response.headers.get('content-type')).toBe('application/pdf')
+        expect(response.headers.get('content-length')).toBe('4')
+        expect(response.headers.get('content-disposition')).toBe('attachment; filename="document.pdf"')
+        expect(response.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'")
+        expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([1, 2, 3, 4])
+    })
+
+    it('sandboxes active MIME types and sanitizes CLI attachment filenames', async () => {
+        const app = createApp({
+            resolveSessionAccess: () => ({
+                ok: true as const,
+                sessionId: 'session-1',
+                session: {} as never,
+            }),
+            readAttachment: mock(async () => ({
+                attachment: { filename: 'evil"\r\n.html' } as never,
+                variant: 'original' as const,
+                data: Buffer.from('<script>alert(1)</script>'),
+                mimeType: 'text/html',
+                size: 25,
+                sha256: 'html-hash',
+            })),
+        } as never)
+
+        const response = await app.request('/cli/sessions/session-1/attachments/attachment-1/original', {
+            headers: authHeaders(),
+        })
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toBe('text/html')
+        expect(response.headers.get('content-disposition')).toBe('attachment; filename="evil___.html"')
+        expect(response.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'")
+        expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    })
+
+    it('encodes Unicode attachment filenames for CLI download headers', async () => {
+        const app = createApp({
+            resolveSessionAccess: () => ({
+                ok: true as const,
+                sessionId: 'session-1',
+                session: {} as never,
+            }),
+            readAttachment: mock(async () => ({
+                attachment: { filename: '截图😀.png' } as never,
+                variant: 'original' as const,
+                data: Buffer.from([1]),
+                mimeType: 'image/png',
+                size: 1,
+                sha256: 'unicode-hash',
+            })),
+        } as never)
+
+        const response = await app.request('/cli/sessions/session-1/attachments/attachment-1/original', {
+            headers: authHeaders(),
+        })
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-disposition')).toBe(
+            "attachment; filename=\"____.png\"; filename*=UTF-8''%E6%88%AA%E5%9B%BE%F0%9F%98%80.png"
+        )
+    })
+
+    it('does not expose an attachment when the session is outside the CLI namespace', async () => {
+        const readAttachment = mock(async () => null)
+        const app = createApp({
+            resolveSessionAccess: () => ({ ok: false as const, reason: 'access-denied' as const }),
+            readAttachment
+        } as never)
+
+        const response = await app.request('/cli/sessions/session-1/attachments/attachment-1/original', {
+            headers: authHeaders()
+        })
+
+        expect(response.status).toBe(403)
+        expect(readAttachment).not.toHaveBeenCalled()
+    })
+})

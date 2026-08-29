@@ -24,7 +24,7 @@
         },
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "older-page-epoch-mismatch-resets",
     "ops": [
         {

@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v22 to v25', () => {
+describe('schema migration v22 to v26', () => {
     it('adds events and event_links tables to a V22 database', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v23-'))
         tempDirs.push(dir)
@@ -42,7 +42,11 @@ describe('schema migration v22 to v25', () => {
         expect(links?.name).toBe('event_links')
         const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         expect(columns.map((column) => column.name)).toContain('delivery_state')
-        expect(version.user_version).toBe(25)
+        const attachments = internalDb.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachments'"
+        ).get() as { name: string } | null
+        expect(attachments?.name).toBe('attachments')
+        expect(version.user_version).toBe(26)
         migrated.close()
     })
 })

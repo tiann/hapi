@@ -534,8 +534,9 @@ export function HappyComposer(props: {
         if (attachment.status.type !== 'requires-action') {
             return false
         }
-        const path = (attachment as { path?: string }).path
-        return typeof path === 'string' && path.length > 0
+        const upload = attachment as { path?: string; attachmentId?: string }
+        return (typeof upload.path === 'string' && upload.path.length > 0)
+            || (typeof upload.attachmentId === 'string' && upload.attachmentId.length > 0)
     })
 
     const [inputState, setInputState] = useState<TextInputState>({
@@ -644,11 +645,12 @@ export function HappyComposer(props: {
 
     const attachmentDrafts = orderedAttachments.flatMap((attachment) => {
         if (!attachment.file) return []
-        const upload = attachment as typeof attachment & { path?: string; previewUrl?: string; uploadSessionId?: string }
+        const upload = attachment as typeof attachment & { path?: string; attachmentId?: string; previewUrl?: string; uploadSessionId?: string }
         return [{
             id: attachment.id,
             file: attachment.file,
             path: upload.path,
+            attachmentId: upload.attachmentId,
             previewUrl: upload.previewUrl,
             uploadSessionId: upload.uploadSessionId,
         }]

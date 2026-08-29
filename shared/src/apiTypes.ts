@@ -481,7 +481,10 @@ export const UploadFileRequestSchema = z.object({
 export type UploadFileRequest = z.infer<typeof UploadFileRequestSchema>
 
 export const DeleteUploadRequestSchema = z.object({
-    path: z.string().min(1)
+    path: z.string().min(1).optional(),
+    attachmentId: z.string().min(1).optional()
+}).refine((value) => Boolean(value.path || value.attachmentId), {
+    message: 'Delete request must include either path or attachmentId'
 })
 
 export type DeleteUploadRequest = z.infer<typeof DeleteUploadRequestSchema>
@@ -689,6 +692,10 @@ export type GeneratedImageResponse = {
 export type UploadFileResponse = {
     success: boolean
     path?: string
+    attachmentId?: string
+    filename?: string
+    mimeType?: string
+    size?: number
     error?: string
 }
 

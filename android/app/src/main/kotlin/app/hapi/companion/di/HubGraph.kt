@@ -151,6 +151,10 @@ class HubGraph(
     fun scratchlistAttachmentUrl(sessionId: String, attachmentId: String): String =
         "${session.hubUrl}/api/sessions/$sessionId/scratchlist/attachments/$attachmentId"
 
+    /** Absolute URL of a durable chat attachment original, for [imageLoader]. */
+    fun attachmentUrl(sessionId: String, attachmentId: String): String =
+        "${session.hubUrl}/api/sessions/$sessionId/attachments/$attachmentId/original"
+
     /** Per-session composer drafts, keyed under this hub (process-wide DataStore). */
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
 

@@ -1066,6 +1066,21 @@ export class SessionCache {
         if (!deleted) {
             throw new Error('Failed to delete session')
         }
+        // Delete durable bytes only after the session row is gone. If the row
+        // deletion fails, retaining the attachment keeps surviving messages
+        // from pointing at missing originals.
+        try {
+            await this.store.attachments.deleteAllForSession(session.namespace, sessionId)
+        } catch (error) {
+            // The session row is already gone, so still finalize the in-memory
+            // lifecycle. The leftover bytes/metadata are retained for the
+            // startup orphan sweep instead of leaving a ghost session in the
+            // running Hub.
+            console.warn('[attachments] Failed to clean up deleted session attachments', {
+                sessionId,
+                error
+            })
+        }
 
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
@@ -1118,6 +1133,7 @@ export class SessionCache {
         }
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        this.store.attachments.transferSession(namespace, oldSessionId, newSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
         // with the original socket, so its notify chain must stay on that id.
         if (options.deleteOldSession) {

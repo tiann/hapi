@@ -169,6 +169,7 @@ On first run, HAPI:
 ~/.hapi/
 ├── settings.json      # Main configuration
 ├── hapi.db           # SQLite database (hub)
+├── attachments/       # Durable attachment originals
 ├── runner.state.json  # Runner process state
 └── logs/             # Log files
 ```
@@ -198,6 +199,7 @@ On first run, HAPI:
 | `VAPID_SUBJECT` | `mailto:admin@hapi.run` | - | Web Push contact info |
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
+| `HAPI_ATTACHMENTS_ROOT` | `~/.hapi/attachments` | - | Durable attachment blob directory |
 | `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |
 | `ELEVENLABS_API_KEY` | - | Settings / env | ElevenLabs API key for voice + dictation |
 | `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |

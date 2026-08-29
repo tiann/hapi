@@ -1,3 +1,4 @@
+import CoreGraphics
 import HapiClient
 import HapiProtocol
 import SwiftUI
@@ -66,6 +67,45 @@ final class GeneratedImageLoader {
             cache.setObject(image, forKey: imageId as NSString)
         }
         return image
+    }
+
+    /// Loads a durable chat attachment original through the authenticated API.
+    func attachmentImage(for attachmentId: String) async -> UIImage? {
+        let key = "attachment:\(attachmentId)"
+        if let cached = cache.object(forKey: key as NSString) {
+            return cached
+        }
+        if let running = inFlight[key] {
+            return await running.value
+        }
+        let api = api
+        let sessionId = sessionId
+        let task = Task<UIImage?, Never> {
+            guard let payload = try? await api.attachment(
+                sessionId: sessionId,
+                attachmentId: attachmentId
+            ) else {
+                return nil
+            }
+            guard let cgImage = await Self.decodeAttachment(payload.data) else {
+                return nil
+            }
+            return UIImage(cgImage: cgImage)
+        }
+        inFlight[key] = task
+        let image = await task.value
+        inFlight[key] = nil
+        if let image {
+            cache.setObject(image, forKey: key as NSString)
+        }
+        return image
+    }
+
+    private nonisolated static func decodeAttachment(_ bytes: Data) async -> CGImage? {
+        AttachmentPreparer.decodeDownsampled(
+            bytes,
+            maxDimension: AttachmentPolicy.previewMaxDimension
+        )
     }
 }
 

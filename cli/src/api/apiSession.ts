@@ -40,6 +40,9 @@ import { cleanupUploadDir } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { AttachmentMaterializer, type MaterializedAttachmentIdentity } from './attachmentMaterializer'
+
+type UserAttachment = NonNullable<UserMessage['content']['attachments']>[number]
 
 /**
  * XML tags that Claude Code injects as `type:'user'` messages.
@@ -241,10 +244,21 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingHubPromptEchoes: { text: string; localIds: string[] }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
+    private incomingMessageTail: Promise<void> = Promise.resolve()
+    private incomingMessagePending = 0
+    private readonly materializingLocalIdCounts = new Map<string, number>()
+    private readonly cancelledMaterializingLocalIds = new Set<string>()
     private cancelQueuedMessageCallback: ((localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed') | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
+    private readonly deferredLiveMessages: Array<{
+        id?: string
+        seq?: number
+        localId?: string | null
+        content: unknown
+    }> = []
     private backfillInFlight: Promise<void> | null = null
+    private backfillRetryTimer: ReturnType<typeof setTimeout> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
     readonly rpcHandlerManager: RpcHandlerManager
@@ -278,11 +292,13 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateChangedDuringAttempt = false
     private readonly pendingOutboundEvents: PendingOutboundEvent[] = []
     private didWarnPendingQueueFull = false
+    private readonly attachmentMaterializer: AttachmentMaterializer
 
     constructor(token: string, session: Session, options: ApiSessionClientOptions = {}) {
         super()
         this.token = token
         this.sessionId = session.id
+        this.attachmentMaterializer = new AttachmentMaterializer(this.sessionId, token)
         this.metadata = session.metadata
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
@@ -427,7 +443,13 @@ export class ApiSessionClient extends EventEmitter {
                 if (!data.body) return
 
                 if (data.body.t === 'new-message') {
-                    this.handleIncomingMessage(data.body.message)
+                    if (this.backfillInFlight || this.needsBackfill) {
+                        this.deferredLiveMessages.push(data.body.message)
+                        return
+                    }
+                    void this.handleIncomingMessage(data.body.message).catch((error) => {
+                        logger.debug('[API] Failed to materialize incoming attachment', { error })
+                    })
                     return
                 }
 
@@ -454,18 +476,40 @@ export class ApiSessionClient extends EventEmitter {
                 }
 
                 if (data.body.t === 'cancel-queued-message') {
-                    const result = (data.body.localId && this.cancelQueuedMessageCallback)
-                        ? this.cancelQueuedMessageCallback(data.body.localId)
+                    const localId = data.body.localId
+                    let removed = false
+                    if (localId) {
+                        for (let index = this.deferredLiveMessages.length - 1; index >= 0; index -= 1) {
+                            if (this.deferredLiveMessages[index]?.localId === localId) {
+                                this.deferredLiveMessages.splice(index, 1)
+                                removed = true
+                            }
+                        }
+                    }
+                    if (localId && (this.materializingLocalIdCounts.get(localId) ?? 0) > 0) {
+                        // The prompt has not reached the agent queue yet. Mark it
+                        // cancelled so the async attachment download cannot enqueue
+                        // it after the Hub has already acknowledged cancellation.
+                        this.cancelledMaterializingLocalIds.add(localId)
+                        removed = true
+                    }
+                    const result = (localId && this.cancelQueuedMessageCallback)
+                        ? this.cancelQueuedMessageCallback(localId)
                         : false
+                    removed = removed || result === true
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
                     // delete it nor stamp invoked_at.
-                    ack?.({
-                        removed: result === true,
-                        inFlight: result === 'in-flight',
-                        indeterminate: result === 'indeterminate',
-                        consumed: result === 'consumed'
-                    })
+                    if (typeof result === 'string') {
+                        ack?.({
+                            removed,
+                            inFlight: result === 'in-flight',
+                            indeterminate: result === 'indeterminate',
+                            consumed: result === 'consumed'
+                        })
+                    } else {
+                        ack?.({ removed })
+                    }
                     return
                 }
 
@@ -517,6 +561,14 @@ export class ApiSessionClient extends EventEmitter {
 
     isPending(): boolean {
         return this.state === 'pending' || this.state === 'materializing'
+    }
+
+    isMaterializedAttachmentPath(path: string): boolean {
+        return this.attachmentMaterializer.isAuthorizedPath(path)
+    }
+
+    isAuthorizedMaterializedAttachment(path: string, identity: MaterializedAttachmentIdentity): boolean {
+        return this.attachmentMaterializer.isAuthorizedFile(path, identity)
     }
 
     private isClosed(): boolean {
@@ -771,24 +823,108 @@ export class ApiSessionClient extends EventEmitter {
     private handleIncomingMessage(
         message: { id?: string; seq?: number; localId?: string | null; content: unknown },
         force = false
-    ): void {
-        const accepted = this.incomingFilter.accept({ id: message.id, seq: message.seq })
-        if (!force && !accepted) {
-            return
+    ): Promise<void> {
+        const parsed = UserMessageSchema.safeParse(message.content)
+        const needsMaterialization = parsed.success
+            && (parsed.data.content.attachments?.some((attachment) => Boolean(attachment.attachmentId && !attachment.path)) ?? false)
+
+        // Preserve the existing synchronous delivery contract for ordinary
+        // messages. Only hub attachment references need an async download.
+        if (this.incomingMessagePending === 0 && !needsMaterialization) {
+            this.deliverIncomingMessage(message, parsed.success ? parsed.data : null, force)
+            return Promise.resolve()
         }
 
-        const userResult = UserMessageSchema.safeParse(message.content)
-        if (userResult.success) {
+        if (message.localId) {
+            this.materializingLocalIdCounts.set(
+                message.localId,
+                (this.materializingLocalIdCounts.get(message.localId) ?? 0) + 1
+            )
+        }
+        this.incomingMessagePending += 1
+        const run = this.incomingMessageTail.then(async () => {
+            if (this.isClosed()) return
+            const userResult = UserMessageSchema.safeParse(message.content)
+            if (!userResult.success) {
+                if (message.localId && this.cancelledMaterializingLocalIds.has(message.localId)) return
+                this.deliverIncomingMessage(message, null, force)
+                return
+            }
+            let materializationResults: Array<{ attachment: UserAttachment; failure: string | null }> | undefined
+            if (userResult.data.content.attachments) {
+                materializationResults = []
+                for (const attachment of userResult.data.content.attachments) {
+                    if (this.isClosed()) return
+                    try {
+                        materializationResults.push({
+                            attachment: await this.attachmentMaterializer.materialize(attachment),
+                            failure: null
+                        })
+                    } catch (error) {
+                        logger.debug('[API] Failed to materialize one attachment', {
+                            attachmentId: attachment.attachmentId,
+                            error
+                        })
+                        if (this.isClosed()) return
+                        materializationResults.push({
+                            attachment,
+                            failure: `Attachment unavailable: ${attachment.filename}`
+                        })
+                    }
+                }
+            }
+            const materializedAttachments = materializationResults?.map((result) => result.attachment)
+            const materializationFailures = materializationResults
+                ?.flatMap((result) => result.failure ? [result.failure] : []) ?? []
+            const materializedText = materializationFailures.length > 0
+                ? [userResult.data.content.text, ...materializationFailures].filter(Boolean).join('\n\n')
+                : userResult.data.content.text
+            const materializedUser = materializedAttachments
+                ? {
+                    ...userResult.data,
+                    content: {
+                        ...userResult.data.content,
+                        text: materializedText,
+                        attachments: materializedAttachments
+                    }
+                }
+                : userResult.data
+            if (message.localId && this.cancelledMaterializingLocalIds.has(message.localId)) return
+            if (this.isClosed()) return
+            this.deliverIncomingMessage(message, materializedUser, force)
+        }).finally(() => {
+            this.incomingMessagePending -= 1
+            if (message.localId) {
+                const remaining = (this.materializingLocalIdCounts.get(message.localId) ?? 1) - 1
+                if (remaining <= 0) {
+                    this.materializingLocalIdCounts.delete(message.localId)
+                    this.cancelledMaterializingLocalIds.delete(message.localId)
+                } else {
+                    this.materializingLocalIdCounts.set(message.localId, remaining)
+                }
+            }
+        })
+        this.incomingMessageTail = run.catch(() => {})
+        return run
+    }
+
+    private deliverIncomingMessage(
+        message: { id?: string; seq?: number; localId?: string | null; content: unknown },
+        userMessage: UserMessage | null,
+        force = false
+    ): void {
+        if (this.isClosed()) return
+        if (!force && !this.incomingFilter.accept({ id: message.id, seq: message.seq })) {
+            return
+        }
+        if (userMessage) {
             // User messages mirrored from a local agent transcript are history,
             // not new remote input. Keep them in the incoming filter above so
             // reconnect backfill still advances and deduplicates correctly.
-            if (userResult.data.meta?.sentFrom === 'cli') {
-                return
-            }
-            this.enqueueUserMessage(userResult.data, message.localId ?? undefined)
+            if (userMessage.meta?.sentFrom === 'cli') return
+            this.enqueueUserMessage(userMessage, message.localId ?? undefined)
             return
         }
-
         this.emit('message', message.content)
     }
 
@@ -799,10 +935,32 @@ export class ApiSessionClient extends EventEmitter {
         try {
             await this.backfillMessages()
             this.needsBackfill = false
+            this.clearBackfillRetry()
         } catch (error) {
             logger.debug('[API] Backfill failed', error)
             this.needsBackfill = true
+            this.scheduleBackfillRetry()
         }
+    }
+
+    private clearBackfillRetry(): void {
+        if (!this.backfillRetryTimer) {
+            return
+        }
+        clearTimeout(this.backfillRetryTimer)
+        this.backfillRetryTimer = null
+    }
+
+    private scheduleBackfillRetry(): void {
+        if (this.backfillRetryTimer || !this.socket.connected || this.isClosed()) {
+            return
+        }
+        this.backfillRetryTimer = setTimeout(() => {
+            this.backfillRetryTimer = null
+            if (this.needsBackfill && this.socket.connected && !this.isClosed()) {
+                void this.backfillIfNeeded()
+            }
+        }, 1_000)
     }
 
     private async backfillMessages(): Promise<void> {
@@ -818,55 +976,82 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         const limit = 200
+        let backfillSucceeded = false
         const run = async () => {
-            let cursor = startSeq
-            while (true) {
-                const response = await axios.get(
-                    `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
-                    {
-                        params: { afterSeq: cursor, limit },
-                        headers: buildHubRequestHeaders({
-                            Authorization: `Bearer ${this.token}`,
-                            'Content-Type': 'application/json'
-                        }),
-                        timeout: 15_000
-                    }
-                )
-
-                const parsed = CliMessagesResponseSchema.safeParse(response.data)
-                if (!parsed.success) {
-                    throw apiValidationError('Invalid /cli/sessions/:id/messages response', response)
-                }
-
-                const messages = parsed.data.messages
-                if (messages.length === 0) {
-                    break
-                }
-
-                let maxSeq = cursor
-                for (const message of messages) {
-                    if (typeof message.seq === 'number') {
-                        if (message.seq > maxSeq) {
-                            maxSeq = message.seq
+            try {
+                let cursor = startSeq
+                while (true) {
+                    const response = await axios.get(
+                        `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
+                        {
+                            params: { afterSeq: cursor, limit },
+                            headers: buildHubRequestHeaders({
+                                Authorization: `Bearer ${this.token}`,
+                                'Content-Type': 'application/json'
+                            }),
+                            timeout: 15_000
                         }
+                    )
+
+                    const parsed = CliMessagesResponseSchema.safeParse(response.data)
+                    if (!parsed.success) {
+                        throw apiValidationError('Invalid /cli/sessions/:id/messages response', response)
                     }
-                    this.handleIncomingMessage(message)
-                }
 
-                const observedSeq = this.incomingFilter.cursorSeq() ?? maxSeq
-                const nextCursor = Math.max(maxSeq, observedSeq)
-                if (nextCursor <= cursor) {
-                    logger.debug('[API] Backfill stopped due to non-advancing cursor', {
-                        cursor,
-                        maxSeq,
-                        observedSeq
+                    const messages = parsed.data.messages
+                    if (messages.length === 0) {
+                        break
+                    }
+
+                    let maxSeq = cursor
+                    // Register the whole page with the delivery queue before
+                    // awaiting any attachment materialization. Otherwise a live
+                    // socket message can arrive while the first backfill row is
+                    // downloading and get queued ahead of the remaining, older
+                    // rows from this page.
+                    const pending = messages.map((message) => {
+                        if (typeof message.seq === 'number') {
+                            if (message.seq > maxSeq) {
+                                maxSeq = message.seq
+                            }
+                        }
+                        return this.handleIncomingMessage(message)
                     })
-                    break
-                }
+                    await Promise.all(pending)
 
-                cursor = nextCursor
-                if (messages.length < limit) {
-                    break
+                    // Only advance the HTTP cursor by the page that this request
+                    // actually fetched. A live socket message may have advanced
+                    // the incoming filter while this page was materializing; using
+                    // that live seq here could skip rows from a later page.
+                    const nextCursor = maxSeq
+                    if (nextCursor <= cursor) {
+                        logger.debug('[API] Backfill stopped due to non-advancing cursor', {
+                            cursor,
+                            maxSeq,
+                            nextCursor
+                        })
+                        break
+                    }
+
+                    cursor = nextCursor
+                    if (messages.length < limit) {
+                        break
+                    }
+                }
+                backfillSucceeded = true
+            } finally {
+                if (backfillSucceeded) {
+                    // Keep live socket messages behind every fetched backfill page.
+                    // Drain repeatedly because another socket event can arrive while
+                    // a deferred attachment is materializing.
+                    while (this.deferredLiveMessages.length > 0) {
+                        const deferred = this.deferredLiveMessages.splice(0)
+                        await Promise.all(deferred.map((message) => (
+                            this.handleIncomingMessage(message).catch((error) => {
+                                logger.debug('[API] Failed to materialize deferred live attachment', { error })
+                            })
+                        )))
+                    }
                 }
             }
         }
@@ -1268,6 +1453,7 @@ export class ApiSessionClient extends EventEmitter {
         if (this.state === 'active') {
             void cleanupUploadDir(this.sessionId)
         }
+        void this.attachmentMaterializer.close()
         this.emitOrQueue(() => {
             this.socket.emit('session-end', { sid: this.sessionId, time: Date.now(), reason })
         })
@@ -1520,7 +1706,11 @@ export class ApiSessionClient extends EventEmitter {
         this.materializationRetryAbortController?.abort()
         this.materializationRetryAbortController = null
         this.awaitingMaterializedConnection = false
+        this.clearBackfillRetry()
         this.pendingOutboundEvents.length = 0
+        this.materializingLocalIdCounts.clear()
+        this.cancelledMaterializingLocalIds.clear()
+        void this.attachmentMaterializer.close()
         this.rpcHandlerManager.onSocketDisconnect()
         this.terminalManager.closeAll()
         this.socket.disconnect()

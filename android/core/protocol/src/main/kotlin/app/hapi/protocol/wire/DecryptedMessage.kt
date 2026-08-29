@@ -103,6 +103,7 @@ data class AttachmentMetadata(
     val filename: String,
     val mimeType: String,
     val size: Long,
-    val path: String,
+    val path: String? = null,
+    val attachmentId: String? = null,
     val previewUrl: String? = null,
 )

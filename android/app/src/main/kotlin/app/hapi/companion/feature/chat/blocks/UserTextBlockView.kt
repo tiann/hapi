@@ -1,11 +1,14 @@
 package app.hapi.companion.feature.chat.blocks
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -18,9 +21,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
@@ -28,20 +35,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
+import app.hapi.companion.feature.chat.LocalChatMedia
 import app.hapi.companion.feature.chat.attachments.PreviewImage
 import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.chat.ChatAttachment
 import app.hapi.protocol.chat.UserTextBlock
+import coil.compose.AsyncImage
 
 /**
  * Operator prompt: right-aligned bubble (whitespace preserved — prompts are
  * not rendered as markdown, matching the web user bubble), attachments as
- * image thumbnails (decoded from the wire `previewUrl` data URL — both
- * Android- and web-sent messages carry one, and optimistic rows do too, so
- * thumbnails appear instantly on send) or filename chips, and a failed-send
+ * image attachments (decoded from an inline preview or fetched from the
+ * authenticated durable attachment endpoint) or filename chips, and a failed-send
  * tap-to-retry hint (B-M3f upgrades the former chips-only rendering).
  */
 @Composable
@@ -98,17 +108,70 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
 }
 
 /**
- * One bubble attachment: image mimes with a decodable `previewUrl` render a
- * thumbnail (web `MessageAttachments` split); everything else — plus decode
- * failures — falls back to the filename chip.
+ * One bubble attachment: image mimes with an inline preview or durable id
+ * render an image; everything else — plus decode failures — falls
+ * back to the filename chip.
  */
 @Composable
 private fun AttachmentView(attachment: ChatAttachment) {
+    val media = LocalChatMedia.current
     val isImage = attachment.mimeType.startsWith("image/")
-    if (!isImage || attachment.previewUrl == null) {
+    val hasInlinePreview = attachment.previewUrl?.startsWith("data:") == true
+    val remoteOriginalUrl = remember(attachment.attachmentId) {
+        attachment.attachmentId?.let { media.attachmentUrl(it) }
+    }
+
+    if (!isImage || (!hasInlinePreview && (media.imageLoader == null || remoteOriginalUrl == null))) {
         AttachmentChip(attachment)
         return
     }
+
+    if (!hasInlinePreview) {
+        var viewerOpen by remember { mutableStateOf(false) }
+        var originalFailed by remember(attachment.attachmentId) { mutableStateOf(false) }
+        if (originalFailed) {
+            AttachmentChip(
+                attachment,
+                modifier = Modifier.clickable(enabled = remoteOriginalUrl != null) { viewerOpen = true },
+            )
+        } else {
+            AsyncImage(
+                model = remoteOriginalUrl,
+                imageLoader = media.imageLoader!!,
+                contentDescription = attachment.filename,
+                contentScale = ContentScale.Fit,
+                onError = { originalFailed = true },
+                modifier = Modifier
+                    .heightIn(max = 180.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(enabled = remoteOriginalUrl != null) { viewerOpen = true },
+            )
+        }
+        if (viewerOpen && remoteOriginalUrl != null) {
+            Dialog(
+                onDismissRequest = { viewerOpen = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.92f))
+                        .clickable { viewerOpen = false },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AsyncImage(
+                        model = remoteOriginalUrl,
+                        imageLoader = media.imageLoader!!,
+                        contentDescription = attachment.filename,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().padding(8.dp),
+                    )
+                }
+            }
+        }
+        return
+    }
+
     val preview by rememberPreviewImage(attachment.previewUrl)
     when (val state = preview) {
         is PreviewImage.Ready -> Image(
@@ -132,10 +195,11 @@ private fun AttachmentView(attachment: ChatAttachment) {
 }
 
 @Composable
-private fun AttachmentChip(attachment: ChatAttachment) {
+private fun AttachmentChip(attachment: ChatAttachment, modifier: Modifier = Modifier) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
         shape = RoundedCornerShape(8.dp),
+        modifier = modifier,
     ) {
         Text(
             text = "${if (attachment.mimeType.startsWith("image/")) "🖼" else "📎"} ${attachment.filename}",

@@ -1,0 +1,81 @@
+{
+    "description": "User message with a durable Hub attachment reference; attachmentId replaces the legacy local path.",
+    "expected": {
+        "blocks": [
+            {
+                "attachments": [
+                    {
+                        "attachmentId": "attachment-01HZXK5S",
+                        "filename": "durable-screenshot.png",
+                        "id": "att-01HZXK5S",
+                        "mimeType": "image/png",
+                        "size": 307200
+                    }
+                ],
+                "createdAt": 1755000000000,
+                "id": "msg-user-102",
+                "invokedAt": 1755000000520,
+                "kind": "user-text",
+                "localId": "local-8e3c0f5a-14d7-4b29-a6e1-9c2f7d4b5a10",
+                "text": "Here is the durable screenshot attachment."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "attachments": [
+                    {
+                        "attachmentId": "attachment-01HZXK5S",
+                        "filename": "durable-screenshot.png",
+                        "id": "att-01HZXK5S",
+                        "mimeType": "image/png",
+                        "size": 307200
+                    }
+                ],
+                "createdAt": 1755000000000,
+                "id": "msg-user-102",
+                "invokedAt": 1755000000520,
+                "kind": "user-text",
+                "localId": "local-8e3c0f5a-14d7-4b29-a6e1-9c2f7d4b5a10",
+                "text": "Here is the durable screenshot attachment."
+            }
+        ]
+    },
+    "fixtureVersion": 2,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "attachments": [
+                            {
+                                "attachmentId": "attachment-01HZXK5S",
+                                "filename": "durable-screenshot.png",
+                                "id": "att-01HZXK5S",
+                                "mimeType": "image/png",
+                                "size": 307200
+                            }
+                        ],
+                        "text": "Here is the durable screenshot attachment.",
+                        "type": "text"
+                    },
+                    "meta": {
+                        "sentFrom": "webapp"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-user-102",
+                "invokedAt": 1755000000520,
+                "localId": "local-8e3c0f5a-14d7-4b29-a6e1-9c2f7d4b5a10",
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "user-text-with-durable-attachments"
+}

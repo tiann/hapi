@@ -163,10 +163,11 @@ Source: `hub/src/web/routes/sessions.ts` (`UploadFileRequestSchema`).
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/sessions/:id/upload` | JSON `{filename, content, mimeType}` — `content` is **base64**; decoded size limit 50 MB → `413` | `{success, path?, error?}` — pass the resulting metadata in `attachments` of send-message |
-| `POST /api/sessions/:id/upload/delete` | `{path}` | `{success, error?}` |
+| `POST /api/sessions/:id/upload` | JSON `{filename, content, mimeType}` — `content` is **base64**; decoded size limit 50 MB → `413` | `{success, attachmentId?, filename?, mimeType?, size?, path?, error?}` — new hubs return an opaque `attachmentId`; legacy hubs may return `path` |
+| `POST /api/sessions/:id/upload/delete` | `{path?}` or `{attachmentId?}` (at least one) | `{success, error?}` |
+| `GET /api/sessions/:id/attachments/:attachmentId/original` | — | **Raw original bytes** with authenticated ownership checks and integrity headers |
 
-Uploads are JSON+base64, **not** multipart. Both require an active session.
+Uploads are JSON+base64, **not** multipart. Uploads require an active session; original reads and durable deletion may also target inactive sessions. New durable messages do not embed image Data URLs, and this contract intentionally has no thumbnail variant.
 
 ### Scratchlist
 

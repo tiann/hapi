@@ -60,7 +60,7 @@
         },
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "reasoning-snapshots-collapse-to-newest",
     "ops": [
         {

@@ -13,6 +13,7 @@ import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
 import { SessionIdentityConflictError } from '../../store/sessions'
+import { attachmentContentDisposition } from '../attachmentHeaders'
 
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
 
@@ -223,7 +224,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         if (!engine) return c.json({ error: 'Not ready' }, 503)
         const parsed = ClearOpencodeSessionCallbackRequestSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) return c.json({ error: 'Invalid clear callback request' }, 400)
-        const result = engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
+        const result = await engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
         if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
         return c.json({ ok: true, sessionId: result.sessionId })
     })
@@ -283,6 +284,39 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             now: Date.now()
         })
         return c.json({ messages })
+    })
+
+    app.get('/sessions/:id/attachments/:attachmentId/original', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, c.req.param('id'), namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+        const attachment = await engine.readAttachment(
+            resolved.sessionId,
+            namespace,
+            c.req.param('attachmentId')
+        )
+        if (!attachment) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+        return new Response(new Uint8Array(attachment.data), {
+            headers: {
+                'Content-Type': attachment.mimeType,
+                'Content-Length': String(attachment.size),
+                'Content-Disposition': attachmentContentDisposition(attachment.attachment.filename),
+                'Content-Security-Policy': "sandbox; default-src 'none'",
+                'Cache-Control': 'private, max-age=31536000, immutable',
+                'ETag': `"${attachment.sha256}"`,
+                'X-Hapi-Attachment-Sha256': attachment.sha256,
+                'X-Hapi-Attachment-Size': String(attachment.size),
+                'X-Content-Type-Options': 'nosniff'
+            }
+        })
     })
 
     app.post('/sessions/:id/migrate-to-acp', async (c) => {

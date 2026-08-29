@@ -494,6 +494,42 @@ export class ApiClient {
         })
     }
 
+    async deleteAttachment(sessionId: string, attachmentId: string): Promise<DeleteUploadResponse> {
+        return await this.request<DeleteUploadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/upload/delete`, {
+            method: 'POST',
+            body: JSON.stringify({ attachmentId })
+        })
+    }
+
+    async fetchAttachmentBlob(
+        sessionId: string,
+        attachmentId: string,
+        attempt: number = 0,
+        overrideToken?: string | null
+    ): Promise<Blob> {
+        const headers = new Headers()
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = overrideToken !== undefined
+            ? (overrideToken ?? (liveToken ?? this.token))
+            : (liveToken ?? this.token)
+        if (authToken) headers.set('authorization', `Bearer ${authToken}`)
+        const url = this.buildUrl(
+            `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/original`
+        )
+        const res = await fetch(url, { headers })
+        if (res.status === 401 && attempt === 0 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                return await this.fetchAttachmentBlob(sessionId, attachmentId, attempt + 1, refreshed)
+            }
+        }
+        if (!res.ok) {
+            throw new ApiError(`HTTP ${res.status}`, res.status, undefined, await res.text().catch(() => undefined))
+        }
+        return await res.blob()
+    }
+
     async deleteUploadFile(sessionId: string, path: string): Promise<DeleteUploadResponse> {
         return await this.request<DeleteUploadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/upload/delete`, {
             method: 'POST',

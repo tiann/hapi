@@ -51,7 +51,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             }, null, 'default')
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toMatchObject({ type: 'success' })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).resolves.toMatchObject({ type: 'success' })
             const abortedMetadata = engine.getSessionByNamespace(source.id, 'default')!.metadata!
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
             const ended = store.sessions.getSessionByNamespace(source.id, 'default')!
@@ -230,6 +230,67 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         }
     )
 
+    it('clones durable attachments when a new OpenCode message is redirected', async () => {
+        const { store, engine } = createEngine()
+        let sourceAttachmentId: string | undefined
+        let targetAttachmentId: string | undefined
+        try {
+            const target = engine.getOrCreateSession(
+                'attachment-redirect-target', { path: '/tmp/project', host: 'host', flavor: 'opencode' }, null, 'default'
+            )
+            const source = engine.getOrCreateSession(
+                'attachment-redirect-source', {
+                    path: '/tmp/project',
+                    host: 'host',
+                    flavor: 'opencode',
+                    supersededBySessionId: target.id
+                }, null, 'default'
+            )
+            const attachment = await store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'redirected.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('redirected')
+            })
+            sourceAttachmentId = attachment.id
+
+            await engine.sendMessage(source.id, {
+                text: 'inspect redirected attachment',
+                localId: 'redirected-attachment-local',
+                attachments: [{
+                    id: 'message-attachment',
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    attachmentId: attachment.id
+                }]
+            })
+
+            const message = store.messages.getAllMessages(target.id).find(
+                (candidate) => candidate.localId === 'redirected-attachment-local'
+            )
+            if (!message) throw new Error('redirected message was not persisted')
+            const content = message.content as {
+                content: { attachments: Array<{ attachmentId: string }> }
+            }
+            targetAttachmentId = content.content.attachments[0]!.attachmentId
+            expect(targetAttachmentId).not.toBe(sourceAttachmentId)
+            expect((await store.attachments.readForSessionAsync(targetAttachmentId, 'default', target.id))?.data)
+                .toEqual(Buffer.from('redirected'))
+        } finally {
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            for (const session of sessions) {
+                for (const attachmentId of [sourceAttachmentId, targetAttachmentId]) {
+                    if (attachmentId) {
+                        await store.attachments.deleteForSession(attachmentId, 'default', session.id)
+                    }
+                }
+            }
+            engine.stop()
+        }
+    })
+
     it('recovers cleanup-confirmed clear when the CLI dies before writing archive metadata', async () => {
         const { engine } = createEngine()
         try {
@@ -371,7 +432,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it('rejects a delayed cleanup confirmation after explicit exit owns the abort', () => {
+    it('rejects a delayed cleanup confirmation after explicit exit owns the abort', async () => {
         const { store, engine } = createEngine()
         try {
             const source = engine.getOrCreateSession('confirm-after-exit', {
@@ -380,7 +441,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
             const original = store.abortOpenCodeClearOperation.bind(store)
-            store.abortOpenCodeClearOperation = (() => ({ result: 'error' as const })) as typeof original
+            store.abortOpenCodeClearOperation = (async () => ({ result: 'error' as const })) as typeof original
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('abort-needed')
             expect(engine.confirmOpenCodeClearCleanup(source.id, 'default', currentReplacementId(engine, source.id))).toMatchObject({ type: 'error' })
@@ -388,7 +449,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it('rejects a delayed cleanup-failure abort after cleanup confirmation', () => {
+    it('rejects a delayed cleanup-failure abort after cleanup confirmation', async () => {
         const { engine } = createEngine()
         try {
             const source = engine.getOrCreateSession('abort-after-confirm', {
@@ -397,7 +458,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
             expect(engine.confirmOpenCodeClearCleanup(source.id, 'default', currentReplacementId(engine, source.id))).toMatchObject({ type: 'success' })
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toMatchObject({ type: 'error' })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).resolves.toMatchObject({ type: 'error' })
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('cleanup-confirmed')
         } finally { engine.stop() }
     })
@@ -462,23 +523,23 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             await engine.sendMessage(source.id, { text: 'restore once', localId: 'restore-once' })
             const original = store.abortOpenCodeClearOperation.bind(store)
             let loseResponse = true
-            store.abortOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
-                const result = original(...args)
+            store.abortOpenCodeClearOperation = (async (...args: Parameters<typeof original>) => {
+                const result = await original(...args)
                 if (loseResponse && result.result === 'success') {
                     loseResponse = false
                     return { result: 'version-mismatch' as const }
                 }
                 return result
             }) as typeof store.abortOpenCodeClearOperation
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).resolves.toEqual({ type: 'success', sessionId: source.id })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).resolves.toEqual({ type: 'success', sessionId: source.id })
             expect(store.messages.getAllMessages(source.id)).toEqual([
                 expect.objectContaining({ localId: 'restore-once', invokedAt: null })
             ])
         } finally { engine.stop() }
     })
 
-    it.each(['confirm', 'abort'] as const)('does not let delayed reservation A %s mutate reservation B', (callback) => {
+    it.each(['confirm', 'abort'] as const)('does not let delayed reservation A %s mutate reservation B', async (callback) => {
         const { engine } = createEngine()
         try {
             const source = engine.getOrCreateSession(`stale-a-${callback}`, {
@@ -487,12 +548,12 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             const first = engine.reserveOpenCodeClearSession(source.id, 'default')
             if (first.type !== 'success') throw new Error('first reservation failed')
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', first.sessionId)).toMatchObject({ type: 'success' })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', first.sessionId)).resolves.toMatchObject({ type: 'success' })
             const second = engine.reserveOpenCodeClearSession(source.id, 'default')
             if (second.type !== 'success') throw new Error('second reservation failed')
             const result = callback === 'confirm'
                 ? engine.confirmOpenCodeClearCleanup(source.id, 'default', first.sessionId)
-                : engine.abortOpenCodeClearSession(source.id, 'default', first.sessionId)
+                : await engine.abortOpenCodeClearSession(source.id, 'default', first.sessionId)
             expect(result).toMatchObject({ type: 'error' })
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toMatchObject({
                 replacementSessionId: second.sessionId,
@@ -513,7 +574,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             await engine.sendMessage(source.id, { text: 'held', localId: 'held' })
             expect(store.messages.getAllMessages(reserved.sessionId)).toHaveLength(1)
             expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(true)
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).resolves.toEqual({ type: 'success', sessionId: source.id })
             expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(false)
             expect(store.messages.getAllMessages(source.id).map((m) => m.localId)).toEqual(['held'])
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
@@ -522,6 +583,99 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 engine.getSessionByNamespace(source.id, 'default')!
             )).toBe(false)
         } finally { engine.stop() }
+    })
+
+    it('retries an abort when a redirected attachment prompt arrives during cloning', async () => {
+        const { store, engine } = createEngine()
+        let releaseClone: (() => void) | undefined
+        try {
+            const source = engine.getOrCreateSession('abort-attachment-race', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+
+            const first = await store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'first.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('first')
+            })
+            const toMessageAttachment = (attachment: typeof first) => ({
+                id: `message-${attachment.filename}`,
+                filename: attachment.filename,
+                mimeType: attachment.mimeType,
+                size: attachment.size,
+                attachmentId: attachment.id
+            })
+            await engine.sendMessage(source.id, {
+                text: 'first',
+                localId: 'first-attachment-message',
+                attachments: [toMessageAttachment(first)]
+            })
+
+            let cloneStarted!: () => void
+            const cloneStartedPromise = new Promise<void>((resolve) => { cloneStarted = resolve })
+            const cloneGate = new Promise<void>((resolve) => { releaseClone = resolve })
+            const originalClone = store.attachments.cloneMessageAttachments.bind(store.attachments)
+            let paused = false
+            store.attachments.cloneMessageAttachments = (async (...args: Parameters<typeof originalClone>) => {
+                if (!paused && args[1] === reserved.sessionId && args[2] === source.id) {
+                    paused = true
+                    cloneStarted()
+                    await cloneGate
+                }
+                return originalClone(...args)
+            }) as typeof store.attachments.cloneMessageAttachments
+
+            const aborting = engine.abortOpenCodeClearSession(source.id, 'default', reserved.sessionId)
+            await cloneStartedPromise
+
+            const second = await store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'second.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('second')
+            })
+            await engine.sendMessage(source.id, {
+                text: 'second',
+                localId: 'second-attachment-message',
+                attachments: [toMessageAttachment(second)]
+            })
+
+            releaseClone?.()
+            await expect(aborting).resolves.toEqual({ type: 'success', sessionId: source.id })
+
+            const restored = store.messages.getAllMessages(source.id)
+            expect(new Set(restored.map((message) => message.localId))).toEqual(new Set([
+                'first-attachment-message',
+                'second-attachment-message'
+            ]))
+            for (const [localId, expectedBytes] of [
+                ['first-attachment-message', Buffer.from('first')],
+                ['second-attachment-message', Buffer.from('second')]
+            ] as const) {
+                const message = restored.find((candidate) => candidate.localId === localId)
+                if (!message) throw new Error(`missing restored message ${localId}`)
+                const content = message.content as { content: { attachments: Array<{ attachmentId: string }> } }
+                const attachmentId = content.content.attachments[0]?.attachmentId
+                if (!attachmentId) throw new Error(`missing attachment for ${localId}`)
+                expect((await store.attachments.readForSessionAsync(
+                    attachmentId,
+                    'default',
+                    source.id
+                ))?.data).toEqual(expectedBytes)
+            }
+        } finally {
+            releaseClone?.()
+            for (const session of store.sessions.getSessionsByNamespace('default')) {
+                await store.attachments.deleteAllForSession('default', session.id).catch(() => {})
+            }
+            engine.stop()
+        }
     })
 
     it('durably retries an explicit-exit abort after a metadata write failure', async () => {
@@ -536,7 +690,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             await engine.sendMessage(source.id, { text: 'restore atomically', localId: 'atomic-held' })
             const original = store.abortOpenCodeClearOperation.bind(store)
             let fail = true
-            store.abortOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
+            store.abortOpenCodeClearOperation = (async (...args: Parameters<typeof original>) => {
                 if (fail) return { result: 'not-found' as const }
                 return original(...args)
             }) as typeof store.abortOpenCodeClearOperation
@@ -552,7 +706,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it('re-reserves an aborted operation with a fresh durable identity', () => {
+    it('re-reserves an aborted operation with a fresh durable identity', async () => {
         const { engine } = createEngine()
         try {
             const source = engine.getOrCreateSession('retry-clear-source', {
@@ -561,7 +715,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             const first = engine.reserveOpenCodeClearSession(source.id, 'default')
             if (first.type !== 'success') throw new Error('reservation failed')
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toMatchObject({ type: 'success' })
+            await expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).resolves.toMatchObject({ type: 'success' })
             const second = engine.reserveOpenCodeClearSession(source.id, 'default')
             expect(second).toMatchObject({ type: 'success', sessionId: expect.any(String) })
             if (second.type !== 'success') throw new Error('re-reservation failed')

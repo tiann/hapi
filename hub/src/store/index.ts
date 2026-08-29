@@ -13,6 +13,7 @@ import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import { AttachmentStore, type StoredAttachment } from './attachments'
 
 export type {
     NativeDevicePlatform,
@@ -26,6 +27,7 @@ export type {
     StoredUser,
     VersionedUpdateResult
 } from './types'
+export type { StoredAttachment } from './attachments'
 export type { CancelQueuedMessageResult, LookupQueuedMessageResult } from './messages'
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
@@ -42,7 +44,21 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 25
+type PreparedMessageAttachmentClones = {
+    messageIds: Set<string>
+    rewrittenContents: Map<string, unknown>
+    clonedAttachments: Map<string, StoredAttachment>
+}
+
+function sameMessageIds(left: Set<string>, right: Set<string>): boolean {
+    if (left.size !== right.size) return false
+    for (const id of left) {
+        if (!right.has(id)) return false
+    }
+    return true
+}
+
+const SCHEMA_VERSION: number = 26
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -55,7 +71,8 @@ const REQUIRED_TABLES = [
     'usage_events',
     'usage_scan_state',
     'events',
-    'event_links'
+    'event_links',
+    'attachments'
 ] as const
 
 export class Store {
@@ -72,6 +89,7 @@ export class Store {
     readonly scratchlist: ScratchlistStore
     readonly usage: UsageStore
     readonly workGraph: WorkGraphStore
+    readonly attachments: AttachmentStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -82,7 +100,7 @@ export class Store {
         return this._dbPath
     }
 
-    constructor(dbPath: string) {
+    constructor(dbPath: string, options?: { attachmentsRoot?: string }) {
         this._dbPath = dbPath
         if (dbPath !== ':memory:' && !dbPath.startsWith('file::memory:')) {
             const dir = dirname(dbPath)
@@ -126,6 +144,35 @@ export class Store {
         this.scratchlist = new ScratchlistStore(this.db)
         this.usage = new UsageStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
+        this.attachments = new AttachmentStore(this.db, options?.attachmentsRoot)
+    }
+
+    /** Reclaim attachment rows whose owning session no longer exists. */
+    async cleanupOrphanedAttachments(): Promise<number> {
+        const rows = this.db.prepare(`
+            SELECT DISTINCT a.namespace, a.session_id
+            FROM attachments AS a
+            LEFT JOIN sessions AS s
+                ON s.id = a.session_id AND s.namespace = a.namespace
+            WHERE s.id IS NULL
+        `).all() as Array<{ namespace: string; session_id: string }>
+
+        let deleted = 0
+        let firstError: unknown
+        for (const row of rows) {
+            try {
+                deleted += await this.attachments.deleteAllForSession(row.namespace, row.session_id)
+            } catch (error) {
+                firstError ??= error
+            }
+        }
+        try {
+            deleted += await this.attachments.cleanupUntrackedFiles()
+        } catch (error) {
+            firstError ??= error
+        }
+        if (firstError) throw firstError
+        return deleted
     }
 
     /**
@@ -199,40 +246,89 @@ export class Store {
         })()
     }
 
-    /** Resolve a durable OpenCode clear reservation and insert in one SQLite transaction. */
-    addMessageForCurrentSession(
+    /** Clone redirected attachments before the short SQLite insert transaction. */
+    async addMessageForCurrentSession(
         sessionId: string,
         content: unknown,
         localId?: string,
         scheduledAt?: number | null
-    ): { sessionId: string; message: StoredMessage; inserted: boolean } {
-        return this.db.transaction(() => {
-            const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?').get(sessionId) as { namespace: string; metadata: string | null } | undefined
-            if (!row) throw new Error('Message source session not found')
-            let targetSessionId = sessionId
-            if (row?.metadata) {
-                const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
-                targetSessionId = metadata.supersededBySessionId
-                    ?? (metadata.opencodeClearOperation?.state !== 'aborted'
-                        ? metadata.opencodeClearOperation?.replacementSessionId
-                        : undefined)
-                    ?? sessionId
+    ): Promise<{ sessionId: string; message: StoredMessage; inserted: boolean }> {
+        const initialRoute = this.resolveCurrentMessageTarget(sessionId)
+        const initialAlreadyExists = localId
+            ? Boolean(this.db.prepare('SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1')
+                .get(initialRoute.targetSessionId, localId))
+            : false
+        const clonedAttachments = new Map<string, StoredAttachment>()
+        let messageContent = content
+
+        try {
+            if (initialRoute.targetSessionId !== sessionId && !initialAlreadyExists) {
+                messageContent = await this.attachments.cloneMessageAttachments(
+                    initialRoute.namespace,
+                    sessionId,
+                    initialRoute.targetSessionId,
+                    content,
+                    clonedAttachments
+                )
             }
-            if (targetSessionId !== sessionId) {
-                const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
-                    .get(targetSessionId, row.namespace)
-                if (!target) throw new Error('OpenCode clear redirect target is unavailable in the source namespace')
+
+            const result = this.db.transaction(() => {
+                const latestRoute = this.resolveCurrentMessageTarget(sessionId)
+                if (latestRoute.namespace !== initialRoute.namespace
+                    || latestRoute.targetSessionId !== initialRoute.targetSessionId) {
+                    throw new Error('OpenCode clear redirect changed while the message attachment was being cloned')
+                }
+                const latestAlreadyExists = localId
+                    ? Boolean(this.db.prepare('SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1')
+                        .get(latestRoute.targetSessionId, localId))
+                    : false
+                if (!latestAlreadyExists
+                    && initialAlreadyExists
+                    && latestRoute.targetSessionId !== sessionId) {
+                    throw new Error('OpenCode clear redirect duplicate disappeared while the message was being prepared')
+                }
+                const persistedContent = latestAlreadyExists
+                    ? content
+                    : latestRoute.targetSessionId !== sessionId
+                        ? messageContent
+                        : content
+                return {
+                    sessionId: latestRoute.targetSessionId,
+                    message: addMessage(this.db, latestRoute.targetSessionId, persistedContent, localId, scheduledAt),
+                    inserted: !latestAlreadyExists
+                }
+            })()
+            if (!result.inserted) {
+                await this.cleanupClonedAttachments(clonedAttachments, initialRoute.namespace, initialRoute.targetSessionId)
             }
-            const alreadyExists = localId
-                ? Boolean(this.db.prepare('SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1')
-                    .get(targetSessionId, localId))
-                : false
-            return {
-                sessionId: targetSessionId,
-                message: addMessage(this.db, targetSessionId, content, localId, scheduledAt),
-                inserted: !alreadyExists
-            }
-        })()
+            return result
+        } catch (error) {
+            await this.cleanupClonedAttachments(clonedAttachments, initialRoute.namespace, initialRoute.targetSessionId)
+            throw error
+        }
+    }
+
+    /** Move queued messages between OpenCode clear sessions with readable attachments. */
+    async moveUninvokedMessages(namespace: string, fromSessionId: string, toSessionId: string): Promise<number> {
+        if (fromSessionId === toSessionId) return 0
+        const prepared = await this.prepareUninvokedMessageAttachmentClones(
+            namespace,
+            fromSessionId,
+            toSessionId
+        )
+        try {
+            return this.db.transaction(() => {
+                for (const [messageId, content] of prepared.rewrittenContents) {
+                    if (!this.messages.updateMessageContent(messageId, content)) {
+                        throw new Error(`Failed to rewrite queued message ${messageId}`)
+                    }
+                }
+                return this.messages.moveUninvokedMessages(fromSessionId, toSessionId)
+            })()
+        } catch (error) {
+            await this.cleanupClonedAttachments(prepared.clonedAttachments, namespace, toSessionId)
+            throw error
+        }
     }
 
     /** Durable delivery gate for a preallocated replacement owned by an unfinished clear. */
@@ -256,7 +352,7 @@ export class Store {
         })
     }
 
-    abortOpenCodeClearOperation(
+    async abortOpenCodeClearOperation(
         sessionId: string,
         replacementSessionId: string,
         metadata: unknown,
@@ -264,21 +360,123 @@ export class Store {
         namespace: string,
         expected?: { replacementSessionId: string; state: string; requireInactive?: boolean }
     ) {
-        return this.db.transaction(() => {
-            const current = this.sessions.getSessionByNamespace(sessionId, namespace)
-            const operation = current?.metadata && typeof current.metadata === 'object'
-                ? (current.metadata as { opencodeClearOperation?: { replacementSessionId?: string; state?: string } }).opencodeClearOperation
-                : undefined
-            if (expected && (!current
-                || (expected.requireInactive === true && current.active)
-                || operation?.replacementSessionId !== expected.replacementSessionId
-                || operation.state !== expected.state)) {
-                return { result: 'version-mismatch' as const }
+        const prepared = await this.prepareUninvokedMessageAttachmentClones(
+            namespace,
+            replacementSessionId,
+            sessionId
+        )
+        try {
+            const result = this.db.transaction(() => {
+                const current = this.sessions.getSessionByNamespace(sessionId, namespace)
+                const operation = current?.metadata && typeof current.metadata === 'object'
+                    ? (current.metadata as { opencodeClearOperation?: { replacementSessionId?: string; state?: string } }).opencodeClearOperation
+                    : undefined
+                if (expected && (!current
+                    || (expected.requireInactive === true && current.active)
+                    || operation?.replacementSessionId !== expected.replacementSessionId
+                    || operation.state !== expected.state)) {
+                    return { result: 'version-mismatch' as const }
+                }
+                const currentMessageIds = new Set(
+                    this.messages.getAllMessages(replacementSessionId)
+                        .filter((message) => message.invokedAt === null)
+                        .map((message) => message.id)
+                )
+                if (!sameMessageIds(currentMessageIds, prepared.messageIds)) {
+                    return { result: 'version-mismatch' as const }
+                }
+                const result = this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
+                if (result.result === 'success') {
+                    for (const [messageId, content] of prepared.rewrittenContents) {
+                        if (!this.messages.updateMessageContent(messageId, content)) {
+                            throw new Error(`Failed to rewrite queued message ${messageId}`)
+                        }
+                    }
+                    this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
+                }
+                return result
+            })()
+            if (result.result !== 'success') {
+                await this.cleanupClonedAttachments(prepared.clonedAttachments, namespace, sessionId)
             }
-            const result = this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
-            if (result.result === 'success') this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
             return result
-        })()
+        } catch (error) {
+            await this.cleanupClonedAttachments(prepared.clonedAttachments, namespace, sessionId)
+            throw error
+        }
+    }
+
+    private resolveCurrentMessageTarget(sessionId: string): { namespace: string; targetSessionId: string } {
+        const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?')
+            .get(sessionId) as { namespace: string; metadata: string | null } | undefined
+        if (!row) throw new Error('Message source session not found')
+
+        let targetSessionId = sessionId
+        if (row.metadata) {
+            const metadata = JSON.parse(row.metadata) as {
+                opencodeClearOperation?: { replacementSessionId?: string; state?: string }
+                supersededBySessionId?: string
+            }
+            targetSessionId = metadata.supersededBySessionId
+                ?? (metadata.opencodeClearOperation?.state !== 'aborted'
+                    ? metadata.opencodeClearOperation?.replacementSessionId
+                    : undefined)
+                ?? sessionId
+        }
+        if (targetSessionId !== sessionId) {
+            const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
+                .get(targetSessionId, row.namespace)
+            if (!target) throw new Error('OpenCode clear redirect target is unavailable in the source namespace')
+        }
+        return { namespace: row.namespace, targetSessionId }
+    }
+
+    private async prepareUninvokedMessageAttachmentClones(
+        namespace: string,
+        fromSessionId: string,
+        toSessionId: string
+    ): Promise<PreparedMessageAttachmentClones> {
+        const sourceMessages = this.messages.getAllMessages(fromSessionId)
+        const messageIds = new Set(
+            sourceMessages
+                .filter((message) => message.invokedAt === null)
+                .map((message) => message.id)
+        )
+        const targetLocalIds = new Set(
+            this.messages.getAllMessages(toSessionId)
+                .map((message) => message.localId)
+                .filter((localId): localId is string => localId !== null)
+        )
+        const clonedAttachments = new Map<string, StoredAttachment>()
+        const rewrittenContents = new Map<string, unknown>()
+        try {
+            for (const message of sourceMessages) {
+                if (message.invokedAt !== null) continue
+                if (message.localId !== null && targetLocalIds.has(message.localId)) continue
+                const rewritten = await this.attachments.cloneMessageAttachments(
+                    namespace,
+                    fromSessionId,
+                    toSessionId,
+                    message.content,
+                    clonedAttachments
+                )
+                if (rewritten !== message.content) rewrittenContents.set(message.id, rewritten)
+            }
+            return { messageIds, rewrittenContents, clonedAttachments }
+        } catch (error) {
+            await this.cleanupClonedAttachments(clonedAttachments, namespace, toSessionId)
+            throw error
+        }
+    }
+
+    private async cleanupClonedAttachments(
+        clonedAttachments: Map<string, StoredAttachment>,
+        namespace: string,
+        sessionId: string
+    ): Promise<void> {
+        for (const attachment of clonedAttachments.values()) {
+            await this.attachments.deleteForSession(attachment.id, namespace, sessionId).catch(() => {})
+        }
     }
 
     transitionOpenCodeClearOperation(
@@ -347,6 +545,7 @@ export class Store {
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
         })
 
         if (currentVersion === 0) {
@@ -591,6 +790,20 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
+                ON attachments(namespace, session_id, created_at);
         `)
     }
 
@@ -1032,6 +1245,25 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+        `)
+    }
+
+    /** v25→v26: add Hub-resident durable attachment metadata. */
+    private migrateFromV25ToV26(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
+                ON attachments(namespace, session_id, created_at);
         `)
     }
 

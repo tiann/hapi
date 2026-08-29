@@ -30,7 +30,7 @@ class PreparedAttachment(
     val mimeType: String,
     /** The exact bytes that will upload (post-compression when applicable). */
     val bytes: ByteArray,
-    /** Small JPEG thumbnail for the chip + wire `previewUrl`; null for non-images. */
+    /** Small JPEG preview for the local composer chip; null for non-images. */
     val previewBytes: ByteArray? = null,
 ) {
     val sizeBytes: Long get() = bytes.size.toLong()
@@ -46,7 +46,7 @@ data class ComposerAttachmentUi(
     val filename: String,
     val mimeType: String,
     val sizeBytes: Long,
-    /** JPEG thumbnail bytes for image picks; null renders a file glyph. */
+    /** JPEG preview bytes for image picks; null renders a file glyph. */
     val previewBytes: ByteArray?,
     val status: ComposerAttachmentStatus,
 )
@@ -64,9 +64,8 @@ data class ComposerAttachmentUi(
  *   removing a chip whose upload is still in flight lets the upload finish
  *   and then deletes the orphan (web `cancelledAttachmentIds` semantics).
  * - [consume] converts every Ready chip into [AttachmentMetadata] for the
- *   send body — `previewUrl` is a small JPEG data URL
- *   ([AttachmentPolicy.PREVIEW_MAX_DIMENSION]) so user bubbles render
- *   thumbnails on every client.
+ *   send body. New durable uploads use `attachmentId`; legacy path responses
+ *   remain supported for older hubs.
  * - **Drafts (v1 simplification)**: unlike the web (IndexedDB attachment
  *   drafts), attachments never persist. Leaving the chat for good discards
  *   un-sent chips via [discardAllDetached] after best-effort hub deletes;
@@ -89,8 +88,10 @@ class ComposerAttachments(
 ) {
     private class Entry(
         val ui: ComposerAttachmentUi,
-        /** Hub upload path once Ready. */
+        /** Legacy Hub upload path once Ready. */
         val path: String? = null,
+        /** Opaque durable Hub attachment id once Ready. */
+        val attachmentId: String? = null,
         /** Upload payload, retained only until the upload succeeds (retry source). */
         val bytes: ByteArray? = null,
     )
@@ -151,8 +152,18 @@ class ComposerAttachments(
             removed = list.firstOrNull { it.ui.id == id }
             list.filterNot { it.ui.id == id }
         }
-        removed?.path?.let { path ->
-            scope.launch { runCatching { api.deleteUpload(sessionId, path) } }
+        removed?.let { entry ->
+            if (entry.path != null || entry.attachmentId != null) {
+                scope.launch {
+                    runCatching {
+                        api.deleteUpload(
+                            sessionId,
+                            path = entry.path,
+                            attachmentId = entry.attachmentId,
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -166,7 +177,10 @@ class ComposerAttachments(
     fun consume(): List<AttachmentMetadata>? {
         var taken: List<Entry> = emptyList()
         entries.update { list ->
-            taken = list.filter { it.ui.status == ComposerAttachmentStatus.Ready && it.path != null }
+            taken = list.filter {
+                it.ui.status == ComposerAttachmentStatus.Ready
+                    && (it.path != null || it.attachmentId != null)
+            }
             list - taken.toSet()
         }
         if (taken.isEmpty()) return null
@@ -176,8 +190,11 @@ class ComposerAttachments(
                 filename = entry.ui.filename,
                 mimeType = entry.ui.mimeType,
                 size = entry.ui.sizeBytes,
-                path = entry.path!!,
-                previewUrl = entry.ui.previewBytes?.let { AttachmentPolicy.dataUrl("image/jpeg", it) },
+                path = entry.path,
+                attachmentId = entry.attachmentId,
+                previewUrl = entry.path?.let {
+                    entry.ui.previewBytes?.let { bytes -> AttachmentPolicy.dataUrl("image/jpeg", bytes) }
+                },
             )
         }
     }
@@ -195,24 +212,35 @@ class ComposerAttachments(
             dropped = list
             emptyList()
         }
-        val paths = dropped.mapNotNull { it.path }
-        if (paths.isEmpty()) return
+        val references = dropped.filter { it.path != null || it.attachmentId != null }
+        if (references.isEmpty()) return
         (detachedCleanupScope ?: GlobalScope).launch(Dispatchers.IO) {
-            paths.forEach { path -> runCatching { api.deleteUpload(sessionId, path) } }
+            references.forEach { entry ->
+                runCatching {
+                    api.deleteUpload(
+                        sessionId,
+                        path = entry.path,
+                        attachmentId = entry.attachmentId,
+                    )
+                }
+            }
         }
     }
 
     private fun upload(id: String, filename: String, mimeType: String, bytes: ByteArray) {
         scope.launch {
             val base64 = withContext(encodeDispatcher) { Base64.getEncoder().encodeToString(bytes) }
-            val path = try {
+            val uploaded = try {
                 val response = api.uploadFile(sessionId, filename, base64, mimeType)
-                if (response.success) response.path else null
+                if (response.success) response.path to response.attachmentId else null to null
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {
-                null
+                null to null
             }
+            val path = uploaded.first
+            val attachmentId = uploaded.second
+            val hasReference = path != null || attachmentId != null
 
             var applied = false
             entries.update { list ->
@@ -222,14 +250,20 @@ class ComposerAttachments(
                     when {
                         entry.ui.id != id -> entry
                         // Success: drop the payload bytes — only the preview stays.
-                        path != null -> Entry(entry.ui.copy(status = ComposerAttachmentStatus.Ready), path = path)
+                        hasReference -> Entry(
+                            entry.ui.copy(status = ComposerAttachmentStatus.Ready),
+                            path = path,
+                            attachmentId = attachmentId,
+                        )
                         else -> Entry(entry.ui.copy(status = ComposerAttachmentStatus.Failed), bytes = entry.bytes)
                     }
                 }
             }
             // Removed while uploading: the hub file just became an orphan.
-            if (!applied && path != null) {
-                runCatching { api.deleteUpload(sessionId, path) }
+            if (!applied && hasReference) {
+                runCatching {
+                    api.deleteUpload(sessionId, path = path, attachmentId = attachmentId)
+                }
             }
         }
     }

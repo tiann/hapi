@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
 
-function createEngine() {
-    const store = new Store(':memory:')
+function createEngine(attachmentsRoot?: string) {
+    const store = new Store(':memory:', attachmentsRoot ? { attachmentsRoot } : undefined)
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     return { store, engine }
 }
@@ -60,7 +63,8 @@ describe('Pi conversation-history hub integration', () => {
     })
 
     it('copies Pi entry-id locators into a fork child and requires exact native-ready binding', async () => {
-        const { store, engine } = createEngine()
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hapi-fork-attachments-'))
+        const { store, engine } = createEngine(join(tempRoot, 'attachments'))
         try {
             const source = engine.getOrCreateSession('pi-source', {
                 path: '/tmp/project',
@@ -73,7 +77,27 @@ describe('Pi conversation-history hub integration', () => {
                 conversationHistoryEntryIds: { local1: 'entry-1', local2: 'entry-2' },
             }, null, 'default', 'source-model', 'high')
             engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
-            store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
+            const sourceAttachment = await store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'photo.png',
+                mimeType: 'image/png',
+                original: Buffer.from('fork original')
+            })
+            store.messages.addMessage(source.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'one',
+                    attachments: [{
+                        id: 'message-attachment',
+                        filename: sourceAttachment.filename,
+                        mimeType: sourceAttachment.mimeType,
+                        size: sourceAttachment.size,
+                        attachmentId: sourceAttachment.id
+                    }]
+                }
+            }, 'local1')
             store.messages.addMessage(source.id, { role: 'user', content: 'two' }, 'local2')
             store.messages.markMessagesInvoked(source.id, ['local1', 'local2'], Date.now())
             // Keep the cache fixture explicit; this is the source used by the
@@ -129,6 +153,14 @@ describe('Pi conversation-history hub integration', () => {
                 conversationHistoryPoints: { local1: true, local2: true, local3: true },
             })
             expect(store.messages.getAllMessages(result.sessionId).map((message) => message.localId)).toContain('local3')
+            const copiedMessage = store.messages.getAllMessages(result.sessionId)
+                .find((message) => message.localId === 'local1')
+            const copiedAttachmentId = ((copiedMessage?.content as any)?.content?.attachments?.[0] as any)?.attachmentId
+            expect(copiedAttachmentId).toBeDefined()
+            expect(copiedAttachmentId).not.toBe(sourceAttachment.id)
+            expect((await store.attachments.readForSessionAsync(copiedAttachmentId, 'default', result.sessionId))?.data)
+                .toEqual(Buffer.from('fork original'))
+            expect(store.attachments.getForSession(sourceAttachment.id, 'default', source.id)).not.toBeNull()
             expect(exactBinds).toEqual([[result.sessionId, 'pi-clone-native', 'piSessionId', true]])
             expect(spawnArgs[3]).toBeUndefined()
             expect(spawnArgs[9]).toBeUndefined()
@@ -136,6 +168,8 @@ describe('Pi conversation-history hub integration', () => {
             expect(engine.getSession(result.sessionId)?.effort).toBeNull()
         } finally {
             engine.stop()
+            store.close()
+            rmSync(tempRoot, { recursive: true, force: true })
         }
     })
 

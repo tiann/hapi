@@ -8,17 +8,18 @@
  */
 
 import { isKnownFlavor, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { AttachmentMetadataSchema } from '@hapi/protocol/schemas'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse, UploadFileResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
-import type { Store, CancelQueuedMessageResult } from '../store'
+import type { Store, CancelQueuedMessageResult, StoredAttachment } from '../store'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
@@ -132,6 +133,25 @@ function normalizeUserMessageText(value: string): string | undefined {
     return text.length > 0 ? text : undefined
 }
 
+function messageReferencesAttachment(content: unknown, attachmentId: string): boolean {
+    const message = asRecord(content)
+    if (message?.role !== 'user') return false
+    const messageContent = asRecord(message.content)
+    if (!Array.isArray(messageContent?.attachments)) return false
+    return messageContent.attachments.some((attachment) => {
+        const parsed = AttachmentMetadataSchema.safeParse(attachment)
+        return parsed.success && parsed.data.attachmentId === attachmentId
+    })
+}
+
+function decodeBase64Attachment(value: string): Buffer {
+    const payload = value.includes(',') ? value.slice(value.indexOf(',') + 1) : value
+    if (!payload || !/^[A-Za-z0-9+/\s]+={0,2}$/.test(payload)) {
+        throw new Error('Invalid attachment content')
+    }
+    return Buffer.from(payload, 'base64')
+}
+
 function extractUserMessageText(content: unknown): string | undefined {
     if (typeof content === 'string') {
         return normalizeUserMessageText(content)
@@ -173,6 +193,7 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
+    private readonly deletingAttachmentKeys = new Set<string>()
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
@@ -550,7 +571,14 @@ export class SyncEngine {
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
-                this.abortOpenCodeClearSession(payload.sid, before.namespace, operation.replacementSessionId, 'abort-needed')
+                void this.abortOpenCodeClearSession(
+                    payload.sid,
+                    before.namespace,
+                    operation.replacementSessionId,
+                    'abort-needed'
+                ).catch((error) => {
+                    console.warn('[opencode] Failed to abort clear after session end', { sessionId: payload.sid, error })
+                })
             }
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
@@ -945,7 +973,7 @@ export class SyncEngine {
             if (session.active || !operation) continue
             if (operation.state === 'reserved') continue
             if (operation.state === 'abort-needed') {
-                this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
+                await this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
                 continue
             }
             if (!['cleanup-confirmed', 'finalizing', 'pending', 'failed'].includes(operation.state)) continue
@@ -999,14 +1027,7 @@ export class SyncEngine {
         payload: {
             text: string
             localId?: string | null
-            attachments?: Array<{
-                id: string
-                filename: string
-                mimeType: string
-                size: number
-                path: string
-                previewUrl?: string
-            }>
+            attachments?: import('@hapi/protocol').AttachmentMetadata[]
             sentFrom?: 'telegram-bot' | 'webapp'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
@@ -1014,6 +1035,13 @@ export class SyncEngine {
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
+        }
+        const session = this.getSession(sessionId)
+        if (session && payload.attachments?.some((attachment) => (
+            attachment.attachmentId
+            && this.deletingAttachmentKeys.has(this.attachmentKey(session.namespace, attachment.attachmentId))
+        ))) {
+            throw new Error('Attachment deletion in progress')
         }
         const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
@@ -1476,15 +1504,26 @@ export class SyncEngine {
 
             // Native fork keeps agent context, but the new HAPI row starts empty.
             // Hydrate the transcript prefix so web navigation is not a blank thread.
-            this.store.messages.copyMessagesToSession(
-                childId,
-                prefix.map((message) => ({
-                    content: message.content,
+            const clonedAttachments = new Map<string, StoredAttachment>()
+            const copiedPrefix = []
+            for (const message of prefix) {
+                copiedPrefix.push({
+                    content: await this.store.attachments.cloneMessageAttachments(
+                        namespace,
+                        sessionId,
+                        childId,
+                        message.content,
+                        clonedAttachments
+                    ),
                     createdAt: message.createdAt,
                     localId: message.localId,
                     invokedAt: message.invokedAt,
                     scheduledAt: message.scheduledAt
-                }))
+                })
+            }
+            this.store.messages.copyMessagesToSession(
+                childId,
+                copiedPrefix
             )
             this.sessionCache.rebuildTodosFromTranscript(childId)
             this.sessionCache.refreshSession(childId)
@@ -2022,13 +2061,13 @@ export class SyncEngine {
         return { type: 'success', sessionId: operation.replacementSessionId }
     }
 
-    abortOpenCodeClearSession(
+    async abortOpenCodeClearSession(
         sessionId: string,
         namespace: string,
         replacementSessionId: string,
         expectedState: 'reserved' | 'abort-needed' = 'reserved',
         requireInactive: boolean = false
-    ): ClearOpencodeSessionResult {
+    ): Promise<ClearOpencodeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
@@ -2050,7 +2089,7 @@ export class SyncEngine {
             if ((required.requireInactive && latest.active)
                 || current.replacementSessionId !== required.replacementSessionId
                 || current.state !== required.state) break
-            const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
+            const result = await this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
                 ...latest.metadata,
                 opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
             }, latest.metadataVersion, namespace, required)
@@ -2193,7 +2232,7 @@ export class SyncEngine {
         // A previous request can have spawned the target but lost the source
         // link acknowledgement. Do not ask the runner again in that case.
         if (replacement.active) {
-            return this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
+            return await this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
         }
 
         // Do not supply a native OpenCode resume id. existingSessionId is only
@@ -2224,15 +2263,15 @@ export class SyncEngine {
             return { type: 'error', message, code: 'spawn_failed' }
         }
 
-        return this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
+        return await this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
     }
 
-    private finishOpenCodeClear(
+    private async finishOpenCodeClear(
         sessionId: string,
         namespace: string,
         replacementSessionId: string,
         operation: NonNullable<Session['metadata']>['opencodeClearOperation']
-    ): ClearOpencodeSessionResult {
+    ): Promise<ClearOpencodeSessionResult> {
         if (!operation) {
             return {
                 type: 'error',
@@ -2241,7 +2280,7 @@ export class SyncEngine {
             }
         }
         try {
-            const moved = this.store.messages.moveUninvokedMessages(sessionId, replacementSessionId)
+            const moved = await this.store.moveUninvokedMessages(namespace, sessionId, replacementSessionId)
             if (moved > 0) {
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementSessionId })
@@ -2775,9 +2814,9 @@ export class SyncEngine {
         try {
             const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
             if (status === 'still_alive') return false
-            return this.abortOpenCodeClearSession(
+            return (await this.abortOpenCodeClearSession(
                 session.id, namespace, operation.replacementSessionId, 'reserved', true
-            ).type === 'success'
+            )).type === 'success'
         } catch {
             return false
         }
@@ -3877,6 +3916,83 @@ export class SyncEngine {
 
     async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
         return await this.rpcGateway.statFiles(sessionId, paths)
+    }
+
+    /** Store a user upload durably on the hub; the CLI-local upload RPC remains a legacy fallback. */
+    async createAttachment(
+        sessionId: string,
+        namespace: string,
+        filename: string,
+        content: string,
+        mimeType: string
+    ): Promise<UploadFileResponse> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            throw new Error(access.reason === 'access-denied' ? 'Session access denied' : 'Session not found')
+        }
+        const original = decodeBase64Attachment(content)
+        const stored = await this.store.attachments.create({
+            namespace,
+            sessionId: access.sessionId,
+            filename,
+            mimeType,
+            original
+        })
+        return {
+            success: true,
+            attachmentId: stored.id,
+            filename: stored.filename,
+            mimeType: stored.mimeType,
+            size: stored.size
+        }
+    }
+
+    async deleteAttachment(sessionId: string, namespace: string, attachmentId: string): Promise<{ success: boolean; error?: string }> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { success: false, error: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found' }
+        }
+        const key = this.attachmentKey(namespace, attachmentId)
+        if (this.deletingAttachmentKeys.has(key)) {
+            return { success: false, error: 'Attachment deletion in progress' }
+        }
+        if (!this.store.attachments.getForSession(attachmentId, namespace, access.sessionId)) {
+            return { success: false, error: 'Attachment not found' }
+        }
+        this.deletingAttachmentKeys.add(key)
+        try {
+            const referenced = this.store.messages.getAllMessages(access.sessionId)
+                .some((message) => messageReferencesAttachment(message.content, attachmentId))
+            if (referenced) {
+                return { success: false, error: 'Attachment is already referenced by a message' }
+            }
+            const deleted = await this.store.attachments.deleteForSession(attachmentId, namespace, access.sessionId)
+            return deleted ? { success: true } : { success: false, error: 'Attachment not found' }
+        } finally {
+            this.deletingAttachmentKeys.delete(key)
+        }
+    }
+
+    async readAttachment(
+        sessionId: string,
+        namespace: string,
+        attachmentId: string
+    ) {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) return null
+        if (this.deletingAttachmentKeys.has(this.attachmentKey(namespace, attachmentId))) return null
+        return await this.store.attachments.readForSessionAsync(attachmentId, namespace, access.sessionId)
+    }
+
+    hasAttachment(sessionId: string, namespace: string, attachmentId: string): boolean {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        return access.ok
+            && !this.deletingAttachmentKeys.has(this.attachmentKey(namespace, attachmentId))
+            && Boolean(this.store.attachments.getForSession(attachmentId, namespace, access.sessionId))
+    }
+
+    private attachmentKey(namespace: string, attachmentId: string): string {
+        return `${namespace}:${attachmentId}`
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {

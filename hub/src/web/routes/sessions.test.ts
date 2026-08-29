@@ -69,6 +69,10 @@ function createApp(session: Session, opts?: {
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
+    createAttachment?: SyncEngine['createAttachment']
+    deleteAttachment?: SyncEngine['deleteAttachment']
+    deleteUploadFile?: SyncEngine['deleteUploadFile']
+    readAttachment?: SyncEngine['readAttachment']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
 }) {
@@ -164,7 +168,11 @@ function createApp(session: Session, opts?: {
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
-        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
+        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {}),
+        createAttachment: opts?.createAttachment ?? (async () => ({ success: false, error: 'not configured' })),
+        deleteAttachment: opts?.deleteAttachment ?? (async () => ({ success: false, error: 'not configured' })),
+        deleteUploadFile: opts?.deleteUploadFile ?? (async () => ({ success: false, error: 'not configured' })),
+        readAttachment: opts?.readAttachment ?? (async () => null)
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -1564,4 +1572,172 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+})
+
+describe('durable attachment routes', () => {
+    it('passes the original to the hub attachment store', async () => {
+        const calls: unknown[][] = []
+        const { app } = createApp(createSession(), {
+            createAttachment: async (...args) => {
+                calls.push(args)
+                return {
+                    success: true,
+                    attachmentId: 'attachment-1',
+                    filename: 'photo.png',
+                    mimeType: 'image/png',
+                    size: 3
+                }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/upload', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                filename: 'photo.png',
+                content: 'AQID',
+                mimeType: 'image/png'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            attachmentId: 'attachment-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 3
+        })
+        expect(calls).toEqual([[
+            'session-1',
+            'default',
+            'photo.png',
+            'AQID',
+            'image/png'
+        ]])
+    })
+
+    it('returns durable attachment bytes with integrity headers', async () => {
+        const { app } = createApp(createSession(), {
+            readAttachment: async () => ({
+                attachment: { filename: 'photo.png' } as never,
+                data: Buffer.from([7, 8, 9]),
+                mimeType: 'image/png',
+                size: 3,
+                sha256: 'hash-1'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/attachments/attachment-1/original')
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toBe('image/png')
+        expect(response.headers.get('content-length')).toBe('3')
+        expect(response.headers.get('content-disposition')).toBe('attachment; filename="photo.png"')
+        expect(response.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'")
+        expect(response.headers.get('cache-control')).toContain('immutable')
+        expect(response.headers.get('etag')).toBe('"hash-1"')
+        expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+        expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([7, 8, 9])
+    })
+
+    it('sandboxes active MIME types and sanitizes attachment filenames', async () => {
+        const { app } = createApp(createSession(), {
+            readAttachment: async () => ({
+                attachment: { filename: 'evil"\r\n.html' } as never,
+                variant: 'original' as const,
+                data: Buffer.from('<script>alert(1)</script>'),
+                mimeType: 'text/html',
+                size: 25,
+                sha256: 'html-hash'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/attachments/attachment-1/original')
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toBe('text/html')
+        expect(response.headers.get('content-disposition')).toBe('attachment; filename="evil___.html"')
+        expect(response.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'")
+        expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    })
+
+    it('encodes Unicode attachment filenames for API download headers', async () => {
+        const { app } = createApp(createSession(), {
+            readAttachment: async () => ({
+                attachment: { filename: '截图😀.png' } as never,
+                variant: 'original' as const,
+                data: Buffer.from([1]),
+                mimeType: 'image/png',
+                size: 1,
+                sha256: 'unicode-hash'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/attachments/attachment-1/original')
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-disposition')).toBe(
+            "attachment; filename=\"____.png\"; filename*=UTF-8''%E6%88%AA%E5%9B%BE%F0%9F%98%80.png"
+        )
+    })
+
+    it('deletes a durable attachment by opaque id without invoking the legacy path RPC', async () => {
+        const durableCalls: string[][] = []
+        const legacyCalls: string[][] = []
+        const { app } = createApp(createSession(), {
+            deleteAttachment: async (...args) => {
+                durableCalls.push(args)
+                return { success: true }
+            },
+            deleteUploadFile: async (...args) => {
+                legacyCalls.push(args)
+                return { success: true }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/upload/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attachmentId: 'attachment-1' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ success: true })
+        expect(durableCalls).toEqual([['session-1', 'default', 'attachment-1']])
+        expect(legacyCalls).toEqual([])
+    })
+
+    it('allows durable attachment cleanup for inactive sessions but keeps legacy deletion active-only', async () => {
+        const durableCalls: string[][] = []
+        const legacyCalls: string[][] = []
+        const { app } = createApp(createSession({ active: false }), {
+            deleteAttachment: async (...args) => {
+                durableCalls.push(args)
+                return { success: true }
+            },
+            deleteUploadFile: async (...args) => {
+                legacyCalls.push(args)
+                return { success: true }
+            }
+        })
+
+        const durableResponse = await app.request('/api/sessions/session-1/upload/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attachmentId: 'attachment-1' })
+        })
+        expect(durableResponse.status).toBe(200)
+        expect(await durableResponse.json()).toEqual({ success: true })
+
+        const legacyResponse = await app.request('/api/sessions/session-1/upload/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: '/tmp/legacy-upload' })
+        })
+        expect(legacyResponse.status).toBe(409)
+        expect(await legacyResponse.json()).toEqual({ error: 'Session is inactive' })
+        expect(durableCalls).toEqual([['session-1', 'default', 'attachment-1']])
+        expect(legacyCalls).toEqual([])
+    })
 })

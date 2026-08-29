@@ -610,8 +610,8 @@ class HapiApi internal constructor(
 
     /**
      * `POST /api/sessions/:id/upload` — JSON + base64 [contentBase64] (NOT
-     * multipart), ≤ 50 MB decoded → 413. The returned `path` feeds the
-     * `attachments` of send-message.
+     * multipart), ≤ 50 MB decoded → 413. The returned `attachmentId` (or
+     * legacy `path`) feeds the `attachments` of send-message.
      */
     override suspend fun uploadFile(
         sessionId: String,
@@ -622,15 +622,26 @@ class HapiApi internal constructor(
         request(
             "POST",
             url("api", "sessions", sessionId, "upload").build(),
-            UploadFileRequest(filename, contentBase64, mimeType).toJsonBody(),
+            UploadFileRequest(
+                filename = filename,
+                content = contentBase64,
+                mimeType = mimeType,
+            ).toJsonBody(),
         )
 
     /** `POST /api/sessions/:id/upload/delete`. */
     override suspend fun deleteUpload(sessionId: String, path: String): DeleteUploadResponse =
+        deleteUpload(sessionId, path = path, attachmentId = null)
+
+    override suspend fun deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?,
+    ): DeleteUploadResponse =
         request(
             "POST",
             url("api", "sessions", sessionId, "upload", "delete").build(),
-            DeleteUploadRequest(path).toJsonBody(),
+            DeleteUploadRequest(path = path, attachmentId = attachmentId).toJsonBody(),
         )
 
     // ---------------------------------------------------- usage & storage --

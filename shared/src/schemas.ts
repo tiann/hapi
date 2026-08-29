@@ -286,8 +286,13 @@ export const AttachmentMetadataSchema = z.object({
     filename: z.string(),
     mimeType: z.string(),
     size: z.number(),
-    path: z.string(),
+    // `path` is the legacy CLI-local upload reference. New messages carry an
+    // opaque hub attachment id and the CLI materializes it on demand.
+    path: z.string().min(1).optional(),
+    attachmentId: z.string().min(1).optional(),
     previewUrl: z.string().optional()
+}).refine((value) => Boolean(value.path || value.attachmentId), {
+    message: 'Attachment metadata must include either path or attachmentId'
 })
 
 export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>

@@ -1353,6 +1353,81 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('clones durable attachments before deleting a duplicate source session', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-attachment-merge-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-attachment-session',
+            { codexSessionId: 'codex-thread-attachments' },
+            {},
+            'default'
+        )
+        const source = store.sessions.getOrCreateSession(
+            'source-attachment-session',
+            { codexSessionId: 'codex-thread-attachments' },
+            {},
+            'default'
+        )
+        const attachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            original: Buffer.from('durable-original')
+        })
+        store.messages.addMessage(canonical.id, {
+            role: 'user',
+            content: { type: 'text', text: 'source with attachment' }
+        }, 'canonical-1')
+        store.messages.addMessage(canonical.id, { role: 'agent', content: { type: 'text', text: 'canonical reply' } }, 'canonical-2')
+        store.messages.addMessage(source.id, {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'source with attachment',
+                attachments: [{
+                    id: 'message-attachment',
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    attachmentId: attachment.id
+                }]
+            }
+        }, 'source-1')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => null }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-attachments'] })
+            })
+            expect(response.status).toBe(200)
+            const mergedMessages = store.messages.getAllMessages(canonical.id)
+            expect(mergedMessages).toHaveLength(2)
+            expect(mergedMessages.some((message) => message.localId === 'source-1')).toBe(false)
+            const merged = mergedMessages.find((message) => message.localId === 'canonical-1')
+            const mergedBody = (merged?.content as {
+                content?: { attachments?: Array<{ attachmentId?: string }> }
+            } | undefined)?.content
+            const copiedId = mergedBody?.attachments?.[0]?.attachmentId
+            expect(copiedId).toBeDefined()
+            expect(copiedId).not.toBe(attachment.id)
+            expect((await store.attachments.readForSessionAsync(copiedId!, 'default', canonical.id))?.data)
+                .toEqual(Buffer.from('durable-original'))
+            expect(await store.cleanupOrphanedAttachments()).toBe(1)
+            expect(store.attachments.getForSession(attachment.id, 'default', source.id)).toBeNull()
+        } finally {
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
     it('treats source and fork ids as the same duplicate-sessions group', async () => {
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {
