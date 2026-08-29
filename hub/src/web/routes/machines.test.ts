@@ -307,6 +307,31 @@ describe('machines routes', () => {
         expect(captured![15]).toBeUndefined()
     })
 
+    it('rejects spawn bodies that include message/prompt/text instead of silently stripping', async () => {
+        const machine = createMachine()
+        const spawnSession = () => { throw new Error('must not spawn') }
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession,
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        for (const key of ['message', 'prompt', 'text'] as const) {
+            const response = await app.request('/api/machines/machine-1/spawn', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ directory: '/tmp/x', [key]: 'do the work' })
+            })
+            expect(response.status).toBe(400)
+            const body = await response.json() as { error?: string; code?: string }
+            expect(body.code).toBe('spawn_remit_not_supported')
+            expect(body.error).toMatch(/spawn-peer|messages/i)
+        }
+    })
+
     it('accepts an explicit remote AGY machine spawn', async () => {
         const machine = createMachine()
         let captured: unknown[] | null = null
