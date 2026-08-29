@@ -1153,11 +1153,19 @@ export function HappyComposer(props: {
             && pendingSchedule == null
             && props.onParkScratchlist
         ) {
-            if (!canSend || parkInFlightRef.current) return
+            const snapshot = api.composer().getState()
+            const liveAttachmentsReady = snapshot.attachments.every((attachment) => {
+                if (attachment.status.type === 'complete') return true
+                if (attachment.status.type !== 'requires-action') return false
+                return Boolean((attachment as { path?: string }).path)
+            })
+            const liveCanSend = (
+                snapshot.text.trim().length > 0 || snapshot.attachments.length > 0
+            ) && liveAttachmentsReady && !controlsDisabled
+            if (!liveCanSend || parkInFlightRef.current) return
             parkInFlightRef.current = true
             setIsParkingScratchlist(true)
             try {
-                const snapshot = api.composer().getState()
                 const prepared = await props.onParkScratchlist(
                     snapshot.text,
                     orderItemsById(snapshot.attachments, attachmentOrderRef.current),
