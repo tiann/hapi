@@ -50,7 +50,7 @@ export function getInitialReasoningCollapsed(): boolean {
 // subscription lives here at module scope: one listener total, and every hook
 // instance reads the same shared snapshot.
 
-let currentCollapsed = DEFAULT_REASONING_COLLAPSED
+let currentCollapsed = getInitialReasoningCollapsed()
 // True while a persistence failure left the in-memory value diverging from
 // storage. New subscriptions must not resync over it until a real cross-tab
 // storage event arrives.
