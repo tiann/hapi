@@ -398,7 +398,9 @@ export function SessionRowSummary(props: {
                                 {todoProgress.completed}/{todoProgress.total}
                             </span>
                         ) : null}
-                        {!attention && s.active && s.pendingRequestsCount > 0 ? (
+                        {/* The blocked chip already names the reason; repeating
+                            "pending N" here just crowds the title out of a narrow row. */}
+                        {!attention && !blocked && s.active && s.pendingRequestsCount > 0 ? (
                             <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>

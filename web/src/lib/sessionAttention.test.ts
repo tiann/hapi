@@ -253,7 +253,7 @@ describe('getSessionBlockedState', () => {
             makeSummary({ id: 'a', lastNotify: { status: 'blocked', at: now, note: 'needs a token' } }),
             { now }
         )
-        expect(state).toEqual({ status: 'blocked', at: now, note: 'needs a token', stale: false })
+        expect(state).toEqual({ reason: 'blocked', at: now, note: 'needs a token', stale: false })
     })
 
     it('treats a self-reported stall as blocked, matching the hub work_ad fold', () => {
@@ -261,7 +261,60 @@ describe('getSessionBlockedState', () => {
             makeSummary({ id: 'a', lastNotify: { status: 'stalled', at: now, note: null } }),
             { now }
         )
-        expect(state?.status).toBe('stalled')
+        expect(state?.reason).toBe('stalled')
+    })
+
+    it('treats a pending permission request as blocked', () => {
+        // Operator's rule: a session parked on a prompt cannot proceed without
+        // them, so it belongs in the same count and section as a self-reported
+        // blocked footer.
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['permission'],
+                pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: now - 1000 }]
+            }),
+            { now }
+        )
+        expect(state).toEqual({ reason: 'permission', at: now - 1000, note: 'Bash', stale: false })
+    })
+
+    it('treats a pending input request as blocked', () => {
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['input'],
+                pendingRequests: [{ id: 'r1', kind: 'input', tool: 'AskUserQuestion', since: now }]
+            }),
+            { now }
+        )
+        expect(state?.reason).toBe('input')
+    })
+
+    it('still counts a pending request whose kinds did not survive the summary', () => {
+        const state = getSessionBlockedState(
+            makeSummary({ id: 'a', pendingRequestsCount: 2, pendingRequestKinds: [] }),
+            { now }
+        )
+        expect(state?.reason).toBe('permission')
+    })
+
+    it('prefers the live prompt over a stored footer', () => {
+        // The prompt is the thing one click clears.
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                lastNotify: { status: 'blocked', at: now, note: 'older reason' },
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['permission'],
+                pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Edit', since: now }]
+            }),
+            { now }
+        )
+        expect(state?.reason).toBe('permission')
+        expect(state?.note).toBe('Edit')
     })
 
     it('ignores non-blocking statuses', () => {
@@ -280,9 +333,13 @@ describe('getSessionBlockedState', () => {
             makeSummary({ id: 'a', thinking: true, lastNotify: { status: 'blocked', at: now, note: null } }),
             { now }
         )).toBeNull()
+        expect(getSessionBlockedState(
+            makeSummary({ id: 'a', thinking: true, pendingRequestsCount: 1, pendingRequestKinds: ['permission'] }),
+            { now }
+        )).toBeNull()
     })
 
-    it('marks a footer older than the loud window stale rather than dropping it', () => {
+    it('marks a report older than the loud window stale rather than dropping it', () => {
         const state = getSessionBlockedState(
             makeSummary({ id: 'a', lastNotify: { status: 'blocked', at: now - BLOCKED_NOTIFY_STALE_MS - 1, note: null } }),
             { now }
@@ -290,7 +347,20 @@ describe('getSessionBlockedState', () => {
         expect(state?.stale).toBe(true)
     })
 
-    it('returns null when no footer has been seen', () => {
+    it('ages a long-unanswered prompt the same way', () => {
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['permission'],
+                pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: now - BLOCKED_NOTIFY_STALE_MS - 1 }]
+            }),
+            { now }
+        )
+        expect(state?.stale).toBe(true)
+    })
+
+    it('returns null when nothing is blocking', () => {
         expect(getSessionBlockedState(makeSummary({ id: 'a' }), { now })).toBeNull()
     })
 })

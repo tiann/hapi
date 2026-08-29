@@ -74,42 +74,77 @@ export function getSessionAttentionLabelKey(attention: SessionAttention): string
 }
 
 /**
- * Blocked chrome for a session row — a *separate axis* from `SessionAttention`.
+ * Blocked chrome for a session row — "this agent cannot proceed without me".
  *
- * `SessionAttention` describes a session that is live and waiting on a click
- * (permission / input) or merely unseen (unread). Blocked describes a turn that
- * *ended* with the agent reporting it cannot proceed. Both can be true at once,
- * so the list renders them in different visual channels (dot vs rail + chip)
- * rather than making one win a precedence fight.
+ * Two sources feed it:
+ *  - a self-reported `AGENT_NOTIFY_SUMMARY` footer of `blocked` / `stalled`
+ *    (the turn ended and the agent said it is stuck), and
+ *  - a live pending permission / input request (the agent is parked on a
+ *    prompt only the operator can answer).
+ *
+ * Both mean the same thing to an operator scanning 600 sessions, so they share
+ * one count, one section, and one row treatment — differing only in the chip's
+ * reason label.
+ *
+ * This is still a *different channel* from `SessionAttention`: that returns the
+ * per-row dot (and stays as it is), while this drives the row rail, the chip,
+ * and the header counter. A row can carry both without either having to win.
  */
+export type SessionBlockedReason = 'blocked' | 'stalled' | 'permission' | 'input'
+
 export type SessionBlockedState = {
-    /** Normalized notify status (`blocked` | `stalled`). */
-    status: string
-    /** Epoch ms of the footer that reported it. */
+    reason: SessionBlockedReason
+    /** Epoch ms it became blocked — footer time, or the oldest pending request. */
     at: number
+    /** Short operator-facing hint: the notify note, or the awaited tool. */
     note: string | null
     /** Past the loud window — render muted so abandoned rows stop alarming. */
     stale: boolean
+}
+
+function getPendingBlockedReason(summary: SessionSummary): SessionBlockedReason | null {
+    const kinds = Array.isArray(summary.pendingRequestKinds) ? summary.pendingRequestKinds : []
+    if (kinds.includes('permission')) return 'permission'
+    if (kinds.includes('input')) return 'input'
+    // `pendingRequestsCount` is the authoritative total; a count without kinds
+    // still parks the agent on a prompt, so do not drop it from the list.
+    return (summary.pendingRequestsCount ?? 0) > 0 ? 'permission' : null
 }
 
 export function getSessionBlockedState(
     summary: SessionSummary,
     options: { now: number }
 ): SessionBlockedState | null {
+    // A working agent is not blocked. Matches `classifySessionAttention`, which
+    // also suppresses every attention kind while `thinking`, and covers the
+    // window before the hub's clear-on-new-turn patch lands.
+    if (summary.thinking) {
+        return null
+    }
+
+    // A live prompt outranks a stored footer: it is the thing the operator can
+    // clear in one click. The two rarely coexist anyway — starting a new turn
+    // clears `lastNotify` hub-side.
+    const pendingReason = getPendingBlockedReason(summary)
+    if (pendingReason !== null) {
+        const oldest = summary.pendingRequests?.find(request => request.kind === pendingReason)
+            ?? summary.pendingRequests?.[0]
+        const at = oldest?.since ?? summary.updatedAt
+        return {
+            reason: pendingReason,
+            at,
+            note: oldest?.tool ?? null,
+            stale: options.now - at > BLOCKED_NOTIFY_STALE_MS
+        }
+    }
+
     const notify = summary.lastNotify
     if (!notify || !isBlockedNotifyStatus(notify.status)) {
         return null
     }
 
-    // The agent is working again, so its last self-report no longer describes
-    // the present. The hub clears `lastNotify` on the same transition, but the
-    // list must not flash a stale rail in the window before that patch lands.
-    if (summary.thinking) {
-        return null
-    }
-
     return {
-        status: normalizeNotifyStatus(notify.status),
+        reason: normalizeNotifyStatus(notify.status) === 'stalled' ? 'stalled' : 'blocked',
         at: notify.at,
         note: notify.note ?? null,
         stale: options.now - notify.at > BLOCKED_NOTIFY_STALE_MS
@@ -120,8 +155,13 @@ export function sessionIsBlocked(summary: SessionSummary, options: { now: number
     return getSessionBlockedState(summary, options) !== null
 }
 
+const BLOCKED_LABEL_KEY: Record<SessionBlockedReason, string> = {
+    blocked: 'sessions.blockedChip.blocked',
+    stalled: 'sessions.blockedChip.stalled',
+    permission: 'sessions.blockedChip.permission',
+    input: 'sessions.blockedChip.input'
+}
+
 export function getSessionBlockedLabelKey(state: SessionBlockedState): string {
-    return state.status === 'stalled'
-        ? 'session.summary.status.stalled'
-        : 'session.summary.status.blocked'
+    return BLOCKED_LABEL_KEY[state.reason]
 }

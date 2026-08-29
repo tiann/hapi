@@ -46,6 +46,17 @@ function blocked(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     })
 }
 
+function pending(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
+    return makeSession({
+        id,
+        active: true,
+        pendingRequestsCount: 1,
+        pendingRequestKinds: ['permission'],
+        pendingRequests: [{ id: `${id}-r1`, kind: 'permission', tool: 'Bash', since: Date.now() }],
+        ...overrides
+    })
+}
+
 function renderList(sessions: SessionSummary[]) {
     const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
@@ -57,7 +68,19 @@ function renderList(sessions: SessionSummary[]) {
             </ToastProvider>
         </QueryClientProvider>
     )
-    return render(wrap(
+    return render(wrapList(sessions, wrap))
+}
+
+let lastWrap: ((children: ReactNode) => ReactNode) | null = null
+
+function wrapList(
+    sessions: SessionSummary[],
+    wrap?: (children: ReactNode) => ReactNode
+): ReactNode {
+    if (wrap) lastWrap = wrap
+    const apply = wrap ?? lastWrap
+    if (!apply) throw new Error('renderList must run first')
+    return apply(
         <SessionList
             sessions={sessions}
             selectedSessionId={null}
@@ -67,7 +90,7 @@ function renderList(sessions: SessionSummary[]) {
             isLoading={false}
             api={null}
         />
-    ))
+    )
 }
 
 describe('SessionList blocked chrome (#1717)', () => {
@@ -128,6 +151,44 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(screen.getByTestId('blocked-lens-toggle').getAttribute('aria-pressed')).toBe('true')
         expect(screen.queryByText('fine-one')).toBeNull()
         expect(screen.getAllByTestId('session-blocked-chip')).toHaveLength(2)
+    })
+
+    it('counts a session awaiting a permission prompt as blocked', () => {
+        // Operator's rule: pending means the agent cannot proceed without them,
+        // so it shares the count, the section and the row treatment.
+        renderList([pending('awaiting-one'), makeSession({ id: 'fine-one' })])
+
+        const section = screen.getByTestId('blocked-section')
+        expect(within(section).getByText('Permission')).toBeTruthy()
+        expect(within(screen.getByTestId('blocked-jump-pill')).getByText('1')).toBeTruthy()
+        expect(document.querySelector('[data-session-id="awaiting-one"]')?.getAttribute('data-session-blocked'))
+            .toBe('active')
+    })
+
+    it('counts self-reported and prompt-parked agents in one number', () => {
+        renderList([blocked('stuck-one'), pending('awaiting-one'), makeSession({ id: 'fine-one' })])
+
+        expect(within(screen.getByTestId('blocked-jump-pill')).getByText('2')).toBeTruthy()
+        expect(screen.getAllByTestId('session-blocked-chip')).toHaveLength(2)
+    })
+
+    it('does not strand a pending session in both Blocked and the pending bucket', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        renderList([pending('awaiting-one')])
+
+        expect(document.querySelectorAll('[data-session-id="awaiting-one"]')).toHaveLength(1)
+    })
+
+    it('drops the blocked flag once the prompt is answered', () => {
+        const { rerender } = renderList([pending('awaiting-one')])
+        expect(screen.getByTestId('blocked-section')).toBeTruthy()
+
+        // No hub round-trip: pending is live state, so clearing the request
+        // clears the chrome on the next render.
+        rerender(wrapList([makeSession({ id: 'awaiting-one', active: true })]))
+
+        expect(screen.queryByTestId('blocked-section')).toBeNull()
+        expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
     })
 
     it('renders no controls and no section when nothing is blocked', () => {

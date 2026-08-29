@@ -8,22 +8,25 @@ test.describe('#1717 blocked session-list chrome', () => {
         await page.waitForSelector('[data-testid="blocked-section"]')
     })
 
-    test('surfaces blocked agents at the top of a 96-session list', async ({ page }) => {
+    test('surfaces every kind of blocked agent at the top of a 96-session list', async ({ page }) => {
         const section = page.getByTestId('blocked-section')
         await expect(section).toBeVisible()
-        // 3 loud + 1 past the staleness window.
-        await expect(section.getByTestId('session-blocked-chip')).toHaveCount(4)
+        // 2 self-reported + 1 stalled + 1 past the staleness window + 2 agents
+        // parked on a prompt (permission / input), which count as blocked too.
+        await expect(section.getByTestId('session-blocked-chip')).toHaveCount(6)
+        await expect(section.getByText('Permission')).toBeVisible()
+        await expect(section.getByText('Input')).toBeVisible()
 
         const pill = page.getByTestId('blocked-jump-pill')
         await expect(pill).toBeVisible()
-        await expect(pill).toContainText('4')
+        await expect(pill).toContainText('6')
 
         await page.screenshot({ path: 'test-results/blocked-1-list-top.png' })
     })
 
     test('demotes a blocked report older than the loud window', async ({ page }) => {
-        await expect(page.locator('[data-session-blocked]')).toHaveCount(4)
-        await expect(page.locator('[data-session-blocked="active"]')).toHaveCount(3)
+        await expect(page.locator('[data-session-blocked]')).toHaveCount(6)
+        await expect(page.locator('[data-session-blocked="active"]')).toHaveCount(5)
         await expect(page.locator('[data-session-blocked="stale"]')).toHaveCount(1)
     })
 
@@ -62,7 +65,7 @@ test.describe('#1717 blocked session-list chrome', () => {
         await toggle.click()
 
         await expect(toggle).toHaveAttribute('aria-pressed', 'true')
-        await expect(page.getByTestId('session-blocked-chip')).toHaveCount(4)
+        await expect(page.getByTestId('session-blocked-chip')).toHaveCount(6)
         // Every remaining row carries the blocked flag.
         const rows = page.locator('[data-session-id]')
         const blockedRows = page.locator('[data-session-blocked]')

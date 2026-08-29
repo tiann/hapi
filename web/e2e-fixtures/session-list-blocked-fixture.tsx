@@ -64,18 +64,29 @@ for (const project of PROJECTS) {
     }
 }
 
-// A working agent, a permission-waiting agent, and an idle-connected agent —
-// so the blocked treatment has to hold its own against the rest of the list's
-// attention vocabulary rather than being the only thing on screen.
+// A working agent and an idle-connected agent, so the blocked treatment has to
+// hold its own against the rest of the list's attention vocabulary rather than
+// being the only thing on screen.
 SESSIONS[1] = { ...SESSIONS[1]!, active: true, thinking: true }
+SESSIONS[3] = { ...SESSIONS[3]!, active: true }
+
+// Prompt-parked agents. These count as blocked too: the operator cannot let
+// them proceed without answering, which is the same problem as a self-reported
+// blocked footer.
 SESSIONS[2] = {
     ...SESSIONS[2]!,
     active: true,
     pendingRequestsCount: 1,
     pendingRequestKinds: ['permission'],
-    pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: NOW }]
+    pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: NOW - 2 * 60_000 }]
 }
-SESSIONS[3] = { ...SESSIONS[3]!, active: true }
+SESSIONS[61] = {
+    ...SESSIONS[61]!,
+    active: true,
+    pendingRequestsCount: 1,
+    pendingRequestKinds: ['input'],
+    pendingRequests: [{ id: 'r2', kind: 'input', tool: 'AskUserQuestion', since: NOW - 12 * 60_000 }]
+}
 
 // Blocked rows, deliberately scattered deep into the list.
 SESSIONS[14] = {

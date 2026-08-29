@@ -1308,10 +1308,14 @@ describe('SessionList collapse behavior', () => {
         ]
         render(renderSessionList(sessions, null))
 
-        expect(screen.getByTitle('In progress')).toBeInTheDocument()
-        expect(screen.getByText(/^pending \(1\)$/i)).toBeInTheDocument()
+        // #1717 keeps this precedence but changes the destination: a pending
+        // operator prompt is a blocker, so the row floats to the Blocked
+        // section rather than the In-progress Jobs bucket. The thing this test
+        // guards — a waiting prompt outranking the Jobs meter — still holds.
+        expect(screen.getByTestId('blocked-section')).toBeInTheDocument()
         expect(screen.queryByText(/^Jobs \(/i)).toBeNull()
         expect(screen.getByRole('button', { name: /Needs approval/ })).toBeInTheDocument()
+        expect(document.querySelectorAll('[data-session-id="session-job-and-pending"]')).toHaveLength(1)
     })
 
     it('does not label quiet connected sessions as Idle', () => {
