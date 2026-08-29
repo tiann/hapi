@@ -14,6 +14,7 @@ export type HappyChatContextValue = {
     /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */
     showSessionSummaryInChat: boolean
     disabled: boolean
+    controlledByUser?: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean

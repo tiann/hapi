@@ -69,6 +69,7 @@ export function RequestUserInputFooter(props: {
     sessionId: string
     tool: ChatToolCall
     disabled: boolean
+    controlledByUser?: boolean
     onDone: () => void
 }) {
     const { t } = useTranslation()
@@ -96,6 +97,16 @@ export function RequestUserInputFooter(props: {
 
     if (!permission || permission.status !== 'pending') return null
     if (!isRequestUserInputToolName(props.tool.name)) return null
+
+    if (props.controlledByUser === true) {
+        return (
+            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                <div className="text-xs font-medium text-[var(--app-hint)]">
+                    {t('tool.waitingForLocalApproval')}
+                </div>
+            </div>
+        )
+    }
 
     const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
         if (props.disabled) return
