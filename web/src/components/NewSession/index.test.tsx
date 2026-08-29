@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { Machine, PiModelSummary } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
@@ -920,6 +921,54 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-terra')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('max')
         })
+    })
+
+    it('falls back when the preferred agent is hidden', async () => {
+        localStorage.setItem('hapi:newSession:agentVisibility:v1', JSON.stringify({ codex: false }))
+        const { container } = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(container.querySelector<HTMLInputElement>('input[value="agy"]')?.checked).toBe(true))
+    })
+
+    it('normalizes launch state when a restored draft agent is hidden', async () => {
+        localStorage.setItem('hapi:newSession:agentVisibility:v1', JSON.stringify({ codex: false }))
+        saveNewSessionFormDraft({
+            agent: 'codex',
+            model: 'gpt-5.6-terra',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'max',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'fallback-session' })
+
+        const { container } = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(container.querySelector<HTMLInputElement>('input[value="agy"]')?.checked).toBe(true))
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'agy',
+            model: undefined,
+            modelReasoningEffort: undefined
+        })))
+    })
+
+    it('blocks Create when every agent is hidden', async () => {
+        localStorage.setItem(
+            'hapi:newSession:agentVisibility:v1',
+            JSON.stringify(Object.fromEntries(CREATABLE_AGENT_FLAVORS.map((agent) => [agent, false])))
+        )
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
     it('resets a restored Pi model that left the machine catalog', async () => {

@@ -856,6 +856,8 @@ export default {
   'settings.display.sessionListStatus.standard': 'Basic',
   'settings.display.sessionListStatus.detailed': 'Extended',
   'settings.display.sessionListStatus.detailedDescription': 'Choose which status hints appear in the session list. Basic shows runtime state; Extended also shows permission, input, background-task, new-activity, and scheduled-message hints (clock icon).',
+  'settings.display.createAgents': 'Create agents',
+  'settings.display.createAgents.description': 'Choose which agents appear when creating a session.',
   'settings.display.sessionHeader': 'Session header',
   'settings.display.sessionHeader.description': 'Choose which details appear below the session title. Mobile shows the agent plus the highest-priority available detail.',
   'settings.display.sessionHeader.showLabels': 'Show field labels',

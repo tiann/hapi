@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
-import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, type CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -19,6 +19,7 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
+import { loadCreateAgentVisibility } from '@/lib/createAgentVisibility'
 import { getCodexModelReasoningEfforts } from '@/lib/codexModelCapabilities'
 import {
     buildNewSessionCursorModelCatalog,
@@ -96,11 +97,16 @@ export function NewSession(props: {
     const { sessions, refetch: refetchSessions } = useSessions(props.api)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
+    const [agentVisibility] = useState(loadCreateAgentVisibility)
     const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
     const [directory, setDirectory] = useState(props.initialDirectory ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
+    const visibleAgents = useMemo<AgentType[]>(
+        () => CREATABLE_AGENT_FLAVORS.filter((candidate) => agentVisibility[candidate]),
+        [agentVisibility]
+    )
     const [legacyCodexYolo] = useState(
         () => loadPreferredAgent() === 'codex' && loadPreferredYoloMode()
     )
@@ -156,6 +162,15 @@ export function NewSession(props: {
     )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
+
+    useEffect(() => {
+        if (!visibleAgents.includes(agent) && visibleAgents[0]) {
+            // A hidden agent must not keep restored-draft launch state: the
+            // fallback behaves like a manual agent switch, so normalize.
+            preserveRestoredDraftRef.current = false
+            setAgent(visibleAgents[0])
+        }
+    }, [agent, visibleAgents])
 
     useEffect(() => {
         if (sessionType === 'worktree') {
@@ -230,31 +245,42 @@ export function NewSession(props: {
             return
         }
         restoredFromBrowseRef.current = true
-        preserveRestoredDraftRef.current = true
-        setAgent(draft.agent)
-        setModel(draft.model)
-        setCursorSelectedBase(draft.cursorSelectedBase)
-        setEffort(draft.effort)
-        setModelReasoningEffort(draft.modelReasoningEffort)
-        setOpencodeSelectedModel(
-            draft.agent === 'opencode' && draft.model !== 'auto' ? draft.model : null
-        )
-        setAgySelectedModel(
-            draft.agent === 'agy' && draft.model !== 'auto' ? draft.model : null
-        )
-        setServiceTier(draft.serviceTier)
-        setCollaborationMode(draft.collaborationMode)
-        setCopilotAgentMode(draft.copilotAgentMode)
-        setYoloMode(draft.yoloMode)
-        setCodexFamilyPermissionMode(draft.codexFamilyPermissionMode)
-        setGrokPermissionMode(draft.grokPermissionMode)
-        setSessionType(draft.sessionType)
-        setWorktreeName(draft.worktreeName)
+        if (visibleAgents.includes(draft.agent)) {
+            preserveRestoredDraftRef.current = true
+            setAgent(draft.agent)
+            setModel(draft.model)
+            setCursorSelectedBase(draft.cursorSelectedBase)
+            setEffort(draft.effort)
+            setModelReasoningEffort(draft.modelReasoningEffort)
+            setOpencodeSelectedModel(
+                draft.agent === 'opencode' && draft.model !== 'auto' ? draft.model : null
+            )
+            setAgySelectedModel(
+                draft.agent === 'agy' && draft.model !== 'auto' ? draft.model : null
+            )
+            setServiceTier(draft.serviceTier)
+            setCollaborationMode(draft.collaborationMode)
+            setCopilotAgentMode(draft.copilotAgentMode)
+            setYoloMode(draft.yoloMode)
+            setCodexFamilyPermissionMode(draft.codexFamilyPermissionMode)
+            setGrokPermissionMode(draft.grokPermissionMode)
+            setSessionType(draft.sessionType)
+            setWorktreeName(draft.worktreeName)
+        } else if (visibleAgents[0]) {
+            // The draft agent is hidden in settings: restore only the
+            // agent-agnostic fields and let the normalization effects pick
+            // defaults for the fallback agent (no stale model/permission state).
+            setAgent(visibleAgents[0])
+            setYoloMode(draft.yoloMode)
+            setSessionType(draft.sessionType)
+            setWorktreeName(draft.worktreeName)
+        }
         clearNewSessionFormDraft()
     }, [
         props.initialDirectory,
         props.initialMachineId,
-        machineId
+        machineId,
+        visibleAgents
     ])
 
     useEffect(() => {
@@ -284,10 +310,9 @@ export function NewSession(props: {
         machineId,
     })
     const availableAgents = useMemo(
-        () => agentAvailability.agents
-            .filter((entry) => entry.available && entry.agent !== 'gemini')
-            .map((entry) => entry.agent as AgentType),
-        [agentAvailability.agents]
+        () => visibleAgents.filter((candidate) =>
+            agentAvailability.agents.some((entry) => entry.agent === candidate && entry.available)),
+        [agentAvailability.agents, visibleAgents]
     )
     const selectedAgentAvailable = availableAgents.includes(agent)
 
@@ -1631,7 +1656,8 @@ export function NewSession(props: {
         && serviceTier === 'fast'
         && codexModelsState.isLoading
     const canCreate = Boolean(
-        machineId
+        visibleAgents.includes(agent)
+        && machineId
         && trimmedDirectory
         && !isFormDisabled
         && !missingWorktreeDirectory
