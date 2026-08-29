@@ -63,6 +63,7 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
+    acknowledgeModelError?: (sessionId: string, eventId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
@@ -71,6 +72,7 @@ function createApp(session: Session, opts?: {
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
+    namespace?: string
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -124,6 +126,7 @@ function createApp(session: Session, opts?: {
     }))
     const sessionExists = opts?.sessionExists !== false
     const archiveSessionMock = opts?.archiveSession ?? (async () => {})
+    const acknowledgeModelErrorMock = opts?.acknowledgeModelError ?? (async () => {})
     const engine = {
         resolveSessionAccess: () => sessionExists
             ? { ok: true, sessionId: session.id, session }
@@ -147,6 +150,7 @@ function createApp(session: Session, opts?: {
         archiveSession: archiveSessionMock,
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
+        acknowledgeModelError: acknowledgeModelErrorMock,
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
@@ -169,7 +173,7 @@ function createApp(session: Session, opts?: {
 
     const app = new Hono<WebAppEnv>()
     app.use('*', async (c, next) => {
-        c.set('namespace', 'default')
+        c.set('namespace', opts?.namespace ?? 'default')
         await next()
     })
     app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
@@ -1562,6 +1566,135 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         const body = await response.json() as { sessions: Array<{ id: string }> }
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
+    })
+
+    describe('POST /sessions/:id/model-error/acknowledge', () => {
+        it('forwards eventId to the engine when body is valid', async () => {
+            const calls: Array<[string, string]> = []
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async (sessionId, eventId) => {
+                    calls.push([sessionId, eventId])
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-ack-1' })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual([['session-1', 'evt-ack-1']])
+        })
+
+        it('returns 400 when eventId is missing', async () => {
+            let called = false
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async () => { called = true }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({})
+            })
+
+            expect(response.status).toBe(400)
+            expect(called).toBe(false)
+        })
+
+        it('returns 409 when the displayed error no longer matches', async () => {
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async () => {
+                    throw new Error('Model error changed; refresh before acknowledging.')
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-stale' })
+            })
+
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Model error changed; refresh before acknowledging.'
+            })
+        })
+    })
+
+    describe('POST /sessions/:id/model-error/bridge', () => {
+        it('returns 409 session_inactive when the session is not active', async () => {
+            const { app } = createApp(createSession({
+                active: false,
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/bridge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-1' })
+            })
+
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Session is inactive',
+                code: 'session_inactive'
+            })
+        })
+
+        it('returns 400 when eventId is missing', async () => {
+            const { app } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/bridge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({})
+            })
+
+            expect(response.status).toBe(400)
+        })
+    })
+
+    describe('POST /sessions/:id/model-error/auto-bridge-setting', () => {
+        it('rejects non-default namespaces with 403 and does not apply config', async () => {
+            const { app, applySessionConfigCalls } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }), { namespace: 'tenant-a' })
+
+            const response = await app.request('/api/sessions/session-1/model-error/auto-bridge-setting', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ enabled: true })
+            })
+
+            expect(response.status).toBe(403)
+            expect(await response.json()).toEqual({
+                error: 'Model error auto-bridge is only available to the hub owner'
+            })
+            expect(applySessionConfigCalls).toEqual([])
+        })
+
+        it('applies the setting for the default namespace', async () => {
+            const { app, applySessionConfigCalls } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/auto-bridge-setting', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ enabled: true })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(applySessionConfigCalls).toEqual([
+                ['session-1', { autoBridgeTransientModelErrors: true }]
+            ])
+        })
     })
 
 })

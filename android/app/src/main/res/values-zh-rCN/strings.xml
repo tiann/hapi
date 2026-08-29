@@ -181,6 +181,8 @@
     <!-- Push notifications (B-M4a) -->
     <string name="channel_permission_requests">权限请求</string>
     <string name="channel_permission_requests_desc">智能体正在等待您允许或拒绝一次工具调用</string>
+    <string name="channel_model_errors">模型错误</string>
+    <string name="channel_model_errors_desc">智能体遇到需要处理的模型侧失败</string>
     <string name="channel_ready">代理就绪</string>
     <string name="channel_ready_desc">智能体已完成并正在等待输入</string>
     <string name="channel_task_notifications">任务通知</string>

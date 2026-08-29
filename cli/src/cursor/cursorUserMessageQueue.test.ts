@@ -7,6 +7,23 @@ import type { EnhancedMode } from './loop';
 const mode: EnhancedMode = { permissionMode: 'default' };
 
 describe('enqueueCursorUserMessage', () => {
+    it('preserves caller bridge: localId but keeps the turn non-bridge provenance', async () => {
+        const consumed: string[] = [];
+        const queue = new MessageQueue2<EnhancedMode>((m) => m.permissionMode);
+        queue.onBatchConsumed = (localIds) => {
+            consumed.push(...localIds);
+        };
+        enqueueCursorUserMessage(queue, 'please continue', mode, 'bridge:evt-1');
+        expect(queue.queue).toHaveLength(1);
+        expect(queue.queue[0]?.localId).toBe('bridge:evt-1');
+        expect(queue.queue[0]?.internal).toBeUndefined();
+        expect(queue.hasPendingNonBridgeTurn()).toBe(true);
+
+        const batch = await queue.waitForMessagesAndGetAsString();
+        expect(batch?.items[0]?.internal).toBeUndefined();
+        expect(consumed).toEqual(['bridge:evt-1']);
+    });
+
     it('isolates /compress from a following same-mode prompt', async () => {
         const queue = new MessageQueue2<EnhancedMode>((m) => m.permissionMode);
         enqueueCursorUserMessage(queue, '/compress keep recap', mode, 'a');

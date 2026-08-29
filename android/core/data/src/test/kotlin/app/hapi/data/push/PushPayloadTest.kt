@@ -82,6 +82,16 @@ class PushPayloadTest {
             PushPayload.CHANNEL_TASK_NOTIFICATIONS,
             PushPayload.parse(permissionData("type" to "task-notification"))!!.channelId,
         )
+        assertEquals(
+            PushPayload.CHANNEL_MODEL_ERROR,
+            PushPayload.parse(
+                permissionData(
+                    "type" to "model-error",
+                    "severity" to "error",
+                    "tag" to "model-error-11111111-2222-3333-4444-555555555555-evt-1",
+                )
+            )!!.channelId,
+        )
     }
 
     @Test
@@ -125,6 +135,51 @@ class PushPayloadTest {
             "ready-11111111-2222-3333-4444-555555555555",
             PushPayload.parse(permissionData("type" to "ready"))!!.notificationTag,
         )
+    }
+
+    @Test
+    fun `model-error is a known type and prefers the hub event tag`() {
+        val eventTag = "model-error-11111111-2222-3333-4444-555555555555-evt-1710000000000"
+        val payload = PushPayload.parse(
+            permissionData(
+                "type" to "model-error",
+                "severity" to "error",
+                "title" to "Rate limited",
+                "body" to "status 429",
+                "tag" to eventTag,
+            ).minus("requestId"),
+        )!!
+
+        assertEquals(PushType.MODEL_ERROR, payload.type)
+        assertEquals("model-error", payload.rawType)
+        assertEquals(PushPayload.CHANNEL_MODEL_ERROR, payload.channelId)
+        assertEquals(eventTag, payload.notificationTag)
+        assertEquals(PushSeverity.ERROR, payload.severity)
+        assertFalse(payload.supportsActions)
+    }
+
+    @Test
+    fun `model-error without a hub tag falls back to type-sessionId`() {
+        val payload = PushPayload.parse(
+            permissionData("type" to "model-error").minus("requestId"),
+        )!!
+        assertEquals(
+            "model-error-11111111-2222-3333-4444-555555555555",
+            payload.notificationTag,
+        )
+    }
+
+    @Test
+    fun `distinct model-error tags do not collapse`() {
+        val session = "11111111-2222-3333-4444-555555555555"
+        val first = PushPayload.parse(
+            permissionData("type" to "model-error", "tag" to "model-error-$session-evt-1"),
+        )!!.notificationTag
+        val second = PushPayload.parse(
+            permissionData("type" to "model-error", "tag" to "model-error-$session-evt-2"),
+        )!!.notificationTag
+        assertEquals("model-error-$session-evt-1", first)
+        assertEquals("model-error-$session-evt-2", second)
     }
 
     // ---------------------------------------------------------- ready bodies --

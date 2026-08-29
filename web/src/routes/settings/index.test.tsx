@@ -23,8 +23,16 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setVoice: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const getHubSettings = vi.fn().mockResolvedValue({
+    sessionSummaryContract: false,
+    sessionSummaryInChat: false,
+    autoBridgeTransientModelErrors: false
+})
+const updateHubSettings = vi.fn().mockResolvedValue({
+    sessionSummaryContract: true,
+    sessionSummaryInChat: false,
+    autoBridgeTransientModelErrors: false
+})
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -160,7 +168,7 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
-        api: { getHubSettings, updateHubSettings },
+        api: { getHubSettings, updateHubSettings, getSessions: vi.fn().mockResolvedValue({ sessions: [] }) },
         baseUrl: 'http://127.0.0.1:3006',
         token: context.token,
     }),
@@ -216,8 +224,16 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: false
+        })
+        updateHubSettings.mockResolvedValue({
+            sessionSummaryContract: true,
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: false
+        })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -278,11 +294,19 @@ describe('responsive settings pages', () => {
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
-    it('keeps chat enum choices inline', () => {
+    it('keeps chat enum choices inline', async () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
         expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
         expect(screen.getByText('Grouped Tool Use Background')).toBeInTheDocument()
+        expect(await screen.findByRole('checkbox', { name: 'Automatically bridge transient model errors' })).toBeInTheDocument()
+    })
+
+    it('hides the auto-bridge setting from tenant namespaces', () => {
+        context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
+        renderPage(<SettingsChatPage />)
+        expect(screen.queryByRole('checkbox', { name: 'Automatically bridge transient model errors' })).not.toBeInTheDocument()
+        expect(getHubSettings).not.toHaveBeenCalled()
     })
 
     it('renders the default-collapse switch for Codex exploration groups', () => {
