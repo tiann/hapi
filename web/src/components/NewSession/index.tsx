@@ -793,6 +793,10 @@ export function NewSession(props: {
         setCursorSelectedBase(preferred.cursorSelectedBase)
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
+        setServiceTier(preferred.serviceTier ?? 'standard')
+        setCollaborationMode(preferred.collaborationMode ?? 'default')
+        setGrokPermissionMode(preferred.grokPermissionMode ?? 'default')
+        setSessionType(preferred.sessionType ?? 'simple')
         if (usesCodexFamilyPermissionModes(agent)) {
             setCodexFamilyPermissionMode(preferred.permissionMode ?? 'default')
         }
@@ -1476,6 +1480,10 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
+                serviceTier,
+                collaborationMode,
+                grokPermissionMode,
+                sessionType,
                 ...(usesCodexFamilyPermissions ? { permissionMode: codexFamilyPermissionMode } : {})
             }
             const resolvedServiceTier = agent === 'codex' && showCodexFastMode
@@ -1605,10 +1613,11 @@ export function NewSession(props: {
             && (model !== 'auto' || cursorSelectedBase !== 'auto')
             && cursorModelsState.isLoading)
         || (agent === 'grok'
-            && deferredDirectory !== ''
-            && (model !== 'auto' || effort !== 'auto')
+            && trimmedDirectory !== ''
+            && (model !== 'auto' || effort !== 'auto' || grokPermissionMode === 'auto')
             && (
-                deferredDirectoryExists === undefined
+                deferredDirectory !== trimmedDirectory
+                || deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && grokModelsState.isLoading)
             ))
         || (agent === 'opencode'

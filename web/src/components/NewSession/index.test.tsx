@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
     directoryExists: undefined as boolean | undefined,
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
     copilotModelsLoading: false,
+    grokModelsLoading: false,
+    grokAutoPermissionSupported: null as boolean | null,
     opencodeModels: [] as Array<{ modelId: string; name?: string }>,
     opencodeModelsLoading: false,
     piDialogSelection: ['pi-native-1'] as string[],
@@ -31,9 +33,18 @@ const mocks = vi.hoisted(() => ({
     piModelsLoading: false,
     piModelsError: null as string | null,
     nextModelValue: 'gpt-5.6-terra',
+    deferredDirectory: undefined as string | undefined,
     refetchSessions: vi.fn(),
     addToast: vi.fn()
 }))
+
+vi.mock('react', async () => {
+    const actual = await vi.importActual<typeof import('react')>('react')
+    return {
+        ...actual,
+        useDeferredValue: (value: string) => mocks.deferredDirectory ?? value
+    }
+})
 
 vi.mock('@/lib/use-translation', () => ({
     useTranslation: () => ({ t: (key: string) => key })
@@ -64,7 +75,7 @@ vi.mock('@/hooks/useRecentPaths', () => ({
 }))
 vi.mock('@/hooks/useMachinePathsExists', () => ({
     useMachinePathsExists: () => ({
-        pathExistence: { 'C:\\repo': mocks.directoryExists },
+        pathExistence: { 'C:\\repo': mocks.directoryExists, 'C:\\next': true },
         outsideWorkspaceRoots: new Set<string>(),
         checkPathsExists: mocks.checkPathsExists
     })
@@ -136,8 +147,8 @@ vi.mock('@/hooks/queries/useGrokModelsForCwd', () => ({
     useGrokModelsForCwd: () => ({
         availableModels: [],
         currentModelId: null,
-        autoPermissionModeSupported: null,
-        isLoading: false,
+        autoPermissionModeSupported: mocks.grokAutoPermissionSupported,
+        isLoading: mocks.grokModelsLoading,
         error: null
     })
 }))
@@ -174,7 +185,18 @@ vi.mock('@/components/PiSessionImportDialog', () => ({
         </>
     ) : null
 }))
-vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
+vi.mock('./DirectorySection', () => ({
+    DirectorySection: (props: {
+        directory: string
+        onDirectoryChange: (value: string) => void
+    }) => (
+        <input
+            aria-label="directory"
+            value={props.directory}
+            onChange={(event) => props.onDirectoryChange(event.target.value)}
+        />
+    )
+}))
 vi.mock('./MachineSelector', () => ({
     MachineSelector: (props: { machines: Machine[]; machineId: string | null; isDisabled: boolean; onChange: (machineId: string) => void }) => (
         <select
@@ -280,6 +302,8 @@ describe('NewSession launch preferences', () => {
         mocks.directoryExists = true
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
+        mocks.grokModelsLoading = false
+        mocks.grokAutoPermissionSupported = null
         mocks.opencodeModels = [{ modelId: 'provider/current', name: 'Current' }]
         mocks.opencodeModelsLoading = false
         mocks.piDialogSelection = ['pi-native-1']
@@ -287,6 +311,7 @@ describe('NewSession launch preferences', () => {
         mocks.piModelsLoading = false
         mocks.piModelsError = null
         mocks.nextModelValue = 'gpt-5.6-terra'
+        mocks.deferredDirectory = undefined
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
         mocks.addToast.mockReset()
@@ -551,6 +576,10 @@ describe('NewSession launch preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'max',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
             permissionMode: 'yolo'
         })
     })
@@ -594,6 +623,38 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
+    it('blocks Create while a remembered Grok Auto permission awaits capability validation', async () => {
+        savePreferredAgent('grok')
+        savePreferredLaunchSettings('machine-1', 'grok', { model: 'auto', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default', grokPermissionMode: 'auto', sessionType: 'simple' })
+        mocks.grokModelsLoading = true
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+    })
+
+    it('falls back to default permission when Grok Auto is unsupported after validation', async () => {
+        savePreferredAgent('grok')
+        savePreferredLaunchSettings('machine-1', 'grok', { model: 'auto', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default', grokPermissionMode: 'auto', sessionType: 'simple' })
+        mocks.grokAutoPermissionSupported = false
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'grok-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('grok-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'grok', permissionMode: 'default' }))
+    })
+
+    it('launches with the remembered Grok Auto permission once capability validation confirms support', async () => {
+        savePreferredAgent('grok')
+        savePreferredLaunchSettings('machine-1', 'grok', { model: 'auto', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default', grokPermissionMode: 'auto', sessionType: 'simple' })
+        mocks.grokAutoPermissionSupported = true
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'grok-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('grok-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'grok', permissionMode: 'auto' }))
+    })
+
     it('does not forward the global YOLO preference to managed DSH ACP', async () => {
         savePreferredAgent('dsh')
         savePreferredYoloMode(true)
@@ -630,6 +691,29 @@ describe('NewSession launch preferences', () => {
         mocks.opencodeModels = [{ modelId: 'provider/model', name: 'Model' }]
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('opencode-model')).toHaveTextContent('provider/model'))
+    })
+
+    it('keeps Create disabled until Grok Auto validation catches up to a changed directory', async () => {
+        savePreferredAgent('grok')
+        savePreferredLaunchSettings('machine-1', 'grok', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            grokPermissionMode: 'auto',
+            sessionType: 'simple'
+        })
+        mocks.grokAutoPermissionSupported = true
+        mocks.deferredDirectory = ''
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        fireEvent.change(screen.getByLabelText('directory'), { target: { value: 'C:\\next' } })
+        expect(screen.getByTestId('create')).toBeDisabled()
+
+        mocks.deferredDirectory = 'C:\\next'
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
     })
 
     it('persists the selected AGY model only after a successful launch', async () => {
