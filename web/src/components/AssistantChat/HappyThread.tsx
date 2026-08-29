@@ -4,9 +4,13 @@ import type { ComponentProps } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { HappyRuntimeExtras } from '@/lib/assistant-runtime'
-import type { Session, SessionMetadataSummary } from '@/types/api'
+import type { Session, SessionContentMatch, SessionMetadataSummary } from '@/types/api'
 import type { ConversationOutlineItem } from '@/chat/outline'
-import { getConversationMessageAnchorId } from '@/chat/outline'
+import {
+    findConversationMessageAnchor,
+    findConversationMessageTextRange,
+    getConversationMessageAnchorId
+} from '@/chat/outline'
 import { formatMessageTimestampTitle, formatOutlineTimestamp } from '@/chat/presentation'
 import {
     HappyChatProvider,
@@ -32,8 +36,8 @@ import { resolveSessionHeaderMachineLabel } from '@/components/SessionHeader'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
-import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { queryKeys } from '@/lib/query-keys'
+import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { matchesSearchQuery } from '@hapi/protocol'
 
 type ScrollAnchor = {
@@ -59,6 +63,8 @@ type HistoryLoaderState = {
     failureCount: number
     autoPaused: boolean
 }
+
+type SearchTargetPhase = 'idle' | 'loading' | 'waiting-runtime' | 'waiting-render' | 'complete' | 'failed'
 
 type ShareTurnState = {
     id: number
@@ -121,6 +127,16 @@ export function prependMissingUserSnapshot(
 }
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
+const SEARCH_TARGET_HIGHLIGHT_CLASS = 'hapi-message-search-target'
+const SEARCH_TARGET_MATCH_ATTRIBUTE = 'data-hapi-source-search-match'
+const SEARCH_TARGET_QUERY_RETRY_DELAY_MS = 75
+const MAX_SEARCH_TARGET_QUERY_RETRIES = 80
+const MAX_SEARCH_TARGET_CONTEXT_RETRIES = 3
+const MAX_SEARCH_TARGET_RENDER_RETRIES = 120
+const SEARCH_TARGET_SCROLL_DELAYS_MS = [
+    0, 16, 50, 120, 250, 500, 900, 1400, 2200, 3500, 5000, 7000,
+    10_000, 15_000, 22_000, 30_000, 45_000
+] as const
 // Resume tail-following only once the user has actually reached the bottom.
 // A wider proximity threshold makes a downward-reading user enter tail mode
 // early; the next content/layout update then snaps the viewport to the end.
@@ -236,6 +252,120 @@ export async function locateOutlineTargetMessage(options: LocateOutlineTargetOpt
         target = options.findTarget(anchorId)
     }
     return target
+}
+
+function createSearchMatchMarkerElement(sourceMessageId: string | null): HTMLElement {
+    const marker = document.createElement('mark')
+    marker.className = SEARCH_TARGET_HIGHLIGHT_CLASS
+    marker.setAttribute(SEARCH_TARGET_MATCH_ATTRIBUTE, 'true')
+    if (sourceMessageId) {
+        marker.setAttribute('data-hapi-source-message-id', sourceMessageId)
+    }
+    return marker
+}
+
+function getSearchMatchTextSegments(range: Range): Array<{ node: Text; start: number; end: number }> {
+    const segments: Array<{ node: Text; start: number; end: number }> = []
+    const root = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+        ? range.commonAncestorContainer.parentNode
+        : range.commonAncestorContainer
+    if (!root) return segments
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let current: Node | null
+    while ((current = walker.nextNode())) {
+        const node = current as Text
+        if (!range.intersectsNode(node)) continue
+        const start = node === range.startContainer ? range.startOffset : 0
+        const end = node === range.endContainer ? range.endOffset : node.data.length
+        if (end > start) segments.push({ node, start, end })
+    }
+    return segments
+}
+
+function createSearchMatchMarker(range: Range, sourceMessageId: string | null): HTMLElement | null {
+    const marker = createSearchMatchMarkerElement(sourceMessageId)
+
+    try {
+        range.surroundContents(marker)
+        return marker
+    } catch {
+        // Markdown can split one logical match across several text nodes,
+        // such as `KV <strong>Cache</strong>`. Wrapping the entire range then
+        // throws because it would partially contain the strong element. Wrap
+        // each intersecting text segment instead so the matched text remains
+        // visibly highlighted without disturbing the markdown structure.
+        const markers: HTMLElement[] = []
+        for (const segment of getSearchMatchTextSegments(range)) {
+            const segmentMarker = createSearchMatchMarkerElement(sourceMessageId)
+            const segmentRange = document.createRange()
+            segmentRange.setStart(segment.node, segment.start)
+            segmentRange.setEnd(segment.node, segment.end)
+            try {
+                segmentRange.surroundContents(segmentMarker)
+                markers.push(segmentMarker)
+            } catch {
+                // Continue with other text nodes; a class-only card fallback
+                // below still keeps the target visibly identifiable.
+            }
+        }
+        if (markers.length > 0) return markers[0]!
+
+        const fallback = range.commonAncestorContainer instanceof HTMLElement
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement
+        fallback?.classList.add(SEARCH_TARGET_HIGHLIGHT_CLASS)
+        return fallback
+    }
+}
+
+function findScrollableAncestor(element: HTMLElement): HTMLElement | null {
+    let current = element.parentElement
+    while (current) {
+        const overflowY = window.getComputedStyle(current).overflowY
+        if (
+            current.scrollHeight > current.clientHeight + 1
+            && (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+        ) {
+            return current
+        }
+        current = current.parentElement
+    }
+    return null
+}
+
+function scrollSearchTargetIntoView(target: HTMLElement, preferredViewport?: HTMLElement | null): void {
+    const viewport = preferredViewport ?? findScrollableAncestor(target)
+    if (!viewport) {
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        return
+    }
+
+    const targetRect = target.getBoundingClientRect()
+    const viewportRect = viewport.getBoundingClientRect()
+    const targetCenter = (targetRect.top + targetRect.bottom) / 2
+    const viewportCenter = (viewportRect.top + viewportRect.bottom) / 2
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+    const nextScrollTop = Math.min(
+        maxScrollTop,
+        Math.max(0, viewport.scrollTop + targetCenter - viewportCenter)
+    )
+    viewport.scrollTo({ top: nextScrollTop, behavior: 'auto' })
+}
+
+function removeSearchMatchMarker(marker: HTMLElement, target: HTMLElement): void {
+    if (marker === target) {
+        marker.classList.remove(SEARCH_TARGET_HIGHLIGHT_CLASS)
+        return
+    }
+
+    const parent = marker.parentNode
+    if (!parent) return
+    while (marker.firstChild) {
+        parent.insertBefore(marker.firstChild, marker)
+    }
+    marker.remove()
+    parent.normalize()
 }
 
 export function shouldLoadOlderForViewport(params: {
@@ -478,6 +608,7 @@ export function HappyThread(props: {
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
     onViewModeChange: (mode: 'tail' | 'history') => void
+    onJumpToTail?: () => void
     isSyncingTail: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
@@ -494,6 +625,11 @@ export function HappyThread(props: {
     outlineItems: readonly ConversationOutlineItem[]
     onOutlineOpenChange: (open: boolean) => void
     onOutlineItemClick?: (item: ConversationOutlineItem) => void
+    initialTargetMessageId?: string
+    initialTargetMessageQuery?: string
+    onLoadMessageContext?: (messageId: string) => Promise<boolean>
+    onInitialTargetConsumed?: () => void
+    onSearchTargetDismissed?: () => void
 }) {
     const { t, locale } = useTranslation()
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
@@ -554,12 +690,44 @@ export function HappyThread(props: {
         retry: false,
     })
     const showSessionSummaryInChat = hubSettingsQuery.data?.sessionSummaryInChat === true
+    const targetSearchQuery = props.initialTargetMessageQuery?.trim() ?? ''
+    const initialSearchTargetId = props.initialTargetMessageId?.trim() ?? ''
+    const hasSearchTarget = Boolean(initialSearchTargetId && targetSearchQuery)
+    const [activeSearchMatchId, setActiveSearchMatchId] = useState<string | null>(null)
+    const sessionContentMatchesQuery = useQuery({
+        queryKey: queryKeys.sessionContentSearch(props.sessionId, targetSearchQuery),
+        queryFn: ({ signal }) => props.api.searchSessionContentMatches(
+            props.sessionId,
+            targetSearchQuery,
+            500,
+            signal
+        ),
+        enabled: hasSearchTarget,
+        staleTime: 30_000,
+        retry: false
+    })
+    const searchMatches: SessionContentMatch[] = sessionContentMatchesQuery.data?.matches ?? []
+    const activeSearchTargetId = activeSearchMatchId ?? initialSearchTargetId
+    const activeSearchMatchIndex = searchMatches.findIndex((match) => match.messageId === activeSearchTargetId)
+    const searchMatchTotal = sessionContentMatchesQuery.data?.total ?? searchMatches.length
+    const searchMatchTotalLabel = sessionContentMatchesQuery.isLoading
+        ? '…'
+        : searchMatchTotal > searchMatches.length
+            ? `${searchMatches.length}+`
+            : String(searchMatchTotal)
+    const searchMatchCurrentLabel = activeSearchMatchIndex >= 0
+        ? String(activeSearchMatchIndex + 1)
+        : sessionContentMatchesQuery.isLoading
+            ? '…'
+            : '—'
     const runtimeExtras = useAuiState((s) => s.thread.extras) as HappyRuntimeExtras | undefined
     const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const contentRef = useRef<HTMLDivElement | null>(null)
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
+    const [searchTargetRetryVersion, setSearchTargetRetryVersion] = useState(0)
+    const [isLocatingSearchTarget, setIsLocatingSearchTarget] = useState(false)
     const pullToLoadStateRef = useRef<PullToLoadState>('idle')
     const shareTurnIdRef = useRef(0)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -616,6 +784,21 @@ export function HappyThread(props: {
     const initialScrollSessionRef = useRef<string | null>(null)
     const initialScrollDeadlineRef = useRef(0)
     const initialScrollTimersRef = useRef<number[]>([])
+    const searchTargetJumpRef = useRef<{
+        messageId: string
+        messageQuery?: string
+        phase: SearchTargetPhase
+    } | null>(null)
+    // Keep automatic initial/tail reconciliation from reclaiming the viewport
+    // after a historical search result has been applied. The lock is released
+    // by an explicit jump to the latest messages or by a new session/target.
+    const searchTargetHistoryLockRef = useRef(false)
+    const searchTargetInputKeyRef = useRef<string | null>(null)
+    const searchTargetRetryTimerRef = useRef<number | null>(null)
+    const searchTargetQueryRetryCountRef = useRef(0)
+    const searchTargetContextRetryCountRef = useRef(0)
+    const searchTargetRenderRetryCountRef = useRef(0)
+    const searchTargetScrollTimersRef = useRef<number[]>([])
 
     // Smart scroll state: enabled only while the user is intentionally at the bottom.
     const autoScrollEnabledRef = useRef(true)
@@ -639,6 +822,25 @@ export function HappyThread(props: {
         sessionIdRef.current = props.sessionId
     }, [props.sessionId])
 
+    useEffect(() => {
+        const inputKey = hasSearchTarget
+            ? `${props.sessionId}\u0000${initialSearchTargetId}\u0000${targetSearchQuery}`
+            : null
+        if (searchTargetInputKeyRef.current === inputKey) return
+        searchTargetInputKeyRef.current = inputKey
+        setActiveSearchMatchId(initialSearchTargetId || null)
+    }, [hasSearchTarget, initialSearchTargetId, props.sessionId, targetSearchQuery])
+
+    const navigateSearchMatch = useCallback((direction: -1 | 1) => {
+        if (searchMatches.length < 2) return
+        const currentIndex = activeSearchMatchIndex >= 0 ? activeSearchMatchIndex : 0
+        const nextIndex = (currentIndex + direction + searchMatches.length) % searchMatches.length
+        const nextMatch = searchMatches[nextIndex]
+        if (nextMatch) {
+            setActiveSearchMatchId(nextMatch.messageId)
+        }
+    }, [activeSearchMatchIndex, searchMatches])
+
     const isInitialScrollSettling = useCallback(() => {
         return initialScrollSessionRef.current === sessionIdRef.current && Date.now() < initialScrollDeadlineRef.current
     }, [])
@@ -649,6 +851,88 @@ export function HappyThread(props: {
         }
         initialScrollTimersRef.current = []
     }, [])
+    const clearSearchTargetScrollTimers = useCallback(() => {
+        for (const timer of searchTargetScrollTimersRef.current) {
+            window.clearTimeout(timer)
+        }
+        searchTargetScrollTimersRef.current = []
+    }, [])
+    const clearSearchTargetRetryTimer = useCallback(() => {
+        if (searchTargetRetryTimerRef.current === null) return
+        window.clearTimeout(searchTargetRetryTimerRef.current)
+        searchTargetRetryTimerRef.current = null
+    }, [])
+    const scheduleSearchTargetRetry = useCallback((delay: number) => {
+        if (searchTargetRetryTimerRef.current !== null) return
+        searchTargetRetryTimerRef.current = window.setTimeout(() => {
+            searchTargetRetryTimerRef.current = null
+            setSearchTargetRetryVersion((version) => version + 1)
+        }, delay)
+    }, [])
+    const clearSearchTargetMarker = useCallback(() => {
+        const markers = Array.from(document.querySelectorAll<HTMLElement>(
+            `[${SEARCH_TARGET_MATCH_ATTRIBUTE}="true"]`
+        ))
+        for (const marker of markers) {
+            const parent = marker.parentElement
+            if (parent) {
+                removeSearchMatchMarker(marker, parent)
+            }
+        }
+        // A message without a text-range match uses a class-only card
+        // highlight. It has no marker attribute, so clean it up separately.
+        for (const fallback of Array.from(document.querySelectorAll<HTMLElement>(
+            `.${SEARCH_TARGET_HIGHLIGHT_CLASS}`
+        ))) {
+            if (fallback.getAttribute(SEARCH_TARGET_MATCH_ATTRIBUTE) !== 'true') {
+                fallback.classList.remove(SEARCH_TARGET_HIGHLIGHT_CLASS)
+            }
+        }
+    }, [])
+    const releaseSearchTargetHistoryLock = useCallback(() => {
+        searchTargetHistoryLockRef.current = false
+        clearSearchTargetScrollTimers()
+        clearSearchTargetRetryTimer()
+        clearSearchTargetMarker()
+    }, [clearSearchTargetMarker, clearSearchTargetRetryTimer, clearSearchTargetScrollTimers])
+    const dismissSearchTarget = useCallback(() => {
+        releaseSearchTargetHistoryLock()
+        setActiveSearchMatchId(null)
+        setIsLocatingSearchTarget(false)
+        props.onSearchTargetDismissed?.()
+    }, [props.onSearchTargetDismissed, releaseSearchTargetHistoryLock])
+    const scheduleSearchTargetScroll = useCallback((
+        targetMessageId: string,
+        query: string | undefined,
+        fallbackTarget: HTMLElement
+    ) => {
+        clearSearchTargetScrollTimers()
+        searchTargetScrollTimersRef.current = SEARCH_TARGET_SCROLL_DELAYS_MS.map((delay) => window.setTimeout(() => {
+            const targetAnchor = findConversationMessageAnchor(targetMessageId, query) ?? fallbackTarget
+            let target = targetAnchor
+            if (query) {
+                const existingMarker = document.querySelector<HTMLElement>(
+                    `[${SEARCH_TARGET_MATCH_ATTRIBUTE}="true"]`
+                )
+                const markerBelongsToTarget = existingMarker
+                    && targetAnchor.contains(existingMarker)
+                if (markerBelongsToTarget) {
+                    target = existingMarker
+                } else {
+                    const range = findConversationMessageTextRange(targetAnchor, query)
+                    if (range) {
+                        target = createSearchMatchMarker(
+                            range,
+                            targetMessageId
+                        ) ?? targetAnchor
+                    }
+                }
+            }
+            if (target.isConnected) {
+                scrollSearchTargetIntoView(target, viewportRef.current)
+            }
+        }, delay))
+    }, [clearSearchTargetScrollTimers])
 
     const clearCoverageCheckTimer = useCallback(() => {
         if (coverageCheckTimerRef.current !== null) {
@@ -714,6 +998,13 @@ export function HappyThread(props: {
 
         const setAtBottomMode = (atBottom: boolean) => {
             if (atBottom === atBottomRef.current) {
+                return
+            }
+            if (atBottom && searchTargetHistoryLockRef.current) {
+                // A clamped/programmatic scroll can look like the bottom was
+                // reached while the historical search window is being mounted.
+                // Do not let that transient event re-enter tail mode.
+                atBottomRef.current = false
                 return
             }
             atBottomRef.current = atBottom
@@ -807,7 +1098,12 @@ export function HappyThread(props: {
             // decides whether this demand may start a request; programmatic
             // scroll events cannot bypass backoff or a paused coverage run.
             if (needsCoverage) {
-                void requestOlderRef.current(explicitUpwardIntent ? 'user' : 'coverage')
+                // A search jump owns the viewport while its historical window
+                // is being displayed. Keep automatic resize/scroll events from
+                // changing that window, but preserve an explicit user gesture.
+                if (explicitUpwardIntent || !searchTargetHistoryLockRef.current) {
+                    void requestOlderRef.current(explicitUpwardIntent ? 'user' : 'coverage')
+                }
             }
 
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
@@ -1051,6 +1347,11 @@ export function HappyThread(props: {
 
     // Scroll to bottom handler for the indicator button
     const scrollToBottom = useCallback(() => {
+        if (activeSearchTargetId) {
+            dismissSearchTarget()
+        } else {
+            releaseSearchTargetHistoryLock()
+        }
         const viewport = viewportRef.current
         if (viewport) {
             tailScrollInProgressRef.current = true
@@ -1058,19 +1359,32 @@ export function HappyThread(props: {
             lastScrollTopRef.current = viewport.scrollTop
         }
         autoScrollEnabledRef.current = true
-        if (!atBottomRef.current) {
-            atBottomRef.current = true
+        atBottomRef.current = true
+        if (props.onJumpToTail) {
+            // A historical search window can look like it is already at the
+            // bottom after a clamped/programmatic scroll. Always use the
+            // explicit tail transition so the bounded window is reconciled
+            // with the server's latest messages before the next turn renders.
+            props.onJumpToTail()
+        } else {
             onViewModeChangeRef.current('tail')
         }
-    }, [])
+    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, releaseSearchTargetHistoryLock])
 
     // Reset state when session changes
     useLayoutEffect(() => {
+        const hasInitialSearchTarget = Boolean(props.initialTargetMessageId?.trim())
+        searchTargetHistoryLockRef.current = false
         autoScrollEnabledRef.current = true
         tailScrollInProgressRef.current = false
         lastScrollTopRef.current = viewportRef.current?.scrollTop ?? 0
         atBottomRef.current = true
-        onViewModeChangeRef.current('tail')
+        if (hasInitialSearchTarget) {
+            autoScrollEnabledRef.current = false
+            atBottomRef.current = false
+        } else {
+            onViewModeChangeRef.current('tail')
+        }
         forceScrollTokenRef.current = props.forceScrollToken
         pendingScrollRef.current = null
         pullToLoadStateRef.current = 'idle'
@@ -1085,12 +1399,21 @@ export function HappyThread(props: {
         initialScrollSessionRef.current = null
         initialScrollDeadlineRef.current = 0
         clearInitialScrollTimers()
+        clearSearchTargetMarker()
+        clearSearchTargetScrollTimers()
         clearCoverageCheckTimer()
         clearFailureRetryTimer()
+        clearSearchTargetRetryTimer()
+        searchTargetQueryRetryCountRef.current = 0
+        searchTargetContextRetryCountRef.current = 0
+        searchTargetRenderRetryCountRef.current = 0
         settlePendingLoad('transient-stop')
     }, [
         props.sessionId,
         clearInitialScrollTimers,
+        clearSearchTargetMarker,
+        clearSearchTargetRetryTimer,
+        clearSearchTargetScrollTimers,
         clearCoverageCheckTimer,
         clearFailureRetryTimer,
         settlePendingLoad
@@ -1098,7 +1421,9 @@ export function HappyThread(props: {
 
     useLayoutEffect(() => {
         if (
-            initialScrollSessionRef.current === props.sessionId
+            props.initialTargetMessageId?.trim()
+            || searchTargetHistoryLockRef.current
+            || initialScrollSessionRef.current === props.sessionId
             || props.isSyncingTail
             || props.rawMessagesCount === 0
             || pendingScrollRef.current
@@ -1118,6 +1443,7 @@ export function HappyThread(props: {
             if (
                 initialScrollSessionRef.current !== props.sessionId
                 || !autoScrollEnabledRef.current
+                || searchTargetHistoryLockRef.current
                 || pendingScrollRef.current
             ) {
                 return
@@ -1126,6 +1452,7 @@ export function HappyThread(props: {
         }, delay))
     }, [
         props.sessionId,
+        props.initialTargetMessageId,
         props.isSyncingTail,
         props.rawMessagesCount,
         props.messagesVersion,
@@ -1133,15 +1460,243 @@ export function HappyThread(props: {
         clearInitialScrollTimers
     ])
 
+    useLayoutEffect(() => {
+        const targetMessageId = activeSearchTargetId
+        if (!targetMessageId) {
+            releaseSearchTargetHistoryLock()
+            setIsLocatingSearchTarget(false)
+            // The route target is cleared after a successful jump. Reset the
+            // per-target phase so selecting the same search result later can
+            // start a fresh jump instead of being stuck at `complete`.
+            if (searchTargetJumpRef.current !== null) {
+                searchTargetJumpRef.current = null
+                clearSearchTargetRetryTimer()
+                searchTargetQueryRetryCountRef.current = 0
+                searchTargetContextRetryCountRef.current = 0
+                searchTargetRenderRetryCountRef.current = 0
+            }
+            return
+        }
+        searchTargetHistoryLockRef.current = true
+        autoScrollEnabledRef.current = false
+        atBottomRef.current = false
+        const previous = searchTargetJumpRef.current
+        if (
+            previous
+            && previous.messageId === targetMessageId
+            && previous.messageQuery === targetSearchQuery
+            && previous.phase === 'complete'
+        ) {
+            setIsLocatingSearchTarget(false)
+            return
+        }
+        if (
+            previous
+            && previous.messageId === targetMessageId
+            && previous.messageQuery === targetSearchQuery
+            && previous.phase === 'failed'
+        ) {
+            searchTargetHistoryLockRef.current = false
+            setIsLocatingSearchTarget(false)
+            return
+        }
+        if (
+            props.isSyncingTail
+            || props.isLoadingMoreMessages
+            || (!targetMessageId && props.rawMessagesCount === 0)
+        ) {
+            setIsLocatingSearchTarget(true)
+            return
+        }
+
+        if (
+            !previous
+            || previous.messageId !== targetMessageId
+            || previous.messageQuery !== targetSearchQuery
+        ) {
+            clearSearchTargetRetryTimer()
+            clearSearchTargetMarker()
+            clearSearchTargetScrollTimers()
+            searchTargetQueryRetryCountRef.current = 0
+            searchTargetContextRetryCountRef.current = 0
+            searchTargetRenderRetryCountRef.current = 0
+            searchTargetJumpRef.current = {
+                messageId: targetMessageId,
+                messageQuery: targetSearchQuery,
+                phase: 'idle'
+            }
+        }
+        const jump = searchTargetJumpRef.current
+        if (!jump) {
+            setIsLocatingSearchTarget(false)
+            return
+        }
+        if (jump.phase === 'complete' || jump.phase === 'failed') {
+            setIsLocatingSearchTarget(false)
+            return
+        }
+        setIsLocatingSearchTarget(true)
+        if (jump.phase === 'loading') {
+            return
+        }
+
+        // assistant-ui can still have the previous window's DOM mounted for
+        // one or more renders after the message store publishes a new window.
+        // Do not anchor a search target against that stale DOM: a tail
+        // reconciliation can otherwise clear the route target before the
+        // historical context is rendered, making the jump appear to work and
+        // then snap back to the latest messages.
+        if (
+            appliedMessagesVersion !== props.messagesVersion
+            || appliedHistoryVersion !== props.historyVersion
+        ) {
+            if (searchTargetRenderRetryCountRef.current >= MAX_SEARCH_TARGET_RENDER_RETRIES) {
+                jump.phase = 'failed'
+                dismissSearchTarget()
+                return
+            }
+            jump.phase = 'waiting-runtime'
+            searchTargetRenderRetryCountRef.current += 1
+            scheduleSearchTargetRetry(SEARCH_TARGET_QUERY_RETRY_DELAY_MS)
+            return
+        }
+
+        const target = findConversationMessageAnchor(targetMessageId, targetSearchQuery)
+        if (target instanceof HTMLElement) {
+            const targetRange = targetSearchQuery
+                ? findConversationMessageTextRange(target, targetSearchQuery)
+                : null
+            if (
+                targetSearchQuery
+                && !targetRange
+                && searchTargetQueryRetryCountRef.current < MAX_SEARCH_TARGET_QUERY_RETRIES
+            ) {
+                searchTargetQueryRetryCountRef.current += 1
+                scheduleSearchTargetRetry(SEARCH_TARGET_QUERY_RETRY_DELAY_MS)
+                return
+            }
+
+            clearSearchTargetRetryTimer()
+            jump.phase = 'complete'
+            setIsLocatingSearchTarget(false)
+            searchTargetHistoryLockRef.current = true
+            clearInitialScrollTimers()
+            autoScrollEnabledRef.current = false
+            atBottomRef.current = false
+            onViewModeChangeRef.current('history')
+            const matchMarker = targetRange
+                ? createSearchMatchMarker(
+                    targetRange,
+                    targetMessageId
+                )
+                : null
+            scrollSearchTargetIntoView(matchMarker ?? target, viewportRef.current)
+            scheduleSearchTargetScroll(targetMessageId, targetSearchQuery, target)
+            if (!matchMarker) {
+                target.classList.add(SEARCH_TARGET_HIGHLIGHT_CLASS)
+            }
+            props.onInitialTargetConsumed?.()
+            return
+        }
+
+        // The context response is committed to the message window before
+        // assistant-ui has necessarily rendered its message components. Keep
+        // the target alive and wait for a later runtime/version or DOM retry;
+        // do not issue a second context request during this hand-off window.
+        if (jump.phase === 'waiting-render') {
+            if (searchTargetRenderRetryCountRef.current >= MAX_SEARCH_TARGET_RENDER_RETRIES) {
+                jump.phase = 'failed'
+                dismissSearchTarget()
+                return
+            }
+            searchTargetRenderRetryCountRef.current += 1
+            scheduleSearchTargetRetry(SEARCH_TARGET_QUERY_RETRY_DELAY_MS)
+            return
+        }
+
+        if (!props.onLoadMessageContext) {
+            jump.phase = 'failed'
+            dismissSearchTarget()
+            return
+        }
+
+        jump.phase = 'loading'
+        setIsLocatingSearchTarget(true)
+        void props.onLoadMessageContext(targetMessageId).then((loaded) => {
+            const current = searchTargetJumpRef.current
+            if (!current || current.messageId !== targetMessageId) return
+            if (!loaded) {
+                // A false result can be a transient busy/invalidated window.
+                // Retry a few times while preserving the route target instead
+                // of silently consuming it and leaving the user at the tail.
+                if (searchTargetContextRetryCountRef.current < MAX_SEARCH_TARGET_CONTEXT_RETRIES) {
+                    searchTargetContextRetryCountRef.current += 1
+                    current.phase = 'idle'
+                    scheduleSearchTargetRetry(SEARCH_TARGET_QUERY_RETRY_DELAY_MS)
+                } else {
+                    current.phase = 'failed'
+                    dismissSearchTarget()
+                }
+                return
+            }
+            current.phase = 'waiting-render'
+            searchTargetRenderRetryCountRef.current = 0
+            scheduleSearchTargetRetry(0)
+        }).catch(() => {
+            const current = searchTargetJumpRef.current
+            if (!current || current.messageId !== targetMessageId) return
+            if (searchTargetContextRetryCountRef.current < MAX_SEARCH_TARGET_CONTEXT_RETRIES) {
+                searchTargetContextRetryCountRef.current += 1
+                current.phase = 'idle'
+                scheduleSearchTargetRetry(SEARCH_TARGET_QUERY_RETRY_DELAY_MS)
+            } else {
+                current.phase = 'failed'
+                dismissSearchTarget()
+            }
+        })
+    }, [
+        activeSearchTargetId,
+        clearInitialScrollTimers,
+        clearSearchTargetMarker,
+        clearSearchTargetRetryTimer,
+        clearSearchTargetScrollTimers,
+        dismissSearchTarget,
+        releaseSearchTargetHistoryLock,
+        scheduleSearchTargetRetry,
+        scheduleSearchTargetScroll,
+        appliedHistoryVersion,
+        appliedMessagesVersion,
+        props.historyVersion,
+        props.isLoadingMoreMessages,
+        props.isSyncingTail,
+        props.messagesVersion,
+        props.onInitialTargetConsumed,
+        props.onLoadMessageContext,
+        props.rawMessagesCount,
+        searchTargetRetryVersion,
+        targetSearchQuery
+    ])
+
     useEffect(() => {
         return () => {
             historyLoaderRef.current.runId += 1
             clearInitialScrollTimers()
+            clearSearchTargetMarker()
+            clearSearchTargetScrollTimers()
             clearCoverageCheckTimer()
             clearFailureRetryTimer()
+            clearSearchTargetRetryTimer()
             settlePendingLoad('transient-stop')
         }
-    }, [clearInitialScrollTimers, clearCoverageCheckTimer, clearFailureRetryTimer, settlePendingLoad])
+    }, [
+        clearInitialScrollTimers,
+        clearSearchTargetMarker,
+        clearSearchTargetRetryTimer,
+        clearSearchTargetScrollTimers,
+        clearCoverageCheckTimer,
+        clearFailureRetryTimer,
+        settlePendingLoad
+    ])
 
     useEffect(() => {
         if (forceScrollTokenRef.current === props.forceScrollToken) {
@@ -1177,7 +1732,7 @@ export function HappyThread(props: {
         const delay = getHistoryCoverageRetryDelay(initialScrollDeadlineRef.current, Date.now())
         coverageCheckTimerRef.current = window.setTimeout(() => {
             coverageCheckTimerRef.current = null
-            if (needsViewportCoverage()) {
+            if (!searchTargetHistoryLockRef.current && needsViewportCoverage()) {
                 void requestOlderRef.current('coverage')
             }
         }, delay)
@@ -1415,6 +1970,10 @@ export function HappyThread(props: {
     }, [loadOlderForOutline, props.onOutlineItemClick, props.onOutlineOpenChange])
 
     useEffect(() => {
+        if (searchTargetHistoryLockRef.current) {
+            clearCoverageCheckTimer()
+            return
+        }
         if (
             !props.hasMoreMessages
             || props.isSyncingTail
@@ -1455,6 +2014,7 @@ export function HappyThread(props: {
             if (
                 autoScrollEnabledRef.current
                 && atBottomRef.current
+                && !searchTargetHistoryLockRef.current
                 && !pendingScrollRef.current
             ) {
                 scrollToBottomInstant()
@@ -1462,7 +2022,11 @@ export function HappyThread(props: {
             // Late content growth can leave the viewport near the top without
             // a scroll event. Submit demand through the same controller; an
             // in-flight load, backoff, or paused run remains exclusive.
-            if (!pendingScrollRef.current && needsViewportCoverage()) {
+            if (
+                !searchTargetHistoryLockRef.current
+                && !pendingScrollRef.current
+                && needsViewportCoverage()
+            ) {
                 if (isInitialScrollSettling()) {
                     scheduleCoverageAfterSettling()
                 } else {
@@ -1518,7 +2082,11 @@ export function HappyThread(props: {
             settlePendingLoad('loaded')
             return
         }
-        if (atBottomRef.current && autoScrollEnabledRef.current) {
+        if (
+            !searchTargetHistoryLockRef.current
+            && atBottomRef.current
+            && autoScrollEnabledRef.current
+        ) {
             scrollToBottomInstant()
         }
     }, [
@@ -1624,13 +2192,69 @@ export function HappyThread(props: {
             loadOlderMessagesPreservingScroll: loadOlderFromConsumer
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
-                {!props.isSyncingTail && (
+                {hasSearchTarget ? (
+                    <div
+                        data-testid="search-match-navigation"
+                        role="group"
+                        aria-label={t('misc.searchMatchNavigation')}
+                        className="pointer-events-auto absolute left-3 right-3 top-3 z-20 flex justify-center"
+                    >
+                        <div className="flex min-w-0 max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/95 px-1.5 py-1 text-xs text-[var(--app-fg)] shadow-sm backdrop-blur">
+                            <span className="min-w-0 max-w-[10rem] truncate px-1.5 text-[var(--app-hint)]" title={targetSearchQuery}>
+                                “{targetSearchQuery}”
+                            </span>
+                            <span className="shrink-0 tabular-nums text-[var(--app-hint)]">
+                                {t('misc.searchMatches', {
+                                    current: searchMatchCurrentLabel,
+                                    total: searchMatchTotalLabel
+                                })}
+                            </span>
+                            <button
+                                type="button"
+                                aria-label={t('misc.previousSearchMatch')}
+                                disabled={searchMatches.length < 2}
+                                onClick={() => navigateSearchMatch(-1)}
+                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm leading-none text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] disabled:cursor-default disabled:opacity-35"
+                            >
+                                <span aria-hidden="true">↑</span>
+                            </button>
+                            <button
+                                type="button"
+                                aria-label={t('misc.nextSearchMatch')}
+                                disabled={searchMatches.length < 2}
+                                onClick={() => navigateSearchMatch(1)}
+                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm leading-none text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] disabled:cursor-default disabled:opacity-35"
+                            >
+                                <span aria-hidden="true">↓</span>
+                            </button>
+                            <button
+                                type="button"
+                                aria-label={t('misc.closeSearch')}
+                                onClick={dismissSearchTarget}
+                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                            >
+                                <CloseIcon className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+                {isLocatingSearchTarget ? (
+                    <div
+                        data-testid="search-target-status"
+                        role="status"
+                        aria-live="polite"
+                        className={`pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur ${hasSearchTarget ? 'top-12' : 'top-3'}`}
+                    >
+                        <Spinner size="sm" label={null} className="text-current" />
+                        <span>{t('misc.locatingMessage')}</span>
+                    </div>
+                ) : !props.isSyncingTail && (
                     props.isLoadingMoreMessages || pullToLoadState !== 'idle'
                 ) ? (
                     <div
                         role="status"
                         aria-live="polite"
-                        className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur"
+                        className={`pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur ${hasSearchTarget ? 'top-12' : 'top-3'}`}
                     >
                         {props.isLoadingMoreMessages ? (
                             <Spinner size="sm" label={null} className="text-current" />

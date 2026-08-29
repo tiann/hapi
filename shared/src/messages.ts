@@ -1,3 +1,5 @@
+import { fromMarkdown } from 'mdast-util-from-markdown'
+import { toString } from 'mdast-util-to-string'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import { isObject } from './utils'
 
@@ -163,6 +165,9 @@ export function extractAssistantPlainText(content: unknown): string | null {
 
         if (data.type !== 'assistant') return null
         const message = isObject(data.message) ? data.message : null
+        if (typeof data.message === 'string' && data.message.trim().length > 0) {
+            return data.message
+        }
         const blocks = Array.isArray(message?.content) ? message.content : null
         if (!blocks) return null
         const textParts: string[] = []
@@ -174,6 +179,158 @@ export function extractAssistantPlainText(content: unknown): string | null {
         }
         if (textParts.length === 0) return null
         return textParts.join('\n')
+    }
+
+    return null
+}
+
+// AGY sometimes echoes an async task's raw result into its own PLANNER_RESPONSE
+// prose. The web renderer strips this block and renders the corresponding task
+// result separately, so keep it out of the searchable assistant text as well.
+export function stripAgyEchoedTaskResult(text: string): string {
+    return text.replace(/\n*\[Message\]\s+timestamp=[\s\S]*$/, '').trim()
+}
+
+// AGY's transitional task-log narration is rendered as a compact tool chip,
+// not an assistant text bubble. Return its task number for renderer/index parity.
+export function getAgyTaskLogId(text: string): string | null {
+    return text.match(/^Inside the task-(\d+) log\b/)?.[1] ?? null
+}
+
+function normalizeSearchablePlainText(value: string): string | null {
+    const text = value.trim().replace(/\s+/g, ' ')
+    return text.length > 0 ? text : null
+}
+
+function normalizeSearchableMarkdownText(value: string): string | null {
+    try {
+        return normalizeSearchablePlainText(toString(fromMarkdown(value)))
+    } catch {
+        // Keep indexing malformed/incomplete streamed Markdown rather than
+        // dropping otherwise visible assistant text.
+        return normalizeSearchablePlainText(value)
+    }
+}
+
+export function extractUserPlainText(content: unknown): string | null {
+    if (typeof content === 'string') {
+        return normalizeSearchablePlainText(content)
+    }
+
+    const blocks = Array.isArray(content) ? content : [content]
+    const textParts = blocks
+        .map((block) => {
+            if (!isObject(block) || block.type !== 'text' || typeof block.text !== 'string') {
+                return null
+            }
+            return block.text
+        })
+        .filter((text): text is string => text !== null)
+
+    return normalizeSearchablePlainText(textParts.join(' '))
+}
+
+function extractClaudeUserPlainText(content: unknown): string | null {
+    if (!isObject(content) || content.type !== 'output') return null
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'user' || Boolean(data.isSidechain)) return null
+
+    const message = isObject(data.message) ? data.message : null
+    const blocks = Array.isArray(message?.content) ? message.content : null
+    if (!blocks || blocks.length === 0 || !blocks.every((block) => (
+        isObject(block) && block.type === 'text' && typeof block.text === 'string'
+    ))) return null
+
+    return extractUserPlainText(blocks)
+}
+
+export type SearchableMessage = {
+    role: 'user' | 'assistant'
+    text: string
+    /** Stable renderer identity used to coalesce streamed assistant snapshots. */
+    renderKey?: string
+}
+
+function getMessageRenderKey(content: unknown): string | undefined {
+    if (!isObject(content)) return undefined
+
+    if (content.type === 'codex') {
+        const data = isObject(content.data) ? content.data : null
+        if (data?.type === 'message' && typeof data.id === 'string' && data.id.length > 0) {
+            return data.id
+        }
+    }
+
+    if (content.type === 'text' && typeof content.streamId === 'string' && content.streamId.length > 0) {
+        return content.streamId
+    }
+
+    return undefined
+}
+
+/** Return the renderer identity for a visible message, even when it has no text. */
+export function extractMessageRenderKey(value: unknown): string | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return null
+    return getMessageRenderKey(record.content) ?? null
+}
+
+/** Return whether a message is a cumulative live stream snapshot. */
+export function isLiveStreamSnapshot(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return false
+    if (!isObject(record.content)) return false
+
+    if (record.content.type === 'codex') {
+        const data = isObject(record.content.data) ? record.content.data : null
+        return data?.type === 'message' && data.streamSnapshot === true && data.live === true
+    }
+
+    return record.content.type === 'text'
+        && record.content.streamSnapshot === true
+        && record.content.live === true
+}
+
+function isHiddenAssistantOutput(content: unknown): boolean {
+    if (!isObject(content) || content.type !== 'output') return false
+    const data = isObject(content.data) ? content.data : null
+    return Boolean(data?.isMeta) || Boolean(data?.isCompactSummary) || Boolean(data?.isSidechain)
+}
+
+/** Extract only user-visible user/assistant prose from a stored role envelope. */
+export function extractSearchableMessageText(value: unknown): SearchableMessage | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (!record) return null
+
+    if (record.role === 'user') {
+        const text = extractUserPlainText(record.content)
+        return text ? { role: 'user', text } : null
+    }
+
+    if (record.role === 'agent' || record.role === 'assistant') {
+        if (isHiddenAssistantOutput(record.content)) return null
+        const claudeUserText = extractClaudeUserPlainText(record.content)
+        if (claudeUserText) return { role: 'user', text: claudeUserText }
+        const renderKey = getMessageRenderKey(record.content)
+        const isAgyPlannerMessage = isObject(record.content)
+            && record.content.type === 'output'
+            && isObject(record.content.data)
+            && record.content.data.type === 'agy_message'
+        const directText = typeof record.content === 'string'
+            ? record.content
+            : isObject(record.content)
+                && record.content.type === 'text'
+                && typeof record.content.text === 'string'
+                ? record.content.text
+                : null
+        const rawText = stripNotifySummaryFooter(
+            isAgyPlannerMessage
+                ? stripAgyEchoedTaskResult(directText ?? extractAssistantPlainText(record.content) ?? '')
+                : (directText ?? extractAssistantPlainText(record.content) ?? '')
+        )
+        const text = normalizeSearchableMarkdownText(rawText)
+        if (!text || (isAgyPlannerMessage && getAgyTaskLogId(normalizeSearchablePlainText(rawText) ?? ''))) return null
+        return { role: 'assistant', text, ...(renderKey ? { renderKey } : {}) }
     }
 
     return null

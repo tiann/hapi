@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
+import { useCallback, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage } from '@/types/api'
 import {
@@ -6,6 +6,8 @@ import {
     cancelOlderMessageLoad,
     fetchOlderMessages,
     getMessageWindowState,
+    loadMessageContext,
+    setMessageWindowTargetLock,
     setMessageViewMode,
     subscribeMessageWindow,
     syncTailMessages,
@@ -25,12 +27,17 @@ export const EMPTY_STATE: MessageWindowState = {
     isLoadingMore: false,
     warning: null,
     viewMode: 'tail',
+    requiresLatestReset: false,
     messagesVersion: 0,
     historyVersion: 0,
     tailRevision: 0,
 }
 
-export function useMessages(api: ApiClient | null, sessionId: string | null): {
+export function useMessages(
+    api: ApiClient | null,
+    sessionId: string | null,
+    options: { skipInitialTailSync?: boolean } = {}
+): {
     messages: DecryptedMessage[]
     warning: string | null
     isSyncingTail: boolean
@@ -41,10 +48,14 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
     historyVersion: number
     tailRevision: number
     loadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    loadMessageContext: (messageId: string) => Promise<boolean>
     cancelLoadMore: () => void
     refetch: () => Promise<void>
     setViewMode: (mode: MessageViewMode) => void
+    jumpToTail: () => void
 } {
+    const initialSyncKey = api && sessionId ? sessionId : null
+    const [initialSyncReadyKey, setInitialSyncReadyKey] = useState<string | null>(null)
     const state = useSyncExternalStore(
         useCallback((listener) => {
             if (!sessionId) return () => {}
@@ -53,18 +64,40 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
         useCallback(() => sessionId ? getMessageWindowState(sessionId) : EMPTY_STATE, [sessionId]),
         () => EMPTY_STATE
     )
-
     useLayoutEffect(() => {
-        if (sessionId) {
+        if (sessionId && !options.skipInitialTailSync) {
             activateMessageWindow(sessionId)
         }
-    }, [sessionId])
+    }, [options.skipInitialTailSync, sessionId])
 
-    useEffect(() => {
-        if (api && sessionId) {
-            void syncTailMessages(api, sessionId)
+    // Start the initial tail reconciliation in the layout phase so a search
+    // target cannot begin a context load in the gap before the tail request
+    // invalidates it. HappyThread waits for this state to settle before it
+    // attempts DOM anchoring.
+    useLayoutEffect(() => {
+        if (!api || !sessionId) return
+        setMessageWindowTargetLock(sessionId, Boolean(options.skipInitialTailSync))
+        if (options.skipInitialTailSync) {
+            // A search result already identifies the exact message to load.
+            // Avoid fetching the latest 200 messages first: inactive sessions
+            // can contain very large tool payloads, and that request can delay
+            // the much smaller, targeted context request for a long time.
+            setInitialSyncReadyKey(sessionId)
+            return () => {
+                setMessageWindowTargetLock(sessionId, false)
+            }
         }
-    }, [api, sessionId])
+        let active = true
+        void syncTailMessages(api, sessionId).then(() => {
+            if (active) {
+                setInitialSyncReadyKey(sessionId)
+            }
+        })
+        return () => {
+            active = false
+            setMessageWindowTargetLock(sessionId, false)
+        }
+    }, [api, sessionId, options.skipInitialTailSync])
 
     const loadMore = useCallback(async (onBeforeApply?: (historyVersion: number) => boolean) => {
         if (!api || !sessionId) {
@@ -79,6 +112,11 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
         }
     }, [sessionId])
 
+    const loadMessageContextForSession = useCallback(async (messageId: string) => {
+        if (!api || !sessionId) return false
+        return await loadMessageContext(api, sessionId, messageId)
+    }, [api, sessionId])
+
     const refetch = useCallback(async () => {
         if (!api || !sessionId) return
         await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
@@ -86,9 +124,17 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
 
     const setViewMode = useCallback((mode: MessageViewMode) => {
         if (!sessionId) return
-        const previousMode = getMessageWindowState(sessionId).viewMode
+        const previous = getMessageWindowState(sessionId)
         setMessageViewMode(sessionId, mode)
-        if (mode === 'tail' && previousMode !== 'tail' && api) {
+        if (mode === 'tail' && api && (previous.viewMode !== 'tail' || previous.requiresLatestReset)) {
+            void syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
+        }
+    }, [api, sessionId])
+
+    const jumpToTail = useCallback(() => {
+        if (!sessionId) return
+        setMessageViewMode(sessionId, 'tail')
+        if (api) {
             void syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
         }
     }, [api, sessionId])
@@ -96,7 +142,18 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
     return {
         messages: state.messages,
         warning: state.warning,
-        isSyncingTail: state.isSyncingTail,
+        // The store's first isSyncingTail publication can occur after child
+        // layout effects. Keep search-target anchoring blocked until the
+        // initial reconciliation promise has settled as well, so a persisted
+        // historical window cannot be mistaken for the latest tail.
+        isSyncingTail: state.isSyncingTail
+            // `requiresLatestReset` is expected while a retained history
+            // window is being re-activated into tail mode. Once a search
+            // context is applied it remains true as a marker for the next
+            // tail activation, but the current history view must still be
+            // renderable and searchable.
+            || (state.requiresLatestReset && state.viewMode === 'tail')
+            || (initialSyncKey !== null && initialSyncReadyKey !== initialSyncKey),
         isLoadingMore: state.isLoadingMore,
         hasMore: state.hasMore,
         viewMode: state.viewMode,
@@ -104,8 +161,10 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
         historyVersion: state.historyVersion,
         tailRevision: state.tailRevision,
         loadMore,
+        loadMessageContext: loadMessageContextForSession,
         cancelLoadMore,
         refetch,
         setViewMode,
+        jumpToTail,
     }
 }

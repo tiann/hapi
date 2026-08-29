@@ -5,7 +5,7 @@ const chromePath = process.env.PLAYWRIGHT_CHROME_PATH
 /** Live hub session tests — no Vite; hits HAPI_URL with HAPI_LIVE=1. */
 export default defineConfig({
     testDir: './e2e',
-    testMatch: 'mermaid-lightbox-session.spec.ts',
+    testMatch: ['mermaid-lightbox-session.spec.ts', 'session-content-search-jump.spec.ts'],
     timeout: 120_000,
     expect: { timeout: 20_000 },
     fullyParallel: false,

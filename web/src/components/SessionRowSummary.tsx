@@ -119,6 +119,8 @@ export function SessionRowSummary(props: {
     projectLabel?: string
     /** Machine label shown next to the project name (pinned "in progress" rows). */
     machineLabel?: string
+    /** Context returned by the opt-in session message-content search. */
+    contentSnippet?: string
 }) {
     const {
         session: s,
@@ -133,6 +135,7 @@ export function SessionRowSummary(props: {
         inRunningSection = false,
         projectLabel,
         machineLabel,
+        contentSnippet,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -288,6 +291,11 @@ export function SessionRowSummary(props: {
                     ) : null}
                 </div>
             </div>
+            {contentSnippet ? (
+                <div className="line-clamp-2 text-xs text-[var(--app-fg)]/80" title={contentSnippet}>
+                    {contentSnippet}
+                </div>
+            ) : null}
             {projectLabel || machineLabel ? (
                 <div className="truncate text-xs text-[var(--app-hint)]" title={[projectLabel, machineLabel].filter(Boolean).join(' · ')}>
                     {[projectLabel, machineLabel].filter(Boolean).join(' · ')}

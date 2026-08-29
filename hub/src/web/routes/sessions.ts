@@ -27,14 +27,22 @@ import {
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import {
+    MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES,
+    serializeContentSearchSessionIds
+} from '../../store/messageContentSearch'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+// Leave room for the query, limit, and JSON envelope; the serialized session
+// scope itself remains bounded by MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES.
+const MAX_CONTENT_SEARCH_REQUEST_BYTES = MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES + 4 * 1024
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -126,6 +134,164 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         })
 
         return c.json({ sessions })
+    })
+
+    const respondToSessionContentSearch = (
+        c: Context<WebAppEnv>,
+        engine: SyncEngine,
+        query: string,
+        limit: number,
+        sessionIds?: readonly string[]
+    ) => {
+        if (!query) return c.json({ results: [] })
+
+        const namespace = c.get('namespace')
+        const sessionsById = new Map(
+            engine.getSessionsByNamespace(namespace).map((session) => [session.id, session])
+        )
+        const normalizedSessionIds = sessionIds === undefined
+            ? undefined
+            : [...new Set(sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean))]
+        const scopedSessionIds = normalizedSessionIds?.filter((sessionId) => sessionsById.has(sessionId))
+        if (scopedSessionIds && serializeContentSearchSessionIds(scopedSessionIds) === null) {
+            return c.json({ error: 'sessionIds too large' }, 400)
+        }
+        const matches = engine.searchSessionContent(query.slice(0, 200), namespace, limit, scopedSessionIds)
+        const matchedSessionIds = matches.map((match) => match.sessionId)
+        const scheduledCounts = engine.getFutureScheduledMessageCounts(matchedSessionIds)
+        const nextScheduledAt = engine.getNextScheduledAtBySessionIds(matchedSessionIds)
+        const results = matches
+            .flatMap((match) => {
+                const session = sessionsById.get(match.sessionId)
+                if (!session) return []
+                const summary = toSessionSummary(session)
+                return [{
+                    session: {
+                        ...summary,
+                        futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
+                        nextScheduledAt: nextScheduledAt.get(session.id) ?? null
+                    },
+                    match: {
+                        messageId: match.messageId,
+                        role: match.role,
+                        seq: match.seq,
+                        createdAt: match.createdAt,
+                        snippet: match.snippet
+                    }
+                }]
+            })
+
+        return c.json({ results })
+    }
+
+    app.get('/sessions/content-search', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const query = c.req.query('query')?.trim() ?? ''
+        const limitRaw = Number(c.req.query('limit'))
+        const limit = Number.isFinite(limitRaw)
+            ? Math.min(100, Math.max(1, Math.floor(limitRaw)))
+            : 50
+        const searchUrl = new URL(c.req.url)
+        const requestedSessionIds = searchUrl.searchParams.getAll('sessionId')
+            .map((sessionId) => sessionId.trim())
+            .filter(Boolean)
+        const sessionIds = searchUrl.searchParams.has('sessionId')
+            ? [...new Set(requestedSessionIds)]
+            : undefined
+        return respondToSessionContentSearch(c, engine, query, limit, sessionIds)
+    })
+
+    app.post(
+        '/sessions/content-search',
+        bodyLimit({
+            maxSize: MAX_CONTENT_SEARCH_REQUEST_BYTES,
+            onError: (c) => c.json({ error: 'Content search request too large' }, 413)
+        }),
+        async (c) => {
+            const engine = requireSyncEngine(c, getSyncEngine)
+            if (engine instanceof Response) {
+                return engine
+            }
+
+            let body: {
+                query?: unknown
+                limit?: unknown
+                sessionIds?: unknown
+            } | null
+            try {
+                body = await c.req.json() as {
+                    query?: unknown
+                    limit?: unknown
+                    sessionIds?: unknown
+                }
+            } catch (error) {
+                if (error instanceof Error && error.name === 'BodyLimitError') {
+                    return c.json({ error: 'Content search request too large' }, 413)
+                }
+                body = null
+            }
+            if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+                return c.json({ error: 'Invalid body' }, 400)
+            }
+            if (body.query !== undefined && typeof body.query !== 'string') {
+                return c.json({ error: 'Invalid query' }, 400)
+            }
+            if (body.sessionIds !== undefined && (
+                !Array.isArray(body.sessionIds)
+                || body.sessionIds.some((sessionId) => typeof sessionId !== 'string')
+            )) {
+                return c.json({ error: 'Invalid sessionIds' }, 400)
+            }
+
+            const query = typeof body.query === 'string' ? body.query.trim() : ''
+            const limitRaw = Number(body.limit)
+            const limit = Number.isFinite(limitRaw)
+                ? Math.min(100, Math.max(1, Math.floor(limitRaw)))
+                : 50
+            const sessionIds = body.sessionIds === undefined
+                ? undefined
+                : [...new Set(
+                    (body.sessionIds as string[])
+                        .map((sessionId) => sessionId.trim())
+                        .filter(Boolean)
+                )]
+            return respondToSessionContentSearch(c, engine, query, limit, sessionIds)
+        }
+    )
+
+    app.get('/sessions/:id/content-search', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const query = c.req.query('query')?.trim() ?? ''
+        if (!query) return c.json({ matches: [], total: 0 })
+
+        const limitRaw = Number(c.req.query('limit'))
+        const limit = Number.isFinite(limitRaw)
+            ? Math.min(1000, Math.max(1, Math.floor(limitRaw)))
+            : 500
+        const result = engine.searchSessionContentMatches(
+            query.slice(0, 200),
+            c.get('namespace'),
+            sessionResult.session.id,
+            limit
+        )
+
+        return c.json({
+            matches: result.matches.map(({ sessionId: _sessionId, ...match }) => match),
+            total: result.total
+        })
     })
 
     app.get('/sessions/:id/export', (c) => {

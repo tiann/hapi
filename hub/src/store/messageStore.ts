@@ -37,12 +37,19 @@ import {
     getAllMessages,
     getMessagesAfterSeq,
     getMessageSeqById,
+    getMessageById,
     truncateMessagesFromLocalId,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
 } from './messages'
+import {
+    searchMessageContent,
+    searchMessageContentInSession,
+    type MessageContentSearchMatch,
+    type SessionMessageContentSearchResult
+} from './messageContentSearch'
 
 export class MessageStore {
     private readonly db: Database
@@ -88,6 +95,10 @@ export class MessageStore {
 
     getSeqById(sessionId: string, messageId: string): number | null {
         return getMessageSeqById(this.db, sessionId, messageId)
+    }
+
+    getMessageById(sessionId: string, messageId: string): StoredMessage | null {
+        return getMessageById(this.db, sessionId, messageId)
     }
 
     getMessages(sessionId: string, limit: number = 200): StoredMessage[] {
@@ -157,6 +168,24 @@ export class MessageStore {
 
     countMessages(sessionId: string): number {
         return countMessages(this.db, sessionId)
+    }
+
+    searchContent(
+        query: string,
+        namespace: string,
+        limit: number = 50,
+        sessionIds?: readonly string[]
+    ): MessageContentSearchMatch[] {
+        return searchMessageContent(this.db, query, namespace, limit, sessionIds)
+    }
+
+    searchContentInSession(
+        query: string,
+        namespace: string,
+        sessionId: string,
+        limit: number = 500
+    ): SessionMessageContentSearchResult {
+        return searchMessageContentInSession(this.db, query, namespace, sessionId, limit)
     }
 
     cancelQueuedMessage(sessionId: string, messageId: string): CancelQueuedMessageResult {

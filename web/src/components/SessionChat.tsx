@@ -526,6 +526,7 @@ type SessionChatProps = {
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
+    onJumpToTail: () => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     availableSlashCommands?: readonly SlashCommand[]
@@ -538,6 +539,11 @@ type SessionChatProps = {
     onSuppressSendErrorRestore?: (id: number) => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
+    initialTargetMessageId?: string
+    initialTargetMessageQuery?: string
+    onLoadMessageContext?: (messageId: string) => Promise<boolean>
+    onInitialTargetConsumed?: () => void
+    onSearchTargetDismissed?: () => void
     // Called when an `abort-restore` event arrives and the composer is not empty,
     // so the caller can surface the aborted text via the existing sendError path.
     onAbortRestore?: (text: string) => void
@@ -1806,6 +1812,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
                         onViewModeChange={props.onViewModeChange}
+                        onJumpToTail={props.onJumpToTail}
                         isSyncingTail={props.isSyncingTail}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
@@ -1821,6 +1828,11 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineOpen={outlineOpen}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
+                        initialTargetMessageId={props.initialTargetMessageId}
+                        initialTargetMessageQuery={props.initialTargetMessageQuery}
+                        onLoadMessageContext={props.onLoadMessageContext}
+                        onInitialTargetConsumed={props.onInitialTargetConsumed}
+                        onSearchTargetDismissed={props.onSearchTargetDismissed}
                     />
                     </div>
 
