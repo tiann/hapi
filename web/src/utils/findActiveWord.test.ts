@@ -27,4 +27,28 @@ describe('findActiveWord', () => {
         expect(hit?.activeWord).toBe('@peer')
         expect(hit?.offset).toBe(4)
     })
+
+    it('recognizes the full-width yen sign at the same boundaries as $', () => {
+        const atStart = findActiveWord('￥browser', { start: 8, end: 8 }, ['@', '/', '$', '￥'])
+        expect(atStart?.activeWord).toBe('￥browser')
+        expect(atStart?.offset).toBe(0)
+
+        const afterSpace = findActiveWord('run ￥browser', { start: 12, end: 12 }, ['@', '/', '$', '￥'])
+        expect(afterSpace?.activeWord).toBe('￥browser')
+        expect(afterSpace?.offset).toBe(4)
+
+        expect(findActiveWord('run￥browser', { start: 11, end: 11 }, ['@', '/', '$', '￥'])).toBeUndefined()
+    })
+
+    it('recognizes the narrow yen sign at the same boundaries as $', () => {
+        const atStart = findActiveWord('\u00A5browser', { start: 8, end: 8 }, ['@', '/', '$', '￥', '\u00A5'])
+        expect(atStart?.activeWord).toBe('\u00A5browser')
+        expect(atStart?.offset).toBe(0)
+
+        const afterSpace = findActiveWord('run \u00A5browser', { start: 12, end: 12 }, ['@', '/', '$', '￥', '\u00A5'])
+        expect(afterSpace?.activeWord).toBe('\u00A5browser')
+        expect(afterSpace?.offset).toBe(4)
+
+        expect(findActiveWord('run\u00A5browser', { start: 11, end: 11 }, ['@', '/', '$', '￥', '\u00A5'])).toBeUndefined()
+    })
 })
