@@ -2,11 +2,11 @@ import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { PiTransport } from './piTransport';
-import { convertPiEvent, convertPiTurnUsage } from './piEventConverter';
+import { convertPiEvent, convertPiTurnUsage, extractPiGeneratedImages } from './piEventConverter';
 import { PiMessageAccumulator } from './piMessageAccumulator';
 import { PiExtensionUiHandler } from './extensionUiHandler';
 import { parsePiModels, parsePiCommands, parsePiContextUsage, PiAgentEndEventSchema, PiAgentSettledEventSchema, PiExtensionUiRequestSchema, PiLifecycleEventSchema, PiResponseEventSchema, PiSessionInfoChangedEventSchema, PiStateDataSchema, PiSetModelDataSchema } from './schemas';
-import type { PiContextUsage, PiResponseEvent, PiRpcCommand, PiThinkingLevel, PiTurnEndEvent } from './types';
+import type { PiContextUsage, PiResponseEvent, PiRpcCommand, PiThinkingLevel, PiToolExecutionStartEvent, PiTurnEndEvent } from './types';
 import type { PiSession } from './session';
 import type { PiConversationHistory } from './conversationHistory';
 
@@ -533,6 +533,9 @@ export function wireTransportEvents(
     const lifecycleTimeline = new PiLifecycleTimeline();
     let latestContextUsageRequest = 0;
     let deliveredSettlement = false;
+    // Bounded tool-args cache so tool_execution_end can attribute registered
+    // media (e.g. images read by the `read` tool) to their source path.
+    const piToolArgsByCallId = new Map<string, unknown>();
     let legacySettleTimer: ReturnType<typeof setTimeout> | null = null;
     let promptLifecycleTimer: ReturnType<typeof setTimeout> | null = null;
     let compactionRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -849,6 +852,19 @@ export function wireTransportEvents(
             for (const message of messages) {
                 const converted = convertAgentMessage(message, session.currentModel);
                 if (converted) session.sendAgentMessage(converted);
+            }
+            if (event.type === 'tool_execution_start') {
+                if (piToolArgsByCallId.size > 500) piToolArgsByCallId.clear();
+                const startEvent = event as PiToolExecutionStartEvent;
+                piToolArgsByCallId.set(startEvent.toolCallId, startEvent.args);
+            } else if (event.type === 'tool_execution_end') {
+                const endEvent = event as { toolCallId: string };
+                const mediaMessages = extractPiGeneratedImages(event, (toolCallId) => piToolArgsByCallId.get(toolCallId));
+                piToolArgsByCallId.delete(endEvent.toolCallId);
+                for (const message of mediaMessages) {
+                    const converted = convertAgentMessage(message, session.currentModel);
+                    if (converted) session.sendAgentMessage(converted);
+                }
             }
         }
 
