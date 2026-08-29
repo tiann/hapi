@@ -666,6 +666,7 @@ export type CommandResponse = {
     stderr?: string
     exitCode?: number
     error?: string
+    code?: string
 }
 
 export type GitCommandResponse = CommandResponse
@@ -676,6 +677,7 @@ export type FileReadResponse = {
     size?: number
     modified?: number
     error?: string
+    code?: string
 }
 
 export type GeneratedImageResponse = {

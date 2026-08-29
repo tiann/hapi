@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { createGitRoutes } from './git'
 
@@ -298,6 +299,51 @@ describe('file search route', () => {
             files: [
                 { fileName: 'file\\name.ts', filePath: 'src', fullPath: 'src/file\\name.ts', fileType: 'file', size: 10, modified: 100 },
             ]
+        })
+    })
+})
+
+describe('session file routes', () => {
+    const session = {
+        id: 'session-1',
+        namespace: 'default',
+        active: false,
+        metadata: { path: '/project' }
+    } as unknown as Session
+
+    it('maps RpcTargetMissingError on /file to 503 rpc_target_missing', async () => {
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            readSessionFile: async () => {
+                throw new RpcTargetMissingError('readFile', 'handler-not-registered')
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/file?path=README.md')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: readFile',
+            code: 'rpc_target_missing'
+        })
+    })
+
+    it('maps RpcTargetMissingError on /git-diff-file to 503 rpc_target_missing', async () => {
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            getGitDiffFile: async () => {
+                throw new RpcTargetMissingError('git-diff-file', 'socket-disconnected')
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/git-diff-file?path=README.md')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC socket disconnected: git-diff-file',
+            code: 'rpc_target_missing'
         })
     })
 })

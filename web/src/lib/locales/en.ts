@@ -521,6 +521,8 @@ export default {
   'file.error.readFailedWithDetail': 'Failed to read file: {error}',
   'file.error.diffUnavailable': 'Diff unavailable.',
   'file.error.diffUnavailableWithDetail': 'Diff unavailable: {error}',
+  'file.error.sessionOffline': 'This session is not connected to your computer right now. Reopen it to load this file.',
+  'file.action.reopen': 'Reopen session',
 
   // Inline media
   'media.displayed.image': 'Displayed image',

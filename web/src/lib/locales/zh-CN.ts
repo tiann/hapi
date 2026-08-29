@@ -520,6 +520,8 @@ export default {
   'file.error.readFailedWithDetail': '读取文件失败：{error}',
   'file.error.diffUnavailable': 'Diff 不可用。',
   'file.error.diffUnavailableWithDetail': 'Diff 不可用：{error}',
+  'file.error.sessionOffline': '此会话当前未连接到您的电脑。请重新打开会话以加载此文件。',
+  'file.action.reopen': '重新打开会话',
 
   // 内联媒体
   'media.displayed.image': '展示图片',
