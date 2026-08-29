@@ -36,4 +36,5 @@ export const queryKeys = {
     machinePiModels: (machineId: string) => ['machine-pi-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
     scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
+    features: ['features'] as const,
 }

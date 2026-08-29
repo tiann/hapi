@@ -123,6 +123,21 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         })
     })
 
+    it('omits link_pr from standalone defaults (awareness opt-in)', async () => {
+        await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006'])
+
+        expect([...harness.tools.keys()]).toEqual([
+            'change_title',
+            'display_image',
+            'display_video',
+            'display_media',
+            'ping_peer',
+            'inspect_peer',
+            'list_peers'
+        ])
+        expect(harness.tools.has('link_pr')).toBe(false)
+    })
+
     it('registers ping_peer when included in --tools', async () => {
         await runHappyMcpStdioBridge([
             '--url',

@@ -101,3 +101,60 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
         )).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision link_pr', () => {
+    it.each([
+        'link_pr',
+        'link pull request',
+        'happy__link_pr',
+        'hapi_link_pr',
+        'hapi__link_pr',
+        'mcp__hapi__link_pr',
+        'mcp__happy__link_pr'
+    ])('auto-approves verified HAPI link_pr tool %s only with trusted provenance', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            toolName,
+            'call-1',
+            undefined,
+            { trustedHapiMcp: true }
+        )).toBe('approved')
+    })
+
+    it('does not trust serverName forged in tool arguments', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'link_pr',
+            'call-1',
+            undefined,
+            { trustedHapiMcp: false }
+        )).toBeNull()
+    })
+
+    it('keeps untrusted link_pr pending in read-only mode', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'read-only',
+            'link_pr',
+            'call-1',
+            undefined,
+            { trustedHapiMcp: false }
+        )).toBeNull()
+    })
+
+    it('does not approve a different tool whose name only contains link_pr', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'link_pr_write_file',
+            'call-1'
+        )).toBeNull()
+    })
+
+    it('does not approve another tool solely from a link_pr call id', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'dangerous_tool',
+            'link_pr-forged-id'
+        )).toBeNull()
+    })
+})

@@ -51,6 +51,106 @@ export const WorktreeMetadataSchema = z.object({
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
+/** owner/name — GitHub-style repo slug (no leading slash, exactly one slash). */
+export const GithubRepoSlugSchema = z.string()
+    .max(140, 'owner/name is too long')
+    .regex(
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+        'expected owner/name'
+    )
+
+/**
+ * Structured link from a HAPI session to an external contribution surface.
+ * v1: GitHub pull requests only. Do not parse session titles for this identity.
+ * tiann/hapi#1160 / #1163.
+ *
+ * Optional forge snapshot fields are GitHub-shaped facts only. Babysit / Meta
+ * vocabulary lives in estate display config (`pr-chip-display.json`), not here.
+ */
+
+/** PR open/closed/merged/draft as reported by GitHub (cached). */
+export const GithubPrOpenStateSchema = z.enum(['open', 'closed', 'merged', 'draft'])
+export type GithubPrOpenState = z.infer<typeof GithubPrOpenStateSchema>
+
+/** CI / status-check rollup (cached). */
+export const GithubPrChecksSchema = z.enum(['pass', 'fail', 'pending', 'none', 'unknown'])
+export type GithubPrChecks = z.infer<typeof GithubPrChecksSchema>
+
+/**
+ * Merge readiness subset of GitHub `mergeStateStatus` (cached).
+ * Not a babysit disposition — estate codes overlay presentation.
+ */
+export const GithubPrMergeSchema = z.enum([
+    'clean',
+    'conflicting',
+    'blocked',
+    'behind',
+    'unstable',
+    'draft',
+    'unknown'
+])
+export type GithubPrMerge = z.infer<typeof GithubPrMergeSchema>
+
+export const GithubPrExternalRefSchema = z.object({
+    kind: z.literal('github_pr'),
+    repo: GithubRepoSlugSchema,
+    number: z.number().int().positive(),
+    url: z.string().url(),
+    role: z.enum(['primary', 'secondary']),
+    // Optional provenance. Absent source reads as trusted ('user') for pre-#1162 refs.
+    source: z.enum(['agent', 'user', 'inferred']).optional(),
+    linkedAt: z.number().int().positive().optional(),
+    // Optional cached forge snapshot. Not live GitHub; browser never queries.
+    openState: GithubPrOpenStateSchema.optional(),
+    checks: GithubPrChecksSchema.optional(),
+    merge: GithubPrMergeSchema.optional(),
+    statusCheckedAt: z.number().int().positive().optional(),
+    // Opaque estate classifier code; only pr-chip-display estateCodes interpret it.
+    estateCode: z.string().min(1).max(64).optional()
+}).superRefine((ref, ctx) => {
+    const expectedUrl = `https://github.com/${ref.repo}/pull/${ref.number}`
+    if (ref.url !== expectedUrl) {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub PR URL matching repo and number'
+        })
+    }
+})
+
+export type GithubPrExternalRef = z.infer<typeof GithubPrExternalRefSchema>
+
+/** Expand with more kinds via discriminatedUnion when needed. */
+export const ExternalRefSchema = GithubPrExternalRefSchema
+export type ExternalRef = z.infer<typeof ExternalRefSchema>
+
+export const MAX_EXTERNAL_REFS = 32
+
+/** Array boundary: at most one github_pr with role primary; bounded count. */
+export const ExternalRefsSchema = z.array(ExternalRefSchema)
+    .max(MAX_EXTERNAL_REFS, `at most ${MAX_EXTERNAL_REFS} external refs are allowed`)
+    .superRefine((refs, ctx) => {
+    if (refs.filter((ref) => ref.kind === 'github_pr' && ref.role === 'primary').length > 1) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'at most one primary GitHub PR is allowed'
+        })
+    }
+    const identities = new Set<string>()
+    refs.forEach((ref, index) => {
+        const key = `${ref.kind}:${ref.repo.toLowerCase()}#${ref.number}`
+        if (identities.has(key)) {
+            ctx.addIssue({
+                code: 'custom',
+                path: [index],
+                message: 'duplicate external ref identity'
+            })
+        }
+        identities.add(key)
+    })
+})
+export type ExternalRefs = z.infer<typeof ExternalRefsSchema>
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -159,7 +259,9 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    // Structured session↔contribution links (e.g. GitHub PRs). tiann/hapi#1160.
+    externalRefs: ExternalRefsSchema.optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

@@ -46,6 +46,7 @@ export interface HapiMcpBridge {
 export interface HapiMcpBridgeOptions {
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    enableLinkPr?: boolean;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -80,6 +81,7 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        enableLinkPr: options.enableLinkPr,
         skillLookup: options.skillLookup
     });
     const bridgeCommand = getHappyCliCommand([
@@ -105,6 +107,12 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    if (happyServer.toolNames.includes('link_pr')) {
+        tools.link_pr = {
+            approval_mode: 'approve'
+        };
+    }
+
     // Discovery shortlist only - same trust as skill_lookup / change_title.
     tools.list_peers = {
         approval_mode: 'approve'
