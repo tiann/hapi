@@ -7,7 +7,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - Session list with status, pending approvals, todos, and summaries.
 - Chat view with streaming updates and message sending.
 - Permission approval and denial workflows.
-- Permission mode and model selection.
+- Permission mode plus capability-driven Model and Effort selection.
 - Machine list and remote session spawn.
 - File browser and git status/diff views.
 - PWA install prompt and offline banner.
@@ -57,7 +57,7 @@ See `src/router.tsx` for route definitions.
 - Message thread with infinite scroll.
 - Composer for sending messages.
 - Permission mode toggle (default/acceptEdits/auto/bypassPermissions/plan).
-- Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
+- Model and Effort controls use the same picker across supported agents; unavailable choices stay hidden.
 - Session abort and mode switch controls.
 - Context size display.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)

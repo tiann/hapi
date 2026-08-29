@@ -8,15 +8,18 @@ import { assertSafeWindowsShellArg } from '@/grok/utils/windowsShellArgs';
 export function buildCopilotLocalArgs(opts: {
     sessionId: string | null;
     model?: string;
+    effort?: string | null;
     yolo?: boolean;
     agentMode?: CopilotAgentMode;
 }): string[] {
     if (opts.sessionId) assertSafeWindowsShellArg(opts.sessionId, 'sessionId');
     if (opts.model) assertSafeWindowsShellArg(opts.model, 'model');
+    if (opts.effort) assertSafeWindowsShellArg(opts.effort, 'effort');
 
     const args: string[] = [];
     if (opts.sessionId) args.push(`--resume=${opts.sessionId}`);
     if (opts.model) args.push('--model', opts.model);
+    if (opts.effort) args.push('--effort', opts.effort);
     if (opts.yolo) args.push('--allow-all');
     if (opts.agentMode && opts.agentMode !== 'interactive') args.push('--mode', opts.agentMode);
     return args;
@@ -27,6 +30,7 @@ export async function copilotLocal(opts: {
     sessionId: string | null;
     abort: AbortSignal;
     model?: string;
+    effort?: string | null;
     yolo?: boolean;
     agentMode?: CopilotAgentMode;
 }): Promise<void> {

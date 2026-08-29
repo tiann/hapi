@@ -13,6 +13,11 @@ describe('buildCopilotLocalArgs', () => {
             .toEqual(['--resume=session-1', '--model', 'gpt-5', '--allow-all', '--mode', 'plan']);
     });
 
+    it('passes effort through to the local Copilot process', () => {
+        expect(buildCopilotLocalArgs({ sessionId: 'session-1', effort: 'high' }))
+            .toEqual(['--resume=session-1', '--effort', 'high']);
+    });
+
     it('rejects shell metacharacters in dynamic Windows arguments', () => {
         Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 

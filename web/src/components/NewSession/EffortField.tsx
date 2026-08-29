@@ -29,23 +29,32 @@ export type EffortFieldProps = {
  *
  * One component serves every flavor with an `effort` field:
  * - Claude: static launch-effort levels.
+ * - Antigravity: static low/medium/high launch-effort levels.
  * - Grok: model-dependent launch-effort levels.
  * - Pi: model-dependent thinking levels (filtered by the selected model's
  *   thinkingLevelMap; hidden when the model cannot reason).
  * - Codex / OpenCode: model-dependent reasoning-effort levels.
+ * - ACP Copilot / Kimi effort is session-discovered and appears after launch.
  */
 export function EffortField(props: EffortFieldProps) {
     const { t } = useTranslation()
     const descriptor = getAgentConfigDescriptor(props.agent)
     const field = descriptor.fields.find((candidate) => candidate.id === 'effort')
-    if (!field) {
+    if (!field || field.availability === 'session') {
         return null
     }
 
     const isReasoningEffort = props.agent === 'codex' || props.agent === 'opencode'
 
     let options: Array<{ value: string; label: string }>
-    if (props.agent === 'grok') {
+    if (props.agent === 'agy') {
+        options = [
+            { value: 'auto', label: t('newSession.model.default') },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
+        ]
+    } else if (props.agent === 'grok') {
         options = props.grokOptions ?? GROK_EFFORT_OPTIONS
     } else if (props.agent === 'pi') {
         if (props.piSelectedModel?.reasoning === false) {

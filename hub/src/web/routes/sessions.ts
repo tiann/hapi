@@ -1407,6 +1407,31 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.get('/sessions/:id/reasoning-effort-options', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor
+        if (flavor !== 'copilot' && flavor !== 'kimi') {
+            return c.json({
+                success: false,
+                error: 'Session reasoning effort options are only available for Copilot and Kimi sessions'
+            }, 400)
+        }
+
+        try {
+            return c.json(await engine.listSessionReasoningEffortOptionsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list session reasoning effort options'
+            }, 500)
+        }
+    })
+
     app.get('/sessions/:id/grok-models', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) return engine

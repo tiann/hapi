@@ -347,6 +347,45 @@ describe('AcpSdkBackend', () => {
         expect(backend.getThoughtLevelConfigOption(sessionId)?.currentValue).toBe('high');
     });
 
+    it('does not overwrite thought-level state for an unrelated session mode', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                registerRequestHandler: (method: string, handler: unknown) => void;
+                close: () => Promise<void>;
+            } | null;
+            sessionConfigOptions: Map<string, Array<{
+                id: string;
+                category?: string;
+                currentValue?: string;
+                options: Array<{ value: string }>;
+            }> >;
+        };
+        backendInternal.transport = {
+            sendRequest: async () => null,
+            registerRequestHandler: () => {},
+            close: async () => {}
+        };
+        backendInternal.sessionConfigOptions.set('session-1', [
+            {
+                id: 'thought-level',
+                category: 'thought_level',
+                currentValue: 'low',
+                options: [{ value: 'low' }, { value: 'high' }]
+            },
+            {
+                id: 'mode',
+                category: 'mode',
+                options: [{ value: 'agent' }, { value: 'plan' }]
+            }
+        ]);
+
+        await backend.setMode('session-1', 'plan');
+
+        expect(backend.getThoughtLevelConfigOption('session-1')?.currentValue).toBe('low');
+    });
+
     it('merges configOptions model variants into availableModels when both are present', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const backendInternal = backend as unknown as {

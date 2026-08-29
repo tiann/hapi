@@ -40,6 +40,8 @@ export type {
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    SessionReasoningEffortOption,
+    SessionReasoningEffortResponse,
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,

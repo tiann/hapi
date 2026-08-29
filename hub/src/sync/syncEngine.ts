@@ -51,6 +51,7 @@ import {
     type RpcListCopilotModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
     type RpcListOpencodeReasoningEffortOptionsResponse,
+    type RpcListSessionReasoningEffortOptionsResponse,
     type RpcCursorModel,
     type RpcCursorChatStoreStatus,
     type RpcOpencodeModel,
@@ -84,6 +85,7 @@ export type {
     RpcListCopilotModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
     RpcListOpencodeReasoningEffortOptionsResponse,
+    RpcListSessionReasoningEffortOptionsResponse,
     RpcCursorModel,
     RpcCursorChatStoreStatus,
     RpcOpencodeModel,
@@ -3974,5 +3976,9 @@ export class SyncEngine {
 
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {
         return await this.rpcGateway.listOpencodeReasoningEffortOptionsForSession(sessionId)
+    }
+
+    async listSessionReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListSessionReasoningEffortOptionsResponse> {
+        return await this.rpcGateway.listSessionReasoningEffortOptionsForSession(sessionId)
     }
 }

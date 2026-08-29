@@ -325,6 +325,25 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --effort for Copilot ACP startup', () => {
+        const args = buildCliArgs('copilot', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).toContain('--effort')
+        expect(args).toContain('high')
+    })
+
+    it('passes the HAPI effort bridge for Kimi ACP startup', () => {
+        const args = buildCliArgs('kimi', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).toContain('--hapi-effort')
+        expect(args).toContain('high')
+        expect(args).not.toContain('--effort')
+    })
+
     it('builds Grok runner resume, model, effort, and permission arguments', () => {
         const args = buildCliArgs('grok', {
             directory: '/tmp',
