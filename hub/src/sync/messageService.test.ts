@@ -1249,6 +1249,59 @@ describe('MessageService.sendMessage deliveryMode', () => {
         })
     })
 
+    it('persists steer for arrival-steerable flavors and downgrades it for cursor and claude', async () => {
+        const store = makeStore()
+        const codexSession = store.sessions.getOrCreateSession(
+            'delivery-mode-codex',
+            { path: '/tmp/delivery-mode-codex', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const cursorSession = store.sessions.getOrCreateSession(
+            'delivery-mode-cursor',
+            { path: '/tmp/delivery-mode-cursor', host: 'localhost', flavor: 'cursor' },
+            null,
+            'default'
+        )
+        const claudeSession = store.sessions.getOrCreateSession(
+            'delivery-mode-claude',
+            { path: '/tmp/delivery-mode-claude', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        const { io } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        await service.sendMessage(codexSession.id, {
+            text: 'mid-turn nudge',
+            localId: 'codex-steer',
+            deliveryMode: 'steer'
+        })
+        await service.sendMessage(claudeSession.id, {
+            text: 'claude cannot steer',
+            localId: 'claude-steer',
+            deliveryMode: 'steer'
+        })
+        await service.sendMessage(cursorSession.id, {
+            text: 'cursor steers only via the manual button',
+            localId: 'cursor-steer',
+            deliveryMode: 'steer'
+        })
+
+        expect(store.messages.getUninvokedLocalMessages(codexSession.id)[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
+        })
+        expect(store.messages.getUninvokedLocalMessages(claudeSession.id)[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
+        })
+        expect(store.messages.getUninvokedLocalMessages(cursorSession.id)[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
+        })
+    })
+
     it('delivers a duplicate-localId retry as queue even when the stored row retains steer', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -1359,7 +1412,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
         ])
     })
 
-    it('downgrades forged steer intent for non-Pi sessions and defaults omitted intent to queue', async () => {
+    it('downgrades forged steer intent for non-steerable sessions and defaults omitted intent to queue', async () => {
         const store = makeStore()
         const session = makeSession(store, 'delivery-mode-non-pi')
         const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)

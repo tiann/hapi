@@ -124,7 +124,14 @@ function getNormalizedDeliveryMode(
         return 'queue'
     }
 
-    return isObject(metadata) && metadata.flavor === 'pi' ? 'steer' : 'queue'
+    // Persist steer provenance only for flavors whose CLI consumes the hint on
+    // arrival (codex turn/steer, pi native steer). Cursor ACP steers only via
+    // the manual button today — its inbound path drops the hint, so keep its
+    // rows queued rather than advertising an inject that never happens.
+    return isObject(metadata)
+        && ((metadata.flavor === 'pi' || metadata.flavor === 'codex'))
+        ? 'steer'
+        : 'queue'
 }
 
 /**

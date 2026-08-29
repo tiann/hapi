@@ -2095,147 +2095,165 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         };
 
-        // Per-message steer from the waiting queue (web "Steer" button).
+        // Per-message steer from the waiting queue (web "Steer" button). Also
+        // driven by the arrival hook below for steer-tagged peer messages.
+        const steerQueuedByLocalId = async (localId: string): Promise<{ steered: boolean; error?: string }> => {
+            if (!localId) {
+                return { steered: false, error: 'Missing localId' };
+            }
+            if (this.abortInProgress || !turnInFlight || !this.currentThreadId || !this.currentTurnId) {
+                return { steered: false, error: 'No active steerable turn' };
+            }
+            // Reserve before awaiting turn/steer so the main loop cannot
+            // collect the same row for turn/start while steer is in flight.
+            const taken = session.queue.takeByLocalId(localId);
+            if (!taken) {
+                return { steered: false, error: 'Message not in queue' };
+            }
+            // An explicit retry supersedes any old reconciliation poll for
+            // the same held row.
+            pendingSteerReconciliations.delete(localId);
+            const isControlCommand = Boolean(taken.item.isolate)
+                || Boolean(parseCodexSpecialCommand(taken.item.message).type);
+            if (isControlCommand) {
+                session.queue.restoreReservation(taken);
+                return { steered: false, error: 'Control commands cannot be steered' };
+            }
+            if (activeMessage?.hash !== taken.item.modeHash) {
+                session.queue.restoreReservation(taken);
+                return { steered: false, error: 'Queued message mode differs from the active turn' };
+            }
+            const batch: QueuedMessage = {
+                message: taken.item.message,
+                mode: taken.item.mode,
+                isolate: Boolean(taken.item.isolate),
+                hash: taken.item.modeHash
+            };
+            const steerEpoch = this.steerEpoch;
+            // Pin the thread this steer targets: reconciliation must look at
+            // the steer's thread, not whichever turn is current later.
+            const steerThreadId = this.currentThreadId;
+            const steerTurnId = this.currentTurnId;
+            if (!session.queue.beginReservationDispatch(taken)) {
+                return { steered: false, error: 'Steer cancelled' };
+            }
+            const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
+            if (!dispatchStatePersisted) {
+                session.queue.markReservationIndeterminate(taken);
+                session.client.emitSteerIndeterminate([localId]);
+                return { steered: false, error: 'Steer state is indeterminate' };
+            }
+            const restoreQueuedReservation = async (): Promise<boolean> => {
+                if (!taken.originIndeterminate) {
+                    const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                    if (!persisted) {
+                        session.queue.markReservationIndeterminate(taken);
+                        session.client.emitSteerIndeterminate([localId]);
+                        return false;
+                    }
+                }
+                if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                    session.client.emitSteerIndeterminate([localId]);
+                    return false;
+                }
+                return true;
+            };
+            if (taken.state !== 'dispatching') {
+                session.client.emitSteerIndeterminate([localId]);
+                return { steered: false, error: 'Steer cancelled' };
+            }
+            if (!turnInFlight
+                || this.currentThreadId !== steerThreadId
+                || this.currentTurnId !== steerTurnId
+                || !isCurrentSteerHandler(this.steerEpoch, steerEpoch, this.shouldExit)) {
+                await restoreQueuedReservation();
+                return { steered: false, error: 'Active turn changed' };
+            }
+            const steer = await trySteerActiveTurn(batch, localId);
+            if (steer) {
+                const reconcileDispatchedSteer = (
+                    localId: string,
+                    taken: QueueReservation<EnhancedMode>,
+                    batch: QueuedMessage
+                ) => {
+                    const threadId = steerThreadId;
+                    if (!threadId) {
+                        session.queue.markReservationIndeterminate(taken);
+                        session.client.emitSteerIndeterminate([localId]);
+                        return;
+                    }
+                    const entry = { threadId, taken, batch, expiresAt: Date.now() + 60_000 };
+                    pendingSteerReconciliations.set(localId, entry);
+                    markReconcileEntryIndeterminate(localId, entry);
+                    scheduleSteerReconcileRetry();
+                };
+                try {
+                    await steer.dispatched;
+                } catch (error) {
+                    // A stalled/aborted stdin callback is indeterminate: the
+                    // bytes may have reached Codex even though dispatch did
+                    // not report success. Reconcile instead of replaying.
+                    void steer.completed.catch(() => {});
+                    if (isIndeterminateError(error)) {
+                        reconcileDispatchedSteer(localId, taken, batch);
+                        return { steered: false, error: 'Steer outcome is being reconciled' };
+                    }
+                    await restoreQueuedReservation();
+                    return { steered: false, error: error instanceof Error ? error.message : 'Steer failed' };
+                }
+                try {
+                    // Await app-server acceptance before reporting success:
+                    // an explicit JSON-RPC rejection must surface as failed
+                    // (row restored, normal turn/start delivers it later)
+                    // rather than a false steered. turn/steer's response is
+                    // the inject acceptance, not the full turn completion.
+                    await steer.completed;
+                } catch (error) {
+                    if (isIndeterminateError(error)) {
+                        // Transport failure after dispatch: the outcome is
+                        // unknown — keep the row reserved and reconcile the
+                        // thread once the app-server is reachable again.
+                        reconcileDispatchedSteer(localId, taken, batch);
+                        return { steered: false, error: 'Steer outcome is being reconciled' };
+                    }
+                    await restoreQueuedReservation();
+                    return { steered: false, error: error instanceof Error ? error.message : 'Steer failed' };
+                }
+                session.queue.commitReservation(taken);
+                messageBuffer.addMessage(batch.message, 'user');
+                session.client.emitMessagesConsumed([localId], { steered: true });
+                return { steered: true };
+            }
+            if (!isCurrentSteerHandler(this.steerEpoch, steerEpoch, this.shouldExit)) {
+                await restoreQueuedReservation();
+                return { steered: false, error: 'Steer cancelled' };
+            }
+            await restoreQueuedReservation();
+            return { steered: false, error: 'Active turn is not steerable' };
+        };
+
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.SteerQueuedMessage,
             async (payload: unknown) => {
                 const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
                     ? (payload as { localId: string }).localId
                     : '';
-                if (!localId) {
-                    return { steered: false, error: 'Missing localId' };
-                }
-                if (this.abortInProgress || !turnInFlight || !this.currentThreadId || !this.currentTurnId) {
-                    return { steered: false, error: 'No active steerable turn' };
-                }
-                // Reserve before awaiting turn/steer so the main loop cannot
-                // collect the same row for turn/start while steer is in flight.
-                const taken = session.queue.takeByLocalId(localId);
-                if (!taken) {
-                    return { steered: false, error: 'Message not in queue' };
-                }
-                // An explicit retry supersedes any old reconciliation poll for
-                // the same held row.
-                pendingSteerReconciliations.delete(localId);
-                const isControlCommand = Boolean(taken.item.isolate)
-                    || Boolean(parseCodexSpecialCommand(taken.item.message).type);
-                if (isControlCommand) {
-                    session.queue.restoreReservation(taken);
-                    return { steered: false, error: 'Control commands cannot be steered' };
-                }
-                if (activeMessage?.hash !== taken.item.modeHash) {
-                    session.queue.restoreReservation(taken);
-                    return { steered: false, error: 'Queued message mode differs from the active turn' };
-                }
-                const batch: QueuedMessage = {
-                    message: taken.item.message,
-                    mode: taken.item.mode,
-                    isolate: Boolean(taken.item.isolate),
-                    hash: taken.item.modeHash
-                };
-                const steerEpoch = this.steerEpoch;
-                // Pin the thread this steer targets: reconciliation must look at
-                // the steer's thread, not whichever turn is current later.
-                const steerThreadId = this.currentThreadId;
-                const steerTurnId = this.currentTurnId;
-                if (!session.queue.beginReservationDispatch(taken)) {
-                    return { steered: false, error: 'Steer cancelled' };
-                }
-                const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
-                if (!dispatchStatePersisted) {
-                    session.queue.markReservationIndeterminate(taken);
-                    session.client.emitSteerIndeterminate([localId]);
-                    return { steered: false, error: 'Steer state is indeterminate' };
-                }
-                const restoreQueuedReservation = async (): Promise<boolean> => {
-                    if (!taken.originIndeterminate) {
-                        const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
-                        if (!persisted) {
-                            session.queue.markReservationIndeterminate(taken);
-                            session.client.emitSteerIndeterminate([localId]);
-                            return false;
-                        }
-                    }
-                    if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
-                        session.client.emitSteerIndeterminate([localId]);
-                        return false;
-                    }
-                    return true;
-                };
-                if (taken.state !== 'dispatching') {
-                    session.client.emitSteerIndeterminate([localId]);
-                    return { steered: false, error: 'Steer cancelled' };
-                }
-                if (!turnInFlight
-                    || this.currentThreadId !== steerThreadId
-                    || this.currentTurnId !== steerTurnId
-                    || !isCurrentSteerHandler(this.steerEpoch, steerEpoch, this.shouldExit)) {
-                    await restoreQueuedReservation();
-                    return { steered: false, error: 'Active turn changed' };
-                }
-                const steer = await trySteerActiveTurn(batch, localId);
-                if (steer) {
-                    const reconcileDispatchedSteer = (
-                        localId: string,
-                        taken: QueueReservation<EnhancedMode>,
-                        batch: QueuedMessage
-                    ) => {
-                        const threadId = steerThreadId;
-                        if (!threadId) {
-                            session.queue.markReservationIndeterminate(taken);
-                            session.client.emitSteerIndeterminate([localId]);
-                            return;
-                        }
-                        const entry = { threadId, taken, batch, expiresAt: Date.now() + 60_000 };
-                        pendingSteerReconciliations.set(localId, entry);
-                        markReconcileEntryIndeterminate(localId, entry);
-                        scheduleSteerReconcileRetry();
-                    };
-                    try {
-                        await steer.dispatched;
-                    } catch (error) {
-                        // A stalled/aborted stdin callback is indeterminate: the
-                        // bytes may have reached Codex even though dispatch did
-                        // not report success. Reconcile instead of replaying.
-                        void steer.completed.catch(() => {});
-                        if (isIndeterminateError(error)) {
-                            reconcileDispatchedSteer(localId, taken, batch);
-                            return { steered: false, error: 'Steer outcome is being reconciled' };
-                        }
-                        await restoreQueuedReservation();
-                        return { steered: false, error: error instanceof Error ? error.message : 'Steer failed' };
-                    }
-                    try {
-                        // Await app-server acceptance before reporting success:
-                        // an explicit JSON-RPC rejection must surface as failed
-                        // (row restored, normal turn/start delivers it later)
-                        // rather than a false steered. turn/steer's response is
-                        // the inject acceptance, not the full turn completion.
-                        await steer.completed;
-                    } catch (error) {
-                        if (isIndeterminateError(error)) {
-                            // Transport failure after dispatch: the outcome is
-                            // unknown — keep the row reserved and reconcile the
-                            // thread once the app-server is reachable again.
-                            reconcileDispatchedSteer(localId, taken, batch);
-                            return { steered: false, error: 'Steer outcome is being reconciled' };
-                        }
-                        await restoreQueuedReservation();
-                        return { steered: false, error: error instanceof Error ? error.message : 'Steer failed' };
-                    }
-                    session.queue.commitReservation(taken);
-                    messageBuffer.addMessage(batch.message, 'user');
-                    session.client.emitMessagesConsumed([localId], { steered: true });
-                    return { steered: true };
-                }
-                if (!isCurrentSteerHandler(this.steerEpoch, steerEpoch, this.shouldExit)) {
-                    await restoreQueuedReservation();
-                    return { steered: false, error: 'Steer cancelled' };
-                }
-                await restoreQueuedReservation();
-                return { steered: false, error: 'Active turn is not steerable' };
+                return steerQueuedByLocalId(localId);
             }
         );
+
+        // Steer-tagged arrivals (ping_peer sends deliveryMode 'steer') inject
+        // into the active turn immediately instead of waiting for turn end.
+        // Every refusal path inside steerQueuedByLocalId restores the queue
+        // row, so a failed auto-steer simply delivers at the next turn
+        // boundary via the normal waitForMessagesAndGetAsString consumption.
+        session.queue.setOnMessage((_message, _mode, item) => {
+            if (!item.steerHint || !item.localId) return;
+            if (!turnInFlight || this.abortInProgress || this.shouldExit) return;
+            void steerQueuedByLocalId(item.localId).catch((error) => {
+                logger.debug('[Codex] Auto-steer of a steer-tagged arrival failed:', error);
+            });
+        });
 
         const clearCompactRecovery = (recovery: typeof compactRecovery) => {
             if (!recovery) {
@@ -4280,6 +4298,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             steerReconcileTimer = null;
         }
         pendingSteerReconciliations.clear();
+        // Detach the steer-on-arrival hook: a stale closure must not steer
+        // against a future launcher generation's queue rows.
+        session.queue.setOnMessage(null);
     }
 
     protected async cleanup(): Promise<void> {
@@ -4291,6 +4312,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             logger.debug('[codex-remote]: Error disconnecting client', error);
         }
+        // Safety net alongside the runMainLoop tail: an exception exit must
+        // still detach the steer-on-arrival hook.
+        this.session.queue.setOnMessage(null);
 
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
 
