@@ -25,6 +25,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { WebhookChannel } from './webhook/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -168,6 +169,16 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     } else {
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
     }
+    if (config.webhookUrl) {
+        const source = formatSource(config.sources.webhookUrl)
+        const notificationSource = formatSource(config.sources.webhookNotification)
+        const backgroundOnlySource = formatSource(config.sources.webhookBackgroundOnly)
+        console.log(`[Hub] Webhook: enabled (${source})`)
+        console.log(`[Hub] Webhook notifications: ${config.webhookNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
+        console.log(`[Hub] Webhook background-only: ${config.webhookBackgroundOnly ? 'enabled' : 'disabled'} (${backgroundOnlySource})`)
+    } else {
+        console.log('[Hub] Webhook: disabled (no HAPI_WEBHOOK_URL)')
+    }
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -275,6 +286,17 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         if (config.telegramNotification) {
             notificationChannels.push(happyBot)
         }
+    }
+
+    // User-controlled HTTP endpoint last so a hung webhook cannot delay Telegram.
+    if (config.webhookUrl && config.webhookNotification) {
+        notificationChannels.push(new WebhookChannel(
+            config.webhookUrl,
+            config.webhookKey,
+            config.publicUrl,
+            visibilityTracker,
+            config.webhookBackgroundOnly
+        ))
     }
 
     notificationHub = new NotificationHub(syncEngine, notificationChannels)

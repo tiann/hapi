@@ -72,11 +72,13 @@ Yes. Telegram is optional. You can use the web app directly in any browser or in
 
 ### How do I receive notifications?
 
-HAPI supports three methods:
+HAPI supports several methods:
 
 1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
 2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
 3. **FCM native push** - Used by the Android/Wear OS companion apps; notifications are delivered via Firebase Cloud Messaging
+4. **Server酱 (ServerChan)** - See [ServerChan Setup](./notifications.md#serverchan-server酱-setup)
+5. **Generic webhook** - POST HAPI's JSON to a relay you control; see [Webhook setup](./notifications.md#webhook-setup)
 
 ### Can I start sessions remotely?
 

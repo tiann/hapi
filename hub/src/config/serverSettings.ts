@@ -9,6 +9,7 @@
  */
 
 import { getSettingsFile, updateSettings } from './settings'
+import { requireWebhookHttpUrl } from '../webhook/url'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -36,6 +37,10 @@ export interface ServerSettings {
     serverChanSendKey: string | null
     serverChanNotification: boolean
     serverChanBackgroundOnly: boolean
+    webhookUrl: string | null
+    webhookKey: string | null
+    webhookNotification: boolean
+    webhookBackgroundOnly: boolean
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -58,6 +63,10 @@ export interface ServerSettingsResult {
         serverChanSendKey: 'env' | 'file' | 'default'
         serverChanNotification: 'env' | 'file' | 'default'
         serverChanBackgroundOnly: 'env' | 'file' | 'default'
+        webhookUrl: 'env' | 'file' | 'default'
+        webhookKey: 'env' | 'file' | 'default'
+        webhookNotification: 'env' | 'file' | 'default'
+        webhookBackgroundOnly: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
@@ -113,6 +122,31 @@ function rejectOldSettingsFields(settings: object, settingsFile: string): void {
     )
 }
 
+function parseOptionalWebhookUrl(value: unknown, label: string): string | null {
+    if (value === null || value === undefined) {
+        return null
+    }
+    if (typeof value !== 'string') {
+        throw new Error(`${label} must be a valid http(s) URL`)
+    }
+    const trimmed = value.trim()
+    if (!trimmed) {
+        return null
+    }
+    return requireWebhookHttpUrl(trimmed, label)
+}
+
+function parseOptionalSecret(value: unknown, label: string): string | null {
+    if (value === null || value === undefined) {
+        return null
+    }
+    if (typeof value !== 'string') {
+        throw new Error(`${label} must be a string`)
+    }
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+}
+
 /**
  * Load hub settings with priority: env > file > default
  * Saves new env values to file when not already present
@@ -129,6 +163,10 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             serverChanSendKey: 'default',
             serverChanNotification: 'default',
             serverChanBackgroundOnly: 'default',
+            webhookUrl: 'default',
+            webhookKey: 'default',
+            webhookNotification: 'default',
+            webhookBackgroundOnly: 'default',
             listenHost: 'default',
             listenPort: 'default',
             publicUrl: 'default',
@@ -212,6 +250,66 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             sources.serverChanBackgroundOnly = 'file'
         } else if (settings.serverChanBackgroundOnly !== undefined) {
             throw new Error('serverChanBackgroundOnly must be a boolean')
+        }
+
+        // webhookUrl: env > file > null (http/https only)
+        let webhookUrl: string | null = null
+        if (process.env.HAPI_WEBHOOK_URL) {
+            webhookUrl = parseOptionalWebhookUrl(process.env.HAPI_WEBHOOK_URL, 'HAPI_WEBHOOK_URL')
+            sources.webhookUrl = 'env'
+            if (settings.webhookUrl === undefined && webhookUrl) {
+                settings.webhookUrl = webhookUrl
+                needsSave = true
+            }
+        } else if (settings.webhookUrl !== undefined) {
+            webhookUrl = parseOptionalWebhookUrl(settings.webhookUrl, 'webhookUrl')
+            sources.webhookUrl = 'file'
+        }
+
+        // webhookKey: env > file > null
+        let webhookKey: string | null = null
+        if (process.env.HAPI_WEBHOOK_KEY) {
+            webhookKey = parseOptionalSecret(process.env.HAPI_WEBHOOK_KEY, 'HAPI_WEBHOOK_KEY')
+            sources.webhookKey = 'env'
+            if (settings.webhookKey === undefined && webhookKey) {
+                settings.webhookKey = webhookKey
+                needsSave = true
+            }
+        } else if (settings.webhookKey !== undefined) {
+            webhookKey = parseOptionalSecret(settings.webhookKey, 'webhookKey')
+            sources.webhookKey = 'file'
+        }
+
+        // webhookNotification: env > file > true
+        let webhookNotification = true
+        if (process.env.HAPI_WEBHOOK_NOTIFICATION !== undefined) {
+            webhookNotification = process.env.HAPI_WEBHOOK_NOTIFICATION === 'true'
+            sources.webhookNotification = 'env'
+            if (settings.webhookNotification === undefined) {
+                settings.webhookNotification = webhookNotification
+                needsSave = true
+            }
+        } else if (typeof settings.webhookNotification === 'boolean') {
+            webhookNotification = settings.webhookNotification
+            sources.webhookNotification = 'file'
+        } else if (settings.webhookNotification !== undefined) {
+            throw new Error('webhookNotification must be a boolean')
+        }
+
+        // webhookBackgroundOnly: env > file > false
+        let webhookBackgroundOnly = false
+        if (process.env.HAPI_WEBHOOK_BACKGROUND_ONLY !== undefined) {
+            webhookBackgroundOnly = process.env.HAPI_WEBHOOK_BACKGROUND_ONLY === 'true'
+            sources.webhookBackgroundOnly = 'env'
+            if (settings.webhookBackgroundOnly === undefined) {
+                settings.webhookBackgroundOnly = webhookBackgroundOnly
+                needsSave = true
+            }
+        } else if (typeof settings.webhookBackgroundOnly === 'boolean') {
+            webhookBackgroundOnly = settings.webhookBackgroundOnly
+            sources.webhookBackgroundOnly = 'file'
+        } else if (settings.webhookBackgroundOnly !== undefined) {
+            throw new Error('webhookBackgroundOnly must be a boolean')
         }
 
         // listenHost: env > file > default
@@ -313,6 +411,10 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     serverChanSendKey,
                     serverChanNotification,
                     serverChanBackgroundOnly,
+                    webhookUrl,
+                    webhookKey,
+                    webhookNotification,
+                    webhookBackgroundOnly,
                     listenHost,
                     listenPort,
                     publicUrl,

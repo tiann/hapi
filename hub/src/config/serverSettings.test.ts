@@ -82,6 +82,87 @@ describe('loadServerSettings', () => {
         await expect(loadServerSettings(dir)).rejects.toThrow('serverChanBackgroundOnly must be a boolean')
     })
 
+    it('defaults webhook settings to disabled', async () => {
+        dir = makeTempDir()
+
+        const result = await loadServerSettings(dir)
+
+        expect(result.settings.webhookUrl).toBeNull()
+        expect(result.settings.webhookKey).toBeNull()
+        expect(result.settings.webhookBackgroundOnly).toBe(false)
+        expect(result.sources.webhookUrl).toBe('default')
+    })
+
+    it('loads webhook settings from environment and persists them', async () => {
+        dir = makeTempDir()
+        const originalUrl = process.env.HAPI_WEBHOOK_URL
+        const originalKey = process.env.HAPI_WEBHOOK_KEY
+        process.env.HAPI_WEBHOOK_URL = 'https://relay.example.com/hook'
+        process.env.HAPI_WEBHOOK_KEY = 'secret'
+
+        try {
+            const result = await loadServerSettings(dir)
+
+            expect(result.settings.webhookUrl).toBe('https://relay.example.com/hook')
+            expect(result.settings.webhookKey).toBe('secret')
+            expect(result.sources.webhookUrl).toBe('env')
+
+            const persisted = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
+            expect(persisted.webhookUrl).toBe('https://relay.example.com/hook')
+        } finally {
+            if (originalUrl === undefined) delete process.env.HAPI_WEBHOOK_URL
+            else process.env.HAPI_WEBHOOK_URL = originalUrl
+            if (originalKey === undefined) delete process.env.HAPI_WEBHOOK_KEY
+            else process.env.HAPI_WEBHOOK_KEY = originalKey
+        }
+    })
+
+    it('rejects a non-boolean webhook background-only setting', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookBackgroundOnly: 'false'
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookBackgroundOnly must be a boolean')
+    })
+
+    it('rejects a non-http webhook URL from the environment', async () => {
+        dir = makeTempDir()
+        process.env.HAPI_WEBHOOK_URL = 'ftp://example.com/hook'
+        try {
+            await expect(loadServerSettings(dir)).rejects.toThrow('HAPI_WEBHOOK_URL must be a valid http(s) URL')
+        } finally {
+            delete process.env.HAPI_WEBHOOK_URL
+        }
+    })
+
+    it('rejects a non-http webhook URL from settings.json', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookUrl: 'not-a-url'
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookUrl must be a valid http(s) URL')
+    })
+
+    it('rejects a non-string webhook key from settings.json', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookKey: 12345
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookKey must be a string')
+    })
+
+    it('rejects a non-boolean webhook notification setting', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            webhookNotification: 'false'
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('webhookNotification must be a boolean')
+    })
+
     it('defaults push settings to null', async () => {
         dir = makeTempDir()
 
