@@ -218,6 +218,8 @@ export default {
   'session.title': 'Files',
   'session.view.returnToChat': 'Return to conversation',
   'session.more': 'More actions',
+  'session.sidebar.hide': 'Hide session list',
+  'session.sidebar.show': 'Show session list',
   'session.outline.open': 'Conversation outline',
   'session.outline.close': 'Close outline',
   'session.outline.title': 'Outline',
