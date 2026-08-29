@@ -13,6 +13,7 @@ import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import { MigrationStore } from './migrationStore'
 
 export type {
     NativeDevicePlatform,
@@ -36,13 +37,14 @@ export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
+export { MigrationStore } from './migrationStore'
 export {
     WorkGraphNotFoundError,
     WorkGraphPrincipalError,
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 25
+const SCHEMA_VERSION: number = 26
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -55,7 +57,8 @@ const REQUIRED_TABLES = [
     'usage_events',
     'usage_scan_state',
     'events',
-    'event_links'
+    'event_links',
+    'migration_state'
 ] as const
 
 export class Store {
@@ -72,6 +75,7 @@ export class Store {
     readonly scratchlist: ScratchlistStore
     readonly usage: UsageStore
     readonly workGraph: WorkGraphStore
+    readonly migrations: MigrationStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -126,6 +130,7 @@ export class Store {
         this.scratchlist = new ScratchlistStore(this.db)
         this.usage = new UsageStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
+        this.migrations = new MigrationStore(this.db)
     }
 
     /**
@@ -347,6 +352,7 @@ export class Store {
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
         })
 
         if (currentVersion === 0) {
@@ -591,6 +597,11 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
         `)
     }
 
@@ -961,22 +972,6 @@ export class Store {
         }
     }
 
-    /** v23→v24: add the iOS push envelope key. */
-    private migrateFromV23ToV24(): void {
-        const fcmColumns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
-        if (fcmColumns.length > 0 && !fcmColumns.some((column) => column.name === 'push_key')) {
-            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
-        }
-    }
-
-    /** v24→v25: add durable unknown-delivery state for steers. */
-    private migrateFromV24ToV25(): void {
-        const messageColumns = this.getMessageColumnNames()
-        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
-            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
-        }
-    }
-
     /**
      * A2A Layer 1 / P1 (#1374) + P3 substrate: hub work-graph ledger tables.
      * Namespace + principal_json required on every events row.
@@ -1032,6 +1027,31 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+        `)
+    }
+
+    /** v23→v24: add the iOS push envelope key. */
+    private migrateFromV23ToV24(): void {
+        const columns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
+        if (columns.length > 0 && !columns.some((column) => column.name === 'push_key')) {
+            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
+        }
+    }
+
+    /** v24→v25: add durable unknown-delivery state for steers. */
+    private migrateFromV24ToV25(): void {
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
+            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
+        }
+    }
+
+    private migrateFromV25ToV26(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
         `)
     }
 

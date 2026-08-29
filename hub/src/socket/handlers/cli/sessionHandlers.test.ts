@@ -211,6 +211,57 @@ describe('cli session handlers', () => {
         expect((sessionUpdated.data as { updatedAt?: number }).updatedAt).toBeGreaterThan(0)
     })
 
+    it('emits a structured todos patch when a Codex update_plan message lands', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('codex-plan-session', { path: '/tmp', host: 'h' }, null, 'default')
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            },
+            onWebappEvent: (event) => {
+                webEvents.push(event)
+            }
+        })
+
+        socket.trigger('message', {
+            sid: session.id,
+            message: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        name: 'update_plan',
+                        input: {
+                            plan: [
+                                { step: 'Inspect', status: 'completed' },
+                                { step: 'Fix', status: 'in_progress' }
+                            ]
+                        }
+                    }
+                }
+            }
+        })
+
+        const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
+        expect(sessionUpdated).toBeDefined()
+        if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
+        expect(sessionUpdated.data).toMatchObject({
+            todos: {
+                version: expect.any(Number),
+                value: [
+                    { content: 'Inspect', status: 'completed', id: 'plan-1' },
+                    { content: 'Fix', status: 'in_progress', id: 'plan-2' }
+                ]
+            }
+        })
+    })
+
     it('emits a structured metadata patch on update-metadata RPC (closes second half of #884)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
