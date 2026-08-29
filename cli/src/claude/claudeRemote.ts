@@ -293,6 +293,25 @@ export async function claudeRemote(opts: {
             opts.onMessage(message);
 
             // Handle special system messages
+            if (
+                message.type === 'system'
+                && message.subtype === 'hook_response'
+                && (message as { hook_name?: string }).hook_name === 'SessionStart:fork'
+                && awaitingForkInit
+            ) {
+                // A forked child starts query() before any prompt exists, and the
+                // SDK only emits `init` after the first prompt is sent. The fork
+                // itself materializes on the SessionStart:fork hook, so accept the
+                // first child prompt from that signal instead of deadlocking on
+                // an `init` that will not arrive until the prompt below is sent.
+                awaitingForkInit = false;
+                const first = await applyInitialTurn();
+                if (!first) {
+                    return;
+                }
+                initial = first;
+            }
+
             if (message.type === 'system' && message.subtype === 'init') {
                 // Start thinking when session initializes
                 updateThinking(true);
