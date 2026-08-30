@@ -410,7 +410,7 @@ function CodeHeader(props: CodeHeaderProps) {
     const language = props.language && props.language !== 'unknown' ? props.language : 'text'
 
     return (
-        <div data-hapi-code-header="true" className="aui-code-shell-header flex items-center justify-between gap-3 rounded-t-xl bg-[var(--app-code-header-bg)] px-3 py-2 text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
+        <div data-hapi-code-header="true" className="aui-code-shell-header flex items-center justify-between gap-3 rounded-t-xl bg-[var(--app-code-header-bg)] pl-[22px] pr-[10px] py-2 text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
             <div className="min-w-0 flex-1 truncate font-mono">
                 {language}
             </div>

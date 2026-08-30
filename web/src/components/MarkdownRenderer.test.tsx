@@ -28,4 +28,17 @@ describe('MarkdownRenderer', () => {
         expect(document.querySelector('.aui-md-codeblock')).toBeFalsy()
         expect(document.querySelector('.aui-md-code')).toBeTruthy()
     })
+
+    it.each(['markdown', 'md'])('keeps the gutter padding for %s fenced blocks', (language) => {
+        const code = Array.from({ length: 123 }, (_, index) => `line ${index + 1}`).join('\n')
+        render(
+            <I18nProvider>
+                <MarkdownRenderer standalone content={`\`\`\`${language}\n${code}\n\`\`\``} />
+            </I18nProvider>
+        )
+
+        const grid = document.querySelector('[data-hapi-code-grid="true"]') as HTMLElement | null
+        expect(grid?.style.gridTemplateColumns).toBe('calc(3ch + 1.5rem) max-content')
+        expect(document.querySelectorAll('[data-line-number]')).toHaveLength(123)
+    })
 })
