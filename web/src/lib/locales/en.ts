@@ -421,6 +421,8 @@ export default {
   'chat.sendError.fallback': "Couldn't send your message. Edit and try again.",
   'chat.sendError.sessionInactive': 'This session is archived. Reopen it to send your message.',
   'chat.sendError.sessionInactive.action': 'Reopen',
+  'attachment.retryUpload': 'Retry upload',
+  'attachment.uploadFailed': 'Upload failed',
 
   // Codex review
   'codexReview.title': 'Codex review',

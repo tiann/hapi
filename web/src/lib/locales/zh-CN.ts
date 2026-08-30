@@ -420,6 +420,8 @@ export default {
   'chat.sendError.fallback': '消息未能发送。请修改后重试。',
   'chat.sendError.sessionInactive': '此会话已归档。请先重新打开再发送消息。',
   'chat.sendError.sessionInactive.action': '重新打开',
+  'attachment.retryUpload': '重试上传',
+  'attachment.uploadFailed': '上传失败',
 
   // Codex review
   'codexReview.title': 'Codex review',

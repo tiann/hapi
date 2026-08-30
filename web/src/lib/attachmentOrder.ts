@@ -41,6 +41,19 @@ export function moveAttachmentId(
     return next
 }
 
+export function replaceAttachmentId(
+    order: readonly string[],
+    originalId: string,
+    replacementId: string,
+    originalIndex = order.indexOf(originalId),
+): string[] {
+    const next = order.filter((id) => id !== originalId && id !== replacementId)
+    if (originalIndex < 0) return next
+
+    next.splice(Math.min(originalIndex, next.length), 0, replacementId)
+    return next
+}
+
 export function orderItemsById<T extends { id: string }>(
     items: readonly T[],
     order: readonly string[],

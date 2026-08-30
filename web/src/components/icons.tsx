@@ -98,6 +98,17 @@ export function RewindIcon(props: IconProps) {
     )
 }
 
+export function RefreshIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M21 12a9 9 0 1 1-3-6.7" />
+            <polyline points="21 3 21 9 15 9" />
+        </>,
+        props,
+        2
+    )
+}
+
 /** Composer schedule-send clock — circle + hands (matches ComposerButtons). */
 export function ScheduleIcon(props: IconProps) {
     return createIcon(

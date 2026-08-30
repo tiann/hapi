@@ -63,7 +63,8 @@ import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
-import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import type { AttachmentRetryHandler } from './AttachmentItem'
 
 export interface TextInputState {
     text: string
@@ -476,6 +477,15 @@ export function HappyComposer(props: {
         attachmentOrderRef.current = nextOrder
         setAttachmentOrderRevision((revision) => revision + 1)
     }, [attachmentIds, attachmentOrderRef])
+    const handleAttachmentRetry = useCallback<AttachmentRetryHandler>((originalId, retryId, originalIndex) => {
+        attachmentOrderRef.current = replaceAttachmentId(
+            attachmentOrderRef.current,
+            originalId,
+            retryId,
+            originalIndex,
+        )
+        setAttachmentOrderRevision((revision) => revision + 1)
+    }, [attachmentOrderRef])
     const orderedAttachments = orderItemsById(attachments, orderedAttachmentIds)
     const threadIsRunning = useAuiState((s) => s.thread.isRunning)
     const threadIsDisabled = useAuiState((s) => s.thread.isDisabled)
@@ -2231,6 +2241,8 @@ export function HappyComposer(props: {
                                     orderedAttachmentIds={orderedAttachmentIds}
                                     disabled={controlsDisabled}
                                     onReorder={handleAttachmentReorder}
+                                    attachmentOrderRef={attachmentOrderRef}
+                                    onRetry={handleAttachmentRetry}
                                 />
                             </div>
                         ) : null}
