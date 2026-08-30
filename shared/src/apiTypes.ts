@@ -575,6 +575,10 @@ export type ForkConversationRpcResult = {
     forkSession?: boolean
 }
 
+export type RewindConversationErrorCode =
+    | 'ambiguous_native_boundary'
+    | 'ambiguous_native_boundary_fork_safe'
+
 export type RewindConversationRpcResult = {
     success: true
     /** Truncate HAPI transcript at/after this localId, then accept rehydrated history. */
@@ -588,6 +592,7 @@ export type RewindConversationRpcResult = {
 } | {
     success: false
     error: string
+    code?: RewindConversationErrorCode
     /** Native state is unchanged, cancelled, or was restored exactly. */
     outcome: 'rejected' | 'cancelled' | 'source_restored'
 }

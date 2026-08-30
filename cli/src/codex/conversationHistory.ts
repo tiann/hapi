@@ -29,10 +29,16 @@ function isMethodNotFound(error: unknown): boolean {
 }
 
 type TurnInfo = {
-    id: string
+    id: string | null
     status?: string
     clientIds: string[]
+    userMessageCount: number
+    hasCompleteItems: boolean
+    hasContextCompaction: boolean
 }
+
+const AMBIGUOUS_REWIND_ERROR =
+    'Rewind is unavailable for this Codex history because native turn boundaries are ambiguous (steering, compaction, or incomplete history)'
 
 export class CodexConversationHistory {
     private states: ConversationHistoryCapabilityStates = { ...CODEX_CONVERSATION_HISTORY_INITIAL }
@@ -127,9 +133,13 @@ export class CodexConversationHistory {
             // Prefer stable inclusive lastTurnId of the previous turn. The first
             // turn has no predecessor, so fall back to experimental beforeTurnId
             // (exclusive) for that single boundary.
+            const previousTurnId = selectedIndex > 0 ? turns[selectedIndex - 1]?.id : null
+            if (selectedIndex > 0 && !previousTurnId) {
+                throw new Error(AMBIGUOUS_REWIND_ERROR)
+            }
             const boundary = selectedIndex === 0
                 ? { beforeTurnId: selectedTurnId }
-                : { lastTurnId: turns[selectedIndex - 1]!.id }
+                : { lastTurnId: previousTurnId! }
             try {
                 const response = await client.forkThread({
                     threadId,
@@ -179,12 +189,57 @@ export class CodexConversationHistory {
         }
 
         const turns = await this.listTurns()
-        const turnId = await this.resolveTurnId(messageLocalId, turns)
-        const index = turns.findIndex((turn) => turn.id === turnId)
-        if (index < 0) throw new Error('Selected turn not found')
+        const turnId = await this.resolveTurnId(messageLocalId, turns).catch(() => null)
+        const index = turnId ? turns.findIndex((turn) => turn.id === turnId) : -1
+        if (index < 0) {
+            return {
+                success: false,
+                error: AMBIGUOUS_REWIND_ERROR,
+                code: 'ambiguous_native_boundary',
+                outcome: 'rejected'
+            }
+        }
         if (turns[index]?.status === 'inProgress' || turns[index]?.status === 'in_progress') {
             throw new Error('Cannot rewind an in-progress turn')
         }
+
+        // thread/rollback takes a raw native-turn count, while the Web transcript
+        // exposes user-message boundaries. Only use that count when every native
+        // turn is known to contain exactly one identified user message. Steering,
+        // compaction, and incomplete item data can otherwise leave the model
+        // context out of sync with the transcript after a successful rollback.
+        const seenTurnIds = new Set<string>()
+        const seenClientIds = new Set<string>()
+        const hasAmbiguousBoundary = turns.some((turn) => {
+            const clientId = turn.clientIds[0]
+            if (
+                !turn.id ||
+                !turn.hasCompleteItems ||
+                turn.userMessageCount !== 1 ||
+                turn.clientIds.length !== 1 ||
+                !clientId ||
+                turn.hasContextCompaction ||
+                seenTurnIds.has(turn.id) ||
+                seenClientIds.has(clientId)
+            ) {
+                return true
+            }
+            seenTurnIds.add(turn.id)
+            seenClientIds.add(clientId)
+            return false
+        })
+        if (hasAmbiguousBoundary) {
+            return {
+                success: false,
+                error: AMBIGUOUS_REWIND_ERROR,
+                code: this.states.forkAtMessage === 'supported'
+                    && this.isForkFallbackSafe(messageLocalId, turns, index)
+                    ? 'ambiguous_native_boundary_fork_safe'
+                    : 'ambiguous_native_boundary',
+                outcome: 'rejected'
+            }
+        }
+
         const numTurns = turns.length - index
         if (numTurns <= 0) throw new Error('Invalid rewind count')
 
@@ -216,12 +271,67 @@ export class CodexConversationHistory {
 
         const list = turns ?? await this.listTurns()
         for (const turn of list) {
-            if (turn.clientIds.includes(localId)) {
+            if (turn.id && turn.clientIds.includes(localId)) {
                 this.turnByLocalId.set(localId, turn.id)
                 return turn.id
             }
         }
         throw new Error(`No native history point for message ${localId}`)
+    }
+
+    private isForkFallbackSafe(messageLocalId: string, turns: TurnInfo[], index: number): boolean {
+        const selected = turns[index]
+        if (
+            !selected
+            || !selected.id
+            || !selected.hasCompleteItems
+            || selected.hasContextCompaction
+            || selected.userMessageCount !== selected.clientIds.length
+            || selected.clientIds[0] !== messageLocalId
+        ) {
+            return false
+        }
+
+        if (turns.flatMap((turn) => turn.clientIds).filter((clientId) => clientId === messageLocalId).length !== 1) {
+            return false
+        }
+        if (turns.filter((turn) => turn.id === selected.id).length !== 1) {
+            return false
+        }
+
+        const previousId = index > 0 ? turns[index - 1]?.id : null
+        if (index > 0 && !previousId) {
+            return false
+        }
+        if (previousId && turns.filter((turn) => turn.id === previousId).length !== 1) {
+            return false
+        }
+
+        // The child transcript excludes the selected HAPI message. Native Fork
+        // excludes the whole selected native turn, so the selected message must
+        // be the first user item in that turn. Also require the retained prefix
+        // to be unambiguous; otherwise the child could inherit a different
+        // projection even though this particular boundary is exact.
+        const retainedTurnIds = new Set<string>()
+        const retainedClientIds = new Set<string>()
+        for (const turn of turns.slice(0, index)) {
+            const clientId = turn.clientIds[0]
+            if (
+                !turn.id
+                || !turn.hasCompleteItems
+                || turn.hasContextCompaction
+                || turn.userMessageCount !== 1
+                || turn.clientIds.length !== 1
+                || !clientId
+                || retainedTurnIds.has(turn.id)
+                || retainedClientIds.has(clientId)
+            ) {
+                return false
+            }
+            retainedTurnIds.add(turn.id)
+            retainedClientIds.add(clientId)
+        }
+        return true
     }
 
     private async listTurns(): Promise<TurnInfo[]> {
@@ -233,16 +343,46 @@ export class CodexConversationHistory {
             const response = await client.readThread({ threadId, includeTurns: true })
             const thread = asRecord(response.thread)
             const turns = Array.isArray(thread?.turns) ? thread.turns : []
-            return turns.flatMap((entry) => {
+            return turns.flatMap((entry): TurnInfo[] => {
                 const record = asRecord(entry)
                 const id = asString(record?.id)
-                if (!id) return []
+                if (!record || !id) {
+                    return [{
+                        id: null,
+                        status: asString(record?.status) ?? undefined,
+                        clientIds: [],
+                        userMessageCount: 0,
+                        hasCompleteItems: false,
+                        hasContextCompaction: false
+                    }]
+                }
                 const clientIds: string[] = []
-                const items = Array.isArray(record?.items) ? record.items : []
+                const items = Array.isArray(record?.items) ? record.items : null
+                if (!items) {
+                    return [{
+                        id,
+                        status: asString(record?.status) ?? undefined,
+                        clientIds,
+                        userMessageCount: 0,
+                        hasCompleteItems: false,
+                        hasContextCompaction: false
+                    }]
+                }
+                let userMessageCount = 0
+                let hasCompleteItems = true
+                let hasContextCompaction = false
                 for (const item of items) {
                     const itemRecord = asRecord(item)
                     const type = asString(itemRecord?.type) ?? asString(itemRecord?.itemType)
+                    if (!itemRecord || !type) {
+                        hasCompleteItems = false
+                        continue
+                    }
+                    if (type === 'contextCompaction' || type === 'context_compaction') {
+                        hasContextCompaction = true
+                    }
                     if (type === 'userMessage' || type === 'user_message') {
+                        userMessageCount += 1
                         const clientId = asString(itemRecord?.clientId) ?? asString(itemRecord?.client_id)
                         if (clientId) clientIds.push(clientId)
                     }
@@ -250,7 +390,10 @@ export class CodexConversationHistory {
                 return [{
                     id,
                     status: asString(record?.status) ?? undefined,
-                    clientIds
+                    clientIds,
+                    userMessageCount,
+                    hasCompleteItems,
+                    hasContextCompaction
                 }]
             })
         } catch (error) {
@@ -258,7 +401,10 @@ export class CodexConversationHistory {
             // Fall back to in-memory mapping only
             return Array.from(this.turnByLocalId.entries()).map(([localId, id]) => ({
                 id,
-                clientIds: [localId]
+                clientIds: [localId],
+                userMessageCount: 1,
+                hasCompleteItems: false,
+                hasContextCompaction: false
             }))
         }
     }

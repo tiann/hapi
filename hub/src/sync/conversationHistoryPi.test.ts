@@ -22,12 +22,13 @@ describe('Pi conversation-history hub integration', () => {
             store.messages.markMessagesInvoked(session.id, ['local-boundary'], Date.now())
             ;(engine as any).rpcGateway.rewindConversation = async () => ({
                 success: false,
-                error: 'Pi rewind was cancelled',
-                outcome: 'cancelled',
+                error: 'Codex native boundary is ambiguous',
+                code: 'ambiguous_native_boundary',
+                outcome: 'rejected',
             })
 
             await expect(engine.rewindConversation(session.id, 'default', 'local-boundary')).resolves.toEqual({
-                type: 'error', message: 'Pi rewind was cancelled',
+                type: 'error', message: 'Codex native boundary is ambiguous', code: 'ambiguous_native_boundary',
             })
             expect(engine.getSession(session.id)?.metadata?.conversationHistoryDiverged).not.toBe(true)
         } finally {

@@ -1492,6 +1492,37 @@ describe('sessions routes', () => {
         expect(calls).toEqual([{ sessionId: 'session-1', messageLocalId: 'local-2' }])
     })
 
+    it('returns a structured ambiguous-boundary code for deterministic rewind rejection', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                capabilities: { conversationHistory: { rewindToMessage: true } }
+            }
+        })
+        const { app } = createApp(session, {
+            rewindConversation: async () => ({
+                type: 'error',
+                message: 'Rewind is unavailable for this Codex history',
+                code: 'ambiguous_native_boundary_fork_safe'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'local-2' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Rewind is unavailable for this Codex history',
+            code: 'ambiguous_native_boundary_fork_safe',
+            hydrateFailed: false
+        })
+    })
+
     it('rejects rewind without messageLocalId', async () => {
         const { app } = createApp(createSession())
         const response = await app.request('/api/sessions/session-1/rewind', {
