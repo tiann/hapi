@@ -141,6 +141,36 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         expect(restoredMessageText).toBe('hello');
     });
 
+    it('does not restore /compact after its SDK result was accepted', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.push('/compact', { permissionMode: 'default' });
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        let callCount = 0;
+        let queueSizeOnSecondAttempt: number | undefined;
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+            if (callCount === 1) {
+                const msg = await opts.nextMessage();
+                expect(msg?.message).toBe('/compact');
+                opts.onCompactResultAccepted();
+                throw new Error('stream failed after compact result');
+            }
+
+            queueSizeOnSecondAttempt = session.queue.size();
+            triggerSwitch(client);
+            throw new Error('stop test');
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        expect(callCount).toBe(2);
+        expect(queueSizeOnSecondAttempt).toBe(0);
+    });
+
     it('sends the result carrier before compact completion and ready', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
         queue.push('/compact', { permissionMode: 'default' });

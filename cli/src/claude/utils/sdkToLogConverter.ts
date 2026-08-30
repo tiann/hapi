@@ -283,6 +283,7 @@ export class SDKToLogConverter {
                     logMessage.isMeta = true
                 }
 
+
                 // Check if this is a tool result and add mode if available
                 if (Array.isArray(userMsg.message.content)) {
                     for (const content of userMsg.message.content) {
