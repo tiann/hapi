@@ -119,6 +119,22 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%20cursor/cursor-chat-store')
     })
 
+    it('forwards an abort signal to session file search', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ success: true, files: [] }), { status: 200 })
+        )
+
+        const controller = new AbortController()
+        const api = new ApiClient('test-token')
+        await expect(api.searchSessionFiles('session-1', 'src', 50, controller.signal)).resolves.toEqual({
+            success: true,
+            files: [],
+        })
+
+        const [, init] = fetchMock.mock.calls[0] ?? []
+        expect(init?.signal).toBe(controller.signal)
+    })
+
     it('generates a title and saves the summary through separate session endpoints', async () => {
         fetchMock
             .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Generated title' }), { status: 200 }))

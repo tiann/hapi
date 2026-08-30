@@ -341,8 +341,12 @@ export class ApiSessionClient extends EventEmitter {
             })
         })
 
-        this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
+        this.socket.on('rpc-request', async (data: { method: string; params: string; requestId?: string }, callback: (response: string) => void) => {
             callback(await this.rpcHandlerManager.handleRequest(data))
+        })
+
+        this.socket.on('rpc-cancel', ({ requestId }) => {
+            this.rpcHandlerManager.cancelRequest(requestId)
         })
 
         this.socket.on('disconnect', (reason) => {

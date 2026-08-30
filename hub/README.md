@@ -186,7 +186,8 @@ Namespace: `/cli`
 ### Hub events (hub to clients)
 
 - `update` - Broadcast session/message updates.
-- `rpc-request` - Incoming RPC call.
+- `rpc-request` - Incoming RPC call; cancellable requests carry a `requestId`.
+- `rpc-cancel` - Cancel an in-flight RPC by `requestId`.
 
 See `src/socket/rpcRegistry.ts` for RPC routing.
 

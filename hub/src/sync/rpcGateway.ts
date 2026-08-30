@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
@@ -343,8 +344,8 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListDirectory, { path }) as RpcListDirectoryResponse
     }
 
-    async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.StatFiles, { paths }) as RpcStatFilesResponse
+    async statFiles(sessionId: string, paths: string[], signal?: AbortSignal): Promise<RpcStatFilesResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.StatFiles, { paths }, DEFAULT_RPC_TIMEOUT_MS, signal) as RpcStatFilesResponse
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
@@ -355,8 +356,8 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.DeleteUpload, { sessionId, path }) as RpcDeleteUploadResponse
     }
 
-    async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.Ripgrep, { args, cwd, fileSearch }) as RpcCommandResponse
+    async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions, signal?: AbortSignal): Promise<RpcCommandResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.Ripgrep, { args, cwd, fileSearch }, DEFAULT_RPC_TIMEOUT_MS, signal) as RpcCommandResponse
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
@@ -509,9 +510,10 @@ export class RpcGateway {
         sessionId: string,
         method: string,
         params: unknown,
-        timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS
+        timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS,
+        signal?: AbortSignal
     ): Promise<unknown> {
-        return await this.rpcCall(`${sessionId}:${method}`, params, timeoutMs)
+        return await this.rpcCall(`${sessionId}:${method}`, params, timeoutMs, signal)
     }
 
     private async machineRpc(
@@ -523,7 +525,7 @@ export class RpcGateway {
         return await this.rpcCall(`${machineId}:${method}`, params, timeoutMs)
     }
 
-    private async rpcCall(method: string, params: unknown, timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS): Promise<unknown> {
+    private async rpcCall(method: string, params: unknown, timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS, signal?: AbortSignal): Promise<unknown> {
         const socketId = this.rpcRegistry.getSocketIdForMethod(method)
         if (!socketId) {
             throw new RpcTargetMissingError(method, 'handler-not-registered')
@@ -534,10 +536,45 @@ export class RpcGateway {
             throw new RpcTargetMissingError(method, 'socket-disconnected')
         }
 
-        const response = await socket.timeout(timeoutMs).emitWithAck('rpc-request', {
+        if (signal?.aborted) {
+            throw createAbortError()
+        }
+
+        const requestId = signal ? randomUUID() : undefined
+        const responsePromise = socket.timeout(timeoutMs).emitWithAck('rpc-request', {
             method,
-            params: JSON.stringify(params)
-        }) as unknown
+            params: JSON.stringify(params),
+            ...(requestId ? { requestId } : {})
+        }) as Promise<unknown>
+
+        const response = requestId && signal
+            ? await new Promise<unknown>((resolve, reject) => {
+                let settled = false
+                const cleanup = () => signal.removeEventListener('abort', onAbort)
+                const onAbort = () => {
+                    if (settled) return
+                    settled = true
+                    socket.emit('rpc-cancel', { requestId })
+                    cleanup()
+                    reject(createAbortError())
+                }
+
+                signal.addEventListener('abort', onAbort, { once: true })
+                responsePromise.then((value) => {
+                    if (settled) return
+                    settled = true
+                    cleanup()
+                    resolve(value)
+                }, (error: unknown) => {
+                    if (settled) return
+                    settled = true
+                    cleanup()
+                    reject(error)
+                })
+
+                if (signal.aborted) onAbort()
+            })
+            : await responsePromise
 
         if (typeof response !== 'string') {
             return response
@@ -549,4 +586,10 @@ export class RpcGateway {
             return response
         }
     }
+}
+
+function createAbortError(): Error {
+    const error = new Error('Request aborted')
+    error.name = 'AbortError'
+    return error
 }

@@ -158,3 +158,53 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         expect((error as RpcTargetMissingError).code).toBe('socket-disconnected')
     })
 })
+
+describe('RpcGateway cancellation', () => {
+    it('sends a cancel event and rejects the aborted RPC', async () => {
+        const emitted: Array<{ event: string; data: unknown }> = []
+        let resolveAck!: (value: string) => void
+        const socket = {
+            emit(event: string, data: unknown) {
+                emitted.push({ event, data })
+            },
+            timeout() {
+                return {
+                    emitWithAck: () => new Promise<string>((resolve) => {
+                        resolveAck = resolve
+                    })
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get: () => socket } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' }
+        } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, rpcRegistry)
+        const controller = new AbortController()
+
+        const pending = gateway.runRipgrep(
+            'session-1',
+            ['--files'],
+            '/workspace',
+            { query: 'src', limit: 200 },
+            controller.signal,
+        )
+        controller.abort()
+
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+        expect(emitted).toHaveLength(1)
+        expect(emitted[0]).toMatchObject({
+            event: 'rpc-cancel',
+            data: { requestId: expect.any(String) },
+        })
+
+        // Let the underlying ack promise settle too; the caller has already
+        // observed the abort, but the socket operation remains in flight until
+        // the CLI finishes handling the cancellation.
+        resolveAck(JSON.stringify({ success: true }))
+    })
+})

@@ -235,7 +235,8 @@ export type MachineUpdateStateAck = {
 
 export interface ServerToClientEvents {
     update: (data: Update, ack?: (response: CancelQueuedMessageAck & { accepted?: boolean }) => void) => void
-    'rpc-request': (data: { method: string; params: string }, callback: (response: string) => void) => void
+    'rpc-request': (data: { method: string; params: string; requestId?: string }, callback: (response: string) => void) => void
+    'rpc-cancel': (data: { requestId: string }) => void
     'terminal:open': (data: TerminalOpenPayload) => void
     'terminal:write': (data: TerminalWritePayload) => void
     'terminal:resize': (data: TerminalResizePayload) => void

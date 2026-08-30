@@ -258,6 +258,7 @@ Graceful runner shutdown.
   - `spawn-happy-session` - spawn new session
   - `stop-session` - stop session by ID
   - `stop-runner` - request shutdown
+- `rpc-cancel` - cancel an in-flight `rpc-request` by request ID
 
 All data is plain JSON over TLS; authentication is `CLI_API_TOKEN` (no end-to-end encryption).
 
