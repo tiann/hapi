@@ -26,6 +26,7 @@ import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
+    onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
     // Called with `true` once the ACP backend + internal HTTP baseUrl are
     // ready (so /compact can actually run) and with `false` whenever this
@@ -251,6 +252,34 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.currentBackendEffort = thoughtLevelOption?.currentValue ?? null;
         this.defaultBackendEffort = this.currentBackendEffort;
 
+        // The CLI may have been launched with an explicit --model that differs
+        // from the ACP session's own default. Apply it eagerly right here so
+        // the new model's thought_level config options are captured (via
+        // setModel's set_config_option round-trip) *before* the web UI's first
+        // effort-options poll — otherwise a variant-capable startup model looks
+        // unsupported until after the first turn. On failure just warn: the
+        // first batch's existing inline switch path retries the same model.
+        const requestedStartupModel = this.session.getModel?.();
+        if (
+            !this.shouldExit
+            && typeof requestedStartupModel === 'string'
+            && requestedStartupModel.length > 0
+            && requestedStartupModel !== this.defaultBackendModel
+            && typeof backend.setModel === 'function'
+        ) {
+            try {
+                await backend.setModel(acpSessionId, requestedStartupModel, { flavor: 'opencode' });
+                this.currentBackendModel = requestedStartupModel;
+                // The lookup above ran before the switch — re-query so the
+                // seeded effort reflects the eagerly applied model.
+                const refreshedThoughtLevel = backend.getThoughtLevelConfigOption?.(acpSessionId);
+                this.currentBackendEffort = refreshedThoughtLevel?.currentValue ?? null;
+                this.defaultBackendEffort = this.currentBackendEffort;
+            } catch (error) {
+                logger.warn('[opencode-remote] Eager startup model application failed; first batch will retry inline', error);
+            }
+        }
+
         // Let the caller (runOpencode.ts) know native /compact can actually
         // run now that the ACP backend + internal HTTP baseUrl exist. The
         // dequeue loop below (not an externally-invoked trigger) is what
@@ -295,13 +324,28 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListOpencodeReasoningEffortOptions, async () => {
             const effortOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
+            const currentModelId = backend.getSessionModelsMetadata?.(acpSessionId)?.currentModelId ?? null;
+            const requestedModel = this.session.getModel?.();
+            const targetModelId = requestedModel === null
+                ? this.defaultBackendModel
+                : requestedModel ?? currentModelId;
             if (!effortOption) {
-                return { success: false, error: 'OpenCode reasoning effort options are not available' };
+                return {
+                    success: false,
+                    error: 'OpenCode reasoning effort options are not available',
+                    currentModelId,
+                    targetModelId
+                };
             }
             return {
                 success: true,
                 options: effortOption.options,
-                currentValue: effortOption.currentValue ?? null
+                currentValue: effortOption.currentValue ?? null,
+                // Lets the web client detect "options still belong to the
+                // previous model" while a requested switch has not been
+                // applied by the backend yet.
+                currentModelId,
+                targetModelId
             };
         });
 
@@ -388,13 +432,22 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.currentBackendModel = requestedModel;
             } else if (requestedModel && requestedModel !== this.currentBackendModel) {
                 if (!backend.setModel || this.setModelSupported === false) {
-                    batch.mode.model = this.currentBackendModel ?? undefined;
+                    this.rollbackModel(batch, this.currentBackendModel);
                 } else {
                     logger.debug(`[opencode-remote] Switching model inline: ${this.currentBackendModel} -> ${requestedModel}`);
                     try {
                         await backend.setModel(acpSessionId, requestedModel, { flavor: 'opencode' });
                         this.currentBackendModel = requestedModel;
                         this.setModelSupported = true;
+                        // set_config_option("model") also switches the backend's
+                        // effort currentValue — refresh both cached efforts so
+                        // a subsequent request equal to the stale value still
+                        // performs the round-trip instead of being skipped,
+                        // and an unset effort falls back to the *new* model's
+                        // default rather than reapplying the old model's.
+                        const refreshedInlineEffort = backend.getThoughtLevelConfigOption?.(acpSessionId);
+                        this.currentBackendEffort = refreshedInlineEffort?.currentValue ?? null;
+                        this.defaultBackendEffort = this.currentBackendEffort;
                         // Reflect the resolved model back into the batch so
                         // downstream display logic sees the concrete id rather
                         // than a `null` placeholder.
@@ -416,7 +469,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                                 message: `Failed to switch model to ${requestedModel}. Continuing with ${this.currentBackendModel ?? '(default)'}.`
                             });
                         }
-                        batch.mode.model = this.currentBackendModel ?? undefined;
+                        this.rollbackModel(batch, this.currentBackendModel);
                     }
                 }
             }
@@ -804,6 +857,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.session.setModelReasoningEffort(effort);
         this.session.pushKeepAlive();
         this.options.onReasoningEffortRollback?.(effort);
+    }
+
+    private rollbackModel(batch: { mode: OpencodeMode }, model: string | null): void {
+        batch.mode.model = model ?? undefined;
+        this.session.setModel(model);
+        this.session.pushKeepAlive();
+        this.options.onModelRollback?.(model);
     }
 
     /**

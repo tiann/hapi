@@ -35,6 +35,10 @@ import {
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
 import {
+    listOpencodeModelVariants,
+    type ListOpencodeModelVariantsResponse
+} from '../modules/common/opencodeModelVariants'
+import {
     listGrokModelsForCwd,
     type ListGrokModelsForCwdRequest,
     type ListGrokModelsForCwdResponse
@@ -253,6 +257,23 @@ export class ApiMachineClient {
                 }
 
                 return await listOpencodeModelsForCwd(resolvedCwd)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<{ cwd?: string | null }, ListOpencodeModelVariantsResponse>(
+            RPC_METHODS.ListOpencodeModelVariants,
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (!rawCwd) {
+                    return { success: false, error: 'cwd is required' }
+                }
+
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace roots' }
+                }
+
+                return await listOpencodeModelVariants({ cwd: resolvedCwd })
             }
         )
 

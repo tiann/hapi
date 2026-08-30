@@ -64,6 +64,25 @@ export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; labe
     { value: 'max', label: 'Max' },
 ]
 
+/**
+ * Whether a saved/selected opencode reasoning effort is still valid for the
+ * current option set. Effort values are arbitrary model-provided strings
+ * (`CodexReasoningEffort` is a `string` alias, and dynamic variant lists from
+ * the OpenCode catalog may contain values beyond the static presets, e.g.
+ * `minimal` or `none`). `dynamicVariants` is the selected model's real variant
+ * list when the catalog is loaded (empty = model has none), or null when the
+ * catalog is unavailable and the static fallback list applies.
+ */
+export function isOpencodeReasoningEffortValid(
+    effort: CodexReasoningEffort,
+    dynamicVariants: string[] | null
+): boolean {
+    if (effort === 'default') return true
+    const allowed = dynamicVariants
+        ?? CODEX_REASONING_EFFORT_OPTIONS.map((option) => option.value).filter((value) => value !== 'xhigh')
+    return allowed.includes(effort)
+}
+
 export const CLAUDE_EFFORT_OPTIONS: { value: LaunchEffort; label: string }[] = [
     { value: 'auto', label: 'Auto' },
     ...CLAUDE_EFFORT_LEVELS.map((value) => ({ value, label: CLAUDE_EFFORT_LABELS[value] })),

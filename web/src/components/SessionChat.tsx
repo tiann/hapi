@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
 import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
@@ -8,6 +9,7 @@ import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
     CodexCollaborationMode,
+    CodexModelSummary,
     CopilotAgentMode,
     DecryptedMessage,
     PermissionMode,
@@ -108,12 +110,29 @@ import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
+import { queryKeys } from '@/lib/query-keys'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
 type SessionModelSelection = { provider: string; modelId: string } | string | null
+
+/**
+ * Query key to invalidate after a successful model switch on an opencode
+ * session, or null for other flavors. The effort-options query caches per
+ * session (not per model), so without invalidation a stale option list from
+ * the previous model survives the switch.
+ */
+export function opencodeEffortOptionsInvalidationKey(
+    agentFlavor: string | null | undefined,
+    sessionId: string
+): readonly unknown[] | null {
+    if (agentFlavor !== 'opencode') {
+        return null
+    }
+    return queryKeys.sessionOpencodeReasoningEffortOptions(sessionId)
+}
 
 export function resolvePiContextWindow(
     models: PiModelSummary[] | undefined,
@@ -153,6 +172,26 @@ export async function applyModelChangeWithReasoningRollback(args: {
         }
         throw error
     }
+}
+
+export function shouldClearReasoningEffortForModelChange(args: {
+    agentFlavor: string | null | undefined
+    previousModelReasoningEffort: string | null
+    codexModels: readonly CodexModelSummary[]
+    model: SessionModelSelection
+}): boolean {
+    if (!args.previousModelReasoningEffort) {
+        return false
+    }
+    if (args.agentFlavor === 'opencode') {
+        return false
+    }
+    return args.agentFlavor === 'codex'
+        && supportsCodexReasoningEffort(
+            args.codexModels,
+            args.model,
+            args.previousModelReasoningEffort
+        ) === false
 }
 
 /**
@@ -634,6 +673,7 @@ function SessionChatInner(props: SessionChatProps) {
     const enqueueCursorModelApply = useMemo(() => createSerialAsyncQueue(), [])
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useHubScratchlist(props.session.id, props.api)
+    const queryClient = useQueryClient()
     const { sessions: allSessions } = useSessions(props.api)
     const resolveSessionMentionTooltip = useCallback((id: string, title: string) => {
         const hit = allSessions.find((s) => s.id === id) ?? null
@@ -859,6 +899,22 @@ function SessionChatInner(props: SessionChatProps) {
         [props.onSend, props.api, props.session.id, scratchlist, scratchlistMode],
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
+    // The effort-options query is keyed by session only, so a stale option
+    // list from the previous model would survive a switch. Reset when the
+    // session model changes. `session.model` is updated by the hub at REST-ack
+    // time, ahead of the CLI's inline ACP switch — the invalidation alone
+    // would refetch the old model's options, and the hook's pending-switch
+    // polling (currentModelId mismatch) is what actually converges the picker.
+    // The key is built inside the effect: computing it during render yields a
+    // fresh array every render, and putting that in the deps would invalidate
+    // on every streaming re-render.
+    const sessionModel = props.session.model
+    const sessionId = props.session.id
+    useEffect(() => {
+        const effortInvalidationKey = opencodeEffortOptionsInvalidationKey(agentFlavor, sessionId)
+        if (!effortInvalidationKey || sessionModel === undefined) return
+        void queryClient.resetQueries({ queryKey: effortInvalidationKey, exact: true })
+    }, [agentFlavor, sessionId, sessionModel, queryClient])
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
     const codexModelsState = useCodexModels({
@@ -906,7 +962,8 @@ function SessionChatInner(props: SessionChatProps) {
     const opencodeReasoningEffortState = useOpencodeReasoningEffortOptions({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'opencode' && props.session.active
+        enabled: agentFlavor === 'opencode' && props.session.active,
+        sessionModel: props.session.model
     })
     const opencodeModelOptions = useMemo(() => {
         if (agentFlavor !== 'opencode') {
@@ -1413,13 +1470,12 @@ function SessionChatInner(props: SessionChatProps) {
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
         const previousModelReasoningEffort = props.session.modelReasoningEffort
-        const shouldClearReasoningEffort = agentFlavor === 'codex'
-            && Boolean(previousModelReasoningEffort)
-            && supportsCodexReasoningEffort(
-                codexModelsState.models,
-                model,
-                previousModelReasoningEffort
-            ) === false
+        const shouldClearReasoningEffort = shouldClearReasoningEffortForModelChange({
+            agentFlavor,
+            previousModelReasoningEffort,
+            codexModels: codexModelsState.models,
+            model
+        })
 
         try {
             await applyModelChangeWithReasoningRollback({

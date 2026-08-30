@@ -10,6 +10,7 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
+import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
 import { useCopilotModelsForCwd } from '@/hooks/queries/useCopilotModelsForCwd'
 import { usePiModelsForMachine } from '@/hooks/queries/usePiModelsForMachine'
@@ -38,6 +39,7 @@ import {
     saveNewSessionFormDraft,
     shouldRestoreNewSessionFormDraft
 } from './newSessionFormDraft'
+import { isOpencodeReasoningEffortValid } from './types'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
@@ -341,6 +343,7 @@ export function NewSession(props: {
         setModelReasoningEffort('default')
     }, [agent, codexSupportedReasoningEfforts, modelReasoningEffort])
 
+
     useEffect(() => {
         if (
             agent !== 'codex'
@@ -553,6 +556,60 @@ export function NewSession(props: {
             cwdExists: deferredDirectoryExists,
         })
     })
+    const opencodeVariantsState = useOpencodeModelVariants({
+        api: props.api,
+        machineId,
+        cwd: deferredDirectory || null,
+        enabled: shouldEnableOpencodeModelDiscovery({
+            agent,
+            machineId,
+            cwd: deferredDirectory,
+            cwdExists: deferredDirectoryExists,
+        })
+    })
+    // OpenCode model option values are provider-qualified (`provider/model`),
+    // matching the variant catalog keys from the OpenCode server `/provider`
+    // endpoint. undefined = not applicable / no selection; null = loading or
+    // failed (static fallback); [] = catalog loaded and the selected model
+    // has no variants (hide the field — matches mid-session behavior).
+    const opencodeVariantOptions = useMemo(() => {
+        if (agent !== 'opencode' || !machineId) {
+            return undefined
+        }
+        const effectiveModelId = !opencodeSelectedModel || opencodeSelectedModel === 'auto'
+            ? opencodeModelsState.currentModelId
+            : opencodeSelectedModel
+        if (!effectiveModelId) {
+            return null
+        }
+        if (opencodeVariantsState.isLoading || opencodeVariantsState.error || !opencodeVariantsState.variants) {
+            return null
+        }
+        return opencodeVariantsState.variants[effectiveModelId] ?? []
+        // Primitive/state-slice deps: the hook returns a fresh object per render,
+        // and a per-render options array would retrigger the reset effect below.
+    }, [agent, machineId, opencodeSelectedModel, opencodeModelsState.currentModelId, opencodeVariantsState.variants, opencodeVariantsState.isLoading, opencodeVariantsState.error])
+    const opencodeCatalogPending = agent === 'opencode'
+        && deferredDirectory !== ''
+        && (
+            deferredDirectoryExists === undefined
+            || (deferredDirectoryExists === true
+                && (opencodeModelsState.isLoading || opencodeVariantsState.isLoading))
+        )
+
+    useEffect(() => {
+        if (
+            agent !== 'opencode'
+            || modelReasoningEffort === 'default'
+            || opencodeCatalogPending
+        ) {
+            return
+        }
+        const dynamicVariants = opencodeVariantOptions ?? null
+        if (!isOpencodeReasoningEffortValid(modelReasoningEffort, dynamicVariants)) {
+            setModelReasoningEffort('default')
+        }
+    }, [agent, modelReasoningEffort, opencodeVariantOptions, opencodeCatalogPending])
     const grokModelsState = useGrokModelsForCwd({
         api: props.api,
         machineId,
@@ -1618,6 +1675,7 @@ export function NewSession(props: {
                 deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && opencodeModelsState.isLoading)
             ))
+        || (opencodeCatalogPending && modelReasoningEffort !== 'default')
         || (agent === 'copilot'
             && model !== 'auto'
             && (
@@ -1844,6 +1902,7 @@ export function NewSession(props: {
                     isDisabled={isFormDisabled || (agent === 'codex' && codexModelsState.isLoading)}
                     grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
                     codexReasoningOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}
+                    opencodeVariantOptions={agent === 'opencode' ? opencodeVariantOptions : undefined}
                     piSelectedModel={agent === 'pi' ? piSelectedModel : null}
                 />
             ) : null}

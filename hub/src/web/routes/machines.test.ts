@@ -248,6 +248,92 @@ describe('machines routes', () => {
         })
     })
 
+    it('returns OpenCode model variants for an online machine', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listOpencodeModelVariantsForMachine: async () => ({
+                success: true,
+                variants: {
+                    'opencode-go/ox-alpha-free': ['low', 'high', 'max']
+                }
+            })
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/opencode-model-variants')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            variants: {
+                'opencode-go/ox-alpha-free': ['low', 'high', 'max']
+            }
+        })
+    })
+
+    it('forwards the cwd query parameter to the machine RPC', async () => {
+        let receivedCwd: string | null | undefined = 'unset'
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listOpencodeModelVariantsForMachine: async (machineId: string, cwd?: string | null) => {
+                void machineId
+                receivedCwd = cwd
+                return { success: true as const, variants: {} }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/opencode-model-variants?cwd=%2Ftmp')
+        expect(response.status).toBe(200)
+        expect(receivedCwd).toBe('/tmp')
+    })
+
+    it('returns a stable code when the OpenCode variants machine RPC target is absent', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listOpencodeModelVariantsForMachine: async () => {
+                throw new RpcTargetMissingError(
+                    'machine-1:listOpencodeModelVariants',
+                    'handler-not-registered'
+                )
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/opencode-model-variants')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: machine-1:listOpencodeModelVariants',
+            code: 'rpc_target_missing'
+        })
+    })
+
     it('forwards startingMode "pty" to SyncEngine.spawnSession in the startingMode slot', async () => {
         const machine = createMachine()
         let captured: unknown[] | null = null

@@ -14,6 +14,10 @@ const harness = vi.hoisted(() => ({
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
     thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
+    // Records the events-array length at each getThoughtLevelConfigOption call,
+    // so tests can order lookups against setModel/prompt events without
+    // polluting the events list other assertions compare exactly.
+    thoughtLevelLookups: [] as number[],
     stderrHandler: null as null | ((error: { type: string; message: string; raw: string }) => void),
     hangPrompt: false,
     resolvePrompt: null as null | (() => void),
@@ -140,7 +144,10 @@ vi.mock('./utils/opencodeBackend', () => ({
             }
         }),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
-        getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption ?? undefined),
+        getThoughtLevelConfigOption: vi.fn(() => {
+            harness.thoughtLevelLookups.push(harness.events.length);
+            return harness.thoughtLevelOption ?? undefined;
+        }),
         // Real AcpSdkBackend.suppressUpdatesDuring swaps out the message
         // handler around `fn`; that detail is irrelevant to these
         // launcher-level tests (which never assert on ACP session/update
@@ -310,6 +317,9 @@ function createSessionStub(
     const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
+    const setModel = vi.fn((model: string | null) => {
+        session.model = model;
+    });
     const pushKeepAlive = vi.fn();
     const emitMessagesConsumedCalls: Array<{ localIds: string[]; options?: { clearQueuedThinkingGrace?: boolean } }> = [];
     const thinkingChangeCalls: boolean[] = [];
@@ -340,10 +350,14 @@ function createSessionStub(
         queue,
         sessionId: null as string | null,
         thinking: false,
+        model: null as string | null,
         getPermissionMode() {
             return 'default' as const;
         },
-        setModel(_model: string | null) {},
+        getModel() {
+            return session.model;
+        },
+        setModel,
         setModelReasoningEffort,
         pushKeepAlive,
         onThinkingChange(thinking: boolean) {
@@ -362,7 +376,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
+    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -393,6 +407,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
         harness.thoughtLevelOption = null;
+        harness.thoughtLevelLookups = [];
         harness.stderrHandler = null;
         harness.hangPrompt = false;
         harness.resolvePrompt = null;
@@ -1646,6 +1661,89 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(lastCall.hostname).toBe('127.0.0.1');
     });
 
+    it('applies the requested startup model eagerly so thought_level is discoverable before the first turn', async () => {
+        // The OpenCode CLI was launched with --model hy3-free, but the ACP
+        // session's own default (mirrored into the metadata) is big-pickle.
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/big-pickle', availableModels: [] };
+        harness.thoughtLevelOption = {
+            id: 'effort',
+            currentValue: 'low',
+            options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }]
+        };
+        const { session } = createSessionStub([
+            { message: 'first', mode: createModeWithEffort(undefined, 'high') }
+        ]);
+        session.model = 'opencode/hy3-free';
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(harness.setModelArgs).toEqual([
+            { sessionId: 'acp-session-1', modelId: 'opencode/hy3-free', flavor: 'opencode' }
+        ]);
+        // The effort lookup that seeds currentBackendEffort must run *after*
+        // the eager setModel, so it observes the new model's thought_level.
+        const eagerModelIndex = harness.events.indexOf('setModel:opencode/hy3-free');
+        expect(eagerModelIndex).toBeGreaterThanOrEqual(0);
+        const lookupAfterEager = harness.thoughtLevelLookups.find((at) => at > eagerModelIndex);
+        expect(lookupAfterEager).toBeDefined();
+        expect(lookupAfterEager!).toBeLessThan(harness.events.indexOf('prompt:start'));
+    });
+
+    it('ignores an eager startup model failure and lets the first batch retry inline', async () => {
+        let eagerFailed = false;
+        harness.setModelImpl = async () => {
+            if (!eagerFailed) {
+                eagerFailed = true;
+                throw new Error('Transient backend failure');
+            }
+        };
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/big-pickle', availableModels: [] };
+        harness.thoughtLevelOption = {
+            id: 'effort',
+            currentValue: 'low',
+            options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }]
+        };
+        const { session, sessionEvents } = createSessionStub([
+            { message: 'first', mode: createMode('opencode/hy3-free') }
+        ]);
+        session.model = 'opencode/hy3-free';
+
+        await opencodeRemoteLauncher(session as never);
+
+        // Eager attempt happened once and failed; the first batch then retried
+        // via the existing inline switch path.
+        expect(harness.setModelArgs).toEqual([
+            { sessionId: 'acp-session-1', modelId: 'opencode/hy3-free', flavor: 'opencode' },
+            { sessionId: 'acp-session-1', modelId: 'opencode/hy3-free', flavor: 'opencode' }
+        ]);
+        // The inline switch must also refresh the cached effort from the fresh
+        // thought_level options (set_config_option changes the backend's
+        // effort currentValue).
+        const inlineSwitchIndex = harness.events.lastIndexOf('setModel:opencode/hy3-free');
+        const lookupAfterInline = harness.thoughtLevelLookups.find((at) => at > inlineSwitchIndex);
+        expect(lookupAfterInline).toBeDefined();
+        // The eager attempt failed, but the inline retry succeeded — so the
+        // user never sees a "Failed to switch model" notice.
+        const failureNotices = sessionEvents.filter(
+            (event) => event.type === 'message' && typeof event.message === 'string' && event.message.includes('Failed to switch model')
+        );
+        expect(failureNotices.length).toBe(0);
+        expect(harness.promptCount).toBe(1);
+    });
+
+    it('does not call setModel when the requested startup model matches the session default', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode('ollama/x') }
+        ]);
+        session.model = 'ollama/x';
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(harness.setModelArgs).toEqual([]);
+        expect(harness.promptCount).toBe(1);
+    });
+
     it('calls setModel with opencode flavor between turns when the queued model differs', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode('ollama/exaone:4.5-33b-q8') },
@@ -1708,17 +1806,21 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     });
 
     it('reports a transient setModel error and continues with the previous model', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/a', availableModels: [] };
         let attempts = 0;
         harness.setModelImpl = async () => {
             attempts++;
             throw new Error('Transient backend failure');
         };
-        const { session, sessionEvents } = createSessionStub([
+        const { session, sessionEvents, setModel, pushKeepAlive } = createSessionStub([
             { message: 'first', mode: createMode('ollama/a') },
             { message: 'second', mode: createMode('ollama/b') }
         ]);
+        const rollbacks: Array<string | null> = [];
 
-        await opencodeRemoteLauncher(session as never);
+        await opencodeRemoteLauncher(session as never, {
+            onModelRollback: (model) => rollbacks.push(model)
+        });
 
         expect(attempts).toBe(1);
         const failureMessages = sessionEvents.filter(
@@ -1729,6 +1831,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         );
         expect(failureMessages.length).toBe(1);
         expect(failureMessages[0]?.message).toContain('ollama/b');
+        expect(setModel).toHaveBeenCalledWith('ollama/a');
+        expect(session.model).toBe('ollama/a');
+        expect(pushKeepAlive).toHaveBeenCalledTimes(1);
+        expect(rollbacks).toEqual(['ollama/a']);
         expect(harness.promptCount).toBe(2);
     });
 
@@ -1962,11 +2068,14 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 { value: 'low', name: 'Low' },
                 { value: 'medium', name: 'Medium' }
             ],
-            currentValue: 'low'
+            currentValue: 'low',
+            currentModelId: null,
+            targetModelId: null
         });
     });
 
     it('listOpencodeReasoningEffortOptions handler returns unavailable when backend has no thought level option', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/big-pickle', availableModels: [] };
         const { session, rpcHandlers } = createSessionStub([
             { message: 'first', mode: createMode() }
         ]);
@@ -1977,7 +2086,24 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const result = await handler!(undefined) as Record<string, unknown>;
         expect(result).toEqual({
             success: false,
-            error: 'OpenCode reasoning effort options are not available'
+            error: 'OpenCode reasoning effort options are not available',
+            currentModelId: 'opencode/big-pickle',
+            targetModelId: 'opencode/big-pickle'
+        });
+    });
+
+    it('reports the resolved default target while the backend still uses the previous model', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/default', availableModels: [] };
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/previous', availableModels: [] };
+        const result = await rpcHandlers.get('listOpencodeReasoningEffortOptions')!(undefined) as Record<string, unknown>;
+        expect(result).toMatchObject({
+            currentModelId: 'opencode/previous',
+            targetModelId: 'opencode/default'
         });
     });
 
