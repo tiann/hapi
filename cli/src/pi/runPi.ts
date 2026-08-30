@@ -292,10 +292,10 @@ export async function runPi(opts: {
         session: apiSession,
         logTag: 'pi',
         stopKeepAlive: () => piSession.stopKeepAlive(),
-        onAfterClose: () => {
+        onAfterClose: async () => {
             piSession.stopKeepAlive();
             killedByCleanup = true;
-            transport.kill();
+            await transport.kill();
         }
     });
 

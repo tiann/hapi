@@ -27,6 +27,7 @@ export function getAgentLaunchCommand(
     if (flavor === 'claude') return env.HAPI_CLAUDE_PATH?.trim() || DEFAULT_COMMANDS.claude
     if (flavor === 'copilot') return env.COPILOT_CLI_PATH?.trim() || DEFAULT_COMMANDS.copilot
     if (flavor === 'dsh') return env.HAPI_DSH_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.dsh
+    if (flavor === 'pi') return env.HAPI_PI_PATH?.trim() || DEFAULT_COMMANDS.pi
     return DEFAULT_COMMANDS[flavor]
 }
 

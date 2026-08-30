@@ -25,6 +25,11 @@ describe('agent executable resolution', () => {
         })).toEqual({ agent: 'copilot', available: true })
     })
 
+    it('uses the configured Pi executable', () => {
+        expect(getAgentLaunchCommand('pi', { HAPI_PI_PATH: 'C:\\Tools\\pi.cmd' }))
+            .toBe('C:\\Tools\\pi.cmd')
+    })
+
     it('uses PATHEXT when resolving Windows commands', () => {
         expect(executableCandidates('agent', {
             platform: 'win32',
