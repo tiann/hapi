@@ -48,19 +48,38 @@ function isRunnerCommand(commandLine: string): boolean {
   return /(?:^|\s)runner(?:\s|$)/.test(commandLine) && /(?:^|\s)start-sync(?:\s|$)/.test(commandLine);
 }
 
+function getWindowsProcessCommandLine(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+
+  const powershell = spawn.sync('powershell', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`
+  ], { stdio: 'pipe', windowsHide: true });
+  if (!powershell.error && powershell.status === 0) {
+    const commandLine = powershell.stdout?.toString() ?? '';
+    if (commandLine.trim()) return commandLine;
+  }
+
+  const wmic = spawn.sync('wmic', [
+    'process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'
+  ], { stdio: 'pipe', windowsHide: true });
+  if (!wmic.error && wmic.status === 0) {
+    const commandLine = wmic.stdout?.toString() ?? '';
+    if (commandLine.trim()) return commandLine;
+  }
+
+  return null;
+}
+
 export function isHapiRunnerProcess(pid: number): boolean {
   if (!isProcessAlive(pid)) {
     return false;
   }
   if (isWindows()) {
-    const result = spawn.sync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'], { stdio: 'pipe' });
-    if (result.error) {
-      return true;
-    }
-    if (result.status !== 0) {
-      return isProcessAlive(pid);
-    }
-    return isRunnerCommand(result.stdout?.toString() ?? '');
+    const commandLine = getWindowsProcessCommandLine(pid);
+    return commandLine === null ? isProcessAlive(pid) : isRunnerCommand(commandLine);
   }
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
   if (result.error || result.status !== 0) {
