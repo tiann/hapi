@@ -1923,6 +1923,13 @@ describe('cursorAcpRemoteLauncher', () => {
             type: 'error',
             message: expect.stringContaining('not retried')
         }));
+        // Assistant text footer stamps lastNotify → estate Blocked chrome (#1724).
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
+        }));
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelError'
         )).toBe(true);
