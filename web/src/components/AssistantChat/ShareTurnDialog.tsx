@@ -757,9 +757,18 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                                 {props.metadataItems.length > 0 ? (
                                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)]">
                                         {props.metadataItems.map((item) => item.key === 'agent' ? (
-                                            <span key={item.key} className="inline-flex items-center gap-1">
-                                                <AgentFlavorIcon flavor={item.flavor} className="h-3.5 w-3.5 shrink-0" />
-                                                {item.text}
+                                            <span
+                                                key={item.key}
+                                                className={`inline-flex items-center gap-1 ${item.showIcon !== false && item.showText === false ? '-mr-2' : ''}`}
+                                            >
+                                                {item.showIcon !== false ? (
+                                                    <AgentFlavorIcon
+                                                        flavor={item.flavor}
+                                                        className="h-3.5 w-3.5 shrink-0"
+                                                        data-testid="share-turn-agent-icon"
+                                                    />
+                                                ) : null}
+                                                {item.showText !== false ? item.text : null}
                                             </span>
                                         ) : (
                                             <span key={item.key} className={item.key === 'fastMode' ? 'text-[#34C759]' : undefined}>

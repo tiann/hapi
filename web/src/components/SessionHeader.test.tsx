@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
+import { DEFAULT_SESSION_HEADER_METADATA } from '@/hooks/useSessionHeaderMetadata'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider, useToast } from '@/lib/toast-context'
 import { resolveSessionHeaderMachineLabel, SessionHeader } from './SessionHeader'
@@ -58,6 +59,22 @@ function renderHeader(session: Session, extra?: { serviceTier?: string | null; t
     )
 }
 
+function renderAgentHeader(preferences: Partial<typeof DEFAULT_SESSION_HEADER_METADATA>) {
+    localStorage.setItem('hapi-session-header-metadata', JSON.stringify({
+        ...DEFAULT_SESSION_HEADER_METADATA,
+        machine: false,
+        lastActive: false,
+        model: false,
+        reasoning: false,
+        fastMode: false,
+        createdAt: false,
+        updatedAt: false,
+        worktree: false,
+        ...preferences,
+    }))
+    return renderHeader(baseSession())
+}
+
 describe('resolveSessionHeaderMachineLabel', () => {
     it('prefers cached/display labels, then host, then short machine id', () => {
         expect(resolveSessionHeaderMachineLabel(
@@ -83,6 +100,37 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
+    it('shows the Agent icon and text by default', () => {
+        renderHeader(baseSession())
+
+        expect(screen.getAllByTestId('session-header-agent-icon')).toHaveLength(2)
+        expect(screen.getAllByText('codex', { exact: true })).toHaveLength(2)
+    })
+
+    it('hides only the Agent icon when its preference is disabled', () => {
+        renderAgentHeader({ agentIcon: false, agent: true })
+
+        expect(screen.queryByTestId('session-header-agent-icon')).not.toBeInTheDocument()
+        expect(screen.getAllByText('codex', { exact: true })).toHaveLength(2)
+    })
+
+    it('shows only the Agent icon when the Agent text preference is disabled', () => {
+        renderAgentHeader({ agentIcon: true, agent: false })
+
+        const agentIcons = screen.getAllByTestId('session-header-agent-icon')
+        expect(agentIcons).toHaveLength(2)
+        expect(agentIcons[0]?.parentElement).toHaveClass('-mr-1')
+        expect(agentIcons[1]?.parentElement).toHaveClass('-mr-2')
+        expect(screen.queryAllByText('codex', { exact: true })).toHaveLength(0)
+    })
+
+    it('hides both Agent details when both preferences are disabled', () => {
+        renderAgentHeader({ agentIcon: false, agent: false })
+
+        expect(screen.queryByTestId('session-header-agent-icon')).not.toBeInTheDocument()
+        expect(screen.queryAllByText('codex', { exact: true })).toHaveLength(0)
+    })
+
     it('hides title generation when the Hub does not advertise the capability', () => {
         const api = {
             getMachines: vi.fn().mockResolvedValue({ machines: [] }),

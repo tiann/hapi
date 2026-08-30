@@ -1,12 +1,14 @@
 import type { SessionHeaderMetadataPreferences } from '@/hooks/useSessionHeaderMetadata'
 import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexStatusLabels'
 
-export type ShareTurnMetadataKey = Exclude<keyof SessionHeaderMetadataPreferences, 'showLabels'>
+export type ShareTurnMetadataKey = Exclude<keyof SessionHeaderMetadataPreferences, 'showLabels' | 'agentIcon'>
 
 export type ShareTurnMetadataItem = {
     key: ShareTurnMetadataKey
     text: string
     flavor?: string | null
+    showIcon?: boolean
+    showText?: boolean
 }
 
 export function getShareTurnReasoningLabel(
@@ -37,6 +39,18 @@ export function selectShareTurnMetadata(
 ): ShareTurnMetadataItem[] {
     return SESSION_HEADER_METADATA_ORDER.flatMap((key) => {
         const item = available[key]
-        return preferences[key] && item?.text ? [{ key, ...item }] : []
+        const enabled = key === 'agent'
+            ? preferences.agent || preferences.agentIcon
+            : preferences[key]
+        if (!enabled || !item?.text) return []
+
+        return [{
+            key,
+            ...item,
+            ...(key === 'agent' ? {
+                showIcon: preferences.agentIcon,
+                showText: preferences.agent,
+            } : {}),
+        }]
     })
 }

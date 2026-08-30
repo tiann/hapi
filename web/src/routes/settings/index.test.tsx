@@ -11,7 +11,7 @@ import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 
-const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice } = vi.hoisted(() => ({
+const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setSessionHeaderMetadata } = vi.hoisted(() => ({
     context: { token: '' },
     navigate: vi.fn(),
     setAppearance: vi.fn(),
@@ -21,6 +21,7 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setComposerEnterBehavior: vi.fn(),
     setCodexExplorationCollapsed: vi.fn(),
     setVoice: vi.fn(),
+    setSessionHeaderMetadata: vi.fn(),
 }))
 
 const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
@@ -90,6 +91,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
         preferences: {
             showLabels: true,
             agent: true,
+            agentIcon: true,
             model: true,
             reasoning: true,
             fastMode: true,
@@ -99,7 +101,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
             updatedAt: false,
             worktree: true,
         },
-        setPreference: vi.fn(),
+        setPreference: setSessionHeaderMetadata,
     }),
 }))
 
@@ -259,11 +261,14 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('radio', { name: '120%' })).toBeInTheDocument()
         expect(screen.getByRole('spinbutton', { name: 'Sessions Before Folding' })).toHaveValue(8)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Agent icon' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Agent icon' }))
+        expect(setSessionHeaderMetadata).toHaveBeenCalledWith('agentIcon', false)
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     })
 
