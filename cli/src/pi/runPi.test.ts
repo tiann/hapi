@@ -59,6 +59,10 @@ vi.mock('@/ui/logger', () => ({
     },
 }));
 
+vi.mock('./titleExtension', () => ({
+    materializePiTitleExtension: vi.fn(async () => '/materialized/hapi-title-extension.ts'),
+}));
+
 vi.mock('./piTransport', () => ({
     PiTransport: class {
         constructor(options: TransportOptions) {
@@ -185,9 +189,8 @@ describe('runPi startup', () => {
 
         expect(harness.transportOptions).toMatchObject({
             command: 'pi',
-            args: ['--mode', 'rpc'],
+            args: ['--mode', 'rpc', '--extension', '/materialized/hapi-title-extension.ts'],
             cwd: '/work',
-            env: { PI_RPC_EMIT_TITLE: '1' },
         });
         expect(harness.sent).toEqual([
             { type: 'get_state' },
@@ -204,9 +207,8 @@ describe('runPi startup', () => {
 
         expect(harness.transportOptions).toMatchObject({
             command: 'pi',
-            args: ['--mode', 'rpc', '--session', 'pi-session-123'],
+            args: ['--mode', 'rpc', '--extension', '/materialized/hapi-title-extension.ts', '--session', 'pi-session-123'],
             cwd: '/work',
-            env: { PI_RPC_EMIT_TITLE: '1' },
         });
         expect(harness.sent).toEqual([
             { type: 'get_state' },
@@ -277,7 +279,11 @@ describe('runPi startup', () => {
         vi.useFakeTimers();
         harness.throwOnGetCommands = false;
         const running = runPi({ workingDirectory: '/work' });
-        await Promise.resolve();
+        // Flush enough microtasks for bootstrap + title-extension materialization
+        // to settle so the session has registered its onUserMessage handler.
+        for (let i = 0; i < 8; i += 1) {
+            await Promise.resolve();
+        }
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (
             message: { role: 'user'; content: { type: 'text'; text: string } },
             localId: string
