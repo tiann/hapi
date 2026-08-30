@@ -1103,6 +1103,7 @@ export default {
   'misc.backToModelList': '← Models',
   'misc.loading': 'Loading…',
   'misc.newMessage': '{n} new message{s}',
+  'misc.scrollToBottom': 'Scroll to bottom',
   'misc.loadingMessages': 'Loading messages…',
   'misc.pullToLoadOlder': 'Keep pulling to load earlier messages',
   'misc.releaseToLoadOlder': 'Release to load earlier messages',

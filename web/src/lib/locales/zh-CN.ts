@@ -1102,6 +1102,7 @@ export default {
   'misc.backToModelList': '← 模型',
   'misc.loading': '加载中…',
   'misc.newMessage': '{n} 条新消息',
+  'misc.scrollToBottom': '跳到底部',
   'misc.loadingMessages': '加载消息中…',
   'misc.pullToLoadOlder': '继续下拉加载更早消息',
   'misc.releaseToLoadOlder': '松开加载',

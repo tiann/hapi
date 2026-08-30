@@ -158,6 +158,7 @@ type ScrollIntent = {
     distanceFromBottom: number
     isNearBottom: boolean
     isScrollingUp: boolean
+    isScrollingDown: boolean
 }
 
 type LocateOutlineTargetOptions = {
@@ -179,8 +180,33 @@ export function getScrollIntent(params: {
     return {
         distanceFromBottom,
         isNearBottom: distanceFromBottom <= thresholdPx,
-        isScrollingUp: params.scrollTop < params.previousScrollTop - MANUAL_SCROLL_EPSILON_PX
+        isScrollingUp: params.scrollTop < params.previousScrollTop - MANUAL_SCROLL_EPSILON_PX,
+        isScrollingDown: params.scrollTop > params.previousScrollTop + MANUAL_SCROLL_EPSILON_PX
     }
+}
+
+export function shouldShowScrollToBottomButton(intent: ScrollIntent): boolean {
+    return intent.isScrollingDown && !intent.isNearBottom
+}
+
+export function getScrollToBottomButtonVisibility(
+    wasVisible: boolean,
+    intent: ScrollIntent
+): boolean {
+    if (intent.isNearBottom || intent.isScrollingUp) {
+        return false
+    }
+    if (intent.isScrollingDown) {
+        return true
+    }
+    return wasVisible
+}
+
+export function shouldRenderScrollToBottomButton(
+    isVisible: boolean,
+    unseenCount: number
+): boolean {
+    return isVisible && unseenCount === 0
 }
 
 export function shouldCancelInitialScrollSettling(
@@ -258,20 +284,54 @@ export function getHistoryCoverageRetryDelay(deadline: number, now: number): num
     return Math.max(0, deadline - now) + 16
 }
 
-function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
+const SCROLL_TO_BOTTOM_BUTTON_CLASS = 'absolute bottom-0 right-2 z-10 h-6 w-6 rounded-full border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-0 text-[var(--app-fg)] hover:bg-[var(--app-bg)]'
+
+function ScrollToBottomButton(props: { onClick: () => void; count?: number }) {
     const { t } = useTranslation()
+    const hasCount = typeof props.count === 'number'
+    const label = hasCount
+        ? `${t('misc.newMessage', { n: props.count! })} — ${t('misc.scrollToBottom')}`
+        : t('misc.scrollToBottom')
+    const buttonClass = hasCount
+        ? 'absolute bottom-0 right-2 z-10 h-6 w-6 rounded-full border-[var(--app-button)] bg-[var(--app-button)] px-0 text-[var(--app-button-text)] hover:opacity-90'
+        : SCROLL_TO_BOTTOM_BUTTON_CLASS
+
+    return (
+        <Button
+            variant="outline"
+            type="button"
+            onClick={props.onClick}
+            aria-label={label}
+            title={label}
+            className={buttonClass}
+        >
+            {hasCount ? (
+                <span className="translate-y-px text-[10px] font-semibold leading-none tabular-nums" aria-hidden="true">
+                    {props.count! > 99 ? '99+' : props.count}
+                </span>
+            ) : (
+                <svg
+                    className="h-4 w-4 translate-y-px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                >
+                    <path d="m6 9 6 6 6-6" />
+                </svg>
+            )}
+        </Button>
+    )
+}
+
+function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
     if (props.count === 0) {
         return null
     }
-
-    return (
-        <button
-            onClick={props.onClick}
-            className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-[var(--app-button)] text-[var(--app-button-text)] px-3 py-1.5 rounded-full text-sm font-medium shadow-lg animate-bounce-in z-10"
-        >
-            {t('misc.newMessage', { n: props.count })} &#8595;
-        </button>
-    )
+    return <ScrollToBottomButton count={props.count} onClick={props.onClick} />
 }
 
 function MessageSkeleton() {
@@ -560,6 +620,7 @@ export function HappyThread(props: {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const contentRef = useRef<HTMLDivElement | null>(null)
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
+    const [showScrollToBottom, setShowScrollToBottom] = useState(false)
     const pullToLoadStateRef = useRef<PullToLoadState>('idle')
     const shareTurnIdRef = useRef(0)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -791,6 +852,7 @@ export function HappyThread(props: {
             const explicitUpwardIntent = needsCoverage && consumeExplicitUpwardIntent(intent)
 
             if (isInitialScrollSettling()) {
+                setShowScrollToBottom(false)
                 if (shouldCancelInitialScrollSettling(intent, hadExplicitUpwardIntent)) {
                     initialScrollDeadlineRef.current = 0
                     clearInitialScrollTimers()
@@ -812,6 +874,7 @@ export function HappyThread(props: {
 
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
                 tailScrollInProgressRef.current = false
+                setShowScrollToBottom(false)
                 setAutoScrollMode(false)
                 setAtBottomMode(false)
                 return
@@ -819,6 +882,7 @@ export function HappyThread(props: {
 
             if (intent.isNearBottom) {
                 tailScrollInProgressRef.current = false
+                setShowScrollToBottom(false)
                 setAutoScrollMode(true)
                 setAtBottomMode(true)
                 return
@@ -829,9 +893,11 @@ export function HappyThread(props: {
             // must not be mistaken for ordinary history browsing. Keep tail
             // mode armed until the animation arrives or the user reverses it.
             if (tailScrollInProgressRef.current) {
+                setShowScrollToBottom(false)
                 return
             }
 
+            setShowScrollToBottom((wasVisible) => getScrollToBottomButtonVisibility(wasVisible, intent))
             setAutoScrollMode(false)
             setAtBottomMode(false)
         }
@@ -1036,9 +1102,23 @@ export function HappyThread(props: {
 
     const scrollToBottomInstant = useCallback(() => {
         const viewport = viewportRef.current
+        setShowScrollToBottom(false)
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+        }
+    }, [])
+
+    const scrollToBottomSmooth = useCallback(() => {
+        const viewport = viewportRef.current
+        const content = contentRef.current
+        if (!viewport) {
+            return
+        }
+        if (content && typeof content.scrollIntoView === 'function') {
+            content.scrollIntoView({ block: 'end', behavior: 'smooth' })
+        } else {
+            viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
         }
     }, [])
 
@@ -1052,20 +1132,26 @@ export function HappyThread(props: {
     // Scroll to bottom handler for the indicator button
     const scrollToBottom = useCallback(() => {
         const viewport = viewportRef.current
+        setShowScrollToBottom(false)
         if (viewport) {
             tailScrollInProgressRef.current = true
-            viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
+            // Match outline navigation's native smooth-scroll path. Keep
+            // instant tail-following disabled until the smooth animation
+            // reaches the bottom, otherwise a resize/state update can snap
+            // the viewport there before the animation is visible.
+            autoScrollEnabledRef.current = false
+            scrollToBottomSmooth()
             lastScrollTopRef.current = viewport.scrollTop
         }
-        autoScrollEnabledRef.current = true
         if (!atBottomRef.current) {
             atBottomRef.current = true
             onViewModeChangeRef.current('tail')
         }
-    }, [])
+    }, [scrollToBottomSmooth])
 
     // Reset state when session changes
     useLayoutEffect(() => {
+        setShowScrollToBottom(false)
         autoScrollEnabledRef.current = true
         tailScrollInProgressRef.current = false
         lastScrollTopRef.current = viewportRef.current?.scrollTop ?? 0
@@ -1451,8 +1537,12 @@ export function HappyThread(props: {
         const observer = new ResizeObserver(() => {
             // Message DOM can grow after messagesVersion commits (assistant-ui
             // updates its external runtime in an effect, then markdown/tool
-            // content may resize). Keep following while the user is at bottom.
-            if (
+            // content may resize). Keep a smooth tail jump aligned with the
+            // newest content until it reaches the bottom; otherwise the
+            // browser's original smooth-scroll target can become stale.
+            if (tailScrollInProgressRef.current && !pendingScrollRef.current) {
+                scrollToBottomSmooth()
+            } else if (
                 autoScrollEnabledRef.current
                 && atBottomRef.current
                 && !pendingScrollRef.current
@@ -1474,6 +1564,7 @@ export function HappyThread(props: {
         return () => observer.disconnect()
     }, [
         scrollToBottomInstant,
+        scrollToBottomSmooth,
         isInitialScrollSettling,
         needsViewportCoverage,
         scheduleCoverageAfterSettling
@@ -1682,6 +1773,9 @@ export function HappyThread(props: {
                     </div>
                 </ThreadPrimitive.Viewport>
                 <NewMessagesIndicator count={props.unseenCount} onClick={scrollToBottom} />
+                {shouldRenderScrollToBottomButton(showScrollToBottom, props.unseenCount) ? (
+                    <ScrollToBottomButton onClick={scrollToBottom} />
+                ) : null}
                 {props.outlineOpen ? (
                     <>
                         <button
