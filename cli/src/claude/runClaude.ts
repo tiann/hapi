@@ -28,6 +28,7 @@ import {
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 export interface StartOptions {
     model?: string
@@ -107,6 +108,18 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             catalogPromise = loadCatalog().then((result) => {
                 const { sdkMetadata, catalog } = result;
                 logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+                const staticContextDetails = buildClaudeContextDetails({
+                    model: options.model,
+                    system: {
+                        model: options.model,
+                        tools: sdkMetadata.tools,
+                        skills: catalog.skills,
+                        slash_commands: catalog.commands
+                    }
+                });
+                if (staticContextDetails) {
+                    publishContextDetails(session, staticContextDetails);
+                }
                 if (sdkMetadata.slashCommands === undefined) {
                     catalogPromise = null;
                     if (sdkMetadata.tools !== undefined) {

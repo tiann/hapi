@@ -7,7 +7,10 @@ import { tmpdir } from 'node:os';
 const harness = {
     launches: [] as Array<Record<string, unknown>>,
     sessionHookHandlers: [] as Array<(sessionId: string, data: Record<string, unknown>) => void>,
-    runBarrier: null as Promise<void> | null
+    runBarrier: null as Promise<void> | null,
+    inventorySlashCommands: null as Promise<Array<{ name: string }>> | null,
+    inventorySkills: null as Promise<Array<{ name: string; description?: string }>> | null,
+    inventoryMcp: null as Promise<unknown[]> | null
 };
 
 vi.mock('./codexLocal', () => ({
@@ -55,6 +58,18 @@ vi.mock('@/modules/common/launcher/BaseLocalLauncher', () => ({
     }
 }));
 
+vi.mock('@/modules/common/slashCommands', () => ({
+    listSlashCommands: async () => harness.inventorySlashCommands ?? [{ name: '/compact' }]
+}));
+
+vi.mock('@/modules/common/skills', () => ({
+    listSkills: async () => harness.inventorySkills ?? [{ name: 'find-docs', description: 'Find docs' }]
+}));
+
+vi.mock('./utils/codexMcpInventory', () => ({
+    listConfiguredCodexMcpServers: async () => harness.inventoryMcp ?? []
+}));
+
 import { codexLocalLauncher } from './codexLocalLauncher';
 
 function createQueueStub() {
@@ -91,6 +106,7 @@ function createSessionStub(
     let transcriptPath: string | null = initialTranscriptPath;
     let transcriptHistoryReplayPending = replayTranscriptHistoryOnStart;
     let modelReasoningEffort: string | null = null;
+    let metadata: Record<string, unknown> = {};
     const modelReasoningEffortUpdates: Array<string | null> = [];
     const transcriptPathCallbacks: Array<(path: string) => void> = [];
 
@@ -112,6 +128,10 @@ function createSessionStub(
             },
             client: {
                 isPending: () => pendingClient,
+                getMetadata: () => metadata,
+                updateMetadata: (handler: (value: Record<string, unknown>) => Record<string, unknown>) => {
+                    metadata = handler(metadata);
+                },
                 rpcHandlerManager: {
                     registerHandler: () => {}
                 }
@@ -170,7 +190,8 @@ function createSessionStub(
         getUserActivityCount: () => userActivityCount,
         getLocalLaunchFailure: () => localLaunchFailure,
         getModelReasoningEffort: () => modelReasoningEffort,
-        getModelReasoningEffortUpdates: () => modelReasoningEffortUpdates
+        getModelReasoningEffortUpdates: () => modelReasoningEffortUpdates,
+        getContextDetails: () => metadata.contextDetails
     };
 }
 
@@ -202,6 +223,9 @@ describe('codexLocalLauncher', () => {
         harness.launches = [];
         harness.sessionHookHandlers = [];
         harness.runBarrier = null;
+        harness.inventorySlashCommands = null;
+        harness.inventorySkills = null;
+        harness.inventoryMcp = null;
     });
 
     afterEach(async () => {
@@ -342,6 +366,36 @@ describe('codexLocalLauncher', () => {
             port: 4242,
             token: 'hook-token'
         });
+    });
+
+    it('publishes local Codex inventory before the first token count', async () => {
+        const { session, getContextDetails } = createSessionStub('default');
+
+        await codexLocalLauncher(session as never);
+
+        expect(getContextDetails()).toMatchObject({
+            provider: 'codex',
+            codex: {
+                slashCommands: ['/compact'],
+                skills: [{ name: 'find-docs' }],
+                mcpServers: []
+            }
+        });
+    });
+
+    it('starts local Codex without waiting for slow capability discovery', async () => {
+        let releaseSkills!: (skills: Array<{ name: string; description?: string }>) => void;
+        harness.inventorySkills = new Promise((resolve) => {
+            releaseSkills = resolve;
+        });
+
+        const { session } = createSessionStub('default');
+
+        await codexLocalLauncher(session as never);
+
+        expect(harness.launches).toHaveLength(1);
+        releaseSkills([]);
+        await Promise.resolve();
     });
 
     it('creates scanner only after transcript path arrives from SessionStart hook', async () => {

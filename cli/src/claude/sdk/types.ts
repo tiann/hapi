@@ -39,6 +39,8 @@ export interface SDKUserMessage extends SDKMessage {
 export interface SDKAssistantMessage extends SDKMessage {
     type: 'assistant'
     parent_tool_use_id?: string
+    model?: string
+    context_usage?: unknown
     message: {
         role: 'assistant'
         content: Array<{
@@ -96,6 +98,7 @@ export interface SDKResultMessage extends SDKMessage {
     duration_api_ms: number
     is_error: boolean
     session_id: string
+    model?: string
 }
 
 export interface SDKControlResponse extends SDKMessage {

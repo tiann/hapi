@@ -4,7 +4,7 @@ import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
 import { claudeRemote } from "./claudeRemote";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
-import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
+import { SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKSystemMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
@@ -18,6 +18,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 interface PermissionsField {
     date: number;
@@ -159,8 +160,42 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         let planModeToolCalls = new Set<string>();
         let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();
+        let lastSystemModel = session.getModel();
 
         function onMessage(message: SDKMessage) {
+            if (message.type === 'system') {
+                const systemMessage = message as SDKSystemMessage;
+                if (systemMessage.model) {
+                    lastSystemModel = systemMessage.model;
+                }
+                const details = buildClaudeContextDetails({ system: systemMessage, model: systemMessage.model });
+                if (details) {
+                    publishContextDetails(session.client, details);
+                }
+            } else if (message.type === 'assistant') {
+                const assistantMessage = message as SDKAssistantMessage;
+                const rawAssistantPayload = assistantMessage as unknown as Record<string, unknown>;
+                const rawMessage = assistantMessage.message as unknown as Record<string, unknown>;
+                const details = buildClaudeContextDetails({
+                    contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
+                    messageUsage: rawMessage.usage,
+                    model: assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
+                });
+                if (details) {
+                    publishContextDetails(session.client, details);
+                }
+            } else if (message.type === 'result') {
+                const resultMessage = message as SDKResultMessage;
+                const details = buildClaudeContextDetails({
+                    result: resultMessage,
+                    messageUsage: resultMessage.usage,
+                    model: resultMessage.model ?? lastSystemModel
+                });
+                if (details) {
+                    publishContextDetails(session.client, details);
+                }
+            }
+
             formatClaudeMessageForInk(message, messageBuffer);
             permissionHandler.onMessage(message);
 

@@ -52,7 +52,7 @@ import {
     resolveMessageDeliveryMode,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
-import type { MessageDeliveryMode } from '@hapi/protocol'
+import type { ContextDetails, MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
 import type { OlderLoadOutcome } from '@/lib/message-window-store'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
@@ -1953,6 +1953,9 @@ function SessionChatInner(props: SessionChatProps) {
                         contextSize={reduced.latestUsage?.contextSize}
                         contextCacheRead={reduced.latestUsage?.cacheRead}
                         contextWindow={reduced.latestUsage?.contextWindow ?? piContextWindow}
+                        contextDetails={props.session.metadata?.contextDetails as ContextDetails | undefined}
+                        legacyTools={props.session.metadata?.tools}
+                        legacySlashCommands={props.session.metadata?.slashCommands}
                         contextModel={reduced.latestUsage?.model ?? props.session.model}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={

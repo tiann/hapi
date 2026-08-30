@@ -302,6 +302,12 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as SkillsListResponse;
     }
 
+    async listMcpServerStatuses(): Promise<unknown> {
+        return await this.sendRequest('mcpServerStatus/list', {}, {
+            timeoutMs: 30_000
+        });
+    }
+
     async listCollaborationModes(): Promise<CollaborationModeListResponse> {
         const response = await this.sendRequest('collaborationMode/list', {}, {
             timeoutMs: 30_000
