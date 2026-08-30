@@ -13,9 +13,6 @@ export default {
   'message.info': '消息详情',
   'message.fork': '分叉',
   'message.rewind': '回退',
-  'message.fork.confirmTitle': '分叉对话',
-  'message.fork.confirmDescription': '从此处创建新会话？\n当前会话不会被修改。',
-  'message.fork.confirming': '分叉中…',
   'message.rewind.confirmTitle': '回退对话',
   'message.rewind.confirmDescription': '将此会话回退到此处？\n之后的对话历史将永久移除。文件不会被修改。',
   'message.rewind.confirming': '回退中…',
@@ -655,6 +652,20 @@ export default {
   'queuedMessages.retryUnavailable': '代理仍在处理这条消息的发送结果',
   'queuedMessages.steeredBadge': '↳ 已介入',
   'queuedMessages.steeredBadgeTitle': '已介入当前进行中的回合',
+
+  // Fork preview (confirm dialog before forking a conversation)
+  'forkPreview.title': '从这里开始一个新会话',
+  'forkPreview.roleUser': '你',
+  'forkPreview.roleAssistant': '代理',
+  'forkPreview.keptAbove': '↑ 会复制到新会话中',
+  'forkPreview.emptyPrefix': '新会话将从空会话开始。',
+  'forkPreview.noTextPreview': '更早的消息也会复制到新会话中 · 此处未全部显示',
+  'forkPreview.boundaryBadge': '分叉点',
+  'forkPreview.newSessionStart': '不会包含在新会话中',
+  'forkPreview.below': '新会话将在这条消息之前继续 · 原会话保持不变',
+  'forkPreview.currentTail': '此会话的副本将成为新会话 · 原会话保持不变',
+  'forkPreview.cancel': '取消',
+  'forkPreview.confirm': '在此分叉',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': '草稿夹',

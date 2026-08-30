@@ -46,6 +46,8 @@ import { classifySessionAttention, getSessionAttentionLabelKey } from '@/lib/ses
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
+import { buildForkPreview } from '@/lib/forkPreview'
 import { findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
 import {
     getRestoredComposerSendIntent,
@@ -569,11 +571,13 @@ function SessionChatInner(props: SessionChatProps) {
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const [historyActionPending, setHistoryActionPending] = useState(false)
+    const [forkPreviewRequest, setForkPreviewRequest] = useState<{ messageLocalId?: string } | null>(null)
 
-    const onForkConversation = useCallback(async (messageLocalId?: string) => {
+    const executeForkConversation = useCallback(async (messageLocalId?: string) => {
         setHistoryActionPending(true)
         try {
             const result = await props.api.forkConversation(props.session.id, messageLocalId)
+            setForkPreviewRequest(null)
             await navigate({
                 to: '/sessions/$sessionId',
                 params: { sessionId: result.sessionId },
@@ -583,6 +587,10 @@ function SessionChatInner(props: SessionChatProps) {
             setHistoryActionPending(false)
         }
     }, [navigate, props.api, props.session.id])
+
+    const onForkConversation = useCallback(async (messageLocalId?: string) => {
+        setForkPreviewRequest({ messageLocalId })
+    }, [])
 
     const onRewindConversation = useCallback(async (messageLocalId: string) => {
         setHistoryActionPending(true)
@@ -1358,6 +1366,11 @@ function SessionChatInner(props: SessionChatProps) {
         props.tailRevision
     )
 
+    const forkPreview = useMemo(
+        () => forkPreviewRequest ? buildForkPreview(reconciled.blocks, forkPreviewRequest.messageLocalId) : null,
+        [forkPreviewRequest, reconciled.blocks]
+    )
+
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId
     }, [latestCompletedBoundaryId])
@@ -1774,6 +1787,17 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                {forkPreviewRequest && forkPreview ? (
+                    <ForkPreviewDialog
+                        isOpen
+                        kind={forkPreview.kind}
+                        keptTurns={forkPreview.keptTurns}
+                        boundaryText={forkPreview.boundaryText}
+                        prefixMayHaveMore={props.hasMoreMessages}
+                        onCancel={() => setForkPreviewRequest(null)}
+                        onConfirm={() => executeForkConversation(forkPreviewRequest.messageLocalId)}
+                    />
+                ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">

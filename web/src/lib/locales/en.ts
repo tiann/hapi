@@ -13,9 +13,6 @@ export default {
   'message.info': 'Message details',
   'message.fork': 'Fork',
   'message.rewind': 'Rewind',
-  'message.fork.confirmTitle': 'Fork conversation',
-  'message.fork.confirmDescription': 'Create a new session from this point?\nThe current session will not be changed.',
-  'message.fork.confirming': 'Forking…',
   'message.rewind.confirmTitle': 'Rewind conversation',
   'message.rewind.confirmDescription': 'Rewind this session to this point?\nLater conversation history will be permanently removed. Files will not be changed.',
   'message.rewind.confirming': 'Rewinding…',
@@ -656,6 +653,20 @@ export default {
   'queuedMessages.retryUnavailable': 'The agent is still resolving this delivery',
   'queuedMessages.steeredBadge': '↳ Steered',
   'queuedMessages.steeredBadgeTitle': 'Steered into the active turn',
+
+  // Fork preview (confirm dialog before forking a conversation)
+  'forkPreview.title': 'Start a new session from here',
+  'forkPreview.roleUser': 'You',
+  'forkPreview.roleAssistant': 'Agent',
+  'forkPreview.keptAbove': '↑ Copied into the new session',
+  'forkPreview.emptyPrefix': 'The new session starts empty.',
+  'forkPreview.noTextPreview': 'Older messages are copied into the new session too · Not all of them are shown here',
+  'forkPreview.boundaryBadge': 'Fork point',
+  'forkPreview.newSessionStart': 'Not included in the new session',
+  'forkPreview.below': 'The new session resumes just before this message · The original session is unchanged',
+  'forkPreview.currentTail': 'A copy of this conversation becomes a new session · The original session is unchanged',
+  'forkPreview.cancel': 'Cancel',
+  'forkPreview.confirm': 'Fork here',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': 'Scratchlist',
