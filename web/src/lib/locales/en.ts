@@ -217,6 +217,7 @@ export default {
   // Session header
   'session.title': 'Files',
   'session.view.returnToChat': 'Return to conversation',
+  'session.header.metadata': 'Session metadata',
   'session.more': 'More actions',
   'session.outline.open': 'Conversation outline',
   'session.outline.close': 'Close outline',

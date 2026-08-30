@@ -22,5 +22,11 @@ const MOBILE_SECONDARY_PRIORITY: ReadonlyArray<SessionHeaderSecondaryMetadataKey
 export function selectMobileSessionHeaderSecondary(
     available: Partial<Record<SessionHeaderSecondaryMetadataKey, boolean>>
 ): SessionHeaderSecondaryMetadataKey | null {
-    return MOBILE_SECONDARY_PRIORITY.find((key) => available[key] === true) ?? null
+    return getMobileSessionHeaderMetadata(available)[0] ?? null
+}
+
+export function getMobileSessionHeaderMetadata(
+    available: Partial<Record<SessionHeaderSecondaryMetadataKey, boolean>>
+): SessionHeaderSecondaryMetadataKey[] {
+    return MOBILE_SECONDARY_PRIORITY.filter((key) => available[key] === true)
 }

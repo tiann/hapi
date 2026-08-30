@@ -83,6 +83,53 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
+    it('renders the session title through the scrollable detail-header surface', () => {
+        const title = '评估移动端标题横向查看与文件预览交互'
+        renderHeader(baseSession({
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', name: title }
+        }))
+
+        const titleRegion = screen.getByTestId('session-header-title')
+        expect(titleRegion).toHaveClass('overflow-x-auto', 'whitespace-nowrap')
+        expect(titleRegion).toHaveTextContent(title)
+    })
+
+    it('renders all enabled mobile metadata in one horizontally scrollable row', () => {
+        const now = Date.now() - 5 * 60_000
+        localStorage.setItem('hapi-session-header-metadata', JSON.stringify({
+            createdAt: true,
+            updatedAt: true,
+        }))
+        renderHeader(baseSession({
+            activeAt: now,
+            createdAt: now - 60 * 60_000,
+            updatedAt: now,
+            model: 'gpt-5.4',
+            modelReasoningEffort: 'xhigh',
+            metadata: {
+                flavor: 'codex',
+                path: '/repo',
+                host: 'machine',
+                worktree: {
+                    basePath: '/repo',
+                    branch: 'feature/mobile-title-scroll',
+                    name: 'mobile-title-scroll',
+                    worktreePath: '/repo/.worktree',
+                },
+            },
+        }), { serviceTier: 'priority' })
+
+        const metadata = screen.getByTestId('session-header-metadata')
+        expect(metadata).toHaveClass('overflow-x-auto', 'whitespace-nowrap')
+        expect(metadata).toHaveTextContent('codex')
+        expect(metadata).toHaveTextContent('machine')
+        expect(metadata).toHaveTextContent('gpt-5.4')
+        expect(metadata).toHaveTextContent('reasoning xhigh')
+        expect(metadata).toHaveTextContent('fast')
+        expect(metadata).toHaveTextContent('feature/mobile-title-scroll')
+        expect(metadata.textContent).toMatch(/Created|Updated|创建|更新/)
+    })
+
     it('hides title generation when the Hub does not advertise the capability', () => {
         const api = {
             getMachines: vi.fn().mockResolvedValue({ machines: [] }),
@@ -207,7 +254,8 @@ describe('SessionHeader', () => {
 
     it('shows an inherited catalog-default Fast tier', () => {
         renderHeader(baseSession(), { serviceTier: 'priority' })
-        expect(screen.getByText('fast')).toBeInTheDocument()
+        expect(screen.getByTestId('session-header-fast')).toBeInTheDocument()
+        expect(screen.getByTestId('session-header-metadata')).toHaveTextContent('fast')
         expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
     })
 

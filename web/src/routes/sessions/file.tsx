@@ -22,6 +22,7 @@ import {
     type MarkdownPreviewMode,
 } from '@/lib/file-markdown-preview'
 import { downloadBase64File } from '@/lib/file-download'
+import { ScrollableTitle } from '@/components/ScrollableTitle'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
 const FILE_SCROLL_KEY_PREFIX = 'hapi-file-scroll-'
@@ -363,7 +364,11 @@ export default function FilePage() {
                         <BackIcon />
                     </button>
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">{fileName}</div>
+                        <ScrollableTitle
+                            text={fileName}
+                            className="font-semibold"
+                            testId="file-page-title"
+                        />
                         <div className="truncate text-xs text-[var(--app-hint)]">{fileMetadata ?? (filePath || t('file.page.unknownPath'))}</div>
                     </div>
                 </div>
@@ -372,7 +377,11 @@ export default function FilePage() {
             <div className="bg-[var(--app-bg)]">
                 <div className="mx-auto w-full max-w-content px-3 py-2 flex items-center gap-2 border-b border-[var(--app-divider)]">
                     <FileIcon fileName={fileName} size={20} />
-                    <span className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]">{filePath || t('file.page.unknownPath')}</span>
+                    <ScrollableTitle
+                        text={filePath || t('file.page.unknownPath')}
+                        className="text-xs text-[var(--app-hint)]"
+                        testId="file-page-path"
+                    />
                     <button
                         type="button"
                         onClick={() => copyPath(filePath)}
