@@ -2,9 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactM
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import { FullscreenExitIcon, FullscreenIcon } from '@/components/icons'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import type { ShareTurnMetadataItem } from '@/lib/shareTurnMetadata'
+import { cn } from '@/lib/utils'
 
 type ShareTurnDialogProps = {
     isOpen: boolean
@@ -26,6 +28,24 @@ const SHARE_EXPORT_HORIZONTAL_PADDING = 40
 const SHARE_EXPORT_SCALE = 2
 const MAX_EXPORT_PIXELS = 24_000_000
 const SHARE_HIDDEN_CONTENT_SELECTOR = '[data-hapi-share-exclude="true"], .aui-reasoning-group'
+const SHARE_FULLSCREEN_STORAGE_KEY = 'hapi-share-preview-fullscreen'
+const SHARE_FULLSCREEN_VIEWPORT_HEIGHT = 'var(--tg-viewport-stable-height, var(--app-viewport-height, 100dvh))'
+
+function readShareFullscreenPreference(): boolean {
+    try {
+        return window.localStorage.getItem(SHARE_FULLSCREEN_STORAGE_KEY) === 'true'
+    } catch {
+        return false
+    }
+}
+
+function writeShareFullscreenPreference(value: boolean): void {
+    try {
+        window.localStorage.setItem(SHARE_FULLSCREEN_STORAGE_KEY, String(value))
+    } catch {
+        // Fullscreen still works when browser storage is unavailable.
+    }
+}
 
 function nextFrame(): Promise<void> {
     return new Promise((resolve) => {
@@ -164,6 +184,7 @@ function prepareExportElement(element: HTMLElement, exportWidth: number, preserv
 
     captureElement.classList.add('hapi-share-export-root')
     stripExportControls(captureElement)
+    captureElement.style.paddingBottom = '14px'
     captureElement.style.cssText += [
         'position:absolute',
         'left:0',
@@ -525,6 +546,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     const [ready, setReady] = useState(false)
     const [preparedBlob, setPreparedBlob] = useState<Blob | null>(null)
     const [previewRevision, setPreviewRevision] = useState(0)
+    const [isFullScreen, setIsFullScreen] = useState(readShareFullscreenPreference)
     const [previewImage, setPreviewImage] = useState<{
         src: string
         label: string
@@ -713,23 +735,88 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         }
     }
 
+    const toggleFullScreen = () => {
+        const nextFullScreen = !isFullScreen
+        setIsFullScreen(nextFullScreen)
+        writeShareFullscreenPreference(nextFullScreen)
+    }
+
     return (
         <Dialog open={props.isOpen} onOpenChange={(open) => { if (!open) props.onClose() }}>
             <DialogContent
-                className="max-h-[calc(100vh-24px)] max-w-3xl overflow-hidden p-4 [&>button:last-child]:top-4"
+                className={cn(
+                    'overflow-hidden p-4',
+                    isFullScreen
+                        ? 'flex flex-col rounded-none'
+                        : 'max-h-[calc(100vh-24px)] max-w-3xl'
+                )}
+                closeButtonClassName={isFullScreen
+                    ? 'top-[calc(0.5rem+env(safe-area-inset-top))] right-[calc(0.75rem+env(safe-area-inset-right))]'
+                    : 'top-2'}
+                style={isFullScreen ? {
+                    left: 0,
+                    top: 0,
+                    width: '100vw',
+                    maxWidth: 'none',
+                    height: SHARE_FULLSCREEN_VIEWPORT_HEIGHT,
+                    maxHeight: SHARE_FULLSCREEN_VIEWPORT_HEIGHT,
+                    paddingTop: 'calc(1rem + env(safe-area-inset-top))',
+                    paddingRight: 'calc(1rem + env(safe-area-inset-right))',
+                    paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
+                    paddingLeft: 'calc(1rem + env(safe-area-inset-left))',
+                    transform: 'none',
+                    translate: '0 0'
+                } : undefined}
                 aria-describedby={undefined}
             >
-                <DialogHeader className="h-8 justify-center !px-10 text-center sm:text-center">
+                <button
+                    type="button"
+                    data-hapi-share-control="fullscreen"
+                    onClick={toggleFullScreen}
+                    disabled={!ready || busy !== null}
+                    className="absolute left-3 top-2 flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:pointer-events-none disabled:opacity-40"
+                    style={isFullScreen ? {
+                        top: 'calc(0.5rem + env(safe-area-inset-top))',
+                        left: 'calc(0.75rem + env(safe-area-inset-left))'
+                    } : undefined}
+                    aria-label={t(isFullScreen ? 'shareTurn.exitFullscreenPreview' : 'shareTurn.fullscreenPreview')}
+                    title={t(isFullScreen ? 'shareTurn.exitFullscreenPreview' : 'shareTurn.fullscreenPreview')}
+                >
+                        {isFullScreen
+                            ? <FullscreenExitIcon className="h-4 w-4" />
+                            : <FullscreenIcon className="h-4 w-4" />}
+                </button>
+                <DialogHeader className="h-4 justify-center !px-10 text-center sm:text-center">
                     <DialogTitle>{t('shareTurn.title')}</DialogTitle>
                 </DialogHeader>
 
-                <div className="mt-3 max-h-[58vh] overflow-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2 sm:max-h-[65vh] sm:p-3">
+                <div className={cn(
+                    'hapi-share-preview-scroll mt-4 overflow-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 sm:pt-3 sm:pb-0 sm:px-0',
+                    isFullScreen
+                        ? 'min-h-0 flex-1 max-h-none'
+                        : 'max-h-[58vh] sm:max-h-[65vh]'
+                )}>
                     <div
                         ref={captureRef}
                         onClick={handlePreviewClick}
-                        className="hapi-share-preview-root mx-auto w-[720px] max-w-full rounded-[28px] bg-[var(--app-bg)] p-4 text-[var(--app-fg)] sm:p-5"
+                        className={cn(
+                            'hapi-share-preview-root mx-auto rounded-[28px] bg-[var(--app-bg)] py-3 px-2 text-[var(--app-fg)] sm:py-3 sm:px-5 sm:mx-0',
+                            'w-[720px] max-w-full sm:w-full sm:max-w-none'
+                        )}
                     >
                         <style>{`
+                            @media (min-width: 640px) {
+                                .hapi-share-preview-scroll > .hapi-share-preview-root:not(.hapi-share-export-root) {
+                                    padding-top: 1px !important;
+                                    padding-left: 14px !important;
+                                    padding-right: 14px !important;
+                                }
+                            }
+                            @media (max-width: 639px) {
+                                .hapi-share-preview-scroll > .hapi-share-preview-root:not(.hapi-share-export-root) {
+                                    padding-bottom: 8px !important;
+                                }
+                            }
                             .hapi-share-preview-root .hapi-share-hidden-content-spacer {
                                 display: block !important;
                                 height: 0.75rem !important;
@@ -771,8 +858,8 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                             </div>
                         </div>
                         <div ref={bodyRef} data-hapi-share-body="true" className="flex flex-col gap-3" />
-                        <div className="mt-4 border-t border-[var(--app-divider)] pt-3 text-right text-[10px] text-[var(--app-hint)]">
-                            {t('shareTurn.generated')}
+                        <div data-hapi-share-footer="true" className="mt-4 border-t border-[var(--app-divider)] pt-3 text-right text-[10px] text-[var(--app-hint)]">
+                            <span data-hapi-share-watermark="true">{t('shareTurn.generated')}</span>
                         </div>
                     </div>
                 </div>
@@ -805,6 +892,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
                     <button
                         type="button"
+                        data-hapi-share-control="copy"
                         onClick={() => { void withPng(copyImageBlob, 'copy') }}
                         disabled={busy !== null || !ready}
                         className="hidden rounded-md border border-[var(--app-border)] px-3 py-2 text-sm text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] disabled:opacity-50 sm:inline-block sm:w-32"
@@ -814,6 +902,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     {showNativeShareButton ? (
                         <button
                             type="button"
+                            data-hapi-share-control="share"
                             onClick={() => {
                                 if (preparedBlob) {
                                     runBlobAction(
@@ -831,6 +920,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     ) : null}
                     <button
                         type="button"
+                        data-hapi-share-control="download"
                         onClick={() => {
                             void withPng((blob) => downloadBlob(blob, getShareFileName(props.title)), 'download')
                         }}

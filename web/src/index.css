@@ -334,6 +334,11 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the share canvas centered between both edges of its scrollbar. */
+.hapi-share-preview-scroll {
+    scrollbar-gutter: stable both-edges;
+}
+
 /* On touch-first devices, keep the chat scrollbar from shifting centered content. */
 @media (hover: none) and (pointer: coarse) {
     .chat-scroll-y {
