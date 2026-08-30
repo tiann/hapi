@@ -211,7 +211,7 @@ class SessionListViewModel(
     /** Call when navigating into a session: stamps the last-seen watermark. */
     fun onSessionOpened(sessionId: String) {
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
-        lastSeenStore.markSeen(sessionId, summary.updatedAt)
+        lastSeenStore.markSeen(sessionId, LastSeenStore.seenTimestamp(summary))
     }
 
     /** `PUT /sessions/:id/pin` with optimistic re-sort; failures surface on [errors]. */

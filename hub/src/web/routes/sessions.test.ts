@@ -1538,6 +1538,71 @@ describe('sessions routes', () => {
         expect(unlimitedBody.sessions).toHaveLength(3)
     })
 
+    it('uses latest assistant reply for default recency while preserving priority buckets', async () => {
+        const sessions = [
+            createSession({
+                id: 'reply-newer',
+                active: false,
+                updatedAt: 500,
+                lastAssistantMessageAt: 900
+            }),
+            createSession({
+                id: 'activity-newer',
+                active: false,
+                updatedAt: 800,
+                lastAssistantMessageAt: 100
+            }),
+            createSession({
+                id: 'pinned-old',
+                active: false,
+                pinned: true,
+                updatedAt: 1,
+                lastAssistantMessageAt: 1
+            }),
+            createSession({
+                id: 'quiet-active',
+                active: true,
+                updatedAt: 2,
+                lastAssistantMessageAt: 2
+            }),
+            createSession({
+                id: 'pending-active',
+                active: true,
+                updatedAt: 3,
+                lastAssistantMessageAt: 3,
+                agentState: {
+                    controlledByUser: false,
+                    requests: { 'request-1': { tool: 'Bash', arguments: {} } },
+                    completedRequests: {}
+                }
+            })
+        ]
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions')
+        expect(response.status).toBe(200)
+        const body = await response.json() as { sessions: Array<{ id: string }> }
+        expect(body.sessions.map((s) => s.id)).toEqual([
+            'pinned-old',
+            'pending-active',
+            'quiet-active',
+            'reply-newer',
+            'activity-newer'
+        ])
+    })
+
     it('order=updatedAt truncates newest-first including inactive peers', async () => {
         const sessions = [
             createSession({ id: 'old-active', active: true, updatedAt: 10 }),

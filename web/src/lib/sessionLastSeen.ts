@@ -1,8 +1,15 @@
 import { useSyncExternalStore } from 'react'
+import { getSessionActivityTimestamp } from '@hapi/protocol'
+import type { SessionSummary } from '@/types/api'
 
-const STORAGE_KEY = 'hapi.sessionLastSeen.v1'
-const MANUAL_UNREAD_KEY = 'hapi.sessionManualUnread.v1'
-const BASELINE_KEY = 'hapi.sessionLastSeenBaseline.v1'
+// v2 changes the stored clock from raw `updatedAt` to the same
+// `lastAssistantMessageAt ?? updatedAt` activity clock used by the list.
+// Keeping the old values would make already-read sessions look unread after
+// the reply-clock feature is enabled.
+const STORAGE_KEY = 'hapi.sessionLastSeen.v2'
+const MANUAL_UNREAD_KEY = 'hapi.sessionManualUnread.v2'
+const BASELINE_KEY = 'hapi.sessionLastSeenBaseline.v2'
+const PENDING_BASELINE_KEY = 'hapi.sessionLastSeenPendingBaseline.v2'
 const CHANGE_EVENT = 'hapi.sessionLastSeen.changed'
 
 let changeVersion = 0
@@ -91,6 +98,45 @@ function writeManualUnreadStore(store: ManualUnreadStore): boolean {
     }
 }
 
+function readPendingBaseline(scope: string): Set<string> {
+    const storage = getLocalStorage()
+    if (!storage) {
+        return new Set()
+    }
+
+    try {
+        const raw = storage.getItem(`${PENDING_BASELINE_KEY}:${scope}`)
+        if (!raw) {
+            return new Set()
+        }
+        const parsed: unknown = JSON.parse(raw)
+        if (!Array.isArray(parsed)) {
+            return new Set()
+        }
+        return new Set(parsed.filter((value): value is string => typeof value === 'string' && value.length > 0))
+    } catch {
+        return new Set()
+    }
+}
+
+function writePendingBaseline(scope: string, sessionIds: Set<string>): boolean {
+    const storage = getLocalStorage()
+    if (!storage) {
+        return false
+    }
+    try {
+        const key = `${PENDING_BASELINE_KEY}:${scope}`
+        if (sessionIds.size === 0) {
+            storage.removeItem(key)
+        } else {
+            storage.setItem(key, JSON.stringify(Array.from(sessionIds)))
+        }
+        return true
+    } catch {
+        return false
+    }
+}
+
 function notifyStoreChanged(): void {
     changeVersion += 1
     if (typeof window !== 'undefined') {
@@ -147,7 +193,10 @@ export function getSessionLastSeenSnapshot(): Readonly<Record<string, number>> {
     return readStore()
 }
 
-export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id: string; updatedAt: number }>): void {
+export function initializeSessionLastSeen(
+    scope: string,
+    sessions: Iterable<Pick<SessionSummary, 'id' | 'updatedAt' | 'lastAssistantMessageAt' | 'assistantReplyClockBackfilled'>>
+): void {
     const storage = getLocalStorage()
     if (!storage) {
         return
@@ -155,20 +204,64 @@ export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id
 
     try {
         const baselineKey = `${BASELINE_KEY}:${scope}`
-        if (storage.getItem(baselineKey) === '1') {
+        const store = readStore()
+        const pendingBaseline = readPendingBaseline(scope)
+        const baselineInitialized = storage.getItem(baselineKey) === '1'
+        let storeChanged = false
+        let pendingChanged = false
+
+        for (const session of sessions) {
+            const replyClockReady = session.assistantReplyClockBackfilled !== false
+            if (!baselineInitialized) {
+                if (!replyClockReady) {
+                    if (!pendingBaseline.has(session.id)) {
+                        pendingBaseline.add(session.id)
+                        pendingChanged = true
+                    }
+                    continue
+                }
+                if (store[session.id] === undefined) {
+                    store[session.id] = getSessionActivityTimestamp(session)
+                    storeChanged = true
+                }
+                continue
+            }
+
+            // A legacy row may have been skipped on the first list because its
+            // asynchronous reply-clock backfill was not complete yet. Seed it
+            // once the full reply clock becomes authoritative, but do not seed
+            // sessions that first appeared after the original baseline.
+            if (!replyClockReady || !pendingBaseline.has(session.id)) {
+                continue
+            }
+            pendingBaseline.delete(session.id)
+            pendingChanged = true
+            if (store[session.id] === undefined) {
+                store[session.id] = getSessionActivityTimestamp(session)
+                storeChanged = true
+            }
+        }
+
+        const storeWritten = !storeChanged || writeStore(store)
+        if (!storeWritten) {
             return
         }
-        const store = readStore()
-        for (const session of sessions) {
-            store[session.id] ??= session.updatedAt
+        const pendingWritten = !pendingChanged || writePendingBaseline(scope, pendingBaseline)
+        if (!pendingWritten) {
+            return
         }
-        storage.setItem(STORAGE_KEY, JSON.stringify(store))
-        storage.setItem(baselineKey, '1')
+        if (!baselineInitialized) {
+            storage.setItem(baselineKey, '1')
+        }
+        if (storeChanged) {
+            notifyStoreChanged()
+        }
     } catch {
         // Ignore storage errors
     }
 }
 
+/** Advance the local watermark for the shared reply/activity clock. */
 export function markSessionSeen(sessionId: string, seenAt: number): void {
     if (!sessionId) {
         return
@@ -200,17 +293,17 @@ export function markSessionSeen(sessionId: string, seenAt: number): void {
 }
 
 /** Move the local watermark just behind the current activity and remember the explicit action. */
-export function markSessionUnread(sessionId: string, updatedAt: number): void {
-    if (!sessionId || !Number.isFinite(updatedAt)) {
+export function markSessionUnread(sessionId: string, activityAt: number): void {
+    if (!sessionId || !Number.isFinite(activityAt)) {
         return
     }
 
     const store = readStore()
     const manualUnreadStore = readManualUnreadStore()
-    const unreadBefore = updatedAt - 1
+    const unreadBefore = activityAt - 1
     const currentSeenAt = store[sessionId]
     const seenChanged = !(typeof currentSeenAt === 'number' && currentSeenAt <= unreadBefore)
-    const manualUnreadChanged = manualUnreadStore[sessionId] !== updatedAt
+    const manualUnreadChanged = manualUnreadStore[sessionId] !== activityAt
     if (!seenChanged && !manualUnreadChanged) {
         return
     }
@@ -219,7 +312,7 @@ export function markSessionUnread(sessionId: string, updatedAt: number): void {
         store[sessionId] = unreadBefore
     }
     if (manualUnreadChanged) {
-        manualUnreadStore[sessionId] = updatedAt
+        manualUnreadStore[sessionId] = activityAt
     }
 
     const seenWritten = !seenChanged || writeStore(store)

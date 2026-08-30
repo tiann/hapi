@@ -94,12 +94,12 @@ describe('sessionLastSeen', () => {
         const initialVersion = Number(view.getByTestId('last-seen-version').textContent)
 
         act(() => {
-            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionLastSeen.v1' }))
+            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionLastSeen.v2' }))
         })
         expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 1))
 
         act(() => {
-            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionManualUnread.v1' }))
+            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionManualUnread.v2' }))
         })
         expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 2))
     })
@@ -112,6 +112,38 @@ describe('sessionLastSeen', () => {
 
         expect(getSessionLastSeenAt('session-a')).toBe(1000)
         expect(getSessionLastSeenAt('session-b')).toBe(2500)
+    })
+
+    it('uses the latest assistant reply for the unread baseline', () => {
+        initializeSessionLastSeen('hub-a', [
+            { id: 'session-a', updatedAt: 9000, lastAssistantMessageAt: 5000 },
+        ])
+
+        expect(getSessionLastSeenAt('session-a')).toBe(5000)
+    })
+
+    it('defers a legacy row baseline until the reply clock is complete', () => {
+        initializeSessionLastSeen('hub-a', [
+            {
+                id: 'legacy',
+                updatedAt: 9000,
+                lastAssistantMessageAt: 5000,
+                assistantReplyClockBackfilled: false,
+            },
+        ])
+
+        expect(getSessionLastSeenAt('legacy')).toBe(0)
+
+        initializeSessionLastSeen('hub-a', [
+            {
+                id: 'legacy',
+                updatedAt: 9000,
+                lastAssistantMessageAt: 5000,
+                assistantReplyClockBackfilled: true,
+            },
+        ])
+
+        expect(getSessionLastSeenAt('legacy')).toBe(5000)
     })
 
     it('preserves existing watermarks while completing a legacy partial baseline', () => {

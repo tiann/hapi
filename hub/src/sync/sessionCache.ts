@@ -1,4 +1,5 @@
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { isAssistantTextMessage } from '@hapi/protocol/messages'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
@@ -7,6 +8,7 @@ import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+const ASSISTANT_REPLY_BACKFILL_PAGE_SIZE = 200
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
 // restoreSessionArchiveMetadata) retry on version-mismatch with a fresh cache
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
@@ -18,10 +20,15 @@ export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
+    private readonly assistantReplyBackfillQueue: string[] = []
+    private readonly assistantReplyBackfillQueuedSessionIds: Set<string> = new Set()
     private readonly deduplicateInProgress: Set<string> = new Set()
     private readonly deduplicatePending: Set<string> = new Set()
     private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
     private readonly runtimeConfigUpdatedAtBySessionId: Map<string, Partial<Record<RuntimeConfigKey, number>>> = new Map()
+    private assistantReplyBackfillTimer: ReturnType<typeof setTimeout> | null = null
+    private assistantReplyBackfillRunning = false
+    private assistantReplyBackfillStopped = false
 
     constructor(
         private readonly store: Store,
@@ -129,6 +136,7 @@ export class SessionCache {
             const existed = this.sessions.delete(sessionId)
             this.pendingThinkingUntilBySessionId.delete(sessionId)
             this.runtimeConfigUpdatedAtBySessionId.delete(sessionId)
+            this.assistantReplyBackfillQueuedSessionIds.delete(sessionId)
             if (existed) {
                 this.publisher.emit({ type: 'session-removed', sessionId })
             }
@@ -151,6 +159,13 @@ export class SessionCache {
                     break
                 }
             }
+        }
+
+        // Older databases need one transcript scan to populate the durable
+        // reply clock. Queue that work after the refresh so startup and
+        // request-driven cache hydration never block on a full transcript.
+        if (!stored.assistantReplyClockBackfilled) {
+            this.queueAssistantReplyBackfill(sessionId)
         }
 
         const metadata = (() => {
@@ -181,6 +196,8 @@ export class SessionCache {
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
+            lastAssistantMessageAt: stored.lastAssistantMessageAt,
+            assistantReplyClockBackfilled: stored.assistantReplyClockBackfilled,
             pinned: stored.pinned,
             globalPinned: stored.globalPinned,
             active: existing?.active ?? stored.active,
@@ -222,6 +239,126 @@ export class SessionCache {
         for (const session of sessions) {
             this.refreshSession(session.id)
         }
+    }
+
+    stop(): void {
+        this.assistantReplyBackfillStopped = true
+        if (this.assistantReplyBackfillTimer !== null) {
+            clearTimeout(this.assistantReplyBackfillTimer)
+            this.assistantReplyBackfillTimer = null
+        }
+        this.assistantReplyBackfillQueue.length = 0
+        this.assistantReplyBackfillQueuedSessionIds.clear()
+    }
+
+    private queueAssistantReplyBackfill(sessionId: string): void {
+        if (this.assistantReplyBackfillStopped || this.assistantReplyBackfillQueuedSessionIds.has(sessionId)) {
+            return
+        }
+
+        this.assistantReplyBackfillQueuedSessionIds.add(sessionId)
+        this.assistantReplyBackfillQueue.push(sessionId)
+        this.scheduleAssistantReplyBackfill()
+    }
+
+    private scheduleAssistantReplyBackfill(): void {
+        if (this.assistantReplyBackfillStopped
+            || this.assistantReplyBackfillTimer !== null
+            || this.assistantReplyBackfillRunning
+            || this.assistantReplyBackfillQueue.length === 0) {
+            return
+        }
+
+        this.assistantReplyBackfillTimer = setTimeout(() => {
+            this.assistantReplyBackfillTimer = null
+            this.runNextAssistantReplyBackfill()
+        }, 0)
+    }
+
+    private runNextAssistantReplyBackfill(): void {
+        if (this.assistantReplyBackfillStopped || this.assistantReplyBackfillRunning) return
+
+        const sessionId = this.assistantReplyBackfillQueue.shift()
+        if (!sessionId) return
+
+        this.assistantReplyBackfillRunning = true
+        let shouldRetry = false
+        void this.backfillAssistantReplyClock(sessionId)
+            .then((retry) => { shouldRetry = retry })
+            .catch(() => {
+                // Keep the marker unset so a later refresh can retry after a
+                // transient database or malformed-row failure.
+            })
+            .finally(() => {
+                this.assistantReplyBackfillQueuedSessionIds.delete(sessionId)
+                this.assistantReplyBackfillRunning = false
+                if (shouldRetry && !this.assistantReplyBackfillStopped) {
+                    this.queueAssistantReplyBackfill(sessionId)
+                }
+                this.scheduleAssistantReplyBackfill()
+            })
+    }
+
+    private async backfillAssistantReplyClock(sessionId: string): Promise<boolean> {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored || stored.assistantReplyClockBackfilled) return false
+
+        let latestAssistantMessageAt: number | null = null
+        let beforeSeq: number | null = null
+        while (!this.assistantReplyBackfillStopped) {
+            const page = this.store.messages.getMessagesBeforeSeq(
+                sessionId,
+                beforeSeq,
+                ASSISTANT_REPLY_BACKFILL_PAGE_SIZE
+            )
+            for (const message of page) {
+                if (!isAssistantTextMessage(message.content)) continue
+                if (latestAssistantMessageAt === null || message.createdAt > latestAssistantMessageAt) {
+                    latestAssistantMessageAt = message.createdAt
+                }
+            }
+
+            if (page.length < ASSISTANT_REPLY_BACKFILL_PAGE_SIZE) break
+            const lastMessage = page.at(-1)
+            if (!lastMessage) break
+            beforeSeq = lastMessage.seq
+            await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        }
+        if (this.assistantReplyBackfillStopped) return false
+
+        const completed = this.store.sessions.completeAssistantReplyClockBackfill(
+            sessionId,
+            latestAssistantMessageAt,
+            stored.seq,
+            stored.namespace
+        )
+        if (completed) {
+            const refreshed = this.store.sessions.getSession(sessionId)
+            const session = this.sessions.get(sessionId)
+            if (!refreshed || !session || refreshed.namespace !== session.namespace) return false
+
+            const replyClockChanged = session.lastAssistantMessageAt !== refreshed.lastAssistantMessageAt
+            const replyClockReadyChanged = session.assistantReplyClockBackfilled !== refreshed.assistantReplyClockBackfilled
+            session.seq = refreshed.seq
+            if (!replyClockChanged && !replyClockReadyChanged) return false
+
+            session.lastAssistantMessageAt = refreshed.lastAssistantMessageAt
+            session.assistantReplyClockBackfilled = refreshed.assistantReplyClockBackfilled
+            this.publisher.emit({
+                type: 'session-updated',
+                sessionId,
+                namespace: session.namespace,
+                // This recomputation may legitimately move the reply clock
+                // backward or clear it after merge/rewind. Send the complete
+                // current record so web clients replace their cached summary
+                // instead of applying the monotonic structured-patch path.
+                data: { ...session }
+            })
+            return false
+        }
+
+        const current = this.store.sessions.getSession(sessionId)
+        return current?.assistantReplyClockBackfilled === false && current.seq !== stored.seq
     }
 
     setSessionPinned(sessionId: string, pinned: boolean): void {
@@ -311,6 +448,31 @@ export class SessionCache {
         if (patch.thinking !== undefined) session.thinking = patch.thinking
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
         if (patch.updatedAt !== undefined) session.updatedAt = Math.max(session.updatedAt, patch.updatedAt)
+        const replyVersion = patch.lastAssistantMessageVersion
+        const canApplyReplyClock = replyVersion === undefined || replyVersion >= session.seq
+        if (replyVersion !== undefined) {
+            session.seq = Math.max(session.seq, replyVersion)
+        }
+        if (patch.lastAssistantMessageAt !== undefined) {
+            if (canApplyReplyClock && replyVersion !== undefined) {
+                // Versioned reply-clock updates are authoritative: transcript
+                // rewinds may legitimately move the timestamp backward/null.
+                session.lastAssistantMessageAt = patch.lastAssistantMessageAt
+            } else if (canApplyReplyClock) {
+                // Legacy unversioned patches retain the old monotonic safety
+                // rule until every producer carries a reply-clock version.
+                if (patch.lastAssistantMessageAt === null) {
+                    if (session.lastAssistantMessageAt == null) {
+                        session.lastAssistantMessageAt = null
+                    }
+                } else {
+                    session.lastAssistantMessageAt = Math.max(
+                        session.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY,
+                        patch.lastAssistantMessageAt
+                    )
+                }
+            }
+        }
         if (patch.model !== undefined) session.model = patch.model
         if (patch.modelReasoningEffort !== undefined) session.modelReasoningEffort = patch.modelReasoningEffort
         if (patch.effort !== undefined) session.effort = patch.effort
@@ -561,12 +723,62 @@ export class SessionCache {
             return
         }
 
+        const refreshed = this.store.sessions.getSession(sessionId)
+        if (refreshed) {
+            session.seq = Math.max(session.seq, refreshed.seq)
+        }
         session.updatedAt = Math.max(session.updatedAt, nextUpdatedAt)
         this.publisher.emit({
             type: 'session-updated',
             sessionId,
             namespace: session.namespace,
             data: { updatedAt: session.updatedAt } satisfies SessionPatch
+        })
+    }
+
+    /**
+     * Update the independent sidebar clock for a visible assistant reply.
+     * This intentionally leaves `updatedAt` untouched.
+     */
+    recordAssistantMessage(sessionId: string, messageAt: number): void {
+        if (!Number.isFinite(messageAt)) return
+
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored) return
+
+        const session = this.sessions.get(sessionId)
+        const current = Math.max(
+            stored.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY,
+            session?.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY
+        )
+        const next = Math.max(current, messageAt)
+        if (!Number.isFinite(next)) return
+
+        this.store.sessions.touchSessionLastAssistantMessageAt(sessionId, next, stored.namespace)
+        const refreshed = this.store.sessions.getSession(sessionId)
+        const replyVersion = refreshed?.seq ?? stored.seq
+
+        if (!session) {
+            this.refreshSession(sessionId)
+            return
+        }
+
+        const replyChanged = (session.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY) < next
+        const versionChanged = session.seq < replyVersion
+        if (!replyChanged && !versionChanged) {
+            return
+        }
+
+        session.seq = Math.max(session.seq, replyVersion)
+        session.lastAssistantMessageAt = next
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace: session.namespace,
+            data: {
+                lastAssistantMessageAt: next,
+                lastAssistantMessageVersion: replyVersion
+            } satisfies SessionPatch
         })
     }
 
@@ -1070,6 +1282,7 @@ export class SessionCache {
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
+        this.assistantReplyBackfillQueuedSessionIds.delete(sessionId)
         this.pendingThinkingUntilBySessionId.delete(sessionId)
 
         void import('../scratchlistAttachments/storage').then(async ({
@@ -1320,6 +1533,7 @@ export class SessionCache {
             }
             this.lastBroadcastAtBySessionId.delete(oldSessionId)
             this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
+            this.assistantReplyBackfillQueuedSessionIds.delete(oldSessionId)
         } else {
             this.refreshSession(oldSessionId)
         }

@@ -41,7 +41,7 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { ApiError } from '@/api/client'
-import type { MessageDeliveryMode } from '@hapi/protocol'
+import { getSessionActivityTimestamp, type MessageDeliveryMode } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -210,8 +210,8 @@ function SessionsPage() {
         if (!selectedSessionId || !selectedSession) {
             return
         }
-        markSessionSeen(selectedSessionId, selectedSession.updatedAt)
-    }, [selectedSessionId, selectedSession?.updatedAt])
+        markSessionSeen(selectedSessionId, getSessionActivityTimestamp(selectedSession))
+    }, [selectedSessionId, selectedSession?.updatedAt, selectedSession?.lastAssistantMessageAt])
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {

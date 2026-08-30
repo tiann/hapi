@@ -51,6 +51,12 @@ export type SessionSummary = {
     thinking: boolean
     activeAt: number
     updatedAt: number
+    /** Latest visible assistant prose; used by sidebar recency and unread state without mutating `updatedAt`. */
+    lastAssistantMessageAt?: number | null
+    /** False while the Hub's legacy reply-clock scan is still incomplete. */
+    assistantReplyClockBackfilled?: boolean
+    /** Session sequence carrying the reply clock; gates dual-SSE stale records/patches. */
+    lastAssistantMessageVersion?: number
     pinned?: boolean
     globalPinned?: boolean
     metadata: SessionSummaryMetadata | null
@@ -148,6 +154,26 @@ export function computeTodoProgress(todos: TodoItem[] | undefined): SessionSumma
     }
 }
 
+/**
+ * Return the timestamp used for session-list recency and unread state.
+ *
+ * A visible assistant reply is the user-facing activity that should make a
+ * session unread. Sessions without a visible reply retain the activity-clock
+ * fallback so pending/new sessions remain discoverable.
+ */
+export function getSessionActivityTimestamp(
+    session: Pick<SessionSummary, 'updatedAt' | 'lastAssistantMessageAt'>
+): number {
+    return session.lastAssistantMessageAt ?? session.updatedAt
+}
+
+/** Return the recency clock used by the default session sidebar ordering. */
+export function getSessionListSortTimestamp(
+    session: Pick<SessionSummary, 'updatedAt' | 'lastAssistantMessageAt'>
+): number {
+    return getSessionActivityTimestamp(session)
+}
+
 const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<AgentFlavor, keyof Metadata>> = {
     claude: 'claudeSessionId',
     codex: 'codexSessionId',
@@ -209,6 +235,9 @@ export function toSessionSummary(session: Session): SessionSummary {
         thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
+        lastAssistantMessageAt: session.lastAssistantMessageAt ?? null,
+        assistantReplyClockBackfilled: session.assistantReplyClockBackfilled ?? true,
+        lastAssistantMessageVersion: session.seq,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
         metadata: toSessionSummaryMetadata(session.metadata),

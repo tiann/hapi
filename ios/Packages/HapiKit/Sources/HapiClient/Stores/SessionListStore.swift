@@ -12,7 +12,9 @@ public protocol SessionListStoring: AnyObject {
     /// pending > recency).
     var sessions: [SessionSummary] { get }
 
-    /// `GET /api/sessions` — replaces the list wholesale. Throws on failure.
+    /// `GET /api/sessions` — refreshes membership and merges each row by its
+    /// reply-clock version so an older response cannot overwrite newer SSE
+    /// state. Throws on failure.
     func refresh() async throws
 
     /// Coalesced fire-and-forget ``refresh()`` (the web's 16 ms invalidation
@@ -117,7 +119,16 @@ public final class SessionListStore: SessionListStoring {
     /// `GET /api/sessions/:id` into the detail cache (chat open / resync).
     @discardableResult
     public func loadSessionDetail(_ sessionId: String) async throws -> Session {
-        let session = try await api.session(id: sessionId)
+        var session = try await api.session(id: sessionId)
+        if let cached = details[sessionId], session.seq < cached.seq {
+            // The rejected snapshot may still contain unrelated fields that
+            // arrived before the newer SSE reply-clock patch. Retry once to
+            // recover that complete server state without creating a loop.
+            session = try await api.session(id: sessionId)
+        }
+        if let cached = details[sessionId], session.seq < cached.seq {
+            return cached
+        }
         details[sessionId] = session
         return session
     }
@@ -148,11 +159,45 @@ public final class SessionListStore: SessionListStoring {
     public func refresh() async throws {
         refreshGeneration += 1
         let generation = refreshGeneration
-        let list = try await api.listSessions()
+        var list = try await api.listSessions()
+        let cachedByIdBeforeRetry = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let detailsByIdBeforeRetry = details
+        if list.contains(where: { incoming in
+            let cached = cachedByIdBeforeRetry[incoming.id]
+            let detail = detailsByIdBeforeRetry[incoming.id]
+            let watermark = max(
+                cached?.lastAssistantMessageVersion ?? 0,
+                detail?.seq ?? 0
+            )
+            return (incoming.lastAssistantMessageVersion ?? 0) < watermark
+        }) {
+            // Recover unrelated row fields after discarding an older list
+            // snapshot, while keeping the retry bounded to one request.
+            list = try await api.listSessions()
+        }
         // A later-started refresh already applied fresher server truth.
         guard generation > lastAppliedRefresh else { return }
         lastAppliedRefresh = generation
-        setSessions(sortSessionSummaries(list))
+        let cachedById = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let detailsById = details
+        let merged = list.map { incoming in
+            let cached = cachedById[incoming.id]
+            let detail = detailsById[incoming.id]
+            let cachedVersion = cached?.lastAssistantMessageVersion ?? 0
+            let detailVersion = detail?.seq ?? 0
+            let watermark = max(cachedVersion, detailVersion)
+            if (incoming.lastAssistantMessageVersion ?? 0) >= watermark {
+                return incoming
+            }
+            if let detail, detailVersion >= cachedVersion {
+                var projected = SummaryPatching.toSessionSummary(detail)
+                projected.futureScheduledMessageCount = incoming.futureScheduledMessageCount
+                projected.nextScheduledAt = incoming.nextScheduledAt
+                return projected
+            }
+            return cached ?? incoming
+        }
+        setSessions(sortSessionSummaries(merged))
     }
 
     public func scheduleRefresh() {
@@ -245,7 +290,9 @@ public final class SessionListStore: SessionListStoring {
         // already encodes the session-vs-strict-patch discrimination.
         switch data {
         case .session(let full) where full.id == sessionId:
-            details[full.id] = full
+            if details[full.id].map({ full.seq >= $0.seq }) ?? true {
+                details[full.id] = full
+            }
             upsertSummary(full)
         case .patch(let patch) where patch != SessionPatch():
             patchDetail(sessionId: sessionId, patch: patch)
@@ -275,6 +322,14 @@ public final class SessionListStore: SessionListStoring {
         var list = sessions
         let index = list.firstIndex { $0.id == session.id }
         let existing = index.map { list[$0] }
+        let detailVersion = details[session.id]?.seq ?? 0
+        let watermark = max(existing?.lastAssistantMessageVersion ?? 0, detailVersion)
+        if session.seq < watermark {
+            // A newer full record may already be cached in the detail pipe
+            // while this list projection is absent or still behind.
+            scheduleRefresh()
+            return
+        }
         // The projection cannot derive the hub-computed scheduled-message
         // fields — carry them over from the previous row (web
         // `upsertSessionSummary`).
@@ -309,7 +364,8 @@ public final class SessionListStore: SessionListStoring {
         let next = SummaryPatching.applySessionSummaryPatch(current, patch)
         // Keep-alive noise: activeAt-only movement keeps the previous list
         // (no revision bump, no re-sort, no snapshot write).
-        if SummaryPatching.isRenderIrrelevantPatch(current: current, next: next) {
+        if SummaryPatching.isRenderIrrelevantPatch(current: current, next: next)
+            && current.lastAssistantMessageVersion == next.lastAssistantMessageVersion {
             return true
         }
         var list = sessions

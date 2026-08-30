@@ -10,6 +10,8 @@ struct SessionPatchingTests {
         updatedAt: Int = 2_000,
         active: Bool = true,
         activeAt: Int = 1_000,
+        seq: Int = 1,
+        lastAssistantMessageAt: Int? = nil,
         metadata: SessionMetadata? = nil,
         metadataVersion: Int = 1,
         agentState: AgentState? = nil,
@@ -27,9 +29,10 @@ struct SessionPatchingTests {
         Session(
             id: "session-1",
             namespace: "default",
-            seq: 1,
+            seq: seq,
             createdAt: 1_000,
             updatedAt: updatedAt,
+            lastAssistantMessageAt: lastAssistantMessageAt,
             active: active,
             activeAt: activeAt,
             metadata: metadata,
@@ -202,6 +205,43 @@ struct SessionPatchingTests {
             updatedAt: 3_000
         )))
         #expect(next.updatedAt == 3_000)
+    }
+
+    @Test func replyClockUsesSequenceGateForBackwardAndNullUpdates() throws {
+        let current = makeSession(seq: 10, lastAssistantMessageAt: 9_000)
+        let backward = try #require(applySessionDetailPatch(session: current, patch: SessionPatch(
+            lastAssistantMessageAt: .value(1_000),
+            lastAssistantMessageVersion: 11
+        )))
+        #expect(backward.lastAssistantMessageAt == 1_000)
+        #expect(backward.seq == 11)
+
+        let staleClear = applySessionDetailPatch(session: backward, patch: SessionPatch(
+            lastAssistantMessageAt: .null,
+            lastAssistantMessageVersion: 10
+        ))
+        #expect(staleClear == nil)
+
+        let cleared = try #require(applySessionDetailPatch(session: backward, patch: SessionPatch(
+            lastAssistantMessageAt: .null,
+            lastAssistantMessageVersion: 12
+        )))
+        #expect(cleared.lastAssistantMessageAt == nil)
+        #expect(cleared.seq == 12)
+    }
+
+    @Test func unversionedReplyTimestampIsMonotonic() throws {
+        let current = makeSession(lastAssistantMessageAt: 9_000)
+        #expect(applySessionDetailPatch(session: current, patch: SessionPatch(
+            lastAssistantMessageAt: .value(1_000)
+        )) == nil)
+        #expect(applySessionDetailPatch(session: current, patch: SessionPatch(
+            lastAssistantMessageAt: .null
+        )) == nil)
+        let next = try #require(applySessionDetailPatch(session: current, patch: SessionPatch(
+            lastAssistantMessageAt: .value(10_000)
+        )))
+        #expect(next.lastAssistantMessageAt == 10_000)
     }
 
     @Test func staleUpdatedAtAloneIsANoOp() {

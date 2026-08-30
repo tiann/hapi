@@ -30,7 +30,9 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 
-Default list order: globalPinned → pinned → active → pending-request count → `updatedAt` desc; `order=updatedAt` gives pure recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
+Default list order: globalPinned → pinned → active → pending-request count → `lastAssistantMessageAt ?? updatedAt` desc; `order=updatedAt` gives pure activity recency. The local unread watermark uses the same `lastAssistantMessageAt ?? updatedAt` clock, so lifecycle metadata changes do not make an already-seen assistant reply unread. When `assistantReplyClockBackfilled` is `false`, the reply clock is incomplete and clients must defer initializing that row's unread baseline until a later full session/list record reports it as complete. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
+
+REST hydration is race-safe with SSE: a detail response replaces a cached `Session` only when its `seq` is at least the cached sequence; a list response keeps a cached row when its `lastAssistantMessageVersion` is newer, while the response remains authoritative for list membership.
 
 ### Sessions — lifecycle
 

@@ -139,6 +139,8 @@ type DbSessionRow = {
     machine_id: string | null
     created_at: number
     updated_at: number
+    last_assistant_message_at: number | null
+    assistant_reply_clock_backfilled: number
     pinned: number
     global_pinned: number
     metadata: string | null
@@ -166,6 +168,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         machineId: row.machine_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        lastAssistantMessageAt: row.last_assistant_message_at,
+        assistantReplyClockBackfilled: row.assistant_reply_clock_backfilled === 1,
         pinned: row.pinned === 1,
         globalPinned: row.global_pinned === 1,
         metadata: safeJsonParse(row.metadata),
@@ -227,6 +231,8 @@ export function getOrCreateSession(
     db.prepare(`
         INSERT INTO sessions (
             id, tag, namespace, machine_id, created_at, updated_at,
+            last_assistant_message_at,
+            assistant_reply_clock_backfilled,
             metadata, metadata_version,
             agent_state, agent_state_version,
             model,
@@ -236,6 +242,8 @@ export function getOrCreateSession(
             active, active_at, seq
         ) VALUES (
             @id, @tag, @namespace, NULL, @created_at, @updated_at,
+            NULL,
+            1,
             @metadata, 1,
             @agent_state, 1,
             @model,
@@ -660,6 +668,82 @@ export function touchSessionUpdatedAt(
             id,
             namespace,
             updated_at: updatedAt
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Persist the latest visible assistant reply without changing `updated_at`.
+ * The latter remains the prompt/activity clock used for unread state and
+ * replay semantics; this field is the sidebar's reply-recency clock.
+ */
+export function touchSessionLastAssistantMessageAt(
+    db: Database,
+    id: string,
+    messageAt: number,
+    namespace: string
+): boolean {
+    if (!Number.isFinite(messageAt)) return false
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_assistant_message_at = @message_at,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (
+                  last_assistant_message_at IS NULL
+                  OR last_assistant_message_at < @message_at
+              )
+        `).run({
+            id,
+            message_at: messageAt,
+            namespace
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Finish the one-time transcript backfill without moving the prompt/activity
+ * clock. The marker is written even when the transcript has no visible
+ * assistant prose, so an empty legacy session is not scanned on every restart.
+ * The sequence guard leaves the marker unset when the session changed while
+ * the paginated scan was yielding, allowing the caller to retry safely.
+ */
+export function completeAssistantReplyClockBackfill(
+    db: Database,
+    id: string,
+    messageAt: number | null,
+    initialSeq: number,
+    namespace: string
+): boolean {
+    if (messageAt !== null && !Number.isFinite(messageAt)) return false
+    if (!Number.isFinite(initialSeq)) return false
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_assistant_message_at = @message_at,
+                assistant_reply_clock_backfilled = 1,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND assistant_reply_clock_backfilled = 0
+              AND seq = @initial_seq
+        `).run({
+            id,
+            message_at: messageAt,
+            initial_seq: initialSeq,
+            namespace
         })
 
         return result.changes === 1

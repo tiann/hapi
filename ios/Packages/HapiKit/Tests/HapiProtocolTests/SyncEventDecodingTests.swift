@@ -21,6 +21,8 @@ struct SyncEventDecodingTests {
                 "active": true,
                 "activeAt": 123,
                 "updatedAt": 456,
+                "lastAssistantMessageAt": 789,
+                "lastAssistantMessageVersion": 9,
                 "serviceTier": null,
                 "metadata": {"version": 7, "value": null}
             }
@@ -35,6 +37,8 @@ struct SyncEventDecodingTests {
         #expect(patch.active == true)
         #expect(patch.activeAt == 123)
         #expect(patch.updatedAt == 456)
+        #expect(patch.lastAssistantMessageAt == .value(789))
+        #expect(patch.lastAssistantMessageVersion == 9)
         // Explicit null is preserved as .null, distinct from an absent key.
         #expect(patch.serviceTier == .null)
         #expect(patch.model == nil)
@@ -71,6 +75,7 @@ struct SyncEventDecodingTests {
         }
         #expect(session.id == "s-1")
         #expect(session.seq == 12)
+        #expect(session.lastAssistantMessageAt == nil)
         // zod nullish transform: null activeAt becomes 0.
         #expect(session.activeAt == 0)
         #expect(session.metadata?.path == "/repo")

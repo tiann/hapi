@@ -311,12 +311,16 @@ final class ChatModel {
         isInitialLoading = isEmpty && !syncSettled && window.warning == nil
         loadFailed = isEmpty && syncSettled && (window.warning != nil || detailLoadFailed)
 
-        // Watermark = the updatedAt currently on screen, from whichever cache
+        // Watermark = the latest visible assistant reply currently on screen,
+        // falling back to updatedAt when no reply exists; use whichever cache
         // is fresher (summary via the global pipe, detail via this one).
         // markSeen is monotonic, so stale inputs cannot rewind it.
-        let updatedAt = max(detail?.updatedAt ?? 0, summary?.updatedAt ?? 0)
-        if updatedAt > 0 {
-            hub.lastSeenStore.markSeen(sessionId: sessionId, seenAt: updatedAt)
+        let seenAt = max(
+            detail.map(LastSeenStore.seenTimestamp) ?? 0,
+            summary.map(LastSeenStore.seenTimestamp) ?? 0
+        )
+        if seenAt > 0 {
+            hub.lastSeenStore.markSeen(sessionId: sessionId, seenAt: seenAt)
         }
     }
 

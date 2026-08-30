@@ -17,6 +17,8 @@ struct SummaryPatchingTests {
         thinking: Bool = false,
         activeAt: Int = 1_000,
         updatedAt: Int = 2_000,
+        lastAssistantMessageAt: Int? = nil,
+        lastAssistantMessageVersion: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         metadata: SessionSummaryMetadata? = nil,
@@ -38,6 +40,8 @@ struct SummaryPatchingTests {
             thinking: thinking,
             activeAt: activeAt,
             updatedAt: updatedAt,
+            lastAssistantMessageAt: lastAssistantMessageAt,
+            lastAssistantMessageVersion: lastAssistantMessageVersion,
             pinned: pinned,
             globalPinned: globalPinned,
             metadata: metadata,
@@ -121,7 +125,8 @@ struct SummaryPatchingTests {
     private func makeSession(
         metadata: SessionMetadata? = nil,
         agentState: AgentState? = nil,
-        todos: [TodoItem]? = nil
+        todos: [TodoItem]? = nil,
+        lastAssistantMessageAt: Int? = nil
     ) -> Session {
         Session(
             id: "session-1",
@@ -129,6 +134,7 @@ struct SummaryPatchingTests {
             seq: 1,
             createdAt: 1_000,
             updatedAt: 2_000,
+            lastAssistantMessageAt: lastAssistantMessageAt,
             active: true,
             activeAt: 1_000,
             metadata: metadata,
@@ -156,7 +162,8 @@ struct SummaryPatchingTests {
                 claudeSessionId: " abc "
             ),
             agentState: AgentState(requests: ["r1": request("Bash", createdAt: 50)]),
-            todos: [TodoItem(content: "a", status: .completed)]
+            todos: [TodoItem(content: "a", status: .completed)],
+            lastAssistantMessageAt: 2_000
         )
         let summary = SummaryPatching.toSessionSummary(session)
         #expect(summary.id == "session-1")
@@ -175,6 +182,8 @@ struct SummaryPatchingTests {
         #expect(summary.backgroundTaskCount == 2)
         #expect(summary.futureScheduledMessageCount == 0)
         #expect(summary.nextScheduledAt == nil)
+        #expect(summary.lastAssistantMessageAt == 2_000)
+        #expect(summary.lastAssistantMessageVersion == 1)
     }
 
     @Test func agentSessionIdUsesOnlyKnownFlavorFieldLegacyChainOtherwise() {
@@ -234,6 +243,36 @@ struct SummaryPatchingTests {
         #expect(next.model == "opus")
         #expect(next.modelReasoningEffort == "high")
         #expect(next.effort == "medium")
+    }
+
+    @Test func replyClockAcceptsNewerAuthoritativeBackwardAndNullUpdates() {
+        let current = makeSummary(lastAssistantMessageAt: 9_000, lastAssistantMessageVersion: 4)
+        let backward = SummaryPatching.applySessionSummaryPatch(current, SessionPatch(
+            lastAssistantMessageAt: .value(1_000),
+            lastAssistantMessageVersion: 5
+        ))
+        #expect(backward.lastAssistantMessageAt == 1_000)
+        #expect(backward.lastAssistantMessageVersion == 5)
+
+        let cleared = SummaryPatching.applySessionSummaryPatch(backward, SessionPatch(
+            lastAssistantMessageAt: .null,
+            lastAssistantMessageVersion: 6
+        ))
+        #expect(cleared.lastAssistantMessageAt == nil)
+        #expect(cleared.lastAssistantMessageVersion == 6)
+    }
+
+    @Test func unversionedReplyClockRemainsMonotonicAndCannotClearKnownValue() {
+        let current = makeSummary(lastAssistantMessageAt: 9_000, lastAssistantMessageVersion: 4)
+        let next = SummaryPatching.applySessionSummaryPatch(current, SessionPatch(
+            lastAssistantMessageAt: .value(1_000)
+        ))
+        #expect(next.lastAssistantMessageAt == 9_000)
+        #expect(next.lastAssistantMessageVersion == 4)
+        let cleared = SummaryPatching.applySessionSummaryPatch(next, SessionPatch(
+            lastAssistantMessageAt: .null
+        ))
+        #expect(cleared.lastAssistantMessageAt == 9_000)
     }
 
     @Test func agentStatePatchWithEqualVersionReappliesSummaryPathAcceptsGte() {

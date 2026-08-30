@@ -133,7 +133,8 @@ export function isRedundantGoalStatusEventContent(value: unknown): boolean {
  *
  *  2. `output` flavor (Claude SDK passthrough):  content.type = 'output',
  *     content.data.type = 'assistant'  -> text at
- *     `content.data.message.content[i].text` (array of `{type:'text', text}`).
+ *     `content.data.message.content` (a string or an array of
+ *     `{type:'text', text}` blocks).
  *
  * Returns `null` when the content does not look like assistant *text*
  * (tool calls, tool results, reasoning, token counts, etc.) so callers can
@@ -145,7 +146,7 @@ export function extractAssistantPlainText(content: unknown): string | null {
     if (content.type === 'codex') {
         const data = isObject(content.data) ? content.data : null
         if (!data || data.type !== 'message') return null
-        return typeof data.message === 'string' && data.message.length > 0
+        return typeof data.message === 'string' && data.message.trim().length > 0
             ? data.message
             : null
     }
@@ -163,7 +164,11 @@ export function extractAssistantPlainText(content: unknown): string | null {
 
         if (data.type !== 'assistant') return null
         const message = isObject(data.message) ? data.message : null
-        const blocks = Array.isArray(message?.content) ? message.content : null
+        const rawContent = message?.content
+        if (typeof rawContent === 'string') {
+            return rawContent.trim().length > 0 ? rawContent : null
+        }
+        const blocks = Array.isArray(rawContent) ? rawContent : null
         if (!blocks) return null
         const textParts: string[] = []
         for (const block of blocks) {
@@ -177,6 +182,54 @@ export function extractAssistantPlainText(content: unknown): string | null {
     }
 
     return null
+}
+
+/**
+ * Whether a stored role-wrapped message contains visible assistant prose.
+ *
+ * This deliberately shares the same extraction rules as notifications: tool
+ * calls, tool results, reasoning, and other agent events must not move the
+ * sidebar's "last reply" clock.
+ */
+export function isAssistantTextMessage(content: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(content)
+    if (record?.role !== 'agent') return false
+
+    const messageContent = record.content
+
+    // `event/message` is a status-event family (for example, model changes
+    // and compaction notices), not a main-agent prose reply.
+    if (isObject(messageContent) && messageContent.type === 'event') return false
+
+    const outputData = isObject(messageContent) && messageContent.type === 'output'
+        && isObject(messageContent.data)
+        ? messageContent.data
+        : null
+    if (isObject(messageContent) && messageContent.type === 'output') {
+        if (
+            !outputData
+            || outputData.isSidechain === true
+            || Boolean(outputData.isMeta)
+            || Boolean(outputData.isCompactSummary)
+        ) return false
+        if (!isClaudeChatVisibleMessage({ type: outputData.type, subtype: outputData.subtype })) return false
+    }
+
+    const text = extractAssistantPlainText(messageContent)
+    if (!text) return false
+
+    // The footer is machine metadata hidden by default in the chat. A footer
+    // alone is not an assistant reply, while prose followed by a footer is.
+    const visibleText = stripNotifySummaryFooter(text).trim()
+    if (!visibleText) return false
+
+    // AGY's task-log narration is rendered as a tool chip; the actual result
+    // arrives separately as a background-task card.
+    if (outputData?.type === 'agy_message' && /^Inside the task-\d+ log\b/.test(visibleText)) {
+        return false
+    }
+
+    return true
 }
 
 const NOTIFY_SUMMARY_PREFIX = 'AGENT_NOTIFY_SUMMARY '

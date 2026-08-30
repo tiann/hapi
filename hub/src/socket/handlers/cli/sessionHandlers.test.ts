@@ -215,7 +215,7 @@ describe('cli session handlers', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'metadata-patch-session',
-            { path: '/tmp/project', host: 'example' },
+            { path: '/tmp/project', host: 'example', name: 'Before' },
             null,
             'default'
         )
@@ -238,7 +238,7 @@ describe('cli session handlers', () => {
             {
                 sid: session.id,
                 expectedVersion: session.metadataVersion,
-                metadata: { lifecycleState: 'archived' }
+                metadata: { name: 'After' }
             },
             () => {}
         )
@@ -248,11 +248,11 @@ describe('cli session handlers', () => {
         if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
         const data = sessionUpdated.data as { metadata?: { version: number; value: Record<string, unknown> }; updatedAt?: number } | undefined
         expect(data?.metadata?.version).toBe(session.metadataVersion + 1)
-        // Merged value: original path/host preserved + new lifecycleState applied.
+        // Merged value: original path/host preserved + the metadata change applied.
         expect(data?.metadata?.value).toMatchObject({
             path: '/tmp/project',
             host: 'example',
-            lifecycleState: 'archived'
+            name: 'After'
         })
         expect(typeof data?.updatedAt).toBe('number')
         // Same-ms create+update is common in unit tests; store still touches updated_at.
@@ -317,6 +317,7 @@ describe('cli session handlers', () => {
             null,
             'default'
         )
+        const updatedAtBeforeArchive = store.sessions.getSession(session.id)?.updatedAt
         const socket = new FakeSocket()
 
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -359,6 +360,149 @@ describe('cli session handlers', () => {
         expect(broadcastBody.metadata.value.cursorSessionId).toBe('broadcast-survives')
         expect(broadcastBody.metadata.value.path).toBe('/tmp/project')
         expect(broadcastBody.metadata.value.lifecycleState).toBe('archived')
+        // Archive metadata is bookkeeping, not new user-facing activity. A
+        // changed activity clock would light a previously-read row as unread.
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeArchive)
+    })
+
+    it('does not count archive-to-running lifecycle metadata as new activity', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'reopen-lifecycle-clock',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session stopped'
+            },
+            null,
+            'default'
+        )
+        const updatedAtBeforeReopen = store.sessions.getSession(session.id)?.updatedAt
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => {
+                const current = store.sessions.getSessionByNamespace(session.id, 'default')
+                return current
+                    ? { ok: true, value: current }
+                    : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        socket.trigger(
+            'update-metadata',
+            {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'example',
+                    lifecycleState: 'running'
+                }
+            },
+            () => {}
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeReopen)
+    })
+
+    it('does not count the post-clear running lifecycle stamp as new activity', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'reopen-cleared-lifecycle-clock',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                lifecycleStateSince: Date.now()
+            },
+            null,
+            'default'
+        )
+        const updatedAtBeforeReopen = store.sessions.getSession(session.id)?.updatedAt
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => {
+                const current = store.sessions.getSessionByNamespace(session.id, 'default')
+                return current
+                    ? { ok: true, value: current }
+                    : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        socket.trigger(
+            'update-metadata',
+            {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'example',
+                    lifecycleState: 'running',
+                    lifecycleStateSince: Date.now()
+                }
+            },
+            () => {}
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeReopen)
+    })
+
+    it('does not count a repeated running lifecycle stamp as new activity', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'repeated-running-lifecycle-clock',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                lifecycleState: 'running',
+                lifecycleStateSince: Date.now()
+            },
+            null,
+            'default'
+        )
+        const updatedAtBeforeRefresh = store.sessions.getSession(session.id)?.updatedAt
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => {
+                const current = store.sessions.getSessionByNamespace(session.id, 'default')
+                return current
+                    ? { ok: true, value: current }
+                    : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        socket.trigger(
+            'update-metadata',
+            {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'example',
+                    lifecycleState: 'running',
+                    lifecycleStateSince: Date.now()
+                }
+            },
+            () => {}
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeRefresh)
     })
 
     // Agent messages used to be stamped with

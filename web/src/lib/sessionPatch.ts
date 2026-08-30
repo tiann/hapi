@@ -28,8 +28,16 @@ export function isNewerVersionedPatch(patchVersion: number, currentVersion: numb
  * which ignores `activeAt` entirely.
  */
 export function isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch): boolean {
+    if (patch.lastAssistantMessageVersion !== undefined
+        && patch.lastAssistantMessageVersion > (Number.isFinite(session.seq) ? session.seq : 0)) {
+        return false
+    }
+
     const current = session as unknown as Record<string, unknown>
     for (const [key, value] of Object.entries(patch)) {
+        if (key === 'lastAssistantMessageVersion') {
+            continue
+        }
         if (
             key === 'activeAt'
             && typeof value === 'number'
@@ -70,6 +78,28 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (patch.updatedAt !== undefined) {
         const nextUpdatedAt = Math.max(nextSession.updatedAt, patch.updatedAt)
         assign('updatedAt', nextUpdatedAt)
+    }
+    const currentReplyVersion = Number.isFinite(session.seq) ? session.seq : 0
+    const replyVersion = patch.lastAssistantMessageVersion
+    const canApplyReplyClock = replyVersion === undefined || replyVersion >= currentReplyVersion
+    if (replyVersion !== undefined && replyVersion > currentReplyVersion) {
+        assign('seq', replyVersion)
+    }
+    if (patch.lastAssistantMessageAt !== undefined && canApplyReplyClock) {
+        if (replyVersion !== undefined) {
+            // Versioned reply-clock updates are authoritative: a rewind may
+            // legitimately move the timestamp backward or clear it.
+            assign('lastAssistantMessageAt', patch.lastAssistantMessageAt)
+        } else if (patch.lastAssistantMessageAt === null) {
+            if (nextSession.lastAssistantMessageAt == null) {
+                assign('lastAssistantMessageAt', null)
+            }
+        } else {
+            assign(
+                'lastAssistantMessageAt',
+                Math.max(nextSession.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY, patch.lastAssistantMessageAt)
+            )
+        }
     }
     if (patch.model !== undefined) assign('model', patch.model)
     if (patch.modelReasoningEffort !== undefined) assign('modelReasoningEffort', patch.modelReasoningEffort)

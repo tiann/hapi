@@ -3,13 +3,20 @@ package app.hapi.data.store
 import app.hapi.data.sse.SseSubscriptionKey
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -50,6 +57,105 @@ class SessionStoreTest {
     }
 
     @Test
+    fun `delayed refresh cannot overwrite a newer reply-clock patch`() = runStoreTest { store, server ->
+        server.enqueueJson(
+            sessionsResponseJson(
+                summary("reply", updatedAt = 9_000, lastAssistantMessageAt = 9_000, lastAssistantMessageVersion = 1),
+                summary("other", updatedAt = 2_000),
+            )
+        )
+        store.refresh()
+
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    sessionsResponseJson(
+                        summary("reply", updatedAt = 9_000, lastAssistantMessageAt = 1_000, lastAssistantMessageVersion = 1),
+                        summary("other", updatedAt = 2_000),
+                    )
+                )
+                .setBodyDelay(100, TimeUnit.MILLISECONDS)
+        )
+        server.enqueueJson(
+            sessionsResponseJson(
+                summary("reply", updatedAt = 10_000, lastAssistantMessageAt = 10_000, lastAssistantMessageVersion = 2, metadataVersion = 2),
+                summary("other", updatedAt = 2_000),
+            )
+        )
+        val pending = async(start = CoroutineStart.UNDISPATCHED) { store.refresh() }
+        assertTrue(server.takeRequest(1, TimeUnit.SECONDS) != null)
+
+        store.applySessionEvent(
+            globalScope,
+            sessionUpdatedEvent("reply", """{"lastAssistantMessageAt":10000,"lastAssistantMessageVersion":2}"""),
+        )
+        pending.await()
+
+        assertEquals(listOf("reply", "other"), store.sessions.value.map { it.id })
+        assertEquals(10_000L, store.sessions.value.first().lastAssistantMessageAt)
+        assertEquals(2L, store.sessions.value.first().lastAssistantMessageVersion)
+        assertEquals(2L, store.sessions.value.first().metadataVersion)
+    }
+
+    @Test
+    fun `refresh projects a newer cached detail through an older list snapshot`() = runStoreTest { store, server ->
+        server.enqueueJson(
+            sessionsResponseJson(
+                summary("reply", updatedAt = 9_000, lastAssistantMessageAt = 9_000, lastAssistantMessageVersion = 1)
+            )
+        )
+        store.refresh()
+
+        val detail = session("reply", seq = 3, updatedAt = 12_000, lastAssistantMessageAt = null)
+        server.enqueueJson("""{"session":${fullSessionJson(detail)}}""")
+        store.loadSessionDetail("reply")
+
+        val stale = sessionsResponseJson(
+            summary(
+                "reply",
+                updatedAt = 11_000,
+                lastAssistantMessageAt = 1_000,
+                lastAssistantMessageVersion = 2,
+                futureScheduledMessageCount = 4,
+                nextScheduledAt = 42,
+            )
+        )
+        server.enqueueJson(stale)
+        server.enqueueJson(stale)
+        store.refresh()
+
+        val row = store.sessions.value.single()
+        assertEquals(12_000L, row.updatedAt)
+        assertNull(row.lastAssistantMessageAt)
+        assertEquals(3L, row.lastAssistantMessageVersion)
+        assertEquals(4, row.futureScheduledMessageCount)
+        assertEquals(42L, row.nextScheduledAt)
+    }
+
+    @Test
+    fun `delayed detail response cannot overwrite a newer full-session event`() = runStoreTest { store, server ->
+        server.enqueueJson("""{"session":${fullSessionJson(session("s1", seq = 5, lastAssistantMessageAt = 9_000))}}""")
+        store.loadSessionDetail("s1")
+
+        val newer = session("s1", seq = 6, updatedAt = 11_000, lastAssistantMessageAt = 10_000, metadataVersion = 2)
+
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"session":${fullSessionJson(session("s1", seq = 4, updatedAt = 10_000, lastAssistantMessageAt = 1_000, metadataVersion = 2))}}""")
+                .setBodyDelay(100, TimeUnit.MILLISECONDS)
+        )
+        server.enqueueJson("""{"session":${fullSessionJson(newer)}}""")
+        val pending = async(start = CoroutineStart.UNDISPATCHED) { store.loadSessionDetail("s1") }
+        assertTrue(server.takeRequest(1, TimeUnit.SECONDS) != null)
+
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", fullSessionJson(newer)))
+        assertEquals(newer, pending.await())
+        assertEquals(newer, store.currentDetail("s1"))
+    }
+
+    @Test
     fun `refresh failure throws and keeps previous state`() = runStoreTest { store, server ->
         server.enqueueJson(sessionsResponseJson(summary("s1")))
         store.refresh()
@@ -79,6 +185,87 @@ class SessionStoreTest {
         // Hub-computed fields the projection cannot derive are preserved.
         assertEquals(2, row.futureScheduledMessageCount)
         assertEquals(999L, row.nextScheduledAt)
+    }
+
+    @Test
+    fun `older full-session event cannot rewind reply clock caches`() = runStoreTest { store, server ->
+        server.enqueueJson(
+            sessionsResponseJson(
+                summary("s1", updatedAt = 9_000, lastAssistantMessageAt = 9_000, lastAssistantMessageVersion = 5)
+            )
+        )
+        store.refresh()
+        val current = session("s1", seq = 5, updatedAt = 9_000, lastAssistantMessageAt = 9_000)
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", fullSessionJson(current)))
+
+        val stale = session("s1", seq = 4, updatedAt = 10_000, lastAssistantMessageAt = 1_000)
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", fullSessionJson(stale)))
+
+        assertEquals(current, store.currentDetail("s1"))
+        assertEquals(9_000L, store.sessions.value.single().lastAssistantMessageAt)
+        assertEquals(5L, store.sessions.value.single().lastAssistantMessageVersion)
+    }
+
+    @Test
+    fun `older full-session event cannot rewind a summary below the detail watermark`() = runStoreTest { store, server ->
+        server.enqueueJson(
+            sessionsResponseJson(
+                summary("s1", updatedAt = 9_000, lastAssistantMessageAt = 9_000, lastAssistantMessageVersion = 1)
+            )
+        )
+        store.refresh()
+
+        val newer = session("s1", seq = 5, updatedAt = 12_000, lastAssistantMessageAt = null)
+        server.enqueueJson("""{"session":${fullSessionJson(newer)}}""")
+        store.loadSessionDetail("s1")
+
+        val stale = session("s1", seq = 4, updatedAt = 11_000, lastAssistantMessageAt = 1_000)
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", fullSessionJson(stale)))
+
+        assertEquals(newer, store.currentDetail("s1"))
+        assertEquals(9_000L, store.sessions.value.first().lastAssistantMessageAt)
+        assertEquals(1L, store.sessions.value.first().lastAssistantMessageVersion)
+    }
+
+    @Test
+    fun `concurrent full-session events keep the highest detail sequence`() = runStoreTest { store, _ ->
+        coroutineScope {
+            (2L..64L).shuffled().map { seq ->
+                launch(Dispatchers.Default) {
+                    store.applySessionEvent(
+                        globalScope,
+                        sessionUpdatedEvent(
+                            "s1",
+                            fullSessionJson(session("s1", seq = seq, lastAssistantMessageAt = seq * 1_000)),
+                        ),
+                    )
+                }
+            }.joinAll()
+        }
+
+        assertEquals(64L, store.currentDetail("s1")?.seq)
+    }
+
+    @Test
+    fun `reply patch updates timestamp and list ordering without changing activity clock`() = runStoreTest { store, server ->
+        server.enqueueJson(
+            sessionsResponseJson(
+                summary("older-reply", active = false, updatedAt = 9_000, lastAssistantMessageAt = 1_000, lastAssistantMessageVersion = 1),
+                summary("newer-reply", active = false, updatedAt = 1_000, lastAssistantMessageAt = 2_000, lastAssistantMessageVersion = 1),
+            )
+        )
+        store.refresh()
+        assertEquals(listOf("newer-reply", "older-reply"), store.sessions.value.map { it.id })
+
+        store.applySessionEvent(
+            globalScope,
+            sessionUpdatedEvent(
+                "older-reply",
+                """{"lastAssistantMessageAt":3000,"lastAssistantMessageVersion":2}""",
+            ),
+        )
+        assertEquals(listOf("older-reply", "newer-reply"), store.sessions.value.map { it.id })
+        assertEquals(9_000L, store.sessions.value.first().updatedAt)
     }
 
     @Test

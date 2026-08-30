@@ -133,21 +133,45 @@ describe('classifySessionAttention', () => {
 })
 
 describe('sessionIsUnread', () => {
-    it('is true when updatedAt is newer than lastSeenAt', () => {
+    it('is true when the latest assistant reply is newer than lastSeenAt', () => {
         expect(sessionIsUnread(
-            makeSummary({ id: 'u', updatedAt: 5000 }),
-            { lastSeenAt: 1000 }
+            makeSummary({ id: 'u', updatedAt: 9000, lastAssistantMessageAt: 5000 }),
+            { lastSeenAt: 4000 }
         )).toBe(true)
     })
 
-    it('is false when the operator has already seen this update', () => {
+    it('is false when the operator has already seen the latest assistant reply', () => {
         expect(sessionIsUnread(
-            makeSummary({ id: 'seen', updatedAt: 1000 }),
+            makeSummary({ id: 'seen', updatedAt: 9000, lastAssistantMessageAt: 5000 }),
             { lastSeenAt: 5000 }
         )).toBe(false)
     })
 
-    it('does not care about permission / background fields — only the watermark', () => {
+    it('ignores an archive-only activity-clock change after the reply was seen', () => {
+        expect(classifySessionAttention(
+            makeSummary({
+                id: 'archived-after-seen',
+                active: false,
+                updatedAt: 9000,
+                lastAssistantMessageAt: 5000,
+            }),
+            { selected: false, lastSeenAt: 5000 }
+        )).toBeNull()
+    })
+
+    it('does not classify a legacy row until its reply clock is complete', () => {
+        expect(sessionIsUnread(
+            makeSummary({
+                id: 'legacy-backfill',
+                updatedAt: 9000,
+                lastAssistantMessageAt: 5000,
+                assistantReplyClockBackfilled: false,
+            }),
+            { lastSeenAt: 0 }
+        )).toBe(false)
+    })
+
+    it('does not care about permission / background fields — only the activity clock', () => {
         expect(sessionIsUnread(
             makeSummary({
                 id: 'p',
@@ -163,6 +187,7 @@ describe('sessionIsUnread', () => {
                 id: 'bg',
                 backgroundTaskCount: 3,
                 updatedAt: 9000,
+                lastAssistantMessageAt: 9000,
             }),
             { lastSeenAt: 1000 }
         )).toBe(true)

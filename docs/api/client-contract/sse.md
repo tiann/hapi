@@ -158,7 +158,7 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 
 The most bug-prone part of the protocol. `session-updated.data` is either a **full `Session`** or a **`SessionPatch`** (`shared/src/schemas.ts`); reference implementation `applySessionDetailPatch` in `web/src/hooks/useSSE.ts`.
 
-1. **Full session** (validates against `SessionSchema` and `data.id === event.sessionId`): replace the cached session wholesale.
+1. **Full session** (validates against `SessionSchema` and `data.id === event.sessionId`): replace the cached session only when `data.seq >= cached.seq`; an older full record is a stale replay and must be ignored. The same gate applies when a REST detail response hydrates an existing cache.
 2. **Patch** (validates against the strict `SessionPatchSchema` — unknown keys make it fail — and is non-empty): apply field-by-field as below.
 3. **Absent or unparseable `data`**: fall back to refetching the session detail and list over REST.
 
@@ -166,6 +166,7 @@ Patch application, field by field:
 
 - **Flat fields** — `active`, `thinking`, `activeAt`, `model`, `modelReasoningEffort`, `effort`, `serviceTier`, `permissionMode`, `collaborationMode`, `copilotAgentMode`, `backgroundTaskCount`: last-write-wins assignment when present. `activeTurnStartedAt` appears in patches but the reference implementation deliberately never applies it from a patch (`web/src/lib/sessionPatch.ts`) — take it from full-session payloads only; the `sse/` fixtures pin this.
 - **`updatedAt`** — max-monotonic: `updatedAt = max(cached.updatedAt, patch.updatedAt)`. A stale replay must never move the clock backward.
+- **Reply clock** — `lastAssistantMessageAt` is the default recency and unread clock, with `updatedAt` as the fallback. `assistantReplyClockBackfilled=false` means a legacy transcript scan is incomplete; clients must not establish an unread baseline from that row until a later full record reports completion. A patch carrying `lastAssistantMessageVersion` is accepted when its version is at least the cached session sequence/detail watermark; the version advances the cached sequence and the timestamp is authoritative, including backward moves and explicit `null`. An unversioned timestamp is max-monotonic and cannot clear a known value. Session-list summaries retain the version as `lastAssistantMessageVersion` and apply the same `>=` gate. REST list hydration applies that per-row summary gate while keeping the server response authoritative for membership. Lifecycle-only metadata transitions do not advance the activity clock, so archiving or reopening an already-seen session does not create an unread reply.
 - **Versioned sub-patches** — `metadata`, `agentState`, `todos`, `teamState` each arrive as a wrapper `{version: number, value: …}`. Apply `value` and store `version` **only when `version` is strictly greater than the cached watermark**:
 
   | Wrapper | Cached watermark on `Session` | `value` type |
@@ -183,7 +184,7 @@ Patch application, field by field:
 
 The CLI keep-alive makes the hub re-broadcast a patch roughly **every 10 s per active session**, in which typically only `activeAt` moves. Recommendation (web: `isRenderIrrelevantSessionPatch`): treat a patch as render-irrelevant when the only effective change is an `activeAt` delta **< 60 s** (relative-time labels only change at minute boundaries); the session-list path ignores `activeAt` entirely. Apply the data if you like, but do not re-render or re-sort six times a minute for it.
 
-Reference list sort (web): `globalPinned` > `pinned` > `active` > `pendingRequestsCount` (among active) > `updatedAt` desc.
+Reference list sort (web): `globalPinned` > `pinned` > `active` > `pendingRequestsCount` (among active) > `lastAssistantMessageAt ?? updatedAt` desc.
 
 ---
 

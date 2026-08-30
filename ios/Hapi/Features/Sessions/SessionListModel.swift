@@ -189,7 +189,10 @@ final class SessionListModel {
         guard let summary = session.sessionStore.sessions.first(where: { $0.id == sessionId }) else {
             return
         }
-        session.lastSeenStore.markSeen(sessionId: sessionId, seenAt: summary.updatedAt)
+        session.lastSeenStore.markSeen(
+            sessionId: sessionId,
+            seenAt: LastSeenStore.seenTimestamp(summary)
+        )
     }
 
     /// `PUT /sessions/:id/pin` with store-side optimistic re-sort; failures

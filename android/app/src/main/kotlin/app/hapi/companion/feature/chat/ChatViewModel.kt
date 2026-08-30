@@ -503,16 +503,17 @@ class ChatViewModel(
         scratchlist?.open(sessionId)
 
         seenJob = scope.launch {
-            // Watermark = updatedAt currently on screen, from whichever cache
-            // is fresher (summary via global events, detail via this pipe).
+            // Watermark = the latest visible assistant reply currently on
+            // screen, falling back to updatedAt when no reply exists; use
+            // whichever cache is fresher (summary or detail).
             merge(
                 sessionStore.sessions
-                    .map { list -> list.firstOrNull { it.id == sessionId }?.updatedAt },
-                sessionStore.sessionDetail(sessionId).map { it?.updatedAt },
+                    .map { list -> list.firstOrNull { it.id == sessionId }?.let(LastSeenStore::seenTimestamp) },
+                sessionStore.sessionDetail(sessionId).map { it?.let(LastSeenStore::seenTimestamp) },
             )
                 .filterNotNull()
                 .distinctUntilChanged()
-                .collect { updatedAt -> lastSeenStore.markSeen(sessionId, updatedAt) }
+                .collect { seenAt -> lastSeenStore.markSeen(sessionId, seenAt) }
         }
     }
 

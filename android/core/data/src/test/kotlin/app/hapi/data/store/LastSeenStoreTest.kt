@@ -22,12 +22,35 @@ class LastSeenStoreTest {
     }
 
     @Test
-    fun `unread compares updatedAt against the watermark`() = runTest {
-        val row = summary("s1", updatedAt = 1_000)
+    fun `unread compares the latest reply against the watermark`() = runTest {
+        val row = summary("s1", updatedAt = 9_000, lastAssistantMessageAt = 1_000)
         assertTrue(LastSeenStore.isUnread(row, lastSeenAt = 0))
         assertTrue(LastSeenStore.isUnread(row, lastSeenAt = 999))
         assertFalse(LastSeenStore.isUnread(row, lastSeenAt = 1_000))
         assertFalse(LastSeenStore.isUnread(row, lastSeenAt = 2_000))
+    }
+
+    @Test
+    fun `archive-only updatedAt changes do not make a seen reply unread`() = runTest {
+        val archived = summary("archived", updatedAt = 9_000, lastAssistantMessageAt = 5_000)
+        assertFalse(LastSeenStore.isUnread(archived, lastSeenAt = 5_000))
+    }
+
+    @Test
+    fun `baseline waits for a legacy reply clock before seeding`() = runTest {
+        val pending = summary(
+            "legacy",
+            updatedAt = 9_000,
+            lastAssistantMessageAt = 5_000,
+        ).copy(assistantReplyClockBackfilled = false)
+        val store = LastSeenStore(backgroundScope)
+
+        store.initializeBaseline("hub-a", listOf(pending))
+        assertEquals(0, store.lastSeenAt("legacy"))
+        assertFalse(LastSeenStore.isUnread(pending, store.lastSeenAt("legacy")))
+
+        store.initializeBaseline("hub-a", listOf(pending.copy(assistantReplyClockBackfilled = true)))
+        assertEquals(5_000, store.lastSeenAt("legacy"))
     }
 
     @Test
@@ -38,7 +61,8 @@ class LastSeenStoreTest {
             "hub-a",
             listOf(summary("seen", updatedAt = 900), summary("fresh", updatedAt = 700)),
         )
-        // Existing watermarks are never overwritten; missing ones seed at updatedAt.
+        // Existing watermarks are never overwritten; missing ones seed at the
+        // reply/activity clock.
         assertEquals(50, store.lastSeenAt("seen"))
         assertEquals(700, store.lastSeenAt("fresh"))
         assertFalse(LastSeenStore.isUnread(summary("fresh", updatedAt = 700), store.lastSeenAt("fresh")))

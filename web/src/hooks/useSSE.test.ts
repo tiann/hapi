@@ -2,8 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SessionSummary } from '@/types/api'
-import type { Session } from '@/types/api'
+import type { Session, SessionResponse, SessionSummary, SessionsResponse } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
     canApplyVersionedSummaryPatch,
@@ -11,7 +11,10 @@ import {
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
     isRenderIrrelevantSessionPatch,
+    shouldAcceptSessionRecord,
+    shouldAcceptSessionSummaryRecord,
     shouldInvalidateSessionListForEvent,
+    sortSessionSummaries,
     useSSE
 } from './useSSE'
 
@@ -49,7 +52,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
-    return renderHook(() => useSSE({
+    const result = renderHook(() => useSSE({
         enabled: true,
         token: 'test-token',
         baseUrl: 'http://hub.test',
@@ -57,6 +60,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
+    return { ...result, queryClient }
 }
 
 describe('useSSE connection liveness (mobile suspend/resume)', () => {
@@ -185,6 +189,116 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     } as SessionSummary
 }
 
+describe('sortSessionSummaries', () => {
+    it('keeps pin and activity priorities, then sorts inactive sessions by assistant reply', () => {
+        const sessions = [
+            makeSummary({ id: 'reply-newer', active: false, updatedAt: 500, lastAssistantMessageAt: 900 }),
+            makeSummary({ id: 'activity-newer', active: false, updatedAt: 800, lastAssistantMessageAt: 100 }),
+            makeSummary({ id: 'pinned-old', active: false, pinned: true, updatedAt: 1, lastAssistantMessageAt: 1 }),
+            makeSummary({ id: 'quiet-active', active: true, updatedAt: 2, lastAssistantMessageAt: 2 }),
+            makeSummary({ id: 'pending-active', active: true, pendingRequestsCount: 1, updatedAt: 3, lastAssistantMessageAt: 3 })
+        ]
+
+        sessions.sort(sortSessionSummaries)
+
+        expect(sessions.map(session => session.id)).toEqual([
+            'pinned-old',
+            'pending-active',
+            'quiet-active',
+            'reply-newer',
+            'activity-newer'
+        ])
+    })
+})
+
+describe('reply-clock SSE ordering', () => {
+    it('rejects a pre-backfill full record after the corrected record', () => {
+        const corrected = { id: 'session-1', seq: 12 } as Session
+        const stale = { id: 'session-1', seq: 11 } as Session
+
+        expect(shouldAcceptSessionRecord(corrected, stale)).toBe(false)
+        expect(shouldAcceptSessionRecord(corrected, corrected)).toBe(true)
+        expect(shouldAcceptSessionRecord(undefined, stale)).toBe(true)
+    })
+
+    it('uses the carried watermark for list summaries', () => {
+        const current = makeSummary({ lastAssistantMessageVersion: 12 })
+
+        expect(shouldAcceptSessionSummaryRecord(current, { seq: 11 })).toBe(false)
+        expect(shouldAcceptSessionSummaryRecord(current, { seq: 12 })).toBe(true)
+        expect(shouldAcceptSessionSummaryRecord(current, { seq: 13 })).toBe(true)
+    })
+})
+
+describe('reply-clock full-record cache ordering', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    it('does not let an older full record overwrite a newer detail watermark', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const newerDetail = {
+            id: 'session-1',
+            namespace: 'default',
+            seq: 12,
+            createdAt: 1_000,
+            updatedAt: 12_000,
+            active: false,
+            activeAt: 0,
+            metadata: null,
+            metadataVersion: 0,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            model: null,
+            modelReasoningEffort: null,
+            effort: null,
+            serviceTier: null,
+            lastAssistantMessageAt: null
+        } as Session
+        const olderRecord = {
+            ...newerDetail,
+            seq: 11,
+            updatedAt: 11_000,
+            lastAssistantMessageAt: 11_000
+        }
+        queryClient.setQueryData<SessionResponse>(queryKeys.session('session-1'), { session: newerDetail })
+        queryClient.setQueryData<SessionsResponse>(queryKeys.sessions, {
+            sessions: [makeSummary({
+                id: 'session-1',
+                updatedAt: 10_000,
+                lastAssistantMessageAt: 10_000,
+                lastAssistantMessageVersion: 10
+            })]
+        })
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'session-updated',
+                sessionId: 'session-1',
+                namespace: 'default',
+                data: olderRecord
+            })
+        })
+
+        const summary = queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)?.sessions[0]
+        expect(summary?.lastAssistantMessageAt).toBe(10_000)
+        expect(summary?.lastAssistantMessageVersion).toBe(10)
+
+        act(() => { vi.advanceTimersByTime(20) })
+        expect(queryClient.getQueryState(queryKeys.sessions)?.isInvalidated).toBe(true)
+        unmount()
+    })
+})
+
 describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Major)', () => {
     it('allows non-versioned patches without a detail cache', () => {
         expect(canApplyVersionedSummaryPatch({}, false)).toBe(true)
@@ -300,6 +414,7 @@ describe('isRenderIrrelevantPatch', () => {
         ['active', { active: false }],
         ['thinking', { thinking: true }],
         ['updatedAt', { updatedAt: 9_999 }],
+        ['lastAssistantMessageAt', { lastAssistantMessageAt: 9_999 }],
         ['backgroundTaskCount', { backgroundTaskCount: 3 }],
         ['model', { model: 'opus' }],
         ['modelReasoningEffort', { modelReasoningEffort: 'high' }],
@@ -429,6 +544,41 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
             thinking: false,
             activeAt: 11_000,
             copilotAgentMode: 'interactive'
+        })).toBeNull()
+    })
+
+    it('does not rewind the reply clock from a stale detail patch', () => {
+        const next = applySessionDetailPatch({
+            ...session,
+            seq: 5,
+            lastAssistantMessageAt: 2_000
+        }, { activeAt: 2_000, lastAssistantMessageAt: 1_000 })
+
+        expect(next?.lastAssistantMessageAt).toBe(2_000)
+    })
+
+    it('accepts versioned backward/null reply-clock updates and rejects older versions', () => {
+        const corrected = applySessionDetailPatch({
+            ...session,
+            seq: 5,
+            lastAssistantMessageAt: 2_000
+        }, {
+            lastAssistantMessageAt: 1_000,
+            lastAssistantMessageVersion: 6
+        })
+        expect(corrected?.lastAssistantMessageAt).toBe(1_000)
+        expect(corrected?.seq).toBe(6)
+
+        const cleared = corrected && applySessionDetailPatch(corrected, {
+            lastAssistantMessageAt: null,
+            lastAssistantMessageVersion: 7
+        })
+        expect(cleared?.lastAssistantMessageAt).toBeNull()
+        expect(cleared?.seq).toBe(7)
+
+        expect(cleared && applySessionDetailPatch(cleared, {
+            lastAssistantMessageAt: 2_000,
+            lastAssistantMessageVersion: 6
         })).toBeNull()
     })
 })

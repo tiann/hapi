@@ -1,10 +1,12 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
 import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
+import { mergeSessionMetadata } from '../../../store/sessions'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
@@ -81,6 +83,48 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
         else delete next[key]
     }
     return next
+}
+
+const LIFECYCLE_METADATA_KEYS = new Set([
+    'lifecycleState',
+    'lifecycleStateSince',
+    'archivedBy',
+    'archiveReason'
+])
+
+function getMetadataRecord(metadata: unknown): Record<string, unknown> {
+    return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? metadata as Record<string, unknown>
+        : {}
+}
+
+function metadataHasChanged(
+    current: unknown,
+    next: unknown,
+    predicate: (key: string) => boolean
+): boolean {
+    const currentRecord = getMetadataRecord(current)
+    const nextRecord = getMetadataRecord(next)
+    const keys = new Set([...Object.keys(currentRecord), ...Object.keys(nextRecord)])
+    for (const key of keys) {
+        if (!predicate(key)) continue
+        const currentHasKey = Object.prototype.hasOwnProperty.call(currentRecord, key)
+        const nextHasKey = Object.prototype.hasOwnProperty.call(nextRecord, key)
+        if (currentHasKey !== nextHasKey) return true
+        if (currentHasKey && !isDeepStrictEqual(currentRecord[key], nextRecord[key])) return true
+    }
+    return false
+}
+
+/** Lifecycle-only transitions are bookkeeping, not user-facing activity. */
+function shouldTouchUpdatedAtForMetadataChange(current: unknown, next: unknown): boolean {
+    const nextRecord = getMetadataRecord(next)
+    const containsLifecycleMetadata = Object.keys(nextRecord).some((key) => LIFECYCLE_METADATA_KEYS.has(key))
+    if (!containsLifecycleMetadata) return true
+
+    // Preserve the old activity semantics when a lifecycle stamp is bundled
+    // with a real metadata change such as a rename or path update.
+    return metadataHasChanged(current, next, (key) => !LIFECYCLE_METADATA_KEYS.has(key))
 }
 
 export type SessionHandlersDeps = {
@@ -246,11 +290,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const nextMetadata = preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata)
+        // The store applies the same merge before persisting. Compare the
+        // merged value so a sparse archive payload does not look like it
+        // changed ordinary identity/resume fields that the Hub carries over.
+        const mergedMetadata = mergeSessionMetadata(sessionAccess.value.metadata, nextMetadata)
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+            nextMetadata,
             expectedVersion,
-            sessionAccess.value.namespace
+            sessionAccess.value.namespace,
+            { touchUpdatedAt: shouldTouchUpdatedAtForMetadataChange(sessionAccess.value.metadata, mergedMetadata) }
         )
         if (result.result === 'success') {
             cb({ result: 'success', version: result.version, metadata: result.value })

@@ -21,12 +21,31 @@ struct LastSeenStoreTests {
         #expect(store.lastSeenAt("unknown") == 0)
     }
 
-    @Test func unreadComparesUpdatedAtAgainstTheWatermark() {
-        let row = storeSummary("s1", updatedAt: 1_000)
+    @Test func unreadComparesLatestReplyAgainstTheWatermark() {
+        let row = storeSummary("s1", updatedAt: 9_000, lastAssistantMessageAt: 1_000)
         #expect(LastSeenStore.isUnread(row, lastSeenAt: 0))
         #expect(LastSeenStore.isUnread(row, lastSeenAt: 999))
         #expect(!LastSeenStore.isUnread(row, lastSeenAt: 1_000))
         #expect(!LastSeenStore.isUnread(row, lastSeenAt: 2_000))
+    }
+
+    @Test func archiveOnlyUpdatedAtChangesDoNotMakeASeenReplyUnread() {
+        let archived = storeSummary("archived", updatedAt: 9_000, lastAssistantMessageAt: 5_000)
+        #expect(!LastSeenStore.isUnread(archived, lastSeenAt: 5_000))
+    }
+
+    @Test func baselineWaitsForALegacyReplyClockBeforeSeeding() {
+        var pending = storeSummary("legacy", updatedAt: 9_000, lastAssistantMessageAt: 5_000)
+        pending.assistantReplyClockBackfilled = false
+        let store = LastSeenStore()
+
+        store.initializeBaseline(scopeKey: "hub-a", sessions: [pending])
+        #expect(store.lastSeenAt("legacy") == 0)
+        #expect(!LastSeenStore.isUnread(pending, lastSeenAt: store.lastSeenAt("legacy")))
+
+        pending.assistantReplyClockBackfilled = true
+        store.initializeBaseline(scopeKey: "hub-a", sessions: [pending])
+        #expect(store.lastSeenAt("legacy") == 5_000)
     }
 
     @Test func baselineSeedsMissingWatermarksOnlyOncePerScope() {
@@ -37,7 +56,7 @@ struct LastSeenStoreTests {
             sessions: [storeSummary("seen", updatedAt: 900), storeSummary("fresh", updatedAt: 700)]
         )
         // Existing watermarks are never overwritten; missing ones seed at
-        // updatedAt.
+        // reply/activity clock.
         #expect(store.lastSeenAt("seen") == 50)
         #expect(store.lastSeenAt("fresh") == 700)
         #expect(!LastSeenStore.isUnread(storeSummary("fresh", updatedAt: 700), lastSeenAt: store.lastSeenAt("fresh")))

@@ -75,7 +75,7 @@ import app.hapi.protocol.wire.TodoProgress
  *   top; a header + divider make the boundary visible);
  * - per row: flavor brand icon + title, spinner while a turn is in flight,
  *   summary line, `project · worktree · machine` meta line (machine only
- *   when it disambiguates), relative `updatedAt`, pending-request badge,
+ *   when it disambiguates), relative latest-reply/activity time, pending-request badge,
  *   todo-progress chip, unread dot; disconnected rows are dimmed —
  *   connected is the resting state, so no presence dot (web parity);
  * - long-press → actions sheet: pin (none/project/global), rename (dialog),
@@ -336,7 +336,7 @@ private fun SessionRow(
             }
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = localizedRelativeAge(summary.updatedAt),
+                text = localizedRelativeAge(summary.lastAssistantMessageAt ?: summary.updatedAt),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

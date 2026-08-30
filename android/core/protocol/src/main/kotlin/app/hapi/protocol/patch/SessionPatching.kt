@@ -38,8 +38,17 @@ fun isNewerVersionedPatch(patchVersion: Long, currentVersion: Long): Boolean {
  * cached session from an explicit `null` the way TS `undefined !== null` does;
  * the divergence is unobservable through [applySessionDetailPatch] because
  * that field is never assigned anyway.
+ * The reply-clock version is a gate/watermark rather than a rendered field:
+ * a version newer than [Session.seq] is relevant even when the timestamp is
+ * unchanged, while an older version cannot overwrite a newer timestamp or
+ * clear it.
  */
 fun isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch): Boolean {
+    if (patch.lastAssistantMessageVersion != null
+        && patch.lastAssistantMessageVersion > session.seq
+    ) {
+        return false
+    }
     patch.active?.let { if (session.active != it) return false }
     patch.thinking?.let { if (session.thinking != it) return false }
     if (patch.activeTurnStartedAt is OptionalField.Present
@@ -49,6 +58,11 @@ fun isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch): Boole
     }
     patch.activeAt?.let { if (abs(it - session.activeAt) >= 60_000) return false }
     patch.updatedAt?.let { if (session.updatedAt != it) return false }
+    if (patch.lastAssistantMessageAt is OptionalField.Present
+        && session.lastAssistantMessageAt != patch.lastAssistantMessageAt.value
+    ) {
+        return false
+    }
     if (patch.metadata != null) return false
     if (patch.agentState != null) return false
     if (patch.todos != null) return false
@@ -82,6 +96,10 @@ fun isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch): Boole
  *   last-write-wins when present; a present-`null` `model` /
  *   `modelReasoningEffort` / `effort` / `serviceTier` clears the field;
  * - `updatedAt` is max-monotonic (a rejected stale replay must not rewind it);
+ * - a versioned reply-clock update applies when its version is at least the
+ *   cached `Session.seq`; the version advances `seq`, and its timestamp is
+ *   authoritative (including backward moves and explicit null); unversioned
+ *   timestamps remain max-monotonic and do not clear a known value;
  * - versioned sub-patches apply only when strictly newer than the cached
  *   watermark (`todosUpdatedAt` / `teamStateUpdatedAt` treat absent as 0);
  * - **`activeTurnStartedAt` and `scratchlistUpdatedAt` are deliberately NOT
@@ -110,6 +128,25 @@ fun applySessionDetailPatch(session: Session, patch: SessionPatch): Session? {
     patch.updatedAt?.let {
         val nextUpdatedAt = max(next.updatedAt, it)
         if (next.updatedAt != nextUpdatedAt) set(next.copy(updatedAt = nextUpdatedAt))
+    }
+    val currentReplyVersion = session.seq
+    val replyVersion = patch.lastAssistantMessageVersion
+    val canApplyReplyClock = replyVersion == null || replyVersion >= currentReplyVersion
+    if (replyVersion != null && replyVersion > currentReplyVersion) {
+        set(next.copy(seq = replyVersion))
+    }
+    if (patch.lastAssistantMessageAt is OptionalField.Present && canApplyReplyClock) {
+        val replyAt = patch.lastAssistantMessageAt.value
+        if (replyVersion != null) {
+            if (next.lastAssistantMessageAt != replyAt) {
+                set(next.copy(lastAssistantMessageAt = replyAt))
+            }
+        } else if (replyAt != null) {
+            val nextReplyAt = max(next.lastAssistantMessageAt ?: Long.MIN_VALUE, replyAt)
+            if (next.lastAssistantMessageAt != nextReplyAt) {
+                set(next.copy(lastAssistantMessageAt = nextReplyAt))
+            }
+        }
     }
     val model = patch.model
     if (model is OptionalField.Present && next.model != model.value) {

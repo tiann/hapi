@@ -13,7 +13,7 @@ import SwiftUI
 ///   top; a header makes the boundary visible);
 /// - per row: flavor brand icon + title, spinner while a turn is in flight,
 ///   summary line, `project · worktree · machine` meta line (machine only
-///   when it disambiguates), relative `updatedAt`, pending-request badge,
+///   when it disambiguates), relative latest-reply/activity time, pending-request badge,
 ///   todo-progress chip, unread dot; disconnected rows are dimmed —
 ///   connected is the resting state, so no presence dot (web parity);
 /// - long-press context menu → pin (none/project/global) + archive with
@@ -254,7 +254,10 @@ struct SessionRowView: View {
                     .frame(width: 8, height: 8)
                     .accessibilityLabel("Unread")
             }
-            Text(formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
+            Text(formatRelativeAge(
+                now: now,
+                thenEpochMs: row.summary.lastAssistantMessageAt ?? row.summary.updatedAt
+            ))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
