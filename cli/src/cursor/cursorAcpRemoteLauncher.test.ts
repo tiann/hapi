@@ -1166,6 +1166,13 @@ describe('cursorAcpRemoteLauncher', () => {
             type: 'error',
             message: expect.stringContaining('not retried')
         }));
+        // Assistant text footer stamps lastNotify → estate Blocked chrome (#1724).
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
+        }));
     });
 
     it('removes the Cursor MCP overlay even when backend.disconnect rejects', async () => {
