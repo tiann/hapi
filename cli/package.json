@@ -1,15 +1,15 @@
 {
-  "name": "@twsxtd/hapi",
-  "version": "0.29.0",
-  "description": "App for agentic coding - access coding agent anywhere",
-  "author": "Kirill Dubovitskiy & weishu",
+  "name": "@youngfine/hapi",
+  "version": "0.29.0-youngfine.1",
+  "description": "Unofficial personal fork of HAPI with custom remote-agent workflow improvements",
+  "author": "youngfine (fork maintainer); Kirill Dubovitskiy & weishu (upstream)",
   "license": "AGPL-3.0-only",
   "type": "module",
-  "homepage": "https://github.com/tiann/hapi",
-  "bugs": "https://github.com/tiann/hapi/issues",
+  "homepage": "https://github.com/Conanxy/hapi",
+  "bugs": "https://github.com/Conanxy/hapi/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tiann/hapi.git",
+    "url": "git+https://github.com/Conanxy/hapi.git",
     "directory": "cli"
   },
   "bin": {
@@ -25,12 +25,8 @@
       "default": "./src/runtime/embeddedAssets.stub.ts"
     }
   },
-  "optionalDependencies": {
-    "@twsxtd/hapi-darwin-arm64": "0.29.0",
-    "@twsxtd/hapi-darwin-x64": "0.29.0",
-    "@twsxtd/hapi-linux-arm64": "0.29.0",
-    "@twsxtd/hapi-linux-x64": "0.29.0",
-    "@twsxtd/hapi-win32-x64": "0.29.0"
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','hapi.cjs'),0o755)}catch(e){}\"",

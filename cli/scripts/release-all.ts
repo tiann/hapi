@@ -3,11 +3,10 @@
  * Unified release script that handles the complete release flow:
  * 1. Bump version
  * 2. Build binaries (with embedded web assets)
- * 3. Publish platform packages first (so lockfile can resolve them)
+ * 3. Publish platform packages first (the wrapper pins them exactly)
  * 4. Verify all platform packages are live on npm
  * 5. Publish main package
- * 6. bun install --lockfile-only --os=* --cpu=* (to lock all platform packages)
- * 7. Git commit + tag + push
+ * 6. Git commit + tag + push
  */
 
 import { execSync } from 'node:child_process';
@@ -18,6 +17,9 @@ const scriptDir = import.meta.dir;
 const projectRoot = join(scriptDir, '..');
 const repoRoot = join(projectRoot, '..');
 const buildInfoPath = join(repoRoot, 'shared', 'src', 'buildInfo.ts');
+const NPM_SCOPE = '@youngfine';
+const MAIN_PACKAGE = `${NPM_SCOPE}/hapi`;
+const VERSION_PATTERN = /^\d+\.\d+\.\d+-youngfine\.\d+$/;
 
 // 解析参数
 const args = process.argv.slice(2);
@@ -32,7 +34,11 @@ if (!version) {
     console.error('  --dry-run      Preview the release process');
     console.error('  --publish-npm  Only publish to npm, skip git operations');
     console.error('  --skip-build   Skip building binaries (use existing)');
-    console.error('Example: bun run scripts/release-all.ts 0.2.0');
+    console.error('Example: bun run scripts/release-all.ts 0.29.0-youngfine.1');
+    process.exit(1);
+}
+if (!VERSION_PATTERN.test(version)) {
+    console.error(`Version must match <upstream>-youngfine.<revision>, for example 0.29.0-youngfine.1`);
     process.exit(1);
 }
 
@@ -43,18 +49,37 @@ function run(cmd: string, cwd = projectRoot): void {
     }
 }
 
+function packageVersionExists(name: string, expectedVersion: string): boolean {
+    try {
+        const published = execSync(
+            `npm view ${name}@${expectedVersion} version`,
+            { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+        ).trim();
+        return published === expectedVersion;
+    } catch {
+        return false;
+    }
+}
+
+function publishPackage(name: string, cwd: string, provenanceFlag: string): void {
+    if (!dryRun && packageVersionExists(name, version!)) {
+        console.log(`   ✓ ${name}@${version} already published; skipping`);
+        return;
+    }
+    run(`npm publish --access public${provenanceFlag}${dryRun ? ' --dry-run' : ''}`, cwd);
+}
+
 function updateBuildInfoVersion(nextVersion: string): void {
     const content = readFileSync(buildInfoPath, 'utf-8');
+    if (!/export const APP_VERSION = ['"][^'"]+['"]/.test(content)) {
+        throw new Error(`Could not find APP_VERSION in ${buildInfoPath}`);
+    }
     const updated = content.replace(
         /export const APP_VERSION = ['"][^'"]+['"]/,
         `export const APP_VERSION = '${nextVersion}'`
     );
 
-    if (updated === content) {
-        throw new Error(`Could not update APP_VERSION in ${buildInfoPath}`);
-    }
-
-    if (!dryRun) {
+    if (!dryRun && updated !== content) {
         writeFileSync(buildInfoPath, updated);
     }
 }
@@ -63,12 +88,12 @@ async function waitForPlatformPackages(platforms: string[], expectedVersion: str
     const timeoutMs = 10 * 60 * 1000;
     const intervalMs = 15_000;
     const deadline = Date.now() + timeoutMs;
-    const pending = new Set(platforms.map(platform => `@twsxtd/hapi-${platform}`));
+    const pending = new Set(platforms.map(platform => `${NPM_SCOPE}/hapi-${platform}`));
 
     while (pending.size > 0) {
         for (const name of [...pending]) {
             try {
-                const published = execSync(`npm view ${name} version`, { encoding: 'utf-8' }).trim();
+                const published = execSync(`npm view ${name}@${expectedVersion} version`, { encoding: 'utf-8' }).trim();
                 if (published === expectedVersion) {
                     console.log(`   ✓ ${name}@${expectedVersion} is live on npm`);
                     pending.delete(name);
@@ -90,23 +115,6 @@ async function waitForPlatformPackages(platforms: string[], expectedVersion: str
     }
 }
 
-async function runWithTimeoutRetry(cmd: string, cwd = projectRoot): Promise<void> {
-    const timeoutCmd = `timeout 60s ${cmd}`;
-    while (true) {
-        console.log(`\n$ ${timeoutCmd}`);
-        if (dryRun) {
-            return;
-        }
-        try {
-            execSync(timeoutCmd, { cwd, stdio: 'inherit' });
-            return;
-        } catch {
-            console.warn(`⚠️ ${cmd} failed or timed out. Retrying in 60s...`);
-            await new Promise(resolve => setTimeout(resolve, 60_000));
-        }
-    }
-}
-
 async function main(): Promise<void> {
     const flags = [dryRun && 'dry-run', publishNpm && 'publish-npm', skipBuild && 'skip-build'].filter(Boolean);
     console.log(`\n🚀 Starting release v${version}${flags.length ? ` (${flags.join(', ')})` : ''}\n`);
@@ -114,21 +122,30 @@ async function main(): Promise<void> {
     // Pre-check: Ensure we're on main branch
     console.log('🔍 Pre-checks...');
     const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8', cwd: repoRoot }).trim();
-    if (currentBranch !== 'main') {
+    const githubMain = process.env.GITHUB_ACTIONS === 'true'
+        && process.env.GITHUB_REF_NAME === 'main';
+    if (currentBranch !== 'main' && !dryRun && !githubMain) {
         console.error(`❌ Release must be run from main branch (current: ${currentBranch})`);
         process.exit(1);
     }
-    console.log('   ✓ On main branch');
+    console.log(currentBranch === 'main' || githubMain
+        ? '   ✓ On main branch'
+        : `   ✓ Dry-run allowed from ${currentBranch}`);
 
     // Pre-check: Ensure npm is logged in (skip in dry-run mode)
-    if (!dryRun) {
+    if (!dryRun && process.env.GITHUB_ACTIONS !== 'true') {
         try {
             const npmUser = execSync('npm whoami', { encoding: 'utf-8' }).trim();
+            if (npmUser !== 'youngfine') {
+                throw new Error(`Expected npm user youngfine, got ${npmUser}`);
+            }
             console.log(`   ✓ Logged in to npm as: ${npmUser}`);
         } catch {
-            console.error('❌ Not logged in to npm. Run `npm login` first.');
+            console.error(`❌ Not logged in to npm as youngfine. Run \`npm login\` first.`);
             process.exit(1);
         }
+    } else if (process.env.GITHUB_ACTIONS === 'true') {
+        console.log('   ✓ GitHub Actions trusted publishing mode');
     } else {
         console.log('   ✓ Skipping npm login check (dry-run)');
     }
@@ -137,6 +154,14 @@ async function main(): Promise<void> {
     console.log('📦 Step 1: Updating package.json version...');
     const pkgPath = join(projectRoot, 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    if (pkg.name !== MAIN_PACKAGE) {
+        throw new Error(`Expected package name ${MAIN_PACKAGE}, got ${pkg.name}`);
+    }
+    if (publishNpm && pkg.version !== version) {
+        throw new Error(
+            `--publish-npm requires ${projectRoot}/package.json to already contain version ${version}`
+        );
+    }
     const oldVersion = pkg.version;
     pkg.version = version;
     if (!dryRun) {
@@ -157,9 +182,10 @@ async function main(): Promise<void> {
     console.log('\n📤 Step 3: Publishing platform packages...');
     run('bun run prepare-npm-packages');
     const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
+    const provenanceFlag = process.env.GITHUB_ACTIONS === 'true' ? ' --provenance' : '';
     for (const platform of platforms) {
         const npmDir = join(projectRoot, 'npm', platform);
-        run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`, npmDir);
+        publishPackage(`${NPM_SCOPE}/hapi-${platform}`, npmDir, provenanceFlag);
     }
 
     // Step 4: Verify all platform packages are live on npm before publishing the main package.
@@ -175,7 +201,7 @@ async function main(): Promise<void> {
     // Step 5: Publish main package
     console.log('\n📤 Step 5: Publishing main package...');
     const mainNpmDir = join(projectRoot, 'npm', 'main');
-    run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`, mainNpmDir);
+    publishPackage(MAIN_PACKAGE, mainNpmDir, provenanceFlag);
 
     // --publish-npm 模式到此结束
     if (publishNpm) {
@@ -183,12 +209,8 @@ async function main(): Promise<void> {
         return;
     }
 
-    // Step 6: bun install to get complete lockfile
-    console.log('\n📥 Step 6: Updating lockfile for all platform packages...');
-
-    await runWithTimeoutRetry('bun install --lockfile-only --os=* --cpu=*', repoRoot);
-    // Step 7: Git commit + tag + push
-    console.log('\n📝 Step 7: Creating git commit and tag...');
+    // Step 6: Git commit + tag + push
+    console.log('\n📝 Step 6: Creating git commit and tag...');
     run(`git add .`, repoRoot);
     run(`git commit -m "Release version ${version}"`, repoRoot);
     run(`git tag v${version}`, repoRoot);

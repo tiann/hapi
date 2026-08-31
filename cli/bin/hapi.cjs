@@ -5,7 +5,9 @@ const path = require('path');
 
 const platform = process.platform;
 const arch = process.arch;
-const RELEASE_URL = 'https://github.com/tiann/hapi/releases';
+const NPM_SCOPE = '@youngfine';
+const MAIN_PACKAGE = `${NPM_SCOPE}/hapi`;
+const RELEASE_URL = 'https://github.com/Conanxy/hapi/releases';
 const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
 const SUPPORTED_PLATFORMS = [
     {
@@ -39,7 +41,7 @@ function isSupportedPlatform(platformName = platform, archName = arch) {
 }
 
 function getBinaryPath(platformName = platform, archName = arch) {
-    const pkgName = `@twsxtd/hapi-${platformName}-${archName}`;
+    const pkgName = `${NPM_SCOPE}/hapi-${platformName}-${archName}`;
 
     try {
         // Try to find the platform-specific package
@@ -96,14 +98,14 @@ function reportUnsupportedPlatform(platformName = platform, archName = arch, log
 }
 
 function reportMissingPlatformPackage(platformName = platform, archName = arch, log = console.error) {
-    const platformPackage = `@twsxtd/hapi-${platformName}-${archName}`;
+    const platformPackage = `${NPM_SCOPE}/hapi-${platformName}-${archName}`;
     log(`Missing platform package: ${platformPackage}`);
     log('');
     log(`Detected platform ${platformName}-${archName} is supported, but the platform binary package was not installed.`);
     log('This may happen when using a registry mirror that has not synced all optionalDependencies.');
     log('');
     log('Try reinstalling with the official npm registry:');
-    log(`  npm install -g @twsxtd/hapi --registry=${OFFICIAL_NPM_REGISTRY}`);
+    log(`  npm install -g ${MAIN_PACKAGE} --registry=${OFFICIAL_NPM_REGISTRY}`);
     log('');
     log('Or download the binary manually from:');
     log(`  ${RELEASE_URL}`);

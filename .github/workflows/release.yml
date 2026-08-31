@@ -14,7 +14,14 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.0
             - run: bun install --frozen-lockfile
+            - name: Verify tag matches package version
+              run: |
+                  VERSION="${GITHUB_REF#refs/tags/v}"
+                  PACKAGE_VERSION="$(node -p "require('./cli/package.json').version")"
+                  test "$VERSION" = "$PACKAGE_VERSION"
             - run: bun run build:single-exe:all
             - name: Package release artifacts
               run: |
@@ -44,10 +51,3 @@ jobs:
                       --title "Release ${GITHUB_REF#refs/tags/}" \
                       --generate-notes \
                       cli/release-artifacts/*
-            - name: Update Homebrew formula
-              continue-on-error: true
-              env:
-                  GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-              run: |
-                  VERSION="${GITHUB_REF#refs/tags/v}"
-                  cd cli && bun run update-homebrew-formula --version "$VERSION" --push

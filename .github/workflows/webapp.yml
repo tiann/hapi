@@ -1,12 +1,6 @@
 name: Deploy Web App to GitHub Pages
 
 on:
-    push:
-        branches:
-            - main
-        paths:
-            - 'web/**'
-            - '.github/workflows/webapp.yml'
     workflow_dispatch:
 
 permissions:
@@ -29,8 +23,6 @@ jobs:
               env:
                   VITE_REQUIRE_HUB_URL: '1'
               run: bun run --cwd web build
-            - name: Add CNAME for custom domain
-              run: echo "app.hapi.run" > web/dist/CNAME
             - name: Setup Pages
               uses: actions/configure-pages@v5
             - name: Upload artifact

@@ -1,0 +1,45 @@
+name: Publish Personal npm Packages
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Version already committed in cli/package.json
+                required: true
+                type: string
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    publish:
+        if: github.ref_name == 'main'
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '24'
+                  registry-url: 'https://registry.npmjs.org'
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.0
+            - run: npm install --global npm@11.6.2
+            - run: bun install --frozen-lockfile
+            - name: Verify version
+              env:
+                  RELEASE_VERSION: ${{ inputs.version }}
+              run: |
+                  PACKAGE_VERSION="$(node -p "require('./cli/package.json').version")"
+                  BUILD_VERSION="$(sed -n "s/export const APP_VERSION = '\\([^']*\\)'/\\1/p" shared/src/buildInfo.ts)"
+                  test "$RELEASE_VERSION" = "$PACKAGE_VERSION"
+                  test "$RELEASE_VERSION" = "$BUILD_VERSION"
+            - run: bun typecheck
+            - run: bun run test
+            - run: bun run build:single-exe:all
+            - name: Publish platform and wrapper packages
+              env:
+                  RELEASE_VERSION: ${{ inputs.version }}
+              run: |
+                  bun run --cwd cli release-all "$RELEASE_VERSION" --publish-npm --skip-build

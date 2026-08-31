@@ -1,0 +1,72 @@
+name: Sync Upstream
+
+on:
+    schedule:
+        - cron: '17 * * * *'
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    pull-requests: write
+
+concurrency:
+    group: sync-upstream-main
+    cancel-in-progress: false
+
+jobs:
+    sync:
+        if: github.repository == 'Conanxy/hapi'
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: main
+                  fetch-depth: 0
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.0
+            - name: Merge upstream main
+              id: merge
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git remote add upstream https://github.com/tiann/hapi.git
+                  git fetch upstream main
+
+                  if git merge-base --is-ancestor upstream/main HEAD; then
+                      echo "changed=false" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  git switch -C sync/upstream-main
+                  git merge --no-edit upstream/main
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+            - name: Verify merged source
+              if: steps.merge.outputs.changed == 'true'
+              run: |
+                  bun install --frozen-lockfile
+                  bun typecheck
+                  bun run test
+            - name: Push sync branch
+              if: steps.merge.outputs.changed == 'true'
+              run: git push --force origin sync/upstream-main
+            - name: Create or update Draft PR
+              if: steps.merge.outputs.changed == 'true'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  if gh pr list \
+                      --base main \
+                      --head sync/upstream-main \
+                      --state open \
+                      --json number \
+                      --jq 'length > 0' | grep -q true; then
+                      exit 0
+                  fi
+
+                  gh pr create \
+                      --base main \
+                      --head sync/upstream-main \
+                      --title "chore: sync upstream main" \
+                      --body "Automated merge of tiann/hapi main. Tests passed in the sync workflow; review conflicts and behavior before merging." \
+                      --draft

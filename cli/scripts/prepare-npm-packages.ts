@@ -6,17 +6,19 @@
  * 2. Generates the main npm package (wrapper)
  * 3. Generates package.json for each platform package
  * 4. Copies binaries from dist-exe to npm package directories
- * 5. Updates optionalDependencies versions in main package.json
+ * 5. Adds exact platform optionalDependencies to the generated wrapper package
  *
- * Run after `bun run build:exe:all`
+ * Run after `bun run build:single-exe:all`
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
+const repoRoot = join(projectRoot, '..');
+const NPM_SCOPE = '@youngfine';
 
 // Platform configurations
 // Maps npm platform name to build target info
@@ -86,7 +88,7 @@ function generatePlatformPackageJson(
     mainPkg: MainPackageJson
 ): object {
     return {
-        name: `@twsxtd/hapi-${platform.name}`,
+        name: `${NPM_SCOPE}/hapi-${platform.name}`,
         version: mainPkg.version,
         description: `hapi binary for ${platform.os} ${platform.cpu}`,
         os: [platform.os],
@@ -96,7 +98,10 @@ function generatePlatformPackageJson(
         },
         files: [`bin/${platform.binName}`],
         license: mainPkg.license ?? 'MIT',
-        repository: mainPkg.repository
+        repository: mainPkg.repository,
+        publishConfig: {
+            access: 'public'
+        }
     };
 }
 
@@ -104,7 +109,7 @@ function buildOptionalDependencies(version: string): Record<string, string> {
     const optionalDependencies: Record<string, string> = {};
 
     for (const platform of PLATFORMS) {
-        optionalDependencies[`@twsxtd/hapi-${platform.name}`] = version;
+        optionalDependencies[`${NPM_SCOPE}/hapi-${platform.name}`] = version;
     }
 
     return optionalDependencies;
@@ -125,8 +130,11 @@ function generateMainPackageJson(
         bugs: mainPkg.bugs,
         repository: mainPkg.repository,
         bin: mainPkg.bin ?? { hapi: 'bin/hapi.cjs' },
-        files: ['bin/hapi.cjs', 'NOTICE'],
-        optionalDependencies
+        files: ['bin/hapi.cjs', 'NOTICE', 'README.md'],
+        optionalDependencies,
+        publishConfig: {
+            access: 'public'
+        }
     };
 }
 
@@ -149,6 +157,10 @@ function prepareMainPackage(
     const srcNotice = join(projectRoot, 'NOTICE');
     const destNotice = join(mainDir, 'NOTICE');
     copyFileSync(srcNotice, destNotice);
+
+    const srcReadme = join(repoRoot, 'README.md');
+    const destReadme = join(mainDir, 'README.md');
+    copyFileSync(srcReadme, destReadme);
 
     const pkgJson = generateMainPackageJson(mainPkg, optionalDependencies);
     const pkgJsonPath = join(mainDir, 'package.json');
@@ -188,30 +200,11 @@ async function preparePlatform(
     console.log(`Copied: ${srcBin} -> ${destBin}`);
 }
 
-function updateMainPackageOptionalDeps(version: string): void {
-    const pkgPath = join(projectRoot, 'package.json');
-    const content = readFileSync(pkgPath, 'utf-8');
-    const pkg = JSON.parse(content);
-
-    // Update optionalDependencies versions
-    if (!pkg.optionalDependencies) {
-        pkg.optionalDependencies = {};
-    }
-
-    pkg.optionalDependencies = buildOptionalDependencies(version);
-
-    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-    console.log(`Updated optionalDependencies in package.json to version ${version}`);
-}
-
 async function main(): Promise<void> {
     console.log('Preparing npm platform packages...\n');
 
     const mainPkg = await readMainPackageJson();
     console.log(`Version: ${mainPkg.version}\n`);
-
-    // Update optionalDependencies in main package.json
-    updateMainPackageOptionalDeps(mainPkg.version);
 
     const distExeDir = join(projectRoot, 'dist-exe');
     const npmDir = join(projectRoot, 'npm');

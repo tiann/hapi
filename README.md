@@ -14,8 +14,7 @@
 ## 使用
 
 ```bash
-git clone https://github.com/Conanxy/hapi.git
-cd hapi
-bun install
-bun run build:single-exe
+npm install -g @youngfine/hapi --registry=https://registry.npmjs.org
+hapi hub
+hapi runner start --workspace-root ~/git-repository
 ```
