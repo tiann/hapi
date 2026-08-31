@@ -82,6 +82,37 @@ export function getComposerEscapeAction(input: {
 }
 
 /**
+ * Enter key after IME / Shift+Enter / suggestions are handled.
+ *
+ * Expanded composer always uses newline semantics (long-form drafting) even when
+ * Settings → Chat → Enter behavior is `send`. Collapsed honors that setting.
+ * Ctrl/Cmd+Enter sends in newline (or expanded) mode; plain modifiers otherwise
+ * are ignored (and the caller still preventDefaults in send mode).
+ */
+export type ComposerEnterKeyAction = 'send' | 'newline' | 'ignore'
+
+export function resolveComposerEnterKeyAction(input: {
+    composerEnterBehavior: 'send' | 'newline'
+    isExpanded: boolean
+    ctrlOrMeta: boolean
+    altKey: boolean
+}): ComposerEnterKeyAction {
+    // The current main branch no longer has the old Pi Alt+Enter queue
+    // gesture (#1480). Preserve its existing send-mode modifier behavior
+    // rather than turning that shortcut into an unintended line break.
+    if (input.isExpanded && input.altKey && input.composerEnterBehavior === 'send') {
+        return 'ignore'
+    }
+    const insertNewline = input.isExpanded || input.composerEnterBehavior === 'newline'
+    if (insertNewline) {
+        if (input.ctrlOrMeta && !input.altKey) return 'send'
+        return 'newline'
+    }
+    if (!input.ctrlOrMeta && !input.altKey) return 'send'
+    return 'ignore'
+}
+
+/**
  * One rejected send.  `id` is bumped per failure so two failures with the
  * same `text` still trigger a fresh restore (the dedupe key is the id, not
  * the text).
@@ -1264,18 +1295,20 @@ export function HappyComposer(props: {
             return
         }
 
-        // Only plain Enter (no modifiers) sends; other modifier combos are ignored
+        // Collapsed: honor Settings Enter behavior. Expanded: always newline
+        // (plain Enter inserts; Ctrl/Cmd+Enter or the send button submits).
         if (key === 'Enter') {
-            if (composerEnterBehavior === 'newline') {
-                if ((e.ctrlKey || e.metaKey) && !e.altKey && canSend) {
-                    e.preventDefault()
-                    flushAndSend()
-                    setShowContinueHint(false)
-                }
+            const action = resolveComposerEnterKeyAction({
+                composerEnterBehavior,
+                isExpanded,
+                ctrlOrMeta: e.ctrlKey || e.metaKey,
+                altKey: e.altKey,
+            })
+            if (action === 'newline') {
                 return
             }
             e.preventDefault()
-            if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
+            if (action === 'send' && canSend) {
                 flushAndSend()
                 setShowContinueHint(false)
             }
