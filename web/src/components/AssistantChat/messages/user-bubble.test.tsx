@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { I18nProvider } from '@/lib/i18n-context'
 
 vi.mock('@/components/LazyRainbowText', () => ({
     LazyRainbowText: ({ text, inline, preserveSingleLineBreaks }: { text: string; inline?: boolean; preserveSingleLineBreaks?: boolean }) => (
@@ -57,6 +58,24 @@ describe('UserBubbleContent', () => {
 
     it('preserves original directive casing in chip labels', () => {
         expect(formatDirectiveLabel('$DeEp-INTERVIEW')).toBe('DeEp INTERVIEW')
+    })
+
+    it('collapses user messages after 15 lines and expands on demand', () => {
+        const text = Array.from({ length: 16 }, (_, index) => `line ${index + 1}`).join('\n')
+        render(
+            <I18nProvider>
+                <UserBubbleContent text={text} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText(/line 15/)).toBeInTheDocument()
+        expect(screen.queryByText(/line 16/)).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Expand full message' }))
+        expect(screen.getByText(/line 16/)).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Collapse message' }))
+        expect(screen.queryByText(/line 16/)).not.toBeInTheDocument()
     })
 
     it('uses the shadowless queued bubble styling', () => {

@@ -104,7 +104,13 @@ export function HappyUserMessage() {
             <div className={getUserBubbleClassName(status)}>
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
-                        {hasText ? <UserBubbleContent text={text} /> : null}
+                        {hasText ? (
+                            <UserBubbleContent
+                                text={text}
+                                expandLabel={t('message.user.expand')}
+                                collapseLabel={t('message.user.collapse')}
+                            />
+                        ) : null}
                         {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
                     </div>
                     {showStatus && (

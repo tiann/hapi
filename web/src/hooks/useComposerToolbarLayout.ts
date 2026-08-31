@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 export const COMPOSER_TOOLBAR_ITEM_IDS = [
     'attachment',
+    'textContext',
     'settings',
     'expand',
     'model',

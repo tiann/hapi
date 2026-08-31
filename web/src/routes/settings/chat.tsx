@@ -14,6 +14,7 @@ import {
 } from '@/hooks/useChatSurfaceColors'
 import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { ComposerToolbarLayoutControl } from '@/components/settings/ComposerToolbarLayoutControl'
+import { TextContextThresholdSettings } from '@/components/settings/TextContextThresholdSettings'
 
 function ChatSurfaceColorControl(props: {
     label: string
@@ -63,6 +64,7 @@ export default function SettingsChatPage() {
                     onChange={setComposerEnterBehavior}
                 />
                 <ComposerToolbarLayoutControl />
+                <TextContextThresholdSettings />
             </SettingsSection>
             <SettingsSection title={t('settings.chat.tools')}>
                 <SettingsChoiceGroup

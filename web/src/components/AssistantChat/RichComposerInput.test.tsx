@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { flushSync } from 'react-dom'
-import { useRef, useState } from 'react'
+import { useRef, useState, type ClipboardEvent as ReactClipboardEvent } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     fitSingleLineFontSize,
@@ -307,5 +307,56 @@ describe('RichComposerInput controlled synchronization', () => {
 
         expect(onKeyDown).not.toHaveBeenCalled()
         expect(serializeComposerSegments(segmentsFromEditor(editor))).toBe('hello')
+    })
+})
+
+describe('RichComposerInput paste delegation', () => {
+    it('lets the parent intercept plain text before the editor inserts it', () => {
+        const onPaste = vi.fn((event: ReactClipboardEvent<HTMLDivElement>) => {
+            event.preventDefault()
+        })
+        render(
+            <RichComposerInput
+                value=""
+                onValueChange={() => {}}
+                onMirrorChange={() => {}}
+                onPaste={onPaste}
+            />
+        )
+
+        const editor = screen.getByTestId('rich-composer-input')
+        fireEvent.paste(editor, {
+            clipboardData: {
+                files: [],
+                getData: () => 'x'.repeat(1_500),
+            },
+        })
+
+        expect(onPaste).toHaveBeenCalledOnce()
+        expect(serializeComposerSegments(segmentsFromEditor(editor))).toBe('')
+    })
+
+    it('delegates non-image clipboard files to the attachment handler', () => {
+        const onPaste = vi.fn((event: ReactClipboardEvent<HTMLDivElement>) => {
+            event.preventDefault()
+        })
+        const file = new File(['document'], 'context.md', { type: 'text/markdown' })
+        render(
+            <RichComposerInput
+                value=""
+                onValueChange={() => {}}
+                onMirrorChange={() => {}}
+                onPaste={onPaste}
+            />
+        )
+
+        fireEvent.paste(screen.getByTestId('rich-composer-input'), {
+            clipboardData: {
+                files: [file],
+                getData: () => '',
+            },
+        })
+
+        expect(onPaste).toHaveBeenCalledOnce()
     })
 })

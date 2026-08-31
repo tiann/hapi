@@ -56,6 +56,14 @@ See `src/router.tsx` for route definitions.
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
+- Separate file and text-context actions in the composer. Text context is
+  converted to a UTF-8 `.txt` attachment so the message body can remain a
+  concise request.
+- Pasted text becomes a context attachment at 3,000 characters or more than
+  60 lines by default; both thresholds are configurable in Chat settings.
+  Sent user messages longer than 15 lines are collapsed by default.
+- Clipboard files use the same generic attachment path as file picks and
+  drag-and-drop.
 - Permission mode toggle (default/acceptEdits/auto/bypassPermissions/plan).
 - Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
 - Session abort and mode switch controls.

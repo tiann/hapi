@@ -260,4 +260,42 @@ describe('ComposerButtons responsive toolbar', () => {
         expect(getComposerToolbarJustifyContent('left')).toBe('flex-start')
         expect(getComposerToolbarJustifyContent('split')).toBe('flex-start')
     })
+
+    it('keeps file attachment and text context as separate actions', () => {
+        const onTextContext = vi.fn()
+        const noop = () => {}
+        render(
+            <RuntimeProviders>
+                <ComposerButtons
+                    canSend
+                    controlsDisabled={false}
+                    showSettingsButton={false}
+                    onSettingsToggle={noop}
+                    expanded={false}
+                    onExpandedToggle={noop}
+                    showTerminalButton={false}
+                    terminalDisabled={false}
+                    terminalLabel="Terminal"
+                    onTerminal={noop}
+                    showAbortButton={false}
+                    abortDisabled={false}
+                    isAborting={false}
+                    onAbort={noop}
+                    showSwitchButton={false}
+                    switchDisabled={false}
+                    isSwitching={false}
+                    onSwitch={noop}
+                    voiceEnabled={false}
+                    voiceStatus="disconnected"
+                    onVoiceToggle={noop}
+                    onSend={noop}
+                    onTextContext={onTextContext}
+                />
+            </RuntimeProviders>,
+        )
+
+        expect(screen.getByRole('button', { name: 'Attach file' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Add text context' }))
+        expect(onTextContext).toHaveBeenCalledOnce()
+    })
 })

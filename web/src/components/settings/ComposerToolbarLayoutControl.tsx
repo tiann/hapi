@@ -14,6 +14,7 @@ import { SettingsChoiceGroup } from './SettingsPrimitives'
 
 const ITEM_LABEL_KEYS: Record<ComposerToolbarItemId, string> = {
     attachment: 'settings.chat.composerToolbar.item.attachment',
+    textContext: 'settings.chat.composerToolbar.item.textContext',
     settings: 'settings.chat.composerToolbar.item.settings',
     expand: 'settings.chat.composerToolbar.item.expand',
     model: 'settings.chat.composerToolbar.item.model',

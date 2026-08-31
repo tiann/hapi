@@ -47,6 +47,7 @@ import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import { TextContextDialog } from '@/components/AssistantChat/TextContextDialog'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { SortableComposerAttachments } from '@/components/AssistantChat/SortableComposerAttachments'
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
@@ -64,6 +65,12 @@ import { useDictation } from '@/hooks/useDictation'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import {
+    createTextContextFile,
+    insertTextAtSelection,
+    shouldConvertPastedTextToContext,
+} from '@/lib/textContext'
+import { useTextContextPreferences } from '@/hooks/useTextContextPreferences'
 
 export interface TextInputState {
     text: string
@@ -457,6 +464,10 @@ export function HappyComposer(props: {
     const displayedServiceTier = getDisplayedCodexServiceTier(serviceTier)
 
     const api = useAui()
+    const {
+        characterThreshold: textContextCharacterThreshold,
+        lineThreshold: textContextLineThreshold,
+    } = useTextContextPreferences()
     const { composerEnterBehavior } = useComposerEnterBehavior()
     const composerText = useAuiState((s) => s.composer.text)
     const attachments = useAuiState((s) => s.composer.attachments)
@@ -515,6 +526,7 @@ export function HappyComposer(props: {
     }, [dictationActive, voiceInput.voiceMode, voiceStatus, onVoiceToggle, dictation.status, dictation.toggle])
 
     const [isParkingScratchlist, setIsParkingScratchlist] = useState(false)
+    const [textContextOpen, setTextContextOpen] = useState(false)
     const parkInFlightRef = useRef(false)
     const onScratchlistParkingChange = props.onScratchlistParkingChange
 
@@ -542,6 +554,8 @@ export function HappyComposer(props: {
         text: '',
         selection: { start: 0, end: 0 }
     })
+    const inputStateRef = useRef(inputState)
+    inputStateRef.current = inputState
     const [isExpanded, setIsExpanded] = useState(false)
     const lastSendAcceptanceRef = useRef(props.sendAcceptance)
     const pendingSendAttemptIdRef = useRef<string | null>(null)
@@ -1394,30 +1408,76 @@ export function HappyComposer(props: {
 
     const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files || [])
-        const imageFiles = files.filter(file => file.type.startsWith('image/'))
+        if (files.length > 0) {
+            // The backend rejects scheduledAt + attachments (per-CLI upload dir is
+            // torn down before a mature emit could read the files). The button-based
+            // attachment flow is disabled by ComposerButtons.hasAttachments, but the
+            // paste path bypasses that.
+            if (pendingSchedule != null) {
+                e.preventDefault()
+                return
+            }
 
-        if (imageFiles.length === 0) return
-
-        // The backend rejects scheduledAt + attachments (per-CLI upload dir is
-        // torn down before a mature emit could read the files). The button-based
-        // attachment flow is disabled by ComposerButtons.hasAttachments, but the
-        // paste path bypasses that — guard here so a pasted image while a
-        // schedule is active cannot produce a submission the hub will reject.
-        if (pendingSchedule != null) {
             e.preventDefault()
+            try {
+                for (const file of files) {
+                    await api.composer().addAttachment(file)
+                }
+            } catch (error) {
+                console.error('Error adding pasted file:', error)
+            }
+            return
+        }
+
+        const pastedText = e.clipboardData?.getData('text/plain') ?? ''
+        if (
+            pendingSchedule != null
+            || props.scratchlistMode
+            || !shouldConvertPastedTextToContext(pastedText, {
+                characterThreshold: textContextCharacterThreshold,
+                lineThreshold: textContextLineThreshold,
+            })
+        ) {
             return
         }
 
         e.preventDefault()
-
         try {
-            for (const file of imageFiles) {
-                await api.composer().addAttachment(file)
-            }
+            await api.composer().addAttachment(createTextContextFile(pastedText))
         } catch (error) {
-            console.error('Error adding pasted image:', error)
+            console.error('Error adding pasted text context:', error)
+            const restored = insertTextAtSelection(
+                inputStateRef.current.text,
+                inputStateRef.current.selection,
+                pastedText,
+            )
+            handleUserEdit()
+            api.composer().setText(restored.text)
+            setInputState(restored)
+            setTimeout(() => {
+                if (richMentionsEnabled) {
+                    richInputRef.current?.focus()
+                    return
+                }
+                const input = textareaRef.current
+                if (!input) return
+                input.setSelectionRange(restored.selection.start, restored.selection.end)
+                input.focus()
+            }, 0)
         }
-    }, [api, pendingSchedule])
+    }, [
+        api,
+        handleUserEdit,
+        pendingSchedule,
+        props.scratchlistMode,
+        richMentionsEnabled,
+        textContextCharacterThreshold,
+        textContextLineThreshold,
+    ])
+
+    const handleAddTextContext = useCallback(async (text: string, name: string) => {
+        await api.composer().addAttachment(createTextContextFile(text, name))
+    }, [api])
 
     // Opens (or closes) the settings sheet. `section` anchors the sheet to a
     // single section ('model' / 'effort'); the gear passes nothing = full sheet.
@@ -2367,11 +2427,22 @@ export function HappyComposer(props: {
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}
+                            onTextContext={() => setTextContextOpen(true)}
+                            textContextDisabled={
+                                controlsDisabled
+                                || pendingSchedule != null
+                                || props.scratchlistMode === true
+                            }
                         />
                     </div>
                 </ComposerPrimitive.Root>
             </div>
         </div>
+        <TextContextDialog
+            open={textContextOpen}
+            onOpenChange={setTextContextOpen}
+            onAdd={handleAddTextContext}
+        />
         </ComposerParkingContext.Provider>
     )
 }

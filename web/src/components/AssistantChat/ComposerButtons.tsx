@@ -187,6 +187,27 @@ function AttachmentIcon() {
     )
 }
 
+function TextContextIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+            <path d="M14 2v6h6" />
+            <path d="M12 12v6" />
+            <path d="M9 15h6" />
+        </svg>
+    )
+}
+
 function ComposerExpandIcon(props: { expanded: boolean }) {
     return props.expanded ? (
         <svg
@@ -334,6 +355,7 @@ export function ComposerToolbarItemPreview(props: { item: ComposerToolbarItemId;
     const icon = (() => {
         switch (props.item) {
             case 'attachment': return <AttachmentIcon />
+            case 'textContext': return <TextContextIcon />
             case 'settings': return <SettingsIcon />
             case 'expand': return <ComposerExpandIcon expanded={false} />
             case 'terminal': return <TerminalIcon />
@@ -629,6 +651,8 @@ export function ComposerButtons(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    onTextContext?: () => void
+    textContextDisabled?: boolean
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
     // The composer must surface that constraint at UI time so the user never
@@ -692,6 +716,21 @@ export function ComposerButtons(props: {
                 >
                     <AttachmentIcon />
                 </ComposerPrimitive.AddAttachment>
+                </ToolbarItemSlot>
+
+                <ToolbarItemSlot item="textContext">
+                {props.onTextContext ? (
+                    <button
+                        type="button"
+                        aria-label={t('composer.textContext.button')}
+                        title={t('composer.textContext.button')}
+                        disabled={props.textContextDisabled ?? (props.controlsDisabled || hasSchedule)}
+                        onClick={props.onTextContext}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <TextContextIcon />
+                    </button>
+                ) : null}
                 </ToolbarItemSlot>
 
                 <ToolbarItemSlot item="settings">

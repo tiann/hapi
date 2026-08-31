@@ -10,6 +10,7 @@ describe('DEFAULT_COMPOSER_TOOLBAR_LAYOUT', () => {
     it('keeps abort last in the default order', () => {
         expect(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left).toEqual([
             'attachment',
+            'textContext',
             'settings',
             'expand',
             'model',
@@ -81,12 +82,12 @@ describe('normalizeComposerToolbarLayout', () => {
             'model',
             'effort',
             'terminal',
+            'textContext',
             'expand',
             'abort',
-            'switch',
             'attachment',
+            'switch',
             'voiceMic',
-            'scratchlist',
         ])
         expect(result.left).toHaveLength(layout.left.length)
     })

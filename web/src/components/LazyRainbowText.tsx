@@ -147,6 +147,7 @@ export function LazyRainbowText(props: { text: string; inline?: boolean; preserv
     const content = (
         <MarkdownRenderer
             content={text}
+            smooth={false}
             className={props.inline ? 'inline' : undefined}
             preserveSingleLineBreaks={props.preserveSingleLineBreaks}
             components={
