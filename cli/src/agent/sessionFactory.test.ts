@@ -389,7 +389,7 @@ describe('buildMachineMetadata runner-only capabilities', () => {
     it('advertises capabilities and supervisedRestart only for asRunner', () => {
         process.env.HAPI_RUNNER_SUPERVISED = '1'
         const metadata = buildMachineMetadata({ asRunner: true, startedCliMtimeMs: 42 })
-        expect(metadata.capabilities).toEqual(expect.arrayContaining(['cursor-chat-store-status', 'stop-runner']))
+        expect(metadata.capabilities).toEqual(expect.arrayContaining(['cursor-chat-store-status', 'stop-runner', 'workspace-file-access']))
         expect(metadata.startedCliMtimeMs).toBe(42)
         expect(metadata.installedCliMtimeMs).toBe(1_700_000_000_000)
         expect(metadata.supervisedRestart).toBe(true)

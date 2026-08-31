@@ -742,6 +742,49 @@ export type PathExistsResponse = {
 
 export type MachinePathsExistsResponse = PathExistsResponse
 
+/** Requests served by the long-lived runner for archived-session file access. */
+export type WorkspaceReadFileRequest = {
+    cwd: string
+    path: string
+}
+
+export type WorkspaceListDirectoryRequest = {
+    cwd: string
+    path?: string
+}
+
+export type WorkspaceStatFilesRequest = {
+    cwd: string
+    paths: string[]
+}
+
+export type WorkspaceGitStatusRequest = {
+    cwd: string
+    timeout?: number
+}
+
+export type WorkspaceGitDiffNumstatRequest = {
+    cwd: string
+    staged?: boolean
+    timeout?: number
+}
+
+export type WorkspaceGitDiffFileRequest = {
+    cwd: string
+    filePath: string
+    staged?: boolean
+    timeout?: number
+}
+
+export type WorkspaceRipgrepRequest = {
+    cwd: string
+    args: string[]
+    fileSearch?: {
+        query: string
+        limit: number
+    }
+}
+
 export type CodexModelSummary = {
     id: string
     displayName: string

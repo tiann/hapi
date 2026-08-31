@@ -70,6 +70,8 @@ Both `start` and `start-sync` accept repeatable `--workspace-root <path>` (or `-
 
 - The web `/browse` page surfaces scoped file trees rooted at those paths.
 - The runner refuses `list-directory` and `spawn-session` requests for paths outside the configured roots.
+- The runner can serve read-only file, Git, and ripgrep requests for inactive
+  sessions through its machine-scoped `workspace-file-access` capability.
 - `~` and `~/foo` are expanded.
 
 Omitting the flag keeps manual session spawning unrestricted and leaves the

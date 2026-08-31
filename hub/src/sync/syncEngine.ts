@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { isKnownFlavor, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -271,6 +271,57 @@ export class SyncEngine {
             if (hostMatch) return hostMatch
         }
         return null
+    }
+
+    /**
+     * Inactive sessions no longer have a session-scoped CLI socket, but their
+     * recorded machine may still have the long-lived runner online. In that
+     * case the runner can serve the current workspace without reviving the
+     * agent or taking a snapshot. Keep this gate strict: only an inactive row
+     * with matching machine metadata and the new read-only capability may use
+     * the fallback.
+     */
+    private getInactiveWorkspaceFallback(sessionId: string): { machineId: string; cwd: string } | null {
+        const session = this.sessionCache.getSession(sessionId)
+        const machineId = session?.metadata?.machineId
+        const cwd = session?.metadata?.path
+        if (!session || session.active || !machineId || !cwd) {
+            return null
+        }
+
+        const machine = this.resolveOnlineMachineForSession(session, session.namespace, { strictMachineId: true })
+        if (!machine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.WorkspaceFileAccess)) {
+            return null
+        }
+
+        return { machineId: machine.id, cwd }
+    }
+
+    private async withInactiveWorkspaceFallback<T>(
+        sessionId: string,
+        originalError: unknown,
+        action: (fallback: { machineId: string; cwd: string }) => Promise<T>
+    ): Promise<T> {
+        if (!(originalError instanceof RpcTargetMissingError)) {
+            throw originalError
+        }
+
+        const fallback = this.getInactiveWorkspaceFallback(sessionId)
+        if (!fallback) {
+            throw originalError
+        }
+
+        try {
+            return await action(fallback)
+        } catch (fallbackError) {
+            // An older runner may be online but not implement this capability
+            // yet. Preserve the original session-RPC diagnostic in that case;
+            // real fallback errors still propagate normally.
+            if (fallbackError instanceof RpcTargetMissingError) {
+                throw originalError
+            }
+            throw fallbackError
+        }
     }
 
     async getCursorChatStoreStatus(sessionId: string, namespace: string): Promise<CursorChatStoreStatusResult> {
@@ -3852,19 +3903,49 @@ export class SyncEngine {
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitStatus(sessionId, cwd)
+        try {
+            return await this.rpcGateway.getGitStatus(sessionId, cwd)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitStatus(machineId, { cwd: fallbackCwd })
+            )
+        }
     }
 
     async getGitDiffNumstat(sessionId: string, options: { cwd?: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
+        try {
+            return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitDiffNumstat(machineId, {
+                    ...options,
+                    cwd: fallbackCwd,
+                })
+            )
+        }
     }
 
     async getGitDiffFile(sessionId: string, options: { cwd?: string; filePath: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitDiffFile(sessionId, options)
+        try {
+            return await this.rpcGateway.getGitDiffFile(sessionId, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitDiffFile(machineId, {
+                    ...options,
+                    cwd: fallbackCwd,
+                })
+            )
+        }
     }
 
     async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
-        return await this.rpcGateway.readSessionFile(sessionId, path)
+        try {
+            return await this.rpcGateway.readSessionFile(sessionId, path)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.readWorkspaceFile(machineId, { cwd, path })
+            )
+        }
     }
 
     async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
@@ -3872,11 +3953,23 @@ export class SyncEngine {
     }
 
     async listDirectory(sessionId: string, path: string): Promise<RpcListDirectoryResponse> {
-        return await this.rpcGateway.listDirectory(sessionId, path)
+        try {
+            return await this.rpcGateway.listDirectory(sessionId, path)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.listWorkspaceDirectory(machineId, { cwd, path })
+            )
+        }
     }
 
     async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
-        return await this.rpcGateway.statFiles(sessionId, paths)
+        try {
+            return await this.rpcGateway.statFiles(sessionId, paths)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.statWorkspaceFiles(machineId, { cwd, paths })
+            )
+        }
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
@@ -3888,7 +3981,13 @@ export class SyncEngine {
     }
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+        try {
+            return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.runWorkspaceRipgrep(machineId, { args, cwd: fallbackCwd, fileSearch })
+            )
+        }
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {

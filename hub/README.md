@@ -133,6 +133,11 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/sessions/:id/file` - Read file content.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
 
+For inactive sessions, including archived sessions, these read-only file and Git operations fall back to
+the matching online Runner when it advertises `workspace-file-access`. The
+Runner reads the current workspace under its configured roots; HAPI does not
+copy or snapshot files during archive.
+
 ### Events (`src/web/routes/events.ts`)
 
 - `GET /api/events` - SSE stream for live updates.

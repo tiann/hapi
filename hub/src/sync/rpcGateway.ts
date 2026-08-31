@@ -34,7 +34,14 @@ import type {
     PiModelsResponse,
     SlashCommandsResponse,
     StatFilesResponse,
-    UploadFileResponse
+    UploadFileResponse,
+    WorkspaceReadFileRequest,
+    WorkspaceListDirectoryRequest,
+    WorkspaceStatFilesRequest,
+    WorkspaceGitStatusRequest,
+    WorkspaceGitDiffNumstatRequest,
+    WorkspaceGitDiffFileRequest,
+    WorkspaceRipgrepRequest
 } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -355,8 +362,36 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.DeleteUpload, { sessionId, path }) as RpcDeleteUploadResponse
     }
 
+    async readWorkspaceFile(machineId: string, request: WorkspaceReadFileRequest): Promise<RpcReadFileResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceReadFile, request) as RpcReadFileResponse
+    }
+
+    async listWorkspaceDirectory(machineId: string, request: WorkspaceListDirectoryRequest): Promise<RpcListDirectoryResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceListDirectory, request) as RpcListDirectoryResponse
+    }
+
+    async statWorkspaceFiles(machineId: string, request: WorkspaceStatFilesRequest): Promise<RpcStatFilesResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceStatFiles, request) as RpcStatFilesResponse
+    }
+
+    async getWorkspaceGitStatus(machineId: string, request: WorkspaceGitStatusRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceGitStatus, request) as RpcCommandResponse
+    }
+
+    async getWorkspaceGitDiffNumstat(machineId: string, request: WorkspaceGitDiffNumstatRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceGitDiffNumstat, request) as RpcCommandResponse
+    }
+
+    async getWorkspaceGitDiffFile(machineId: string, request: WorkspaceGitDiffFileRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceGitDiffFile, request) as RpcCommandResponse
+    }
+
     async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.Ripgrep, { args, cwd, fileSearch }) as RpcCommandResponse
+    }
+
+    async runWorkspaceRipgrep(machineId: string, request: WorkspaceRipgrepRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceRipgrep, request) as RpcCommandResponse
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
