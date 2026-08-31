@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '../src/index.css'
 import type { ApiClient } from '../src/api/client'
 import type { DecryptedMessage, MessagesResponse, Session } from '../src/types/api'
@@ -285,8 +286,16 @@ function FixtureThread() {
     )
 }
 
+const queryClient = new QueryClient({
+    defaultOptions: {
+        queries: { retry: false }
+    }
+})
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
-    <I18nProvider>
-        <FixtureThread />
-    </I18nProvider>
+    <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+            <FixtureThread />
+        </I18nProvider>
+    </QueryClientProvider>
 )
