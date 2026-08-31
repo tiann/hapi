@@ -1362,7 +1362,10 @@ describe('SessionList collapse behavior', () => {
 
         expect(screen.getByTitle('In progress')).toBeInTheDocument()
         expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
-        expect(screen.getByText(/pending \(1\)/)).toBeInTheDocument()
+        // #1717: a session awaiting an operator prompt is a blocker, so it sits
+        // in the Blocked section rather than the In-progress pending bucket.
+        expect(screen.getByTestId('blocked-section')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Pending task/ })).toBeInTheDocument()
         expect(screen.queryByText(/Idle \(/)).toBeNull()
         // Quiet active stays under its project directory, not an Idle pin bucket.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
@@ -1784,7 +1787,11 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            // #1717: `thinking` keeps these out of the Blocked section (a working
+            // agent is not blocked) so they stay group-resident while remaining
+            // required by the preview cap.
             active: index > 0,
+            thinking: index > 0,
             pendingRequestsCount: index > 0 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',
@@ -1815,7 +1822,9 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 8 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            // See above: thinking keeps a queued-request row in its group.
             active: index < 5,
+            thinking: index < 5,
             pendingRequestsCount: index < 5 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',

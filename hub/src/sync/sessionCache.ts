@@ -525,7 +525,7 @@ export class SessionCache {
             return
         }
         if (this.store.sessions.setSessionLastNotify(sessionId, signal, session.namespace)) {
-            this.refreshSession(sessionId)
+            this.applyLastNotifyToCache(session, signal)
         }
     }
 
@@ -539,8 +539,29 @@ export class SessionCache {
         // no SQL: this runs on every thinking transition.
         if (!session?.lastNotify) return
         if (this.store.sessions.clearSessionLastNotify(sessionId, session.namespace)) {
-            this.refreshSession(sessionId)
+            this.applyLastNotifyToCache(session, null)
         }
+    }
+
+    /**
+     * Update `lastNotify` in place and broadcast the whole Session.
+     *
+     * Deliberately NOT `refreshSession`: that rebuilds from SQLite and would
+     * discard in-memory runtime state, most damagingly the `updatedAt` bump
+     * `markMessageQueued` / `applySessionPatch` just made in memory — the clear
+     * runs on exactly those paths, so refreshing there broadcast a stale clock
+     * and moved the session back down the list.
+     *
+     * A full Session rather than a SessionPatch because `SessionPatch` has no
+     * `lastNotify` field; the web's full-session branch rebuilds the summary
+     * via `toSessionSummary`, which does carry it.
+     */
+    private applyLastNotifyToCache(
+        session: Session,
+        signal: { status: string; at: number; note: string | null } | null
+    ): void {
+        session.lastNotify = signal
+        this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
     }
 
     markSessionActive(sessionId: string, time: number = Date.now()): void {

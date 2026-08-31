@@ -4,6 +4,7 @@ import { BLOCKED_NOTIFY_STALE_MS } from '@hapi/protocol'
 import {
     classifySessionAttention,
     getSessionBlockedState,
+    sessionBlockedIsError,
     sessionIsUnread,
 } from './sessionAttention'
 import { followSessionTail } from './sessionLastSeen'
@@ -280,6 +281,39 @@ describe('getSessionBlockedState', () => {
         expect(state).toEqual({ reason: 'permission', at: now - 1000, note: 'Bash', stale: false })
     })
 
+    it('treats a Cursor plan approval as a question, not a bare permission', () => {
+        // CursorCreatePlan is Cursor's ExitPlanMode; it was misclassified as a
+        // plain permission before, so every Cursor plan review read as "approve
+        // a tool" rather than "answer me".
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['input'],
+                pendingRequests: [{ id: 'r1', kind: 'input', tool: 'CursorCreatePlan', since: now }]
+            }),
+            { now }
+        )
+        expect(state?.reason).toBe('question')
+    })
+
+    it('ranks an unanswered question above a permission on the same session', () => {
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                pendingRequestsCount: 2,
+                pendingRequestKinds: ['permission', 'input'],
+                pendingRequests: [
+                    { id: 'r1', kind: 'permission', tool: 'Bash', since: now - 5000 },
+                    { id: 'r2', kind: 'input', tool: 'AskUserQuestion', since: now }
+                ]
+            }),
+            { now }
+        )
+        expect(state?.reason).toBe('question')
+        expect(state?.note).toBe('AskUserQuestion')
+    })
+
     it('treats a pending input request as blocked', () => {
         const state = getSessionBlockedState(
             makeSummary({
@@ -290,7 +324,7 @@ describe('getSessionBlockedState', () => {
             }),
             { now }
         )
-        expect(state?.reason).toBe('input')
+        expect(state?.reason).toBe('question')
     })
 
     it('still counts a pending request whose kinds did not survive the summary', () => {
@@ -317,13 +351,57 @@ describe('getSessionBlockedState', () => {
         expect(state?.note).toBe('Edit')
     })
 
-    it('ignores non-blocking statuses', () => {
-        for (const status of ['done', 'in_progress', 'needs_review', 'failed']) {
+    it('flags every status class the operator calls a blocker', () => {
+        const cases: Array<[string, string]> = [
+            ['blocked', 'blocked'],
+            ['stalled', 'stalled'],
+            ['needs_decision', 'needs_decision'],
+            ['needs_review', 'needs_review'],
+            ['failed', 'failed'],
+            ['error', 'failed'],
+            // Non-contract but the most-emitted waiting status in the wild.
+            ['pending', 'blocked'],
+            ['waiting', 'blocked'],
+            ['BLOCKED', 'blocked'],
+        ]
+        for (const [status, reason] of cases) {
+            const state = getSessionBlockedState(
+                makeSummary({ id: 'a', lastNotify: { status, at: now, note: null } }),
+                { now }
+            )
+            expect([status, state?.reason]).toEqual([status, reason])
+        }
+    })
+
+    it('leaves finished and running agents alone', () => {
+        // `completed` is non-contract but observed; it must clear, not alarm.
+        for (const status of ['done', 'completed', 'complete', 'in_progress', 'running', 'success']) {
             expect(getSessionBlockedState(
                 makeSummary({ id: 'a', lastNotify: { status, at: now, note: null } }),
                 { now }
             )).toBeNull()
         }
+    })
+
+    it('does not alarm on an unrecognised status', () => {
+        // Default must be quiet — crying wolf costs more than a missed synonym.
+        expect(getSessionBlockedState(
+            makeSummary({ id: 'a', lastNotify: { status: 'refactoring', at: now, note: null } }),
+            { now }
+        )).toBeNull()
+    })
+
+    it('marks only errors as error-styled', () => {
+        const failed = getSessionBlockedState(
+            makeSummary({ id: 'a', lastNotify: { status: 'failed', at: now, note: null } }),
+            { now }
+        )!
+        const blocked = getSessionBlockedState(
+            makeSummary({ id: 'b', lastNotify: { status: 'blocked', at: now, note: null } }),
+            { now }
+        )!
+        expect(sessionBlockedIsError(failed)).toBe(true)
+        expect(sessionBlockedIsError(blocked)).toBe(false)
     })
 
     it('suppresses blocked chrome while the agent is thinking again', () => {

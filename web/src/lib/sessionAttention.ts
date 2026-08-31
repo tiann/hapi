@@ -1,7 +1,6 @@
 import {
     BLOCKED_NOTIFY_STALE_MS,
-    isBlockedNotifyStatus,
-    normalizeNotifyStatus
+    getNotifyBlockReason
 } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { hasUnseenContent } from '@/lib/sessionLastSeen'
@@ -90,7 +89,14 @@ export function getSessionAttentionLabelKey(attention: SessionAttention): string
  * per-row dot (and stays as it is), while this drives the row rail, the chip,
  * and the header counter. A row can carry both without either having to win.
  */
-export type SessionBlockedReason = 'blocked' | 'stalled' | 'permission' | 'input'
+export type SessionBlockedReason =
+    | 'blocked'
+    | 'stalled'
+    | 'needs_decision'
+    | 'needs_review'
+    | 'failed'
+    | 'permission'
+    | 'question'
 
 export type SessionBlockedState = {
     reason: SessionBlockedReason
@@ -104,8 +110,10 @@ export type SessionBlockedState = {
 
 function getPendingBlockedReason(summary: SessionSummary): SessionBlockedReason | null {
     const kinds = Array.isArray(summary.pendingRequestKinds) ? summary.pendingRequestKinds : []
+    // A question outranks a permission: "answer me" is a heavier ask than
+    // "approve this tool", and it is the one the operator asked to be loud.
+    if (kinds.includes('input')) return 'question'
     if (kinds.includes('permission')) return 'permission'
-    if (kinds.includes('input')) return 'input'
     // `pendingRequestsCount` is the authoritative total; a count without kinds
     // still parks the agent on a prompt, so do not drop it from the list.
     return (summary.pendingRequestsCount ?? 0) > 0 ? 'permission' : null
@@ -127,7 +135,8 @@ export function getSessionBlockedState(
     // clears `lastNotify` hub-side.
     const pendingReason = getPendingBlockedReason(summary)
     if (pendingReason !== null) {
-        const oldest = summary.pendingRequests?.find(request => request.kind === pendingReason)
+        const wantedKind = pendingReason === 'question' ? 'input' : 'permission'
+        const oldest = summary.pendingRequests?.find(request => request.kind === wantedKind)
             ?? summary.pendingRequests?.[0]
         const at = oldest?.since ?? summary.updatedAt
         return {
@@ -139,12 +148,13 @@ export function getSessionBlockedState(
     }
 
     const notify = summary.lastNotify
-    if (!notify || !isBlockedNotifyStatus(notify.status)) {
+    const notifyReason = notify ? getNotifyBlockReason(notify.status) : null
+    if (!notify || notifyReason === null) {
         return null
     }
 
     return {
-        reason: normalizeNotifyStatus(notify.status) === 'stalled' ? 'stalled' : 'blocked',
+        reason: notifyReason,
         at: notify.at,
         note: notify.note ?? null,
         stale: options.now - notify.at > BLOCKED_NOTIFY_STALE_MS
@@ -158,10 +168,21 @@ export function sessionIsBlocked(summary: SessionSummary, options: { now: number
 const BLOCKED_LABEL_KEY: Record<SessionBlockedReason, string> = {
     blocked: 'sessions.blockedChip.blocked',
     stalled: 'sessions.blockedChip.stalled',
+    needs_decision: 'sessions.blockedChip.decision',
+    needs_review: 'sessions.blockedChip.review',
+    failed: 'sessions.blockedChip.failed',
     permission: 'sessions.blockedChip.permission',
-    input: 'sessions.blockedChip.input'
+    question: 'sessions.blockedChip.question'
 }
 
 export function getSessionBlockedLabelKey(state: SessionBlockedState): string {
     return BLOCKED_LABEL_KEY[state.reason]
+}
+
+/**
+ * Errors read as errors. Everything else that needs a human is amber — one
+ * colour for "you are the blocker", red reserved for "it broke".
+ */
+export function sessionBlockedIsError(state: SessionBlockedState): boolean {
+    return state.reason === 'failed'
 }

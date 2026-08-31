@@ -982,3 +982,20 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
     transition: none;
   }
 }
+
+/* #1717 — blocked-arrival alert on the session-list counter.
+   Medium cadence on purpose: fast enough to catch peripheral vision, slow
+   enough not to read as an error state or trigger motion sensitivity. */
+@keyframes blocked-alert {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(1.08); }
+}
+
+.animate-blocked-alert {
+    animation: blocked-alert 0.9s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Keep the colour change, drop the movement. */
+    .animate-blocked-alert { animation: none; }
+}

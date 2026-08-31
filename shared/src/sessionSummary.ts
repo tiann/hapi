@@ -26,6 +26,13 @@ export function buildForkSessionSummary(
 
 export type PendingRequestKind = 'permission' | 'input'
 
+/**
+ * Requests that are a *question for the operator* rather than a permission to
+ * act. `CursorCreatePlan` is Cursor's plan-approval prompt — the direct
+ * analogue of Claude's `ExitPlanMode`, and the second most common request tool
+ * in the wild (16 occurrences on a 683-session fleet) — so omitting it left
+ * every Cursor plan review misclassified as a plain permission.
+ */
 const INPUT_REQUEST_TOOLS = new Set([
     'AskUserQuestion',
     'ask_user_question',
@@ -33,7 +40,9 @@ const INPUT_REQUEST_TOOLS = new Set([
     'cursor_ask_question',
     'ExitPlanMode',
     'exit_plan_mode',
-    'request_user_input'
+    'request_user_input',
+    'CursorCreatePlan',
+    'cursor_create_plan'
 ])
 
 /** Cap on `pendingRequests` carried in `SessionSummary`. The list is meant for

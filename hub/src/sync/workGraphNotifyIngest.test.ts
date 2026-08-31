@@ -9,6 +9,7 @@ import {
     buildWorkAdFromNotify,
     extractSessionNotifySignal,
     ingestNotifySummaryFromMessage,
+    isOperatorReplyMessage,
     mapNotifyStatusToWorkAdStatus
 } from './workGraphNotifyIngest'
 
@@ -1246,5 +1247,23 @@ describe('extractSessionNotifySignal (#1717 blocked session-list chrome)', () =>
             assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"summary":"no status here"}'),
             ts
         )).toBeNull()
+    })
+})
+
+describe('isOperatorReplyMessage (#1717 backfill boundary)', () => {
+    it('recognises a real operator prompt', () => {
+        expect(isOperatorReplyMessage(userInbound('unblocked: use the staging key'))).toBe(true)
+    })
+
+    it('ignores the Claude transcript echo of that same prompt', () => {
+        // The echo replays the prompt as a second role=user row; treating it as
+        // a fresh reply would move the backfill boundary past a real footer.
+        expect(isOperatorReplyMessage(
+            userInbound('unblocked: use the staging key', 'cli', { isTranscriptEcho: true })
+        )).toBe(false)
+    })
+
+    it('ignores agent output', () => {
+        expect(isOperatorReplyMessage(assistantOutput('working on it'))).toBe(false)
     })
 })

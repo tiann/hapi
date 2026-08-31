@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { extractSessionNotifySignal, ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { extractSessionNotifySignal, ingestNotifySummaryFromMessage, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -452,6 +452,10 @@ export class SyncEngine {
             // self-report, and older ones have already been superseded.
             for (let index = messages.length - 1; index >= 0; index -= 1) {
                 const message = messages[index]!
+                // Stop at the newest operator prompt. Anything older was already
+                // answered, and clear-on-new-turn deliberately erased it — a
+                // restart must not resurrect a blocker the operator dealt with.
+                if (isOperatorReplyMessage(message.content)) break
                 const signal = extractSessionNotifySignal(message.content, message.createdAt)
                 if (!signal) continue
                 this.sessionCache.setSessionLastNotify(session.id, signal)
