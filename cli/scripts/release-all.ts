@@ -19,6 +19,7 @@ const repoRoot = join(projectRoot, '..');
 const buildInfoPath = join(repoRoot, 'shared', 'src', 'buildInfo.ts');
 const NPM_SCOPE = '@youngfine';
 const MAIN_PACKAGE = `${NPM_SCOPE}/hapi`;
+const NPM_DIST_TAG = 'latest';
 const VERSION_PATTERN = /^\d+\.\d+\.\d+-youngfine\.\d+$/;
 
 // 解析参数
@@ -31,7 +32,7 @@ const skipBuild = args.includes('--skip-build');    // 跳过构建（二进制�
 if (!version) {
     console.error('Usage: bun run scripts/release-all.ts <version> [options]');
     console.error('Options:');
-    console.error('  --dry-run      Preview the release process');
+    console.error('  --dry-run      Validate package preparation and npm publishing without uploading');
     console.error('  --publish-npm  Only publish to npm, skip git operations');
     console.error('  --skip-build   Skip building binaries (use existing)');
     console.error('Example: bun run scripts/release-all.ts 0.29.0-youngfine.1');
@@ -42,9 +43,13 @@ if (!VERSION_PATTERN.test(version)) {
     process.exit(1);
 }
 
-function run(cmd: string, cwd = projectRoot): void {
+function run(
+    cmd: string,
+    cwd = projectRoot,
+    options: { executeDuringDryRun?: boolean } = {}
+): void {
     console.log(`\n$ ${cmd}`);
-    if (!dryRun) {
+    if (!dryRun || options.executeDuringDryRun) {
         execSync(cmd, { cwd, stdio: 'inherit' });
     }
 }
@@ -66,7 +71,11 @@ function publishPackage(name: string, cwd: string, provenanceFlag: string): void
         console.log(`   ✓ ${name}@${version} already published; skipping`);
         return;
     }
-    run(`npm publish --access public${provenanceFlag}${dryRun ? ' --dry-run' : ''}`, cwd);
+    run(
+        `npm publish --access public --tag ${NPM_DIST_TAG}${provenanceFlag}${dryRun ? ' --dry-run' : ''}`,
+        cwd,
+        { executeDuringDryRun: dryRun }
+    );
 }
 
 function updateBuildInfoVersion(nextVersion: string): void {
@@ -157,9 +166,9 @@ async function main(): Promise<void> {
     if (pkg.name !== MAIN_PACKAGE) {
         throw new Error(`Expected package name ${MAIN_PACKAGE}, got ${pkg.name}`);
     }
-    if (publishNpm && pkg.version !== version) {
+    if ((publishNpm || dryRun) && pkg.version !== version) {
         throw new Error(
-            `--publish-npm requires ${projectRoot}/package.json to already contain version ${version}`
+            `${publishNpm ? '--publish-npm' : '--dry-run'} requires ${projectRoot}/package.json to already contain version ${version}`
         );
     }
     const oldVersion = pkg.version;
@@ -173,14 +182,14 @@ async function main(): Promise<void> {
     // Step 2: Build all platform binaries (with embedded web assets)
     if (!skipBuild) {
         console.log('\n🔨 Step 2: Building all platform binaries with web assets...');
-        run('bun run build:single-exe:all', repoRoot);
+        run('bun run build:single-exe:all', repoRoot, { executeDuringDryRun: dryRun });
     } else {
         console.log('\n🔨 Step 2: Skipping build (--skip-build)');
     }
 
     // Step 3: Prepare and publish platform packages
     console.log('\n📤 Step 3: Publishing platform packages...');
-    run('bun run prepare-npm-packages');
+    run('bun run prepare-npm-packages', projectRoot, { executeDuringDryRun: dryRun });
     const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
     const provenanceFlag = process.env.GITHUB_ACTIONS === 'true' ? ' --provenance' : '';
     for (const platform of platforms) {
@@ -202,6 +211,11 @@ async function main(): Promise<void> {
     console.log('\n📤 Step 5: Publishing main package...');
     const mainNpmDir = join(projectRoot, 'npm', 'main');
     publishPackage(MAIN_PACKAGE, mainNpmDir, provenanceFlag);
+
+    if (dryRun) {
+        console.log(`\n✅ Dry-run validation completed for v${version}. No packages or git refs were published.`);
+        return;
+    }
 
     // --publish-npm 模式到此结束
     if (publishNpm) {
