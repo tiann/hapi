@@ -73,6 +73,7 @@ export default {
   'sessions.search.clear': 'Clear search',
   'sessions.search.noResults': 'No sessions match your filters.',
   'sessions.unreadFilter.toggle': 'Unread only',
+  'sessions.openTick.tooltip': 'Open session — click the scrollbar near this mark to jump there',
   'sessions.timeFilter.label': 'Filter sessions by last activity',
   'sessions.timeFilter.pickStart': 'Select start date',
   'sessions.timeFilter.pickEnd': 'Select end date',

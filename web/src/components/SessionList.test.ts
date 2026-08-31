@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import {
+    computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     filterActiveSessionsOnly,
@@ -20,6 +21,7 @@ import {
     prepareSidebarSessions,
     sessionMatchesQuery,
     sessionMatchesTimeRange,
+    shouldShowOpenSessionTick,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -651,5 +653,87 @@ describe('getPullRefreshIndicatorRotation', () => {
     it('turns the pull indicator upward once refresh is ready', () => {
         expect(getPullRefreshIndicatorRotation('pulling')).toBe(0)
         expect(getPullRefreshIndicatorRotation('ready')).toBe(180)
+    })
+})
+
+describe('computeOpenSessionTickRatio', () => {
+    it('maps the row midpoint into the scroll extent as a 0..1 rail ratio', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 200,
+            targetHeight: 40,
+        })).toBeCloseTo(0.22)
+    })
+
+    it('clamps to the rail ends', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: -10,
+            targetHeight: 20,
+        })).toBe(0)
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 990,
+            targetHeight: 40,
+        })).toBe(1)
+    })
+
+    it('hides when the list does not overflow (no scrollbar)', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 300,
+            clientHeight: 400,
+            contentOffsetTop: 40,
+            targetHeight: 40,
+        })).toBeNull()
+    })
+
+    it('hides when the row has no laid-out height', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 200,
+            targetHeight: 0,
+        })).toBeNull()
+    })
+})
+
+describe('shouldShowOpenSessionTick', () => {
+    it('shows only when the open session row is present and not collapsed away', () => {
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(true)
+    })
+
+    it('hides when nothing is open, the row is missing, collapsed, or ratio is null', () => {
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: null,
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: false,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: true,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: null,
+        })).toBe(false)
     })
 })
