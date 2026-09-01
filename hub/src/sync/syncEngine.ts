@@ -490,23 +490,7 @@ export class SyncEngine {
         if (event.type === 'message-received' && event.sessionId && 'message' in event && event.message) {
             // A2A P3: well-formed AGENT_NOTIFY_SUMMARY → work-graph work_ad.
             // Capture is independent of chat display settings (#1462/#1464).
-            const session = this.getSession(event.sessionId)
-            if (session) {
-                try {
-                    ingestNotifySummaryFromMessage({
-                        store: this.store,
-                        namespace: session.namespace,
-                        sessionId: session.id,
-                        messageId: event.message.id,
-                        content: event.message.content,
-                        ts: event.message.createdAt,
-                        ownerUserId: this.hubOwnerUserId,
-                        flavor: session.metadata?.flavor ?? null
-                    })
-                } catch (error) {
-                    console.error('[work-graph] notify ingest failed', error)
-                }
-            }
+            this.captureNotifyFromMessage(event.sessionId, event.message)
         }
     }
 
@@ -1007,17 +991,55 @@ export class SyncEngine {
                 path: string
                 previewUrl?: string
             }>
-            sentFrom?: 'telegram-bot' | 'webapp'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'peer'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
+            notifySource?: 'peer'
+            peerSourceSessionId?: string
         }
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
-        const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+        const { actualSessionId, createdAt: activeTurnStartedAt, message } =
+            await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
+        this.captureNotifyFromMessage(actualSessionId, message, {
+            trustedPeerSourceSessionId: payload.notifySource === 'peer'
+                ? payload.peerSourceSessionId
+                : undefined
+        })
+    }
+
+    private captureNotifyFromMessage(
+        sessionId: string,
+        message: { id: string; content: unknown; createdAt: number },
+        options?: { trustedPeerSourceSessionId?: string }
+    ): void {
+        const session = this.getSession(sessionId)
+        if (!session) {
+            return
+        }
+        const peerSourceSessionId = options?.trustedPeerSourceSessionId?.trim() || null
+        const principalSession = peerSourceSessionId
+            ? this.getSession(peerSourceSessionId)
+            : session
+        try {
+            ingestNotifySummaryFromMessage({
+                store: this.store,
+                namespace: session.namespace,
+                sessionId: session.id,
+                messageId: message.id,
+                content: message.content,
+                ts: message.createdAt,
+                ownerUserId: this.hubOwnerUserId,
+                flavor: principalSession?.metadata?.flavor ?? null,
+                trustedPeerSourceSessionId: peerSourceSessionId ?? undefined
+            })
+        } catch (error) {
+            console.error('[work-graph] notify ingest failed', error)
+        }
     }
 
     async cancelQueuedMessage(
