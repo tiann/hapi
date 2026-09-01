@@ -225,3 +225,23 @@ Switch to remote mode when you need to step away:
 2. **Permission Approval** - AI requests file access, you get notified on phone, approve with one tap, session continues
 
 3. **Multi-Device Collaboration** - View session progress on your phone while your desktop does the heavy lifting
+
+## Developer architecture and data flow
+
+```
+┌─────────┐  Socket.IO   ┌─────────┐   SSE/REST   ┌─────────┐
+│   CLI   │ ──────────── │   Hub   │ ──────────── │   Web   │
+│ (agent) │              │ (server)│              │  (PWA)  │
+└─────────┘              └─────────┘              └─────────┘
+     │                        │                        │
+     ├─ Wraps Claude/Codex    ├─ SQLite persistence   ├─ TanStack Query
+     ├─ Socket.IO client      ├─ Session cache        ├─ SSE for updates
+     └─ RPC handlers          ├─ RPC gateway          └─ assistant-ui
+                              └─ Telegram bot
+```
+
+**Data flow:**
+1. CLI spawns agent (claude/codex/gemini), connects to hub via Socket.IO
+2. Agent events → CLI → hub (socket `message` event) → DB + SSE broadcast
+3. Web subscribes to SSE `/api/events`, receives live updates
+4. User actions → Web → hub REST API → RPC to CLI → agent
