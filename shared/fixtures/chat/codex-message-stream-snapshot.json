@@ -1,10 +1,10 @@
 {
-    "description": "Codex family: two message payloads sharing a stream id (data.id) are cumulative snapshots. Expects a single agent-text block keyed by the first message, carrying the final snapshot text.",
+    "description": "Codex family: two message payloads sharing a stream id (data.id) are cumulative snapshots. Expects a single agent-text block keyed by that stable stream id, carrying the final snapshot text.",
     "expected": {
         "blocks": [
             {
                 "createdAt": 1755000000000,
-                "id": "msg-codex-051:0",
+                "id": "item_7",
                 "kind": "agent-text",
                 "localId": null,
                 "text": "Tracking down the failing pagination test: the cursor math drops the epoch check when seq wraps."
@@ -15,7 +15,7 @@
         "visibleBlocks": [
             {
                 "createdAt": 1755000000000,
-                "id": "msg-codex-051:0",
+                "id": "item_7",
                 "kind": "agent-text",
                 "localId": null,
                 "text": "Tracking down the failing pagination test: the cursor math drops the epoch check when seq wraps."

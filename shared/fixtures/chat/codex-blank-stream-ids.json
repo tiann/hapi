@@ -1,0 +1,145 @@
+{
+    "description": "Codex family: blank (empty or whitespace-only) data.id values are not stream identities (shared/src/messages.ts trims before accepting) — each payload keeps its own row-derived block id instead of collapsing onto a shared blank identity.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-065:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "blank id one"
+            },
+            {
+                "createdAt": 1755000000100,
+                "id": "msg-codex-066:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "blank id two"
+            },
+            {
+                "createdAt": 1755000000200,
+                "id": "msg-codex-067:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "blank id text one"
+            },
+            {
+                "createdAt": 1755000000300,
+                "id": "msg-codex-068:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "blank id text two"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "msg-codex-065:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "blank id one"
+            },
+            {
+                "createdAt": 1755000000100,
+                "id": "msg-codex-066:0",
+                "kind": "agent-reasoning",
+                "localId": null,
+                "text": "blank id two"
+            },
+            {
+                "createdAt": 1755000000200,
+                "id": "msg-codex-067:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "blank id text one"
+            },
+            {
+                "createdAt": 1755000000300,
+                "id": "msg-codex-068:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "blank id text two"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "",
+                            "message": "blank id one",
+                            "type": "reasoning"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-codex-065",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "   ",
+                            "message": "blank id two",
+                            "type": "reasoning"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000100,
+                "id": "msg-codex-066",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "",
+                            "message": "blank id text one",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000200,
+                "id": "msg-codex-067",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "   ",
+                            "message": "blank id text two",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000300,
+                "id": "msg-codex-068",
+                "localId": null,
+                "seq": 4
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-blank-stream-ids"
+}

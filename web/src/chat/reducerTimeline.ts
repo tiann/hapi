@@ -10,6 +10,14 @@ function getEventString(event: Record<string, unknown>, key: string): string | n
     return asString(event[key])
 }
 
+// Stream identity must match the wire-level semantics in @hapi/protocol
+// (blank ids are not streams): a blank value falls back to row-derived ids
+// instead of colliding every blank-id row onto one block identity.
+function nonBlank(value: unknown): string | null {
+    const raw = asString(value)
+    return raw !== null && raw.trim().length > 0 ? raw : null
+}
+
 function getEventNumber(event: Record<string, unknown>, key: string): number | null {
     const value = event[key]
     return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -788,7 +796,7 @@ export function reduceTimeline(
                         }))
                         continue
                     }
-                    const streamId = asString(c.streamId)
+                    const streamId = nonBlank(c.streamId)
                     if (streamId) {
                         const existing = textBlocksByStreamId.get(streamId)
                         if (existing) {
@@ -803,7 +811,13 @@ export function reduceTimeline(
 
                     const block: AgentTextBlock = {
                         kind: 'agent-text',
-                        id: `${msg.id}:${idx}`,
+                        // Streamed snapshots under one stream id arrive as
+                        // separate message rows that the window keeps swapping
+                        // for newer rows. Deriving the id from the stream id
+                        // (unique per stream) keeps the block identity stable
+                        // across snapshots so the rendered component is
+                        // updated in place instead of being remounted.
+                        id: streamId ?? `${msg.id}:${idx}`,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -836,7 +850,7 @@ export function reduceTimeline(
                 }
 
                 if (c.type === 'reasoning') {
-                    const streamId = asString(c.streamId)
+                    const streamId = nonBlank(c.streamId)
                     if (streamId) {
                         const existing = reasoningBlocksByStreamId.get(streamId)
                         if (existing) {
@@ -851,7 +865,11 @@ export function reduceTimeline(
 
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',
-                        id: `${msg.id}:${idx}`,
+                        // Same as agent-text above: a stream-stable id keeps
+                        // the reasoning panel mounted while its snapshots
+                        // arrive, so the smooth streaming continues from the
+                        // previous text instead of replaying from a remount.
+                        id: streamId ?? `${msg.id}:${idx}`,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
