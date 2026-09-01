@@ -26,7 +26,14 @@ CLI, hub, and web communicate through Socket.IO, REST, and SSE; see [`docs/guide
 
 ## Shared rules
 
-Project-wide implementation conventions are mandatory; see [`docs/guide/development.md#shared-rules`](docs/guide/development.md#shared-rules).
+- No backward compatibility: breaking old formats freely
+- Prioritize Pragmatism, and Avoid Overengineering.
+- Write necessary tests ONLY.
+- TypeScript strict; no untyped code
+- Bun workspaces; run `bun` commands from repo root
+- Path alias `@/*` maps to `./src/*` per package
+- Prefer 4-space indentation
+- Zod for runtime validation (schemas in `shared/src/schemas.ts`)
 
 ## Common commands (repo root)
 
