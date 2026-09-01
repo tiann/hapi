@@ -97,3 +97,40 @@ test.describe('#1717 blocker alerting', () => {
         await page.screenshot({ path: 'test-results/blocked-5-alert-pulse.png' })
     })
 })
+
+test.describe('#1717 manual unblock', () => {
+    test('right-click a blocked row offers Mark unblocked and demands a reason', async ({ page }) => {
+        await page.goto(FIXTURE)
+        await page.waitForSelector('[data-testid="blocked-section"]')
+
+        const row = page.locator('[data-session-blocked="active"]').first()
+        await row.click({ button: 'right' })
+
+        const item = page.getByTestId('session-action-mark-unblocked')
+        await expect(item).toBeVisible()
+        await item.click()
+
+        const dialog = page.getByTestId('unblock-reason-dialog')
+        await expect(dialog).toBeVisible()
+        await page.screenshot({ path: 'test-results/blocked-6-unblock-dialog.png' })
+
+        // Empty reason is refused — the whole point of the prompt.
+        await page.getByTestId('unblock-confirm').click()
+        await expect(dialog.getByRole('alert')).toBeVisible()
+        await expect(dialog).toBeVisible()
+
+        // A preset fills a real, comparable rationale in one tap.
+        await dialog.getByText('Handled outside HAPI', { exact: true }).click()
+        await page.screenshot({ path: 'test-results/blocked-7-unblock-reason.png' })
+    })
+
+    test('an unblocked row is not offered the action', async ({ page }) => {
+        await page.goto(FIXTURE)
+        await page.waitForSelector('[data-testid="blocked-section"]')
+
+        const clean = page.locator('[data-session-id]:not([data-session-blocked])').first()
+        await clean.click({ button: 'right' })
+
+        await expect(page.getByTestId('session-action-mark-unblocked')).toHaveCount(0)
+    })
+})

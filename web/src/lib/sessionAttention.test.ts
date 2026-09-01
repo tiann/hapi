@@ -438,6 +438,74 @@ describe('getSessionBlockedState', () => {
         expect(state?.stale).toBe(true)
     })
 
+    it('honours a manual unblock, and lets a NEWER blocker come back', () => {
+        // Watermark, not a flag: dismissing must not mute the session forever.
+        const acked = makeSummary({
+            id: 'a',
+            lastNotify: { status: 'blocked', at: now - 1000, note: 'old' },
+            blockedAck: { at: now, reason: 'handled outside HAPI' }
+        })
+        expect(getSessionBlockedState(acked, { now })).toBeNull()
+
+        const reblocked = makeSummary({
+            ...acked,
+            id: 'a',
+            lastNotify: { status: 'blocked', at: now + 1, note: 'new problem' }
+        })
+        expect(getSessionBlockedState(reblocked, { now })?.reason).toBe('blocked')
+    })
+
+    it('dismisses a stale prompt but not one raised after the acknowledgement', () => {
+        const base = {
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['permission' as const],
+            blockedAck: { at: now, reason: 'abandoned' }
+        }
+        expect(getSessionBlockedState(makeSummary({
+            id: 'a',
+            ...base,
+            pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: now - 5000 }]
+        }), { now })).toBeNull()
+
+        expect(getSessionBlockedState(makeSummary({
+            id: 'a',
+            ...base,
+            pendingRequests: [{ id: 'r2', kind: 'permission', tool: 'Bash', since: now + 5000 }]
+        }), { now })?.reason).toBe('permission')
+    })
+
+    it('still reports a newer footer when the prompt was acknowledged', () => {
+        // Dismissing a prompt says nothing about a later self-reported blocker
+        // on the same session; returning early there would silently mute it.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: now - 5000 }],
+            lastNotify: { status: 'failed', at: now + 100, note: 'blew up after' },
+            blockedAck: { at: now, reason: 'approved out of band' }
+        }), { now })
+
+        expect(state?.reason).toBe('failed')
+    })
+
+    it('blocks on a new prompt while an older acknowledged one is still open', () => {
+        // Comparing only the oldest request would keep the session suppressed.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 2,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: [
+                { id: 'r1', kind: 'permission', tool: 'Bash', since: now - 5000 },
+                { id: 'r2', kind: 'permission', tool: 'Edit', since: now + 5000 }
+            ],
+            blockedAck: { at: now, reason: 'dismissed the first one' }
+        }), { now })
+
+        expect(state?.reason).toBe('permission')
+        expect(state?.note).toBe('Edit')
+    })
+
     it('returns null when nothing is blocking', () => {
         expect(getSessionBlockedState(makeSummary({ id: 'a' }), { now })).toBeNull()
     })

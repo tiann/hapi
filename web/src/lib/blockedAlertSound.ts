@@ -26,7 +26,11 @@ type AudioContextCtor = new () => AudioContext
 
 function getAudioContext(): AudioContext | null {
     if (typeof window === 'undefined') return null
-    if (context) return context
+    // iOS closes the context when a PWA is backgrounded. A closed context can
+    // never produce sound again, so drop it and build a fresh one rather than
+    // silently no-op for the rest of the session.
+    if (context && context.state !== 'closed') return context
+    context = null
     const Ctor: AudioContextCtor | undefined =
         window.AudioContext
         ?? (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext

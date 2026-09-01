@@ -286,6 +286,8 @@ type DbSessionRow = {
     last_notify_status: string | null
     last_notify_at: number | null
     last_notify_note: string | null
+    blocked_ack_at: number | null
+    blocked_ack_reason: string | null
     active: number
     active_at: number | null
     seq: number
@@ -319,6 +321,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         lastNotifyStatus: row.last_notify_status,
         lastNotifyAt: row.last_notify_at,
         lastNotifyNote: row.last_notify_note,
+        blockedAckAt: row.blocked_ack_at,
+        blockedAckReason: row.blocked_ack_reason,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -733,6 +737,35 @@ export function setSessionLastNotify(
             note: signal.note,
             namespace
         })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Record the operator's manual "this is not blocked" acknowledgement (#1717).
+ *
+ * Monotonic on `blocked_ack_at`: a replayed older ack must not un-dismiss a
+ * newer one. Leaves `updated_at` alone for the same reason the notify writes
+ * do — dismissing chrome is not conversation and must not re-sort the list.
+ */
+export function setSessionBlockedAck(
+    db: Database,
+    id: string,
+    ack: { at: number; reason: string },
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET blocked_ack_at = @at,
+                blocked_ack_reason = @reason,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (blocked_ack_at IS NULL OR blocked_ack_at <= @at)
+        `).run({ id, at: ack.at, reason: ack.reason, namespace })
         return result.changes === 1
     } catch {
         return false

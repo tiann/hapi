@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'bun:test'
-import { WORK_GRAPH_MAX_STRING, WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
+import { WORK_GRAPH_MAX_STRING, WORK_GRAPH_MAX_SUMMARY, WorkGraphEventCreateSchema } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
     WORK_AD_DEFAULT_TTL_MS,
+    buildOperatorUnblockEvent,
     buildWorkAdFromNotify,
     extractSessionNotifySignal,
     ingestNotifySummaryFromMessage,
@@ -1265,5 +1266,64 @@ describe('isOperatorReplyMessage (#1717 backfill boundary)', () => {
 
     it('ignores agent output', () => {
         expect(isOperatorReplyMessage(assistantOutput('working on it'))).toBe(false)
+    })
+})
+
+describe('buildOperatorUnblockEvent (#1717 posterity record)', () => {
+    it('records the operator rationale against the session, as a human principal', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 42,
+            reason: 'handled outside HAPI',
+            acknowledgedAt: 1700,
+            priorNotify: { status: 'blocked', at: 1000, note: 'needs prod creds' }
+        })
+
+        expect(event.event_type).toBe('operator_unblock')
+        expect(event.related_session_id).toBe('sess-1')
+        expect(event.summary).toBe('handled outside HAPI')
+        expect(event.principal).toEqual({ kind: 'human', id: '42' })
+        expect(event.payload_json).toEqual({
+            reason: 'handled outside HAPI',
+            acknowledged_at: 1700,
+            // The agent's claim travels with the dismissal so a reader can tell
+            // "operator disagreed" from "resolved elsewhere".
+            prior_status: 'blocked',
+            prior_note: 'needs prod creds',
+            prior_at: 1000
+        })
+    })
+
+    it('is valid against the work-graph create schema', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 'owner-abc',
+            reason: 'not actually blocked',
+            acknowledgedAt: 1700,
+            priorNotify: null
+        })
+        expect(WorkGraphEventCreateSchema.safeParse(event).success).toBe(true)
+    })
+
+    it('survives an oversized rationale without breaking ledger bounds', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 1,
+            reason: 'x'.repeat(WORK_GRAPH_MAX_SUMMARY * 2),
+            acknowledgedAt: 1,
+            priorNotify: null
+        })
+        expect(WorkGraphEventCreateSchema.safeParse(event).success).toBe(true)
+    })
+
+    it('nulls the prior claim when no footer was stored', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 1,
+            reason: 'abandoning this work',
+            acknowledgedAt: 5,
+            priorNotify: null
+        })
+        expect(event.payload_json).toMatchObject({ prior_status: null, prior_note: null, prior_at: null })
     })
 })

@@ -96,6 +96,26 @@ export function isNonBlockingNotifyStatus(status: string | null | undefined): bo
  */
 export const BLOCKED_NOTIFY_STALE_MS = 24 * 60 * 60 * 1000
 
+/** Max length of an operator's manual-unblock rationale. */
+export const BLOCKED_ACK_REASON_MAX_CHARS = 500
+
+/**
+ * Operator's manual "this is not blocked" acknowledgement (#1717).
+ *
+ * A watermark rather than a flag, so it survives the next blocker: anything
+ * reported at or before `at` is dismissed, anything newer blocks again. That
+ * makes one uniform mechanism cover both blocker sources — a stale notify
+ * footer and an abandoned prompt — without the UI needing to know which it is.
+ *
+ * `reason` is mandatory by design. Replying to an agent carries the rationale
+ * implicitly (it is right there in the transcript); dismissing silently would
+ * leave the event log with a state change and no "why".
+ */
+export type SessionBlockedAck = {
+    at: number
+    reason: string
+}
+
 /** Last `AGENT_NOTIFY_SUMMARY` footer seen for a session. */
 export type SessionNotifySignal = {
     /** Raw self-reported status, lowercased. Kept verbatim so new vocabulary

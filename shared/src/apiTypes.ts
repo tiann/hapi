@@ -23,6 +23,7 @@ import type {
     Machine,
     Session
 } from './schemas'
+import { BLOCKED_ACK_REASON_MAX_CHARS } from './notifyAttention'
 import type { SessionSummary } from './sessionSummary'
 
 export const CreateOrLoadMachineRequestSchema = z.object({
@@ -507,6 +508,12 @@ export const SetSessionPinnedRequestSchema = z.object({
 })
 
 export type SetSessionPinnedRequest = z.infer<typeof SetSessionPinnedRequestSchema>
+
+/** Manual unblock (#1717). Reason is required — see `SessionBlockedAck`. */
+export const SetSessionBlockedAckRequestSchema = z.object({
+    reason: z.string().trim().min(1).max(BLOCKED_ACK_REASON_MAX_CHARS)
+})
+export type SetSessionBlockedAckRequest = z.infer<typeof SetSessionBlockedAckRequestSchema>
 export type SessionPinMode = SetSessionPinnedRequest['mode']
 
 /**

@@ -1768,3 +1768,67 @@ describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
         expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
     })
 })
+
+describe('setSessionBlockedAck (#1717 manual unblock)', () => {
+    function seed(store: Store) {
+        return store.sessions.getOrCreateSession(
+            `ack-${randomUUID()}`,
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+    }
+
+    it('persists the watermark and the rationale', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        expect(store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: 5000, reason: 'handled outside HAPI' },
+            'default'
+        )).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.blockedAckAt).toBe(5000)
+        expect(row?.blockedAckReason).toBe('handled outside HAPI')
+    })
+
+    it('does not let a replayed older ack un-dismiss a newer one', () => {
+        const store = makeStore()
+        const session = seed(store)
+        store.sessions.setSessionBlockedAck(session.id, { at: 9000, reason: 'newer' }, 'default')
+
+        expect(store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: 1000, reason: 'older replay' },
+            'default'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.blockedAckReason).toBe('newer')
+    })
+
+    it('leaves updated_at alone — dismissing chrome is not conversation', () => {
+        const store = makeStore()
+        const session = seed(store)
+        const before = store.sessions.getSession(session.id)?.updatedAt
+
+        store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: Date.now() + 60_000, reason: 'x' },
+            'default'
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(before!)
+    })
+
+    it('is namespace scoped', () => {
+        const store = makeStore()
+        const session = seed(store)
+        expect(store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: 5000, reason: 'x' },
+            'other'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.blockedAckAt).toBeNull()
+    })
+})

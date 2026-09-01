@@ -160,16 +160,6 @@ function isInboundUserMessage(content: unknown): boolean {
     return asRecord(content)?.role === 'user'
 }
 
-/**
- * True for a real operator prompt — the thing that answers a blocked agent.
- * Excludes the Claude jsonl transcript echo, which replays the same prompt as
- * a second `role=user` row and would otherwise look like a fresh reply.
- */
-export function isOperatorReplyMessage(content: unknown): boolean {
-    if (!isInboundUserMessage(content)) return false
-    return asRecord(asRecord(content)?.meta)?.isTranscriptEcho !== true
-}
-
 function isCauseCandidate(message: StoredMessage, now: number = Date.now()): boolean {
     if (!isInboundUserMessage(message.content)) return false
     const meta = asRecord(asRecord(message.content)?.meta)

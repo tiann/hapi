@@ -457,6 +457,9 @@ export class SessionCache {
             teamState,
             todosUpdatedAt: stored.todosUpdatedAt ?? 0,
             teamStateUpdatedAt: stored.teamStateUpdatedAt ?? 0,
+            blockedAck: stored.blockedAckAt !== null
+                ? { at: stored.blockedAckAt, reason: stored.blockedAckReason ?? '' }
+                : null,
             lastNotify: stored.lastNotifyStatus !== null && stored.lastNotifyAt !== null
                 ? {
                     status: stored.lastNotifyStatus,
@@ -527,6 +530,27 @@ export class SessionCache {
         if (this.store.sessions.setSessionLastNotify(sessionId, signal, session.namespace)) {
             this.applyLastNotifyToCache(session, signal)
         }
+    }
+
+    /**
+     * Record the operator's manual unblock (#1717). Returns the stored ack so
+     * the caller can put the same values in the ledger event.
+     */
+    setSessionBlockedAck(sessionId: string, reason: string, at: number = Date.now()): {
+        at: number
+        reason: string
+    } | null {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return null
+        const ack = { at, reason }
+        if (!this.store.sessions.setSessionBlockedAck(sessionId, ack, session.namespace)) {
+            return null
+        }
+        // In place + full-session emit, for the same reason as the notify
+        // writes: refreshSession would discard in-memory runtime state.
+        session.blockedAck = ack
+        this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
+        return ack
     }
 
     /**

@@ -60,7 +60,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 37
+const SCHEMA_VERSION: number = 38
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -411,6 +411,7 @@ export class Store {
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
             36: () => this.migrateFromV36ToV37(),
+            37: () => this.migrateFromV37ToV38(),
         })
 
         if (currentVersion === 0) {
@@ -509,6 +510,8 @@ export class Store {
                 last_notify_status TEXT,
                 last_notify_at INTEGER,
                 last_notify_note TEXT,
+                blocked_ack_at INTEGER,
+                blocked_ack_reason TEXT,
                 active INTEGER DEFAULT 0,
                 active_at INTEGER,
                 seq INTEGER DEFAULT 0
@@ -1312,6 +1315,18 @@ export class Store {
         }
         if (!columns.has('last_notify_note')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_note TEXT')
+        }
+    }
+
+    /** Operator manual-unblock watermark + rationale (#1717). */
+    private migrateFromV37ToV38(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('blocked_ack_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_at INTEGER')
+        }
+        if (!columns.has('blocked_ack_reason')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_reason TEXT')
         }
     }
 

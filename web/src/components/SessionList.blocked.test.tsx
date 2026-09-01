@@ -191,6 +191,62 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
     })
 
+    it('offers Mark unblocked only on blocked rows, and demands a reason', async () => {
+        renderList([blocked('stuck-one')])
+
+        const row = document.querySelector('[data-session-id="stuck-one"]') as HTMLElement
+        fireEvent.contextMenu(row)
+
+        const item = await screen.findByTestId('session-action-mark-unblocked')
+        fireEvent.click(item)
+
+        const dialog = await screen.findByTestId('unblock-reason-dialog')
+        expect(dialog).toBeTruthy()
+
+        // Empty reason must be refused — a silent dismissal is the whole thing
+        // this dialog exists to prevent.
+        fireEvent.click(screen.getByTestId('unblock-confirm'))
+        expect(await screen.findByRole('alert')).toBeTruthy()
+        expect(screen.getByTestId('unblock-reason-dialog')).toBeTruthy()
+    })
+
+    it('does not offer Mark unblocked on an unblocked row', async () => {
+        renderList([makeSession({ id: 'fine-one' })])
+
+        // Inactive, unpinned session: its directory group starts collapsed.
+        fireEvent.click(screen.getByTitle('/home/ubuntu'))
+
+        const row = document.querySelector('[data-session-id="fine-one"]') as HTMLElement
+        fireEvent.contextMenu(row)
+
+        expect(screen.queryByTestId('session-action-mark-unblocked')).toBeNull()
+    })
+
+    it('hides a row whose blocker the operator already acknowledged', () => {
+        renderList([
+            makeSession({
+                id: 'acked-one',
+                lastNotify: { status: 'blocked', at: Date.now() - 1000, note: 'old' },
+                blockedAck: { at: Date.now(), reason: 'handled outside HAPI' }
+            })
+        ])
+
+        expect(screen.queryByTestId('blocked-section')).toBeNull()
+        expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
+    })
+
+    it('counts a disconnected blocked agent even with "active sessions only" on', () => {
+        // The count is meant to be fleet-wide. A blocked agent whose CLI
+        // dropped is precisely the one worth surfacing, and it is not active.
+        localStorage.setItem('hapi-show-active-sessions-only', 'true')
+        try {
+            renderList([blocked('stuck-offline'), makeSession({ id: 'live-one', active: true })])
+            expect(within(screen.getByTestId('blocked-jump-pill')).getByText('1')).toBeTruthy()
+        } finally {
+            localStorage.removeItem('hapi-show-active-sessions-only')
+        }
+    })
+
     it('renders no controls and no section when nothing is blocked', () => {
         renderList([makeSession({ id: 'fine-one' }), makeSession({ id: 'fine-two' })])
 

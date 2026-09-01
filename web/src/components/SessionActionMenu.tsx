@@ -33,6 +33,8 @@ type SessionActionMenuProps = {
     onMarkUnread?: () => void
     onForkSession?: () => void
     forkDisabledReason?: string
+    /** #1717: present only when the session currently reads as blocked. */
+    onMarkUnblocked?: () => void
     onSyncCodex?: () => void
     onSyncPi?: () => void
     onArchive: () => void
@@ -217,6 +219,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onMarkUnread,
         onForkSession,
         forkDisabledReason,
+        onMarkUnblocked,
         onSyncCodex,
         onSyncPi,
         onArchive,
@@ -280,6 +283,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleForkSession = () => {
         onClose()
         onForkSession?.()
+    }
+
+    const handleMarkUnblocked = () => {
+        onClose()
+        onMarkUnblocked?.()
     }
 
     const handleSyncCodex = () => {
@@ -417,6 +425,26 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                         <OpenWindowIcon className="text-[var(--app-hint)]" />
                         {t('session.action.openSeparateWindow')}
                     </a>
+                ) : null}
+
+                {onMarkUnblocked ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        data-testid="session-action-mark-unblocked"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleMarkUnblocked}
+                    >
+                        <span
+                            aria-hidden="true"
+                            className="inline-flex h-[18px] w-[18px] items-center justify-center text-[var(--app-badge-warning-text)]"
+                        >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                                <path d="M4 21V4h13l-2 4 2 4H4" />
+                            </svg>
+                        </span>
+                        {t('session.action.markUnblocked')}
+                    </button>
                 ) : null}
 
                 {onMarkUnread ? (

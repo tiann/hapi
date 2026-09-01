@@ -130,26 +130,49 @@ export function getSessionBlockedState(
         return null
     }
 
+    // Operator dismissed this by hand. A watermark, not a flag: a blocker
+    // reported AFTER the acknowledgement is a genuinely new problem and must
+    // come back, or "mark unblocked" would silently mute the session forever.
+    // Null rather than 0: a 0 sentinel would dismiss any blocker whose
+    // timestamp is non-positive, which is only ever a test or clock artefact
+    // but is exactly the kind of silent suppression this feature must not do.
+    const ackAt = summary.blockedAck?.at ?? null
+
     // A live prompt outranks a stored footer: it is the thing the operator can
     // clear in one click. The two rarely coexist anyway — starting a new turn
     // clears `lastNotify` hub-side.
     const pendingReason = getPendingBlockedReason(summary)
     if (pendingReason !== null) {
         const wantedKind = pendingReason === 'question' ? 'input' : 'permission'
-        const oldest = summary.pendingRequests?.find(request => request.kind === wantedKind)
-            ?? summary.pendingRequests?.[0]
-        const at = oldest?.since ?? summary.updatedAt
-        return {
-            reason: pendingReason,
-            at,
-            note: oldest?.tool ?? null,
-            stale: options.now - at > BLOCKED_NOTIFY_STALE_MS
+        const all = summary.pendingRequests ?? []
+        const matching = all.filter(request => request.kind === wantedKind)
+        // `pendingRequests` is capped and oldest-first; fall back to the whole
+        // list when the summary dropped the matching kind.
+        const pool = matching.length > 0 ? matching : all
+        const unacked = ackAt === null ? pool : pool.filter(request => request.since > ackAt)
+        // Compare the ack against every known prompt, not just the oldest: a
+        // prompt raised AFTER the acknowledgement is a new ask and must block
+        // even while an older, already-dismissed prompt is still outstanding.
+        const oldestUnacked = unacked[0]
+        const at = oldestUnacked?.since
+            ?? (pool.length === 0 ? summary.updatedAt : null)
+
+        // Deliberately falls through rather than returning null: the prompt
+        // being dismissed says nothing about a newer self-reported footer on
+        // the same session, and returning here would silently mute it.
+        if (at !== null && (ackAt === null || at > ackAt)) {
+            return {
+                reason: pendingReason,
+                at,
+                note: oldestUnacked?.tool ?? null,
+                stale: options.now - at > BLOCKED_NOTIFY_STALE_MS
+            }
         }
     }
 
     const notify = summary.lastNotify
     const notifyReason = notify ? getNotifyBlockReason(notify.status) : null
-    if (!notify || notifyReason === null) {
+    if (!notify || notifyReason === null || (ackAt !== null && notify.at <= ackAt)) {
         return null
     }
 

@@ -549,6 +549,12 @@ export const SessionNotifySignalSchema = z.object({
     note: z.string().nullable().default(null)
 })
 
+/** Operator's manual unblock acknowledgement (#1717). */
+export const SessionBlockedAckSchema = z.object({
+    at: z.number(),
+    reason: z.string()
+})
+
 export const ThreadGoalStatusSchema = z.enum([
     'active',
     'paused',
@@ -652,6 +658,9 @@ export const SessionSchema = z.object({
     /** Last agent notify footer. Drives the session list's blocked chrome;
      *  nullish on hubs that have not seen a footer for this session yet. */
     lastNotify: SessionNotifySignalSchema.nullish(),
+    /** Operator dismissed blocked chrome up to this point; newer blockers still
+     *  count. See `SessionBlockedAck`. */
+    blockedAck: SessionBlockedAckSchema.nullish(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),
