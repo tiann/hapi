@@ -10,6 +10,7 @@ ios/             - Native SwiftUI app (in development)
 android/         - Native Kotlin Compose app (in development)
 shared/          - Common types, schemas, utilities
 shared/fixtures/ - Golden chat fixtures, generated from web pipeline (never hand-edit)
+relay/           - E2E-encrypted APNs push relay
 docs/            - VitePress documentation site
 website/         - Marketing site
 ```
@@ -19,7 +20,7 @@ Bun workspaces; `shared` consumed by cli, hub, web. `ios`/`android` outside work
 ## Common commands (repo root)
 
 ```bash
-bun typecheck           # All packages
+bun typecheck           # cli + hub + web + relay
 bun run test            # cli + hub + web + shared + relay tests
 bun run dev             # hub + web concurrently
 bun run build:single-exe # All-in-one binary
