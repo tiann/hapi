@@ -31,7 +31,7 @@ Bun workspaces; `shared` consumed by cli, hub, web. `ios`/`android` outside work
 
 ```bash
 bun typecheck           # All packages
-bun run test            # cli + hub + web + shared tests
+bun run test            # cli + hub + web + shared + relay tests
 bun run dev             # hub + web concurrently
 bun run build:single-exe # All-in-one binary
 bun run gen:fixtures    # Regenerate shared/fixtures/ from web pipeline
@@ -94,7 +94,7 @@ iOS tests run in CI (`ios.yml`: macOS `swift test`); no local Xcode/Swift toolch
 | Task | Key files |
 |------|-----------|
 | Add CLI command | `cli/src/commands/`, `cli/src/index.ts` |
-| Add API endpoint | `hub/src/web/routes/`, register in `hub/src/web/index.ts` |
+| Add API endpoint | `hub/src/web/routes/`, register in `hub/src/web/server.ts` |
 | Add Socket.IO event | `hub/src/socket/handlers/cli/`, `shared/src/socket.ts` |
 | Add web route | `web/src/routes/`, `web/src/router.tsx` |
 | Add web component | `web/src/components/` |
