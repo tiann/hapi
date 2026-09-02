@@ -64,6 +64,8 @@ export default {
 
   // Sessions page
   'sessions.new': 'New Session',
+  'sessions.sidebar.collapse': 'Collapse session list',
+  'sessions.sidebar.expand': 'Expand session list',
   'sessions.empty.title': 'No sessions yet',
   'sessions.empty.hint': 'Start a coding session in any folder under your workspace, or browse the tree first.',
   'sessions.empty.startSession': 'Start a session',

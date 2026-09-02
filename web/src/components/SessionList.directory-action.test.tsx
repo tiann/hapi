@@ -14,6 +14,7 @@ afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
     localStorage.removeItem('hapi-pin-in-progress-sessions')
+    localStorage.removeItem('hapi-session-list-status-mode')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -59,6 +60,37 @@ function renderWithProviders(children: ReactNode) {
 }
 
 describe('SessionList directory action', () => {
+    it('does not reference hidden schedule details from compact rows', () => {
+        localStorage.setItem('hapi-session-list-status-mode', 'detailed')
+        const session = makeSession({
+            id: 'scheduled-session',
+            futureScheduledMessageCount: 1,
+            nextScheduledAt: Date.now() + 60_000,
+            metadata: {
+                path: '/home/ubuntu',
+                name: 'Scheduled session',
+                flavor: 'codex',
+            }
+        })
+
+        renderWithProviders(
+            <SessionList
+                compact
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: 'Scheduled session' })).not.toHaveAttribute('aria-describedby')
+        expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument()
+    })
+
     it('starts a new session with the project machine and directory', () => {
         const onNewSessionInDirectory = vi.fn()
         const session = makeSession({

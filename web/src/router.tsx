@@ -27,6 +27,7 @@ import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
+import { useSidebarCollapsed } from '@/hooks/useSidebarCollapsed'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -91,6 +92,28 @@ function BackIcon(props: { className?: string }) {
             className={props.className}
         >
             <polyline points="15 18 9 12 15 6" />
+        </svg>
+    )
+}
+
+function SidebarCollapseIcon(props: { className?: string; direction: 'left' | 'right' }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M9 4v16" />
+            {props.direction === 'left' ? <path d="m14 9-3 3 3 3" /> : <path d="m6 9 3 3-3 3" />}
         </svg>
     )
 }
@@ -214,6 +237,10 @@ function SessionsPage() {
     }, [selectedSessionId, selectedSession?.updatedAt])
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
+    const sidebarCollapse = useSidebarCollapsed()
+    // On the sessions index there is no detail pane to reveal, so keep the list
+    // visible even when a collapsed preference was saved on another route.
+    const sidebarIsCollapsed = sidebarCollapse.sidebarCollapsed && !isSessionsIndex
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
         navigate({
             to: '/sessions/new',
@@ -228,16 +255,19 @@ function SessionsPage() {
         <>
             <div className="flex h-full min-h-0">
             <div
-                className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
-                style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
+                className={sidebarIsCollapsed
+                    ? 'sidebar-collapsed-rail hidden split:flex shrink-0 flex-col border-r border-[var(--app-divider)] bg-[var(--app-bg)]'
+                    : `${isSessionsIndex ? 'flex' : 'hidden split:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                style={!sidebarIsCollapsed ? { '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties : undefined}
             >
                 <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
-                    {error ? (
+                    {error && !sidebarIsCollapsed ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>
                         </div>
                     ) : null}
                     <SessionList
+                        compact={sidebarIsCollapsed}
                         key={initializedHub === baseUrl ? 'last-seen-ready' : 'last-seen-pending'}
                         sessions={sessions}
                         selectedSessionId={selectedSessionId}
@@ -251,8 +281,29 @@ function SessionsPage() {
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
                         renderHeader={false}
-                        headerActions={(
+                        headerActions={sidebarIsCollapsed ? (
+                            <button
+                                type="button"
+                                onClick={() => sidebarCollapse.setSidebarCollapsed(false)}
+                                className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                title={t('sessions.sidebar.expand')}
+                                aria-label={t('sessions.sidebar.expand')}
+                            >
+                                <SidebarCollapseIcon direction="right" className="h-4 w-4" />
+                            </button>
+                        ) : (
                             <div className="flex items-center gap-2">
+                                {!isSessionsIndex && (
+                                    <button
+                                        type="button"
+                                        onClick={() => sidebarCollapse.setSidebarCollapsed(true)}
+                                        className="hidden split:flex h-9 w-9 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                        title={t('sessions.sidebar.collapse')}
+                                        aria-label={t('sessions.sidebar.collapse')}
+                                    >
+                                        <SidebarCollapseIcon direction="left" className="h-5 w-5" />
+                                    </button>
+                                )}
                                 {canBrowse && (
                                     <button
                                         type="button"
@@ -293,11 +344,13 @@ function SessionsPage() {
             </div>
 
             {/* Resize handle - desktop only */}
-            <div
-                className="sidebar-resize-handle hidden split:block shrink-0"
-                data-dragging={sidebar.isDragging || undefined}
-                onPointerDown={sidebar.onPointerDown}
-            />
+            {!sidebarIsCollapsed ? (
+                <div
+                    className="sidebar-resize-handle hidden split:block shrink-0"
+                    data-dragging={sidebar.isDragging || undefined}
+                    onPointerDown={sidebar.onPointerDown}
+                />
+            ) : null}
 
             <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 <div className="flex-1 min-h-0">
