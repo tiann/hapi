@@ -557,10 +557,10 @@ export class MessageService {
         }
 
         // Phase 2b: future-scheduled messages were never emitted to the CLI, so they
-        // are not in the CLI's in-memory queue.  Asking the CLI whether it can remove
-        // the item would always return 'not-found', which the normal ack path
-        // misinterprets as "CLI already consumed it" and stamps invoked_at.
-        // Short-circuit: delete the row directly without a CLI ack round-trip.
+        // are not in the CLI's in-memory queue. Asking the CLI whether it can remove
+        // the item would always return 'not-found', forcing an unnecessary
+        // indeterminate state. Short-circuit: delete the row directly without a CLI
+        // ack round-trip.
         //
         // Single event loop turn: the scheduledAt > now check and the
         // deleteQueuedMessageById call execute atomically with no await between
@@ -624,7 +624,7 @@ export class MessageService {
         if (ackResult === 'consumed') {
             return this.recordConsumedAcknowledgement(sessionId, localId)
         }
-        if (ackResult === 'in-flight') {
+        if (ackResult === 'in-flight' || ackResult === 'indeterminate') {
             // The row is inside an async steer (mid-turn delivery): it can
             // neither be removed nor stamped invoked — the steer's eventual
             // accept/reject decides. Report busy so the caller keeps the row.
@@ -632,40 +632,19 @@ export class MessageService {
         }
 
         if (ackResult === 'not-found' || ackResult === 'timeout') {
-            // CLI could not remove the item — it was already shift()-ed or CLI is
-            // offline.  Stamp invoked_at immediately so the message lands in the thread
-            // as 'sent' instead of disappearing.  The agent's later assistant message
-            // (if it produced one) joins the same thread normally.
-            const invokedAt = Date.now()
-            try {
-                this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
-            } catch (err) {
-                console.error('cancelQueuedMessage: markMessagesInvoked failed', err)
-                // DB write failed — let the HTTP 500 surface to the caller.
-                throw err
+            // Neither outcome proves the model consumed the message. The CLI may have
+            // reserved it, disconnected, or simply missed the request. Hold the durable
+            // row out of automatic replay until a positive consumed ACK arrives or the
+            // user explicitly retries/discards it.
+            const changed = this.store.messages.setMessagesDeliveryState(sessionId, [localId], 'indeterminate')
+            if (changed === 0) {
+                const settled = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
+                if (settled.status === 'invoked') return settled
+                if (settled.status === 'absent') return { status: 'cancelled', localId }
+            } else {
+                this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds: [localId] })
             }
-            this.forgetScheduledMatureNotified([localId])
-            // Notify all SSE subscribers (other open tabs) that this queued row is now
-            // invoked so they remove it from the floating bar.  Without this emit, only
-            // the tab that sent the DELETE request learns about the status change via the
-            // HTTP response; every other subscriber keeps the row in the queued bar until
-            // a refresh or a later event.  Mirrors the identical publish in the normal
-            // CLI-driven path (sessionHandlers.ts messages-consumed handler).
-            this.publisher.emit({
-                type: 'messages-consumed',
-                sessionId,
-                localIds: [localId],
-                invokedAt,
-            })
-            // Re-fetch the single row via lookupQueuedMessage to avoid the 200-row
-            // pagination cap of getMessages.  After markMessagesInvoked the row will
-            // have invoked_at set, so lookupQueuedMessage returns status='invoked'.
-            const recheck = this.store.messages.lookupQueuedMessage(sessionId, localId)
-            if (recheck.status === 'invoked') {
-                return recheck
-            }
-            // Row absent from DB after markMessagesInvoked — edge case, treat as cancelled
-            return { status: 'cancelled', localId }
+            return { status: 'busy', localId }
         }
 
         // Phase 3: CLI confirmed removal.  Now DELETE the DB row and broadcast SSE.
@@ -1042,12 +1021,10 @@ export class MessageService {
      * restart scenarios (pitfall #2 guard).
      *
      * Race window with cancel: this tick widens the cancel race to 5 s for
-     * scheduled messages (vs near-zero for immediate-queued ones).  If the CLI
-     * has already shift()-ed the row when cancel arrives, cancelQueuedMessage
-     * gets 'not-found' from the CLI ack and stamps invoked_at (PR #568 contract
-     * preserved).  Web client surfaces this as 'sent' in the thread.
-     * See messageService.test.ts "cancel × mature race" for the documented
-     * expected behaviour. */
+     * scheduled messages (vs near-zero for immediate-queued ones). If the CLI
+     * has already shift()-ed the row when cancel arrives, a non-positive cancel
+     * ACK leaves the row indeterminate; only an explicit consumed ACK stamps it
+     * invoked. See messageService.test.ts "cancel × mature race". */
     releaseMatureScheduledMessages(now: number, skipSessionIds?: ReadonlySet<string>): void {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
