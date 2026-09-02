@@ -681,6 +681,8 @@ export class CodexAppServerClient extends JsonLineParser {
                     id: requestId,
                     method,
                     params
+                }).catch((error) => {
+                    logger.debug('[CodexAppServer] Error handling incoming request', error);
                 });
                 return;
             }
@@ -765,8 +767,20 @@ export class CodexAppServerClient extends JsonLineParser {
     }
 
     private writePayload(payload: JsonRpcLiteRequest | JsonRpcLiteNotification | JsonRpcLiteResponse): void {
+        const stdin = this.process?.stdin;
+        if (!stdin || stdin.destroyed || stdin.writableEnded || stdin.writable === false) {
+            return;
+        }
+
         const serialized = JSON.stringify(payload);
-        this.process?.stdin.write(`${serialized}\n`);
+        try {
+            stdin.write(`${serialized}\n`);
+        } catch (error) {
+            // The app-server can close stdin while an async request handler is
+            // still completing. Dropping that late response is safe; the
+            // transport is already unavailable and must not crash the runner.
+            logger.debug('[CodexAppServer] Ignoring payload write after process shutdown', error);
+        }
     }
 
     private resetParserState(): void {
