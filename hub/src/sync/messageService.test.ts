@@ -1192,6 +1192,21 @@ describe('MessageService.sendMessage deliveryMode', () => {
         return { io, cliEmitted }
     }
 
+    it('skips the OpenCode delivery-gate scan when heartbeat replay has no queued messages', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'empty-heartbeat-replay')
+        const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)
+        const originalGateCheck = store.isOpenCodeClearDeliveryGated.bind(store)
+        let gateChecks = 0
+        store.isOpenCodeClearDeliveryGated = (sessionId: string) => {
+            gateChecks += 1
+            return originalGateCheck(sessionId)
+        }
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(gateChecks).toBe(0)
+    })
+
     it('persists Pi steer provenance but downgrades every deferred CLI delivery to queue', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
