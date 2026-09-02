@@ -295,6 +295,16 @@ export async function stopRunner() {
       return;
     }
 
+    // Every stop is a signal to the persisted pid and port, so gate the whole
+    // sequence on a confirmed identity. Callers derive their decision from a
+    // boolean, and a pid we cannot identify may belong to an unrelated process
+    // that reused it, whose port may have been reused as well.
+    const identity = getHapiRunnerProcessIdentity(state.pid);
+    if (identity !== 'runner') {
+      logger.debug(`Not stopping PID ${state.pid}: identity is ${identity}`);
+      return;
+    }
+
     logger.debug(`Stopping runner with PID ${state.pid}`);
 
     // Try HTTP graceful stop
@@ -307,15 +317,6 @@ export async function stopRunner() {
       return;
     } catch (error) {
       logger.debug('HTTP stop failed, will force kill', error);
-    }
-
-    // Force kill. Only a confirmed runner may be signalled: every caller that
-    // reaches this point derived its decision from a boolean, and a pid we
-    // cannot identify may belong to an unrelated process that reused it.
-    const identity = getHapiRunnerProcessIdentity(state.pid);
-    if (identity !== 'runner') {
-      logger.debug(`Not force killing PID ${state.pid}: identity is ${identity}`);
-      return;
     }
 
     const killed = await killProcess(state.pid, true);

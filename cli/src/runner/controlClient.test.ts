@@ -56,7 +56,7 @@ describe('runner control client stop-session contract', () => {
     })
 })
 
-describe('stopRunner force-kill gate', () => {
+describe('stopRunner identity gate', () => {
     beforeEach(() => {
         readRunnerStateMock.mockResolvedValue({ pid: 42, httpPort: 3210 })
         isProcessAliveMock.mockReturnValue(true)
@@ -72,21 +72,23 @@ describe('stopRunner force-kill gate', () => {
         vi.clearAllMocks()
     })
 
-    it('force kills a confirmed runner', async () => {
+    it('stops a confirmed runner', async () => {
         identityMock.mockReturnValue('runner')
 
         await stopRunner()
 
+        expect(globalThis.fetch).toHaveBeenCalled()
         expect(killProcessMock).toHaveBeenCalledWith(42, true)
     })
 
     it.each(['foreign', 'unknown', 'dead'] as const)(
-        'does not signal a pid whose identity is %s',
+        'sends neither the http stop nor a signal when the identity is %s',
         async (identity) => {
             identityMock.mockReturnValue(identity)
 
             await stopRunner()
 
+            expect(globalThis.fetch).not.toHaveBeenCalled()
             expect(killProcessMock).not.toHaveBeenCalled()
         }
     )
