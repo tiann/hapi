@@ -73,19 +73,31 @@ function getWindowsProcessCommandLine(pid: number): string | null {
   return null;
 }
 
-export function isHapiRunnerProcess(pid: number): boolean {
+/**
+ * `unknown` means the process is alive but its command line could not be read.
+ * Callers must not signal or clean up on that answer: the pid may belong to an
+ * unrelated process that reused it, and it may equally be a healthy runner.
+ */
+export type RunnerProcessIdentity = 'runner' | 'foreign' | 'unknown' | 'dead';
+
+export function getHapiRunnerProcessIdentity(pid: number): RunnerProcessIdentity {
   if (!isProcessAlive(pid)) {
-    return false;
+    return 'dead';
   }
-  if (isWindows()) {
-    const commandLine = getWindowsProcessCommandLine(pid);
-    return commandLine === null ? isProcessAlive(pid) : isRunnerCommand(commandLine);
+  const commandLine = isWindows()
+    ? getWindowsProcessCommandLine(pid)
+    : getPosixProcessCommandLine(pid);
+  if (commandLine === null) {
+    return isProcessAlive(pid) ? 'unknown' : 'dead';
   }
+  return isRunnerCommand(commandLine) ? 'runner' : 'foreign';
+}
+
+function getPosixProcessCommandLine(pid: number): string | null {
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
-  if (result.error || result.status !== 0) {
-    return isProcessAlive(pid);
-  }
-  return isRunnerCommand(result.stdout?.toString() ?? '');
+  if (result.error || result.status !== 0) return null;
+  const commandLine = result.stdout?.toString() ?? '';
+  return commandLine.trim() ? commandLine : null;
 }
 
 function killProcessWindows(pid: number, force: boolean): boolean {

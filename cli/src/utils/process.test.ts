@@ -10,7 +10,7 @@ vi.mock('cross-spawn', () => ({
     }
 }))
 
-import { isHapiRunnerProcess } from './process'
+import { getHapiRunnerProcessIdentity } from './process'
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
 
@@ -40,7 +40,7 @@ function unavailable(command: string) {
     }
 }
 
-describe('isHapiRunnerProcess on Windows', () => {
+describe('getHapiRunnerProcessIdentity on Windows', () => {
     beforeAll(() => {
         if (!originalPlatformDescriptor?.configurable) {
             throw new Error('process.platform is not configurable in this runtime')
@@ -63,10 +63,10 @@ describe('isHapiRunnerProcess on Windows', () => {
         }
     })
 
-    it('rejects a foreign process when CIM identifies it', () => {
+    it('reports a foreign process when CIM identifies it', () => {
         spawnSyncMock.mockReturnValueOnce(completed('C:\\Windows\\System32\\conhost.exe'))
 
-        expect(isHapiRunnerProcess(8328)).toBe(false)
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('foreign')
         expect(spawnSyncMock).toHaveBeenCalledTimes(1)
         expect(spawnSyncMock).toHaveBeenNthCalledWith(
             1,
@@ -81,10 +81,10 @@ describe('isHapiRunnerProcess on Windows', () => {
         )
     })
 
-    it('accepts the runner when CIM identifies it', () => {
+    it('reports the runner when CIM identifies it', () => {
         spawnSyncMock.mockReturnValueOnce(completed('hapi-local.exe runner start-sync'))
 
-        expect(isHapiRunnerProcess(9124)).toBe(true)
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
     })
 
     it('falls back to WMIC when PowerShell is unavailable', () => {
@@ -92,7 +92,7 @@ describe('isHapiRunnerProcess on Windows', () => {
             .mockReturnValueOnce(unavailable('powershell'))
             .mockReturnValueOnce(completed('hapi-local.exe runner start-sync'))
 
-        expect(isHapiRunnerProcess(9124)).toBe(true)
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
         expect(spawnSyncMock).toHaveBeenNthCalledWith(
             2,
             'wmic',
@@ -106,7 +106,7 @@ describe('isHapiRunnerProcess on Windows', () => {
             .mockReturnValueOnce(completed(''))
             .mockReturnValueOnce(completed('hapi-local.exe runner start-sync'))
 
-        expect(isHapiRunnerProcess(9124)).toBe(true)
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
         expect(spawnSyncMock).toHaveBeenCalledTimes(2)
     })
 
@@ -115,20 +115,20 @@ describe('isHapiRunnerProcess on Windows', () => {
             .mockReturnValueOnce(completed('', 1))
             .mockReturnValueOnce(completed('hapi-local.exe runner start-sync'))
 
-        expect(isHapiRunnerProcess(9124)).toBe(true)
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
         expect(spawnSyncMock).toHaveBeenCalledTimes(2)
     })
 
-    it('preserves a live runner state when no probe reports a command line', () => {
+    it('reports unknown when no probe reports a command line', () => {
         spawnSyncMock
             .mockReturnValueOnce(completed(''))
             .mockReturnValueOnce(unavailable('wmic'))
 
-        expect(isHapiRunnerProcess(8328)).toBe(true)
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('unknown')
         expect(spawnSyncMock).toHaveBeenCalledTimes(2)
     })
 
-    it('rejects the pid when it exits while the probes run', () => {
+    it('reports dead when the pid exits while the probes run', () => {
         vi.spyOn(process, 'kill')
             .mockReturnValueOnce(true)
             .mockImplementationOnce(() => {
@@ -138,6 +138,45 @@ describe('isHapiRunnerProcess on Windows', () => {
             .mockReturnValueOnce(unavailable('powershell'))
             .mockReturnValueOnce(unavailable('wmic'))
 
-        expect(isHapiRunnerProcess(8328)).toBe(false)
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('dead')
+    })
+
+    it('reports dead without probing when the pid is already gone', () => {
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw new Error('ESRCH')
+        })
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('dead')
+        expect(spawnSyncMock).not.toHaveBeenCalled()
+    })
+})
+
+describe('getHapiRunnerProcessIdentity on POSIX', () => {
+    beforeEach(() => {
+        setPlatform('linux')
+        spawnSyncMock.mockReset()
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+    })
+
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('reports the runner from the ps command line', () => {
+        spawnSyncMock.mockReturnValueOnce(completed('hapi runner start-sync'))
+
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+    })
+
+    it('reports unknown when ps cannot report a command line', () => {
+        spawnSyncMock.mockReturnValueOnce(completed(''))
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('unknown')
     })
 })
