@@ -224,6 +224,11 @@ export class CodexAppServerClient extends JsonLineParser {
         });
         this.process = child;
 
+        child.stdin.on('error', (error) => {
+            if (this.process !== child) return;
+            logger.debug('[CodexAppServer] stdin error', error);
+        });
+
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
             if (this.process === child) this.feed(chunk);
@@ -677,11 +682,12 @@ export class CodexAppServerClient extends JsonLineParser {
 
             if ('id' in message && message.id !== undefined) {
                 const requestId = message.id;
+                const sourceProcess = this.process;
                 void this.handleIncomingRequest({
                     id: requestId,
                     method,
                     params
-                }).catch((error) => {
+                }, sourceProcess).catch((error) => {
                     logger.debug('[CodexAppServer] Error handling incoming request', error);
                 });
                 return;
@@ -696,7 +702,10 @@ export class CodexAppServerClient extends JsonLineParser {
         }
     }
 
-    private async handleIncomingRequest(request: { id: unknown; method: string; params?: unknown }): Promise<void> {
+    private async handleIncomingRequest(
+        request: { id: unknown; method: string; params?: unknown },
+        sourceProcess: ChildProcessWithoutNullStreams | null
+    ): Promise<void> {
         const responseId = typeof request.id === 'number' || typeof request.id === 'string'
             ? request.id
             : null;
@@ -709,7 +718,7 @@ export class CodexAppServerClient extends JsonLineParser {
                     code: -32601,
                     message: `Method not found: ${request.method}`
                 }
-            } satisfies JsonRpcLiteResponse);
+            } satisfies JsonRpcLiteResponse, sourceProcess);
             return;
         }
 
@@ -718,7 +727,7 @@ export class CodexAppServerClient extends JsonLineParser {
             this.writePayload({
                 id: responseId,
                 result
-            } satisfies JsonRpcLiteResponse);
+            } satisfies JsonRpcLiteResponse, sourceProcess);
         } catch (error) {
             this.writePayload({
                 id: responseId,
@@ -726,7 +735,7 @@ export class CodexAppServerClient extends JsonLineParser {
                     code: -32603,
                     message: error instanceof Error ? error.message : 'Internal error'
                 }
-            } satisfies JsonRpcLiteResponse);
+            } satisfies JsonRpcLiteResponse, sourceProcess);
         }
     }
 
@@ -766,8 +775,15 @@ export class CodexAppServerClient extends JsonLineParser {
         return error;
     }
 
-    private writePayload(payload: JsonRpcLiteRequest | JsonRpcLiteNotification | JsonRpcLiteResponse): void {
-        const stdin = this.process?.stdin;
+    private writePayload(
+        payload: JsonRpcLiteRequest | JsonRpcLiteNotification | JsonRpcLiteResponse,
+        targetProcess: ChildProcessWithoutNullStreams | null = this.process
+    ): void {
+        if (!targetProcess || targetProcess !== this.process) {
+            return;
+        }
+
+        const stdin = targetProcess.stdin;
         if (!stdin || stdin.destroyed || stdin.writableEnded || stdin.writable === false) {
             return;
         }
