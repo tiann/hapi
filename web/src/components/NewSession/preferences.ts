@@ -1,6 +1,7 @@
 import {
     CREATABLE_AGENT_FLAVORS,
     getPermissionModesForFlavor,
+    resolveHapiYoloPermissionMode,
     type PermissionMode
 } from '@hapi/protocol'
 import {
@@ -11,7 +12,7 @@ import {
     type CodexReasoningEffort,
     type LaunchEffort
 } from './types'
-import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { LEGACY_YOLO_BRIDGE_AGENTS, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
@@ -128,7 +129,7 @@ function resolvePreferredOptionValue(
 export function resolvePreferredLaunchSettings(
     agent: AgentType,
     preferred: PreferredLaunchSettings | null,
-    legacyCodexYolo = false
+    legacyYolo = false
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
@@ -151,14 +152,17 @@ export function resolvePreferredLaunchSettings(
             'default'
         )
         : (preferred?.modelReasoningEffort ?? 'default')
-    const supportsCodexFamilyPermissionMode = usesCodexFamilyPermissionModes(agent)
+    const usesSharedPermissionMode = usesSharedPermissionModeState(agent)
     const availablePermissionModes = getPermissionModesForFlavor(agent)
     const preferredPermissionMode = preferred?.permissionMode
-    const permissionMode = supportsCodexFamilyPermissionMode
+    const legacyYoloBridgeMode = legacyYolo && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
+        ? resolveHapiYoloPermissionMode(agent)
+        : null
+    const permissionMode = usesSharedPermissionMode
         ? preferredPermissionMode && availablePermissionModes.includes(preferredPermissionMode)
             ? preferredPermissionMode
-            : agent === 'codex' && legacyCodexYolo
-                ? 'yolo'
+            : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
+                ? legacyYoloBridgeMode
                 : 'default'
         : undefined
 

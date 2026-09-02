@@ -24,7 +24,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -41,7 +41,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -71,7 +71,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -92,7 +92,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'plan',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -115,7 +115,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'plan',
             copilotAgentMode: 'interactive',
             yoloMode: true,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -135,7 +135,10 @@ describe('newSessionFormDraft', () => {
         expect(loaded.machineId).toBe('machine-1')
     })
 
-    it('maps legacy yoloMode to codex-family permission mode when restoring copilot drafts', () => {
+    it('does not bridge a legacy yoloMode for a flavor outside the legacy YOLO allow-list (copilot)', () => {
+        // copilot moved to the native permission select before the YOLO
+        // toggle era; its restore-time bridge target already settled on
+        // 'default' and stays there (see LEGACY_YOLO_BRIDGE_AGENTS).
         sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
             agent: 'copilot',
             model: 'auto',
@@ -153,6 +156,69 @@ describe('newSessionFormDraft', () => {
 
         const loaded = loadNewSessionFormDraft()!
         expect(loaded.agent).toBe('copilot')
-        expect(loaded.codexFamilyPermissionMode).toBe('yolo')
+        expect(loaded.nativePermissionMode).toBe('default')
+    })
+
+    it('does not bridge a legacy yoloMode for opencode', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
+            agent: 'opencode',
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: true,
+            sessionType: 'simple',
+            worktreeName: ''
+        }))
+
+        const loaded = loadNewSessionFormDraft()!
+        expect(loaded.agent).toBe('opencode')
+        expect(loaded.nativePermissionMode).toBe('default')
+    })
+
+    it('bridges a legacy yoloMode to yolo when restoring codex drafts (pin: codex stays in the allow-list)', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
+            agent: 'codex',
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: true,
+            sessionType: 'simple',
+            worktreeName: ''
+        }))
+
+        const loaded = loadNewSessionFormDraft()!
+        expect(loaded.agent).toBe('codex')
+        expect(loaded.nativePermissionMode).toBe('yolo')
+    })
+
+    it('maps legacy yoloMode to bypassPermissions when restoring claude drafts', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
+            agent: 'claude',
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: true,
+            sessionType: 'simple',
+            worktreeName: ''
+        }))
+
+        const loaded = loadNewSessionFormDraft()!
+        expect(loaded.agent).toBe('claude')
+        expect(loaded.nativePermissionMode).toBe('bypassPermissions')
     })
 })

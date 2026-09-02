@@ -122,9 +122,12 @@ public enum NewSessionLogic {
         codexFamilyPermissionAgents.contains(flavor)
     }
 
-    /// Flavors whose permission control is the native-mode select.
+    /// Flavors whose permission control is the native-mode select. claude
+    /// and grok do not share the codex-family mode set, but they render
+    /// through the same native select (web `usesNativePermissionSelect`,
+    /// `web/src/lib/codexFamilyPermissionAgents.ts`).
     public static func usesNativePermissionSelect(_ flavor: AgentFlavor) -> Bool {
-        flavor == .grok || usesCodexFamilyPermissionModes(flavor)
+        flavor == .claude || flavor == .grok || usesCodexFamilyPermissionModes(flavor)
     }
 
     /// `resolveHapiYoloPermissionMode` (`shared/src/agentConfig.ts`) — the
@@ -144,21 +147,25 @@ public enum NewSessionLogic {
     /// port of the web `handleCreate` mapping:
     /// - `model`/`effort` only for flavors whose picker exists in this v1
     ///   (claude static list, codex machine catalog; others send no model);
-    /// - `yolo` for non-grok/non-codex-family flavors — **including `false`**;
-    /// - `permissionMode` for grok + codex-family — including `'default'`;
+    /// - `yolo` only for flavors still on the YOLO toggle (not
+    ///   `usesNativePermissionSelect`) — **including `false`**;
+    /// - `permissionMode` for every `usesNativePermissionSelect` flavor —
+    ///   including `'default'`;
     /// - `sessionType` always; `worktreeName` only for worktree and non-blank;
     /// - `serviceTier` only while the codex fast tier is visible (then also
     ///   `'standard'`); `collaborationMode` only when not `'default'`;
     /// - `copilotAgentMode` always for copilot;
     /// - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
     ///   remote; pty is deferred, matching the web create form).
+    ///
+    /// Unlike web, iOS has no persistent YOLO preference to migrate: the
+    /// toggle only lives in the in-memory form / a draft that is deleted on
+    /// success, so there is nothing to bridge into `permissionMode` here.
     public static func buildSpawnRequest(
         form: NewSessionForm,
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
-        let codexFamily = usesCodexFamilyPermissionModes(agent)
-        let isGrok = agent == .grok
         // v1 model pickers: claude (static presets) and codex (machine
         // catalog). Other flavors' discovery endpoints are TODO(M4+), so
         // their model is never sent.
@@ -174,8 +181,8 @@ public enum NewSessionLogic {
             modelReasoningEffort: (agent == .codex && form.modelReasoningEffort != "default")
                 ? form.modelReasoningEffort
                 : nil,
-            yolo: (agent == .dsh || isGrok || codexFamily) ? nil : form.yolo,
-            permissionMode: (isGrok || codexFamily) ? form.permissionMode : nil,
+            yolo: (agent == .dsh || usesNativePermissionSelect(agent)) ? nil : form.yolo,
+            permissionMode: usesNativePermissionSelect(agent) ? form.permissionMode : nil,
             sessionType: form.sessionType,
             worktreeName: (form.sessionType == .worktree && !trimmedWorktreeName.isEmpty)
                 ? trimmedWorktreeName

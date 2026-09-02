@@ -133,7 +133,8 @@ describe('NewSession preferences', () => {
             model: 'auto',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
         })
     })
 
@@ -175,6 +176,29 @@ describe('NewSession preferences', () => {
         expect(resolvePreferredLaunchSettings('codex', null, true).permissionMode).toBe('yolo')
         expect(resolvePreferredLaunchSettings('copilot', null, true).permissionMode).toBe('default')
         expect(resolvePreferredLaunchSettings('codex', null, false).permissionMode).toBe('default')
+    })
+
+    it('migrates the legacy YOLO preference for Claude to bypassPermissions', () => {
+        expect(resolvePreferredLaunchSettings('claude', null, true).permissionMode).toBe('bypassPermissions')
+        expect(resolvePreferredLaunchSettings('claude', null, false).permissionMode).toBe('default')
+    })
+
+    it('round-trips a Claude permission mode through storage', () => {
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'plan'
+        })
+
+        expect(loadPreferredLaunchSettings('machine-1', 'claude')).toEqual({
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'plan'
+        })
     })
 
     it.each([
