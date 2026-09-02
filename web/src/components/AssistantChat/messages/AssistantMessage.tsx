@@ -57,6 +57,7 @@ export function HappyAssistantMessage() {
     const messageModel = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
     const turnCount = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.turnCount)
     const roundSummary = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.roundSummary)
+    const replyToMessageId = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.replyToMessageId)
 
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount, roundSummary }
 
@@ -91,6 +92,11 @@ export function HappyAssistantMessage() {
                 showFork={showForkCurrent}
                 historyActionPending={ctx.historyActionPending}
                 onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}
+                onJumpToPrompt={() => { void ctx.jumpToPrompt(messageId, replyToMessageId) }}
+                onJumpToConversationStart={() => { void ctx.scrollToConversationStart() }}
+                isLoadingConversationStart={ctx.isLoadingConversationStart}
+                isLoadingPrompt={ctx.loadingPromptMessageId === messageId}
+                isNavigationInFlight={ctx.isNavigationInFlight}
             />
         </MessagePrimitive.Root>
     )

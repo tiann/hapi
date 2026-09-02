@@ -4,16 +4,24 @@ import { useState, type ComponentProps } from 'react'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     ConversationOutlinePanel,
+    ConversationStartStatus,
     captureScrollAnchor,
     getHistoryCoverageRetryDelay,
     getPullToLoadState,
-    getScrollIntent,
     hasAppliedHistoryVersion,
     isNestedScrollEvent,
+    findPromptTarget,
+    findPreviousUserMessage,
+    getNavigationFeedback,
+    getScrollIntent,
+    loadOlderForNavigationWithRetry,
+    loadAllOlderMessages,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
     restoreScrollAnchor,
+    runAfterPendingHistoryLoad,
     shouldLoadOlderForViewport,
+    shouldHoldHistoryNavigation,
     shouldCancelInitialScrollSettling,
     ThreadMessagesById,
 } from '@/components/AssistantChat/HappyThread'
@@ -57,6 +65,144 @@ describe('nested scroll event ownership', () => {
         expect(isNestedScrollEvent(childEvent)).toBe(true)
 
         nested.remove()
+    })
+})
+
+describe('ConversationStartStatus', () => {
+    it('announces loading and completion states', () => {
+        const { rerender } = render(
+            <I18nProvider><ConversationStartStatus status="loading" /></I18nProvider>
+        )
+        expect(screen.getByRole('status')).toHaveTextContent('Loading earlier messages…')
+
+        rerender(<I18nProvider><ConversationStartStatus status="success" /></I18nProvider>)
+        expect(screen.getByRole('status')).toHaveTextContent('Reached conversation start')
+    })
+
+    it('uses an alert for load failures', () => {
+        render(<I18nProvider><ConversationStartStatus status="error" /></I18nProvider>)
+        expect(screen.getByRole('alert')).toHaveTextContent('Could not load earlier messages. Try again.')
+    })
+
+    it('announces prompt loading separately from conversation-start loading', () => {
+        render(<I18nProvider><ConversationStartStatus status="loading" kind="prompt" /></I18nProvider>)
+        expect(screen.getByRole('status')).toHaveTextContent('Loading turn input…')
+    })
+})
+
+describe('navigation feedback priority', () => {
+    it('shows the prompt status while conversation-start feedback is still settling', () => {
+        expect(getNavigationFeedback('success', 'loading')).toEqual({
+            status: 'loading',
+            kind: 'prompt'
+        })
+        expect(getNavigationFeedback('error', 'success')).toEqual({
+            status: 'success',
+            kind: 'prompt'
+        })
+    })
+
+    it('falls back to conversation-start feedback when no prompt navigation is active', () => {
+        expect(getNavigationFeedback('success', 'idle')).toEqual({
+            status: 'success',
+            kind: 'conversationStart'
+        })
+    })
+})
+
+describe('history navigation viewport lock', () => {
+    it('holds the viewport in history mode when restoration reports the bottom', () => {
+        expect(shouldHoldHistoryNavigation(true, true)).toBe(true)
+        expect(shouldHoldHistoryNavigation(true, false)).toBe(false)
+        expect(shouldHoldHistoryNavigation(false, true)).toBe(false)
+    })
+})
+
+describe('assistant prompt lookup', () => {
+    it('finds the nearest preceding user message', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:first" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:first-answer"></div>
+                <div id="hapi-message-user-text:second" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:second-answer"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'agent-text:second-answer')?.id)
+            .toBe('hapi-message-user-text:second')
+    })
+
+    it('returns null when the prompt is outside the loaded history window', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-agent-text:answer"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'agent-text:answer')).toBeNull()
+    })
+
+    it('recognizes user-role CLI output as a turn input', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-cli-output:command" data-hapi-message-role="user"></div>
+                <div id="hapi-message-cli-output:result"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'cli-output:result')?.id)
+            .toBe('hapi-message-cli-output:command')
+    })
+
+    it('prefers the stable response target over a later queued user row', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:prompt" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:answer"></div>
+                <div id="hapi-message-user-text:queued" data-hapi-message-role="user"></div>
+            </div>
+        `
+
+        expect(findPromptTarget(
+            viewport,
+            'agent-text:answer',
+            { current: false, nextAnchorId: null },
+            'user-text:prompt'
+        )?.id).toBe('hapi-message-user-text:prompt')
+    })
+
+    it('bounds prompt lookup when prepending re-keys the selected assistant card', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-agent-text:answer"></div>
+                <div id="hapi-message-user-text:later" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:later-answer"></div>
+            </div>
+        `
+        document.body.append(viewport)
+        const assistantAnchorState = { current: false, nextAnchorId: null as string | null }
+        expect(findPromptTarget(viewport, 'agent-text:answer', assistantAnchorState)).toBeNull()
+        expect(assistantAnchorState.nextAnchorId).toBe('hapi-message-user-text:later')
+
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:older" data-hapi-message-role="user"></div>
+                <div id="hapi-message-user-text:prompt" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:older-answer"></div>
+                <div id="hapi-message-user-text:later" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:later-answer"></div>
+            </div>
+        `
+
+        expect(findPromptTarget(viewport, 'agent-text:answer', assistantAnchorState)?.id)
+            .toBe('hapi-message-user-text:prompt')
+        viewport.remove()
     })
 })
 
@@ -334,6 +480,30 @@ describe('scroll anchor helpers', () => {
         })
     })
 
+    it('keeps the first conversation-start smooth-scroll frame as upward when the pre-jump baseline is preserved', () => {
+        // After load-all, restoration leaves the viewport near the bottom.
+        // Zeroing previousScrollTop before smooth scroll makes the first
+        // near-bottom frame look non-upward and can flip view mode to tail.
+        expect(getScrollIntent({
+            scrollTop: 24_800,
+            previousScrollTop: 0,
+            scrollHeight: 25_200,
+            clientHeight: 530
+        })).toMatchObject({
+            isNearBottom: true,
+            isScrollingUp: false
+        })
+        expect(getScrollIntent({
+            scrollTop: 24_800,
+            previousScrollTop: 24_967,
+            scrollHeight: 25_200,
+            clientHeight: 530
+        })).toMatchObject({
+            isNearBottom: true,
+            isScrollingUp: true
+        })
+    })
+
     it('cancels initial scroll settling when the user scrolls up away from the bottom', () => {
         const intent = getScrollIntent({
             scrollTop: 520,
@@ -485,5 +655,115 @@ describe('share turn snapshots', () => {
         const fallback = { html: '', text: 'prompt', role: 'user' as const }
 
         expect(prependMissingUserSnapshot([user], fallback)).toEqual([user])
+    })
+})
+
+describe('conversation-start loading', () => {
+    it('loads every older page from one action', async () => {
+        let remainingPages = 3
+        const loadOlderPreservingScroll = vi.fn(async () => {
+            remainingPages -= 1
+            return true
+        })
+
+        await expect(loadAllOlderMessages({
+            hasMoreMessages: () => remainingPages > 0,
+            loadOlderPreservingScroll
+        })).resolves.toBe(true)
+        expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(3)
+    })
+
+    it('stops when a page fails to load', async () => {
+        const loadOlderPreservingScroll = vi.fn(async () => false)
+
+        await expect(loadAllOlderMessages({
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll
+        })).resolves.toBe(false)
+        expect(loadOlderPreservingScroll).toHaveBeenCalledOnce()
+    })
+
+    it('stops before another page when navigation is cancelled', async () => {
+        let cancelled = false
+        const loadOlderPreservingScroll = vi.fn(async () => {
+            cancelled = true
+            return true
+        })
+
+        await expect(loadAllOlderMessages({
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll,
+            isCancelled: () => cancelled
+        })).resolves.toBe(false)
+        expect(loadOlderPreservingScroll).toHaveBeenCalledOnce()
+    })
+})
+
+describe('pending history navigation', () => {
+    it('waits for the active prepend before scrolling to a loaded prompt', async () => {
+        let settleLoad!: (value: boolean) => void
+        const pendingLoad = new Promise<boolean>((resolve) => {
+            settleLoad = resolve
+        })
+        const scrollToPrompt = vi.fn(() => true)
+
+        const navigation = runAfterPendingHistoryLoad(pendingLoad, scrollToPrompt)
+        await Promise.resolve()
+        expect(scrollToPrompt).not.toHaveBeenCalled()
+
+        settleLoad(true)
+        await expect(navigation).resolves.toBe(true)
+        expect(scrollToPrompt).toHaveBeenCalledOnce()
+    })
+})
+
+describe('navigation history loading', () => {
+    it('retries transient stops until a page loads', async () => {
+        const loadOlder = vi.fn()
+            .mockResolvedValueOnce('transient-stop')
+            .mockResolvedValueOnce('transient-stop')
+            .mockResolvedValueOnce('loaded')
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, { wait })).resolves.toBe(true)
+        expect(loadOlder).toHaveBeenCalledTimes(3)
+        expect(wait).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not retry a terminal stop', async () => {
+        const loadOlder = vi.fn(async () => 'terminal-stop' as const)
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, { wait })).resolves.toBe(false)
+        expect(loadOlder).toHaveBeenCalledOnce()
+        expect(wait).not.toHaveBeenCalled()
+    })
+
+    it('bounds repeated transient stops', async () => {
+        const loadOlder = vi.fn(async () => 'transient-stop' as const)
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, {
+            maxTransientRetries: 2,
+            wait
+        })).resolves.toBe(false)
+        expect(loadOlder).toHaveBeenCalledTimes(3)
+        expect(wait).toHaveBeenCalledTimes(2)
+    })
+
+    it('stops retrying when navigation is cancelled', async () => {
+        let cancelled = false
+        const loadOlder = vi.fn(async () => {
+            cancelled = true
+            return 'transient-stop' as const
+        })
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, {
+            wait,
+            isCancelled: () => cancelled
+        })).resolves.toBe(false)
+        expect(loadOlder).toHaveBeenCalledOnce()
+        expect(wait).not.toHaveBeenCalled()
     })
 })
