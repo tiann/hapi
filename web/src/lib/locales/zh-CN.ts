@@ -64,6 +64,8 @@ export default {
 
   // Sessions page
   'sessions.new': '新建会话',
+  'sessions.sidebar.collapse': '收起会话列表',
+  'sessions.sidebar.expand': '展开会话列表',
   'sessions.empty.title': '还没有会话',
   'sessions.empty.hint': '在 workspace 下任意目录启动一个会话，或先浏览目录树看看。',
   'sessions.empty.startSession': '启动会话',
