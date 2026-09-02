@@ -243,15 +243,54 @@ struct CatalogTests {
 
     // MARK: - New-session catalogs (derived from the claude catalog data, #39)
 
+    @Test func claudeEffortOptionsFollowModelCapability() {
+        // Haiku supports no --effort, so its picker offers Auto only. A session
+        // pinned to `high` elsewhere must not be able to re-pin it from here.
+        #expect(ModelCatalog.claudeEffortOptions(currentEffort: "high", model: "haiku")
+            == [CatalogOption(value: nil, label: "Auto")])
+
+        // A family that does support effort keeps the full list.
+        let sonnet = ModelCatalog.claudeEffortOptions(currentEffort: "high", model: "sonnet")
+        #expect(sonnet.count == ClaudeEfforts.levels.count + 1)
+        #expect(sonnet.first == CatalogOption(value: nil, label: "Auto"))
+
+        // Unknown, Default and omitted selections stay permissive: nothing has
+        // said the model lacks effort.
+        #expect(ClaudeModels.supportsEffort(nil))
+        #expect(ClaudeModels.supportsEffort("auto"))
+        #expect(ClaudeModels.supportsEffort("default"))
+        #expect(ClaudeModels.supportsEffort("opusplan"))
+        #expect(!ClaudeModels.supportsEffort("haiku"))
+        // Sessions predating discovery store the resolved SDK id.
+        #expect(!ClaudeModels.supportsEffort("claude-haiku-4-5-20251001"))
+        #expect(ClaudeModels.supportsEffort("claude-sonnet-5"))
+        #expect(ClaudeModels.family(of: "claude-haiku-4-5-20251001") == "haiku")
+        #expect(ClaudeModels.family(of: "sonnet[1m]") == "sonnet")
+        #expect(ClaudeModels.family(of: "default") == nil)
+        // Pre-4 ids put the generation before the family; a positional read
+        // returned "3" for all of them and conflated every model of it.
+        #expect(ClaudeModels.family(of: "claude-3-5-sonnet-20241022") == "sonnet")
+        #expect(ClaudeModels.family(of: "claude-3-opus-20240229") == "opus")
+        #expect(ClaudeModels.family(of: "us.anthropic.claude-sonnet-5") == "sonnet")
+        #expect(ClaudeModels.family(of: "claude-opusplan-1") == nil)
+        #expect(!ClaudeModels.supportsEffort("claude-3-5-haiku-20241022"))
+        // A suffixed id names the same family as its bare counterpart.
+        #expect(ModelCatalog.claudeEffortOptions(currentEffort: nil, model: "sonnet[1m]").count
+            == ClaudeEfforts.levels.count + 1)
+    }
+
     @Test func newSessionCatalogsMatchTheWebOptionLists() {
+        // One deliberate divergence from the web offer list: Haiku. The web
+        // picker drives its effort options from the model's advertised
+        // capability, so it can offer a model that supports no effort; these
+        // catalogs are static and post model and effort separately, so offering
+        // Haiku here would let a session sit on it with `high` pinned. It stays
+        // in ClaudeModels.labels, so an existing Haiku session still renders.
         #expect(NewSessionCatalogs.claudeModels == [
             NewSessionOption(value: "auto", label: "Default"),
-            NewSessionOption(value: "sonnet", label: "Sonnet"),
-            NewSessionOption(value: "sonnet[1m]", label: "Sonnet 1M"),
             NewSessionOption(value: "opus", label: "Opus"),
-            NewSessionOption(value: "opus[1m]", label: "Opus 1M"),
             NewSessionOption(value: "fable", label: "Fable"),
-            NewSessionOption(value: "fable[1m]", label: "Fable 1M"),
+            NewSessionOption(value: "sonnet", label: "Sonnet"),
         ])
         #expect(NewSessionCatalogs.claudeEfforts == [
             NewSessionOption(value: "auto", label: "Auto"),

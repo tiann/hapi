@@ -510,3 +510,315 @@ describe('claudeRemote /compact result reporting', () => {
         expect(wireOrder).toEqual(['result', 'Compaction completed', 'ready']);
     }, 15_000);
 });
+
+describe('claudeRemote turn-1 contextWindow seed (get_context_usage)', () => {
+    function createAsyncStreamWithContextUsage(
+        messages: SDKMessage[],
+        getContextUsage: () => Promise<{ maxTokens: number; model: string | null } | null>
+    ) {
+        return {
+            ...createAsyncStream(messages),
+            getContextUsage
+        };
+    }
+
+    it('fires get_context_usage on init when needsContextWindowSeed says yes, and forwards the measurement', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+
+        const getContextUsage = vi.fn().mockResolvedValue({ maxTokens: 967_000, model: 'claude-sonnet-5' });
+        const sdkMessages: SDKMessage[] = [
+            {
+                type: 'system',
+                subtype: 'init',
+                session_id: 's-1',
+                model: 'claude-sonnet-5'
+            } as unknown as SDKMessage,
+            {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's-1'
+            } as unknown as SDKMessage
+        ];
+        queryMock.mockReturnValueOnce(createAsyncStreamWithContextUsage(sdkMessages, getContextUsage));
+
+        const onContextWindowSeed = vi.fn();
+        // The key needsContextWindowSeed() returns need not equal the model
+        // id verbatim (SDKToLogConverter folds "[1m]" into it in some cases)
+        // -- use a distinct string here so a test that accidentally passed
+        // `model` through instead of the returned key would be caught.
+        const needsContextWindowSeed = vi.fn().mockReturnValue('claude-sonnet-5-key');
+        let nextCallCount = 0;
+
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'hi', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                needsContextWindowSeed,
+                onContextWindowSeed
+            });
+
+            await waitFor(() => onContextWindowSeed.mock.calls.length > 0);
+
+            expect(needsContextWindowSeed).toHaveBeenCalledWith('claude-sonnet-5');
+            expect(getContextUsage).toHaveBeenCalledTimes(1);
+            expect(onContextWindowSeed).toHaveBeenCalledWith({ key: 'claude-sonnet-5-key', maxTokens: 967_000 });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+
+    it('discards the measurement when get_context_usage answers for a different model than the one the request was fired for', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+
+        // Simulates a model switch racing ahead of the in-flight get_context_usage
+        // request: it resolves, but reports a model other than seedModel.
+        const getContextUsage = vi.fn().mockResolvedValue({ maxTokens: 1_000_000, model: 'claude-opus-5' });
+        const sdkMessages: SDKMessage[] = [
+            {
+                type: 'system',
+                subtype: 'init',
+                session_id: 's-1',
+                model: 'claude-sonnet-5'
+            } as unknown as SDKMessage,
+            {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's-1'
+            } as unknown as SDKMessage
+        ];
+        queryMock.mockReturnValueOnce(createAsyncStreamWithContextUsage(sdkMessages, getContextUsage));
+
+        const onContextWindowSeed = vi.fn();
+        const needsContextWindowSeed = vi.fn().mockReturnValue('claude-sonnet-5-key');
+        let nextCallCount = 0;
+
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'hi', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                needsContextWindowSeed,
+                onContextWindowSeed
+            });
+
+            await waitFor(() => getContextUsage.mock.calls.length > 0);
+            // getContextUsage resolved (awaited above via its mock call count),
+            // give its .then() a tick to run before asserting the negative.
+            await new Promise((resolve) => setTimeout(resolve, 10));
+
+            expect(onContextWindowSeed).not.toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+
+    it('accepts the measurement when get_context_usage omits model (older CLI -- a missing model cannot disprove a match)', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+
+        const getContextUsage = vi.fn().mockResolvedValue({ maxTokens: 967_000, model: null });
+        const sdkMessages: SDKMessage[] = [
+            {
+                type: 'system',
+                subtype: 'init',
+                session_id: 's-1',
+                model: 'claude-sonnet-5'
+            } as unknown as SDKMessage,
+            {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's-1'
+            } as unknown as SDKMessage
+        ];
+        queryMock.mockReturnValueOnce(createAsyncStreamWithContextUsage(sdkMessages, getContextUsage));
+
+        const onContextWindowSeed = vi.fn();
+        const needsContextWindowSeed = vi.fn().mockReturnValue('claude-sonnet-5-key');
+        let nextCallCount = 0;
+
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'hi', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                needsContextWindowSeed,
+                onContextWindowSeed
+            });
+
+            await waitFor(() => onContextWindowSeed.mock.calls.length > 0);
+
+            expect(onContextWindowSeed).toHaveBeenCalledWith({ key: 'claude-sonnet-5-key', maxTokens: 967_000 });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+
+    it('does not call get_context_usage when needsContextWindowSeed says the model is already known', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+
+        const getContextUsage = vi.fn().mockResolvedValue({ maxTokens: 967_000, model: 'claude-sonnet-5' });
+        const sdkMessages: SDKMessage[] = [
+            {
+                type: 'system',
+                subtype: 'init',
+                session_id: 's-1',
+                model: 'claude-sonnet-5'
+            } as unknown as SDKMessage,
+            {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's-1'
+            } as unknown as SDKMessage
+        ];
+        queryMock.mockReturnValueOnce(createAsyncStreamWithContextUsage(sdkMessages, getContextUsage));
+
+        const onContextWindowSeed = vi.fn();
+        const needsContextWindowSeed = vi.fn().mockReturnValue(null);
+        let nextCallCount = 0;
+
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'hi', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                needsContextWindowSeed,
+                onContextWindowSeed
+            });
+
+            expect(needsContextWindowSeed).toHaveBeenCalledWith('claude-sonnet-5');
+            expect(getContextUsage).not.toHaveBeenCalled();
+            expect(onContextWindowSeed).not.toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+
+    it('does not call get_context_usage at all when the caller omits needsContextWindowSeed (backward compatible)', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+
+        const getContextUsage = vi.fn().mockResolvedValue({ maxTokens: 967_000, model: 'claude-sonnet-5' });
+        const sdkMessages: SDKMessage[] = [
+            {
+                type: 'system',
+                subtype: 'init',
+                session_id: 's-1',
+                model: 'claude-sonnet-5'
+            } as unknown as SDKMessage,
+            {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's-1'
+            } as unknown as SDKMessage
+        ];
+        queryMock.mockReturnValueOnce(createAsyncStreamWithContextUsage(sdkMessages, getContextUsage));
+
+        let nextCallCount = 0;
+
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'hi', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {}
+            });
+
+            expect(getContextUsage).not.toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+});

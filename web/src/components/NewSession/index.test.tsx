@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
         'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
     ].map((agent) => ({ agent, available: true })),
     codexModelsLoading: false,
+    claudeModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     directoryExists: undefined as boolean | undefined,
@@ -29,6 +30,7 @@ const mocks = vi.hoisted(() => ({
     piDialogSelection: ['pi-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
+    claudeModels: [] as Array<{ value: string; displayName: string; resolvedModel?: string; supportedEffortLevels?: string[] }>,
     piModelsError: null as string | null,
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
@@ -147,6 +149,14 @@ vi.mock('@/hooks/queries/useCopilotModelsForCwd', () => ({
         currentModelId: null,
         isLoading: mocks.copilotModelsLoading,
         error: null
+    })
+}))
+vi.mock('@/hooks/queries/useClaudeModelsForCwd', () => ({
+    useClaudeModelsForCwd: () => ({
+        availableModels: mocks.claudeModels,
+        isLoading: mocks.claudeModelsLoading,
+        error: null,
+        refetch: vi.fn()
     })
 }))
 vi.mock('@/hooks/queries/usePiModelsForMachine', () => ({
@@ -275,6 +285,7 @@ describe('NewSession launch preferences', () => {
                 .map((agent) => ({ agent, available: true }))
         )
         mocks.codexModelsLoading = false
+        mocks.claudeModelsLoading = false
         mocks.agyModelsLoading = false
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
         mocks.directoryExists = true
@@ -285,6 +296,7 @@ describe('NewSession launch preferences', () => {
         mocks.piDialogSelection = ['pi-native-1']
         mocks.piModels = []
         mocks.piModelsLoading = false
+        mocks.claudeModels = []
         mocks.piModelsError = null
         mocks.nextModelValue = 'gpt-5.6-terra'
         mocks.refetchSessions.mockReset()
@@ -1099,5 +1111,374 @@ describe('NewSession launch preferences', () => {
             agent: 'pi',
             model: 'opencode-go/deepseek-v4-pro',
         }))
+    })
+
+    it('keeps a catalog-only Claude selection visible when catalog discovery falls back', async () => {
+        mocks.claudeModels = []
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'opus[1m]',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('opus[1m]')
+            expect(screen.getByTestId('model-options')).toHaveTextContent(
+                'Default,Opus 1M,Opus,Fable,Sonnet,Haiku'
+            )
+        })
+    })
+
+    it('keeps the exact row when a family offers more than one, so the pick is what spawns', async () => {
+        // Aliasing is only safe while a family has a single row. With two, the
+        // user distinguished between them: storing the family would let the
+        // derivation pick the other row and spawn a different generation.
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
+            { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', resolvedModel: 'claude-sonnet-4-5-20250929' }
+        ]
+        savePreferredAgent('claude')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('model-options')).toHaveTextContent('Sonnet 4.5'))
+        mocks.nextModelValue = 'claude-sonnet-4-5-20250929'
+        fireEvent.click(screen.getByTestId('model'))
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalled())
+
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            model: 'claude-sonnet-4-5-20250929'
+        }))
+        expect(loadPreferredLaunchSettings('machine-1', 'claude')?.model)
+            .toBe('claude-sonnet-4-5-20250929')
+    })
+
+    it('holds Create while a restored Claude pin is still being validated', async () => {
+        // The gate exists so a restored model/effort is never submitted before
+        // this cwd's catalog can confirm it. The loading arm is the half the
+        // shared mock used to hardcode away.
+        mocks.claudeModelsLoading = true
+        mocks.claudeModels = []
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'fable',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+        savePreferredAgent('claude')
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+    })
+
+    it('stores a picked Claude family as its alias, not as today\'s row id', async () => {
+        // With a catalog loaded the picker is the only place Fable appears, so
+        // this is the ordinary way to end up on it. Storing the row id would
+        // make every preference this feature creates a pin, and a pin stops
+        // matching the moment the catalog renames the row.
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'claude-fable-5-1[1m]', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }
+        ]
+        savePreferredAgent('claude')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('model-options')).toHaveTextContent('Fable'))
+        mocks.nextModelValue = 'claude-fable-5-1[1m]'
+        fireEvent.click(screen.getByTestId('model'))
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalled())
+
+        // The spawn carries the concrete row the catalog published...
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            model: 'claude-fable-5-1[1m]'
+        }))
+        // ...while what is remembered is the family itself.
+        expect(loadPreferredLaunchSettings('machine-1', 'claude')?.model).toBe('fable')
+    })
+
+    it('leaves the stored Claude preset an alias rather than pinning it to today\'s row', async () => {
+        // `fable` means "whatever Fable currently is". Rewriting the stored
+        // value to the row it resolves to today turns it into a pin, and the
+        // next time the catalog renames that row the pin matches nothing and
+        // resets to Default (= Opus) -- the very bug this path just fixed,
+        // then unrecoverable because the alias that would heal it is gone.
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'claude-fable-5-1[1m]', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }
+        ]
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'fable',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+        savePreferredAgent('claude')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+        // The Claude launch-preference gate holds Create until this cwd's catalog
+        // has been validated, which needs the directory to resolve as existing.
+        mocks.directoryExists = true
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                // JS expression, not a JSX string: the path-existence mock keys on a
+                // single-backslash path, and a JSX attribute would not unescape.
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        // The picker resolves the alias to today's row...
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('claude-fable-5-1[1m]')
+        })
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+
+        // ...and creating carries that concrete row to the spawn...
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalled())
+        // ...while what stays stored is still the alias.
+        expect(loadPreferredLaunchSettings('machine-1', 'claude')?.model).toBe('fable')
+    })
+
+    it('keeps a restored Claude preset when the catalog publishes that family under another id', async () => {
+        // The CLI picks its own identifier form per family and changes it
+        // between releases: Fable currently ships only as a full SDK id. A
+        // stored `fable` preset means "the current Fable", so it must land on
+        // that row rather than being discarded back to Default (= Opus).
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'claude-fable-5-1[1m]', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }
+        ]
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'fable',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('claude-fable-5-1[1m]')
+        })
+    })
+
+    it('resets a restored Claude model this cwd\'s catalog does not list', async () => {
+        // Mirrors the grok reset: the saved preference is machine-wide while the
+        // catalog is per-cwd, so a value the loaded catalog omits must not stay
+        // selectable and must not be what Create submits.
+        mocks.claudeModels = [
+            // The real catalog leads with a `default` row; the picker must not
+            // render it as a second Default alongside the 'auto' sentinel.
+            { value: 'default', displayName: 'Default (Sonnet)', resolvedModel: 'claude-sonnet-5' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
+        ]
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'opusplan',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            expect(screen.getByTestId('model-options')).toHaveTextContent('Default,Sonnet,Haiku')
+        })
+    })
+
+    it('shows Default plus the static fallback list when Claude catalog discovery falls back with no pin', async () => {
+        mocks.claudeModels = []
+        savePreferredAgent('claude')
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            expect(screen.getByTestId('model-options')).toHaveTextContent(
+                'Default,Opus,Fable,Sonnet,Haiku'
+            )
+        })
+    })
+
+    it('does not duplicate a Claude selection that already matches a static fallback option', async () => {
+        mocks.claudeModels = []
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'sonnet',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('sonnet')
+            const options = screen.getByTestId('model-options').textContent?.split(',') ?? []
+            expect(options.filter((label) => label === 'Sonnet')).toHaveLength(1)
+            expect(options).toEqual(['Default', 'Opus', 'Fable', 'Sonnet', 'Haiku'])
+        })
+    })
+
+    it('keeps rendering the live Claude catalog when it is available (regression)', async () => {
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default' },
+            { value: 'opus[1m]', displayName: 'Opus 1M', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }
+        ]
+        savePreferredAgent('claude')
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            expect(screen.getByTestId('model-options')).toHaveTextContent('Default,Opus 1M,Sonnet')
+        })
     })
 })

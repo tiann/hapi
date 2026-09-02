@@ -10,6 +10,8 @@ import {
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    resolveClaudeCatalogCwd,
+    shouldDriveClaudeCatalog,
     shouldRouteToScratchlist,
 } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -50,6 +52,51 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModel).toHaveBeenCalledWith('gpt-next')
     })
 })
+
+describe('resolveClaudeCatalogCwd', () => {
+    it('probes the repo root for a worktree session, not the generated worktree path', () => {
+        // The worktree path is outside a workspace root configured as the repo,
+        // so probing it would be rejected and the pickers would fall back.
+        expect(resolveClaudeCatalogCwd({
+            path: '/home/u/proj-worktrees/feature-x',
+            worktree: { basePath: '/home/u/proj' }
+        })).toBe('/home/u/proj')
+    })
+
+    it('uses the session path when there is no worktree', () => {
+        expect(resolveClaudeCatalogCwd({ path: '/home/u/proj' })).toBe('/home/u/proj')
+    })
+
+    it('returns null when neither is present', () => {
+        expect(resolveClaudeCatalogCwd(null)).toBeNull()
+        expect(resolveClaudeCatalogCwd({ worktree: null })).toBeNull()
+    })
+})
+
+describe('shouldDriveClaudeCatalog', () => {
+    // Unlike codex/cursor/grok, the hub's model and effort routes for
+    // Claude sessions do not gate on controlledByUser (hub/src/web/routes/
+    // sessions.ts) -- only codex/cursor/grok's model route and grok's
+    // effort route 409 for a locally-controlled session. So the catalog
+    // query has to cover every active Claude session, controlled or not,
+    // to match what the route actually accepts.
+    it('is true for an active, locally-controlled Claude session (the fixed gap)', () => {
+        expect(shouldDriveClaudeCatalog('claude', true)).toBe(true)
+    })
+
+    it('is true for an active, remote Claude session', () => {
+        expect(shouldDriveClaudeCatalog('claude', true)).toBe(true)
+    })
+
+    it('is false for an inactive Claude session', () => {
+        expect(shouldDriveClaudeCatalog('claude', false)).toBe(false)
+    })
+
+    it('is false for a non-Claude flavor', () => {
+        expect(shouldDriveClaudeCatalog('codex', true)).toBe(false)
+    })
+})
+
 
 describe('resolvePiContextWindow', () => {
     const models = [

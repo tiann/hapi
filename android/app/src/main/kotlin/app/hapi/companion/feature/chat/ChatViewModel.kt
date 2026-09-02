@@ -1286,7 +1286,7 @@ class ChatViewModel(
             "claude" -> {
                 modelOptions = ModelCatalog.claudeModelOptions(model)
                 effort = detail?.effort
-                effortOptions = ModelCatalog.claudeEffortOptions(effort)
+                effortOptions = ModelCatalog.claudeEffortOptions(effort, model)
             }
             "codex" -> {
                 when (models) {

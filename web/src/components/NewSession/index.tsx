@@ -2,7 +2,9 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, ty
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel, isClaudeModelPreset, resolveClaudeModelFamily } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -10,6 +12,7 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
+import { useClaudeModelsForCwd } from '@/hooks/queries/useClaudeModelsForCwd'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
 import { useCopilotModelsForCwd } from '@/hooks/queries/useCopilotModelsForCwd'
 import { usePiModelsForMachine } from '@/hooks/queries/usePiModelsForMachine'
@@ -38,6 +41,7 @@ import {
     saveNewSessionFormDraft,
     shouldRestoreNewSessionFormDraft
 } from './newSessionFormDraft'
+import { MODEL_OPTIONS } from './types'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
@@ -570,6 +574,182 @@ export function NewSession(props: {
         cwd: deferredDirectory,
         enabled: agent === 'copilot' && deferredDirectoryExists === true
     })
+    const claudeModelsState = useClaudeModelsForCwd({
+        api: props.api,
+        machineId,
+        cwd: deferredDirectory,
+        enabled: agent === 'claude' && deferredDirectoryExists === true
+    })
+    const claudeModelOptions = useMemo(() => {
+        if (agent !== 'claude') {
+            return undefined
+        }
+
+        // Delegate to the same canonical builder the composer uses instead of
+        // re-deriving the mapping here, regardless of whether the catalog has
+        // loaded: it already does the resolvedModel-aware current-model dedup
+        // (a stored resolved SDK id like "claude-opus-5[1m]" matches the
+        // catalog's "opus[1m]" row instead of getting a second, raw-labeled
+        // row) and legacy-[1m]-alias labeling, and -- critically -- falls
+        // Catalog rows only, like buildGrokModelOptions: a create form must not
+        // offer a model this cwd's catalog doesn't list. The composer builder
+        // deliberately folds a missing current value back in, which is right for
+        // an already-running session carrying a legacy id but wrong here -- a
+        // machine-wide saved preference would stay selectable in a cwd whose
+        // catalog omits it. The effect below resets such a value instead, again
+        // mirroring grok. When the probe fails there is no catalog to validate
+        // against, so the static offer list stands in.
+        if (claudeModelsState.availableModels.length === 0) {
+            // No catalog to validate against, so the saved value has to stay
+            // selectable: the composer builder folds it in on top of the static
+            // offer list. The reset effect above is skipped in this same case,
+            // so the two never disagree about a value discovery cannot judge.
+            return getClaudeComposerModelOptions(model === 'auto' ? null : model).map((option) => ({
+                value: option.value ?? 'auto',
+                label: option.label
+            }))
+        }
+        return [
+            { value: 'auto', label: 'Default' },
+            // The catalog carries its own `default` row; 'auto' above already is
+            // that row's sentinel here, so emitting both would render two
+            // Default choices and let Create submit the literal string
+            // `default` (only 'auto' is translated away in handleCreate). The
+            // composer builder maps the same row onto its null sentinel.
+            ...claudeModelsState.availableModels
+                .filter((candidate) => candidate.value !== 'default')
+                .map((candidate) => ({
+                    value: candidate.value,
+                    label: candidate.displayName
+                }))
+        ]
+    }, [agent, claudeModelsState.availableModels, model])
+    // The row the current selection resolves to, for the select's value and the
+    // spawn payload. Deliberately not written back into `model`: that state is
+    // what gets persisted (savePreferredLaunchSettings, the form draft), and
+    // storing today's row id would turn the user's alias -- `fable`, meaning
+    // "whatever Fable currently is" -- into a pin to one release. The next time
+    // the catalog renamed that row the pin would match nothing and reset to
+    // Default, which is the regression this path exists to prevent.
+    const claudeSelectedRowValue = useMemo(() => {
+        if (agent !== 'claude' || model === 'auto' || model === 'default') {
+            return model
+        }
+        return findCatalogRowFor(model, claudeModelsState.availableModels)?.value ?? model
+    }, [agent, claudeModelsState.availableModels, model])
+
+    // Store the family a picked row belongs to rather than the row's own id, so
+    // the preference survives the catalog renaming that row -- with a catalog
+    // loaded the picker is the only place a family appears, so this is the
+    // ordinary way a preference is created. claudeSelectedRowValue turns the
+    // alias back into the concrete row for the select and the spawn.
+    //
+    // Only when the family has a single row, though. Two rows mean the user
+    // chose between them, and an alias cannot say which: the derivation would
+    // take the first and spawn the other generation. Those, and rows whose
+    // family is not a known preset, are stored exactly as they came.
+    const handleClaudeModelChange = useCallback((next: string) => {
+        const family = resolveClaudeModelFamily(next)
+        if (!family || !isClaudeModelPreset(family)) {
+            setModel(next)
+            return
+        }
+        const familyRowCount = claudeModelsState.availableModels.filter((candidate) => (
+            candidate.value !== 'default' && resolveClaudeModelFamily(candidate.value) === family
+        )).length
+        setModel(familyRowCount > 1 ? next : family)
+    }, [claudeModelsState.availableModels])
+
+    const claudeEffortOptions = useMemo(() => {
+        if (agent !== 'claude') {
+            return undefined
+        }
+        // resolveClaudeSupportedEffortLevels returns undefined unless some
+        // row in the catalog has confirmed the running claude CLI reports
+        // supportedEffortLevels at all -- a single row's own absence of the
+        // field is ambiguous by itself (haiku's real zero-support vs. an
+        // older CLI that doesn't report the field for any model, and HAPI
+        // enforces no minimum claude version, see claudeRemote.ts).
+        // Fall back to LaunchEffortSelector's static CLAUDE_EFFORT_OPTIONS
+        // list (its own `undefined` branch) rather than asserting every
+        // model has zero support. Passing `model` (the raw picker value,
+        // e.g. "haiku") -- resolveClaudeSupportedEffortLevels resolves the
+        // catalog row itself (or, with no live catalog loaded, consults the
+        // static CLAUDE_MODEL_FALLBACK_OPTIONS list) from that identifier
+        // alone.
+        const levels = resolveClaudeSupportedEffortLevels(model, claudeModelsState.availableModels)
+        if (levels === undefined) {
+            return undefined
+        }
+        // 'auto' (omit --effort entirely) is always valid regardless of what
+        // the model supports, and the effort form field defaults to 'auto' --
+        // every sibling effort list (CLAUDE_EFFORT_OPTIONS, buildGrokEffortOptions)
+        // keeps that base row unconditionally. Without it, once the catalog
+        // loads, the <select> has no option matching the current 'auto' value
+        // and silently displays a different option's label while the
+        // underlying state stays 'auto'.
+        return [
+            { value: 'auto', label: 'Auto' },
+            ...levels.map((level) => ({
+                value: level,
+                label: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
+            }))
+        ]
+    }, [agent, claudeModelsState.availableModels, model])
+    // Reconcile a stale non-auto effort selection when the selected model no
+    // longer supports it (e.g. switching from opus/high to haiku, which has
+    // no supportedEffortLevels) -- mirrors the Grok effort reconciliation
+    // effect below. Without this, the effort selector would silently render
+    // "Auto" (no option matches "high") while the form still submits
+    // effort: 'high' to a model that doesn't advertise it.
+    useEffect(() => {
+        // Mirrors the grok reset below: once this cwd's catalog has loaded, a
+        // restored model it doesn't list can't be submitted. Skipped when the
+        // probe failed (no catalog to judge against -- the static offer list is
+        // in use) so a legacy alias isn't wiped by a transient failure.
+        if (
+            agent !== 'claude'
+            || claudeModelsState.isLoading
+            || claudeModelsState.error
+            || claudeModelsState.availableModels.length === 0
+        ) {
+            return
+        }
+        if (model === 'auto' || model === 'default') {
+            return
+        }
+        // Through findCatalogRowFor rather than a raw value scan: a stored
+        // preset like `fable` names a family the catalog may publish under
+        // another id (`claude-fable-5-1[1m]` today), and scanning values alone
+        // read that as "not in this catalog" and reset a deliberate Fable
+        // choice to Default, which resolves to Opus. Only the reset happens
+        // here -- the matched row's value is derived below rather than written
+        // back, since this state is what gets persisted.
+        if (!findCatalogRowFor(model, claudeModelsState.availableModels)) {
+            setModel('auto')
+        }
+    }, [agent, claudeModelsState.availableModels, claudeModelsState.error, claudeModelsState.isLoading, model])
+
+    useEffect(() => {
+        // No error guard: claudeEffortOptions already answers from the static
+        // fallback when the catalog request fails, and that answer is confirmed
+        // capability data -- haiku supports no effort either way. Gating on the
+        // query error would let the form submit effort: 'high' to haiku while
+        // rendering Auto, which is the mismatch this effect exists to prevent.
+        if (
+            agent !== 'claude'
+            || claudeModelsState.isLoading
+            || !claudeEffortOptions
+        ) {
+            return
+        }
+        if (
+            effort !== 'auto'
+            && !claudeEffortOptions.some((option) => option.value === effort)
+        ) {
+            setEffort('auto')
+        }
+    }, [agent, claudeEffortOptions, claudeModelsState.isLoading, effort])
     const copilotModelOptions = useMemo(
         () => [
             { value: 'auto', label: 'Auto' },
@@ -1459,7 +1639,7 @@ export function NewSession(props: {
                 ? (opencodeSelectedModel ?? undefined)
                 : agent === 'agy'
                     ? (agySelectedModel ?? undefined)
-                    : (model !== 'auto' ? model : undefined)
+                    : (model !== 'auto' ? claudeSelectedRowValue : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi') && effort !== 'auto'
                 ? effort
                 : undefined
@@ -1610,6 +1790,13 @@ export function NewSession(props: {
             && (
                 deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && grokModelsState.isLoading)
+            ))
+        || (agent === 'claude'
+            && deferredDirectory !== ''
+            && (model !== 'auto' || effort !== 'auto')
+            && (
+                deferredDirectoryExists === undefined
+                || (deferredDirectoryExists === true && claudeModelsState.isLoading)
             ))
         || (agent === 'opencode'
             && deferredDirectory !== ''
@@ -1798,7 +1985,7 @@ export function NewSession(props: {
                 ) : (
                     <ModelSelector
                         agent={agent}
-                        model={model}
+                        model={claudeSelectedRowValue}
                         options={
                             agent === 'codex'
                                 ? codexModelOptions
@@ -1806,6 +1993,8 @@ export function NewSession(props: {
                                     ? grokModelOptions
                                     : agent === 'copilot'
                                         ? copilotModelOptions
+                                        : agent === 'claude'
+                                            ? claudeModelOptions
                                         : agent === 'pi'
                                             ? (showPiLaunchConfig ? piModelOptions : undefined)
                                     : undefined
@@ -1820,6 +2009,7 @@ export function NewSession(props: {
                         isLoading={(agent === 'codex' && codexModelsState.isLoading)
                             || (agent === 'grok' && grokModelsState.isLoading)
                             || (agent === 'copilot' && copilotModelsState.isLoading)
+                            || (agent === 'claude' && claudeModelsState.isLoading)
                             || (agent === 'pi' && piModelsState.isLoading)}
                         error={agent === 'codex' && codexModelsState.error
                             ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
@@ -1829,8 +2019,13 @@ export function NewSession(props: {
                                     ? `${t('newSession.model.loadFailed')}: ${copilotModelsState.error}`
                                     : agent === 'pi' && piModelsState.error
                                         ? `${t('newSession.model.loadFailed')}: ${piModelsState.error}`
-                                    : null}
-                        onModelChange={setModel}
+                                // Claude probe failures fall back to the static
+                                // preset list (MODEL_OPTIONS.claude) instead of
+                                // disabling the picker -- quiet degrade per the
+                                // catalog's backward-compat policy, so no error
+                                // text is surfaced here.
+                                : null}
+                        onModelChange={agent === 'claude' ? handleClaudeModelChange : setModel}
                     />
                 )
             )}
@@ -1843,6 +2038,7 @@ export function NewSession(props: {
                     onReasoningEffortChange={setModelReasoningEffort}
                     isDisabled={isFormDisabled || (agent === 'codex' && codexModelsState.isLoading)}
                     grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
+                    claudeOptions={agent === 'claude' ? claudeEffortOptions : undefined}
                     codexReasoningOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}
                     piSelectedModel={agent === 'pi' ? piSelectedModel : null}
                 />

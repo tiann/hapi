@@ -67,6 +67,27 @@ function estimateBase64Bytes(base64: string): number {
     return Math.floor((len * 3) / 4) - padding
 }
 
+// The two guards `/effort` applies before touching an effort value, shared
+// with `/model` when a model-change request also carries an `effort` (a
+// single request that folds an atomic effort clear into the model switch --
+// see the `/model` handler below). Extracted so the two routes can't drift
+// apart into two different rejection rules for the same capability; each
+// caller does `const rejection = rejectUnsupportedEffort(...); if
+// (rejection) return rejection`.
+function rejectUnsupportedEffort(
+    c: Context<WebAppEnv>,
+    flavor: string,
+    controlledByUser: boolean
+): Response | null {
+    if (!supportsEffort(flavor)) {
+        return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
+    }
+    if (flavor === 'grok' && controlledByUser) {
+        return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
+    }
+    return null
+}
+
 export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -665,8 +686,43 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
         }
 
+        // A payload that also carries `effort` (the atomic model+effort
+        // clear below) is asking this route to do what `/effort` does, so it
+        // must pass the same capability/ownership guards `/effort` applies --
+        // otherwise a flavor that doesn't support effort (or a
+        // locally-controlled Grok session) could have its effort silently
+        // set through the model route instead of being rejected.
+        if (parsed.data.effort !== undefined) {
+            const rejection = rejectUnsupportedEffort(
+                c,
+                flavor,
+                sessionResult.session.agentState?.controlledByUser === true
+            )
+            if (rejection) return rejection
+            // Passing both only makes sense where the agent applies them as one
+            // operation. Claude's session config RPC does; Pi's runs set_model
+            // and set_thinking_level in sequence and commits the model between
+            // them (cli/src/pi/runPi.ts), so a failing thinking-level call would
+            // leave Pi on the new model while this route reports 409 and the hub
+            // cache keeps the old one. Those flavors must use the two routes.
+            if (flavor !== 'claude') {
+                return c.json(
+                    { error: 'Combining model and effort in one request is only supported for Claude sessions' },
+                    400
+                )
+            }
+        }
+
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
+            // Fold an optional `effort` into the same applySessionConfig call
+            // when the payload carries one, so a model switch that drops
+            // support for the currently pinned effort clears it atomically
+            // instead of relying on a second, separate effort RPC that a
+            // prompt sent in between could race.
+            const config = parsed.data.effort !== undefined
+                ? { model: parsed.data.model, effort: parsed.data.effort }
+                : { model: parsed.data.model }
+            await engine.applySessionConfig(sessionResult.sessionId, config)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model'
@@ -728,12 +784,12 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (!supportsEffort(flavor)) {
-            return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
-        }
-        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true) {
-            return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
-        }
+        const rejection = rejectUnsupportedEffort(
+            c,
+            flavor,
+            sessionResult.session.agentState?.controlledByUser === true
+        )
+        if (rejection) return rejection
 
         try {
             await engine.applySessionConfig(sessionResult.sessionId, { effort: parsed.data.effort })
