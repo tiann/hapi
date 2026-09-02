@@ -309,7 +309,15 @@ export async function stopRunner() {
       logger.debug('HTTP stop failed, will force kill', error);
     }
 
-    // Force kill
+    // Force kill. Only a confirmed runner may be signalled: every caller that
+    // reaches this point derived its decision from a boolean, and a pid we
+    // cannot identify may belong to an unrelated process that reused it.
+    const identity = getHapiRunnerProcessIdentity(state.pid);
+    if (identity !== 'runner') {
+      logger.debug(`Not force killing PID ${state.pid}: identity is ${identity}`);
+      return;
+    }
+
     const killed = await killProcess(state.pid, true);
     if (killed) {
       logger.debug('Force killed runner');

@@ -104,9 +104,18 @@ describe('getHapiRunnerProcessIdentity on Windows', () => {
     it('falls back to WMIC when CIM reports no command line', () => {
         spawnSyncMock
             .mockReturnValueOnce(completed(''))
-            .mockReturnValueOnce(completed('hapi-local.exe runner start-sync'))
+            .mockReturnValueOnce(completed('CommandLine\r\nhapi-local.exe runner start-sync\r\n'))
 
         expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+        expect(spawnSyncMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('reports unknown when WMIC prints only the column header', () => {
+        spawnSyncMock
+            .mockReturnValueOnce(completed(''))
+            .mockReturnValueOnce(completed('CommandLine\r\n\r\n'))
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('unknown')
         expect(spawnSyncMock).toHaveBeenCalledTimes(2)
     })
 

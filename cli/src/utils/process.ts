@@ -66,11 +66,23 @@ function getWindowsProcessCommandLine(pid: number): string | null {
     'process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'
   ], { stdio: 'pipe', windowsHide: true });
   if (!wmic.error && wmic.status === 0) {
-    const commandLine = wmic.stdout?.toString() ?? '';
-    if (commandLine.trim()) return commandLine;
+    const commandLine = readWmicCommandLine(wmic.stdout?.toString() ?? '');
+    if (commandLine) return commandLine;
   }
 
   return null;
+}
+
+/**
+ * `wmic ... get CommandLine` prints the `CommandLine` column header even when
+ * the property itself is empty or unreadable, so the raw stdout is never empty
+ * on success. Drop the header before deciding whether a command line was read.
+ */
+function readWmicCommandLine(stdout: string): string | null {
+  const lines = stdout.split(/\r?\n/);
+  const headerIndex = lines.findIndex(line => line.trim() === 'CommandLine');
+  const value = (headerIndex === -1 ? lines : lines.slice(headerIndex + 1)).join('\n');
+  return value.trim() ? value : null;
 }
 
 /**
