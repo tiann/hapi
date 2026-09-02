@@ -2,8 +2,8 @@ import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
+import type { AttachmentMetadata } from '@hapi/protocol/types'
 import { getLiveReasoningStreamId } from '@hapi/protocol/messages'
-
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
 
@@ -93,6 +93,50 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         scheduledAt: row.scheduled_at ?? null,
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {})
     }
+}
+
+function messageReferencesAttachment(content: unknown, path: string): boolean {
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) return false
+    const record = content as { content?: unknown }
+    if (record.content === null || typeof record.content !== 'object' || Array.isArray(record.content)) {
+        return false
+    }
+    const messageContent = record.content as { attachments?: unknown }
+    if (!Array.isArray(messageContent.attachments)) return false
+    return messageContent.attachments.some((attachment) => {
+        if (attachment === null || typeof attachment !== 'object' || Array.isArray(attachment)) return false
+        return (attachment as { path?: unknown }).path === path
+    })
+}
+
+function hasUserMessageAttachments(content: unknown): boolean {
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) return false
+    const record = content as { role?: unknown; content?: unknown }
+    if (record.role !== 'user') return false
+    if (record.content === null || typeof record.content !== 'object' || Array.isArray(record.content)) {
+        return false
+    }
+    const attachments = (record.content as { attachments?: unknown }).attachments
+    return Array.isArray(attachments) && attachments.length > 0
+}
+
+/**
+ * Scheduled scratchlist attachments outlive their draft row. Keep the hub
+ * blob while any uninvoked message still references it, even if the draft is
+ * deleted immediately after the schedule is accepted.
+ */
+export function hasUninvokedAttachmentReference(
+    db: Database,
+    sessionId: string,
+    path: string
+): boolean {
+    const rows = db.prepare(`
+        SELECT content
+        FROM messages
+        WHERE session_id = ?
+          AND invoked_at IS NULL
+    `).all(sessionId) as Array<{ content: string | Uint8Array }>
+    return rows.some((row) => messageReferencesAttachment(decodeMessageContent(row.content), path))
 }
 
 export type CopyStoredMessageInput = Pick<
@@ -316,6 +360,75 @@ export function getAllMessages(
     return rows.map(toStoredMessage)
 }
 
+/** Return only consumed scheduled messages needed for attachment reconciliation. */
+export function getConsumedScheduledMessages(
+    db: Database,
+    sessionId: string,
+): StoredMessage[] {
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ?
+          AND scheduled_at IS NOT NULL
+          AND invoked_at IS NOT NULL
+        ORDER BY seq ASC
+    `).all(sessionId) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
+export type MessageAttachmentRewrite = {
+    messageId: string
+    attachments: AttachmentMetadata[]
+}
+
+function replaceUserMessageAttachments(content: unknown, attachments: AttachmentMetadata[]): unknown {
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) return content
+    const record = content as { content?: unknown }
+    if (record.content === null || typeof record.content !== 'object' || Array.isArray(record.content)) {
+        return content
+    }
+    return {
+        ...record,
+        content: {
+            ...(record.content as Record<string, unknown>),
+            attachments,
+        },
+    }
+}
+
+/** Rewrite attachment paths after a message row changes its session owner. */
+export function rewriteMessageAttachments(
+    db: Database,
+    sessionId: string,
+    rewrites: MessageAttachmentRewrite[],
+): number {
+    if (rewrites.length === 0) return 0
+    return db.transaction(() => {
+        let changed = 0
+        const select = db.prepare(
+            'SELECT content FROM messages WHERE session_id = ? AND id = ?'
+        )
+        const update = db.prepare(
+            'UPDATE messages SET content = ? WHERE session_id = ? AND id = ?'
+        )
+        for (const rewrite of rewrites) {
+            const row = select.get(sessionId, rewrite.messageId) as { content: string | Uint8Array } | undefined
+            if (!row) continue
+            const current = decodeMessageContent(row.content)
+            const next = replaceUserMessageAttachments(current, rewrite.attachments)
+            if (isDeepStrictEqual(current, next)) continue
+            update.run(
+                encodeMessageContent(truncateOversizedMessageContent(next)),
+                sessionId,
+                rewrite.messageId,
+            )
+            changed += 1
+        }
+        if (changed > 0) bumpMessageEpoch(db, sessionId)
+        return changed
+    })()
+}
+
 export function getMessagesAfterSeq(
     db: Database,
     sessionId: string,
@@ -355,10 +468,9 @@ export function getFirstMessages(
 }
 
 /** CLI reconnect backfill: returns messages above the seq cursor that are
- *  deliverable now, i.e. excludes future-scheduled rows (scheduled_at > now).
- *  Without this filter, a CLI reconnect between schedule time and release time
- *  would replay future-scheduled rows via the normal message stream and the
- *  runner would consume them immediately, bypassing the mature-scan path.
+ *  deliverable through the ordinary CLI backfill path. Future scheduled rows
+ *  are excluded, and scheduled rows carrying attachments stay on the
+ *  mature-scan path so Hub-resident files can be materialized before delivery.
  *  Only the CLI backfill route should use this; the Web thread API still calls
  *  byPosition / getMessages and needs the full set so scheduled rows surface in
  *  the queued floating bar. */
@@ -372,17 +484,41 @@ export function getDeliverableMessagesAfter(
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
     const safeAfterSeq = Number.isFinite(afterSeq) ? afterSeq : 0
 
-    const rows = db.prepare(`
-        SELECT * FROM messages
-        WHERE session_id = ?
-          AND seq > ?
-          AND (scheduled_at IS NULL OR scheduled_at <= ?)
-          AND delivery_state = 'queued'
-        ORDER BY seq ASC
-        LIMIT ?
-    `).all(sessionId, safeAfterSeq, now, safeLimit) as DbMessageRow[]
+    const deliverable: StoredMessage[] = []
+    let cursor = safeAfterSeq
 
-    return rows.map(toStoredMessage)
+    // Attachment-backed scheduled rows stay on the mature-scan path, so the
+    // SQL page can contain rows that are filtered from the CLI backfill. Keep
+    // reading pages until the requested number of deliverable rows is filled;
+    // otherwise a full page of filtered rows can make the CLI stop before it
+    // reaches a later immediate message.
+    while (deliverable.length < safeLimit) {
+        const rows = db.prepare(`
+            SELECT * FROM messages
+            WHERE session_id = ?
+              AND seq > ?
+              AND (scheduled_at IS NULL OR scheduled_at <= ?)
+              AND delivery_state = 'queued'
+            ORDER BY seq ASC
+            LIMIT ?
+        `).all(sessionId, cursor, now, safeLimit) as DbMessageRow[]
+
+        if (rows.length === 0) break
+        cursor = rows[rows.length - 1]!.seq
+
+        for (const row of rows) {
+            const message = toStoredMessage(row)
+            if (message.scheduledAt !== null && hasUserMessageAttachments(message.content)) {
+                continue
+            }
+            deliverable.push(message)
+            if (deliverable.length >= safeLimit) break
+        }
+
+        if (rows.length < safeLimit) break
+    }
+
+    return deliverable
 }
 
 /** How far back to look for a stream's replaceable snapshots.
@@ -570,6 +706,36 @@ export function getLocalMessageStates(
             ? { deliveryState: row.delivery_state }
             : {})
     }))
+}
+
+export function getMessagesByLocalIds(
+    db: Database,
+    sessionId: string,
+    localIds: string[],
+): StoredMessage[] {
+    if (localIds.length === 0) return []
+    const placeholders = localIds.map(() => '?').join(', ')
+    const rows = db.prepare(`
+        SELECT *
+        FROM messages
+        WHERE session_id = ? AND local_id IN (${placeholders})
+        ORDER BY seq ASC
+    `).all(sessionId, ...localIds) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
+export function getMessageById(
+    db: Database,
+    sessionId: string,
+    messageId: string,
+): StoredMessage | null {
+    const row = db.prepare(`
+        SELECT *
+        FROM messages
+        WHERE session_id = ? AND id = ?
+        LIMIT 1
+    `).get(sessionId, messageId) as DbMessageRow | undefined
+    return row ? toStoredMessage(row) : null
 }
 
 /** Returns scheduled messages across all sessions whose scheduled_at <= beforeTime

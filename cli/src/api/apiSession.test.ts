@@ -6,6 +6,7 @@ const socketHarness = vi.hoisted(() => ({
         connected: boolean
         connectCalls: number
         connectImmediately: boolean
+        ioOptions: unknown
         emitted: Array<{ event: string; args: unknown[] }>
         listeners: Map<string, Array<(...args: any[]) => void>>
         trigger: (event: string, ...args: any[]) => void
@@ -19,11 +20,12 @@ const axiosHarness = vi.hoisted(() => ({
 }))
 
 vi.mock('socket.io-client', () => ({
-    io: () => {
+    io: (_url: unknown, ioOptions: unknown) => {
         const state: (typeof socketHarness.sockets)[number] = {
             connected: false,
             connectCalls: 0,
             connectImmediately: true,
+            ioOptions,
             emitted: [] as Array<{ event: string; args: unknown[] }>,
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
             trigger: () => {},
@@ -164,6 +166,23 @@ function triggerIncomingUserMessage(
 }
 
 describe('ApiSessionClient lazy materialization', () => {
+    it('keeps the same client instance identity across transport reconnects', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        const initialAuth = (socket.ioOptions as { auth: { clientInstanceId?: string } }).auth
+        socket.triggerConnect()
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        const reconnectAuth = (socket.ioOptions as { auth: { clientInstanceId?: string } }).auth
+
+        expect(initialAuth.clientInstanceId).toEqual(expect.any(String))
+        expect(reconnectAuth.clientInstanceId).toBe(initialAuth.clientInstanceId)
+        client.close()
+    })
+
     it('does not connect or materialize without a real user message', async () => {
         socketHarness.sockets.length = 0
         const materialize = vi.fn(async () => createSession())

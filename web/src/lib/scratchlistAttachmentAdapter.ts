@@ -8,6 +8,10 @@ import type { ApiClient } from '@/api/client'
 import { getRestoredUploadMetadata } from '@/lib/composer-attachment-drafts'
 import { isImageMimeType } from '@/lib/fileAttachments'
 import { randomId } from '@/lib/randomId'
+import {
+    rememberScratchlistAttachmentPreview,
+    type ScratchlistAttachmentWithPreview,
+} from '@/lib/scratchlistAttachmentPreview'
 
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
@@ -298,19 +302,24 @@ async function fileToDataUrl(file: File): Promise<string> {
 
 export function extractScratchlistAttachmentMetadata(
     attachments: import('@/types/api').AttachmentMetadata[] | undefined
-): ScratchlistAttachmentMetadata[] {
+): ScratchlistAttachmentWithPreview[] {
     if (!attachments || attachments.length === 0) return []
-    const out: ScratchlistAttachmentMetadata[] = []
+    const out: ScratchlistAttachmentWithPreview[] = []
     for (const att of attachments) {
         const rec = att as ScratchlistAttachmentMetadata & { previewUrl?: string }
         if (rec.path && rec.id && rec.filename && rec.mimeType && typeof rec.size === 'number') {
-            out.push({
+            const metadata: ScratchlistAttachmentWithPreview = {
                 id: rec.id,
                 filename: rec.filename,
                 mimeType: rec.mimeType,
                 size: rec.size,
                 path: rec.path
-            })
+            }
+            if (rec.previewUrl) {
+                metadata.previewUrl = rec.previewUrl
+                rememberScratchlistAttachmentPreview(metadata, rec.previewUrl)
+            }
+            out.push(metadata)
         }
     }
     return out

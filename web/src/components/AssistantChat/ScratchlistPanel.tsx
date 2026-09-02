@@ -1,8 +1,14 @@
 import {
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
+    type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
+    type RefObject,
+    type TouchEvent as ReactTouchEvent,
     useCallback,
     useEffect,
+    useId,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -10,20 +16,31 @@ import {
 import {
     addScratchlistEntry,
     deleteScratchlistEntry,
-    moveScratchlistEntry,
     persistScratchlist,
     readScratchlist,
+    reorderScratchlistEntry,
     SCRATCHLIST_MAX_ENTRIES,
     SCRATCHLIST_MAX_TEXT_LENGTH,
-    shouldConfirmDelete,
+    updateScratchlistEntry,
     type ScratchlistEntry,
 } from '@/lib/scratchlist'
+import { createPortal } from 'react-dom'
 import type { ApiClient } from '@/api/client'
 import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 import { isImageMimeType } from '@/lib/fileAttachments'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
-import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
+import { HoverTooltip } from '@/components/HoverTooltip'
+import { ImagePreview } from '@/components/ImagePreview'
+import { CheckIcon } from '@/components/icons'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ScheduleTimePicker, type PendingSchedule } from './ScheduleTimePicker'
+import {
+    getScratchlistAttachmentPreview,
+    releaseScratchlistAttachmentPreview,
+    rememberScratchlistAttachmentObjectUrl,
+    rememberScratchlistAttachmentPreview,
+} from '@/lib/scratchlistAttachmentPreview'
 
 const STORAGE_KEY_PREFIX = 'hapi.scratchlist-collapsed.v1.'
 
@@ -52,19 +69,20 @@ function writeCollapsedPref(sessionId: string, collapsed: boolean): void {
 function NoteIcon() {
     return (
         <svg
-            className="h-[14px] w-[14px] shrink-0"
+            className="relative top-[0.03125rem] max-sm:-top-[0.0625rem] h-[0.8125rem] w-[0.8125rem] shrink-0 text-[var(--app-hint)]"
             viewBox="0 0 16 16"
             fill="none"
             aria-hidden="true"
+            data-testid="scratchlist-note-icon"
         >
             <path
-                d="M3.5 2.5h6L12.5 5.5v8a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"
+                d="M3.5 1.5h6L12.5 4.5v9a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1Z"
                 stroke="currentColor"
                 strokeWidth="1.4"
                 strokeLinejoin="round"
             />
             <path
-                d="M9.5 2.5v3h3M5 8.5h6M5 11h4"
+                d="M9.5 1.5v3h3M5 8.5h6M5 11h4"
                 stroke="currentColor"
                 strokeWidth="1.4"
                 strokeLinecap="round"
@@ -86,159 +104,112 @@ function ChevronIcon({ open }: { open: boolean }) {
     )
 }
 
-function ArrowUpIcon() {
+function MoreIcon() {
     return (
         <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <path d="M8 12V4M8 4l3 3M8 4 5 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <circle cx="3.5" cy="8" r="1" fill="currentColor" />
+            <circle cx="8" cy="8" r="1" fill="currentColor" />
+            <circle cx="12.5" cy="8" r="1" fill="currentColor" />
         </svg>
     )
 }
 
-function ArrowDownIcon() {
+function ScratchlistQuestionIcon() {
     return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <path d="M8 4v8M8 12l3-3M8 12 5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    )
-}
-
-function PencilIcon() {
-    return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <path
-                d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13H3v-2L11.5 2.5Z"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
-        </svg>
-    )
-}
-
-function SendIcon() {
-    return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <path d="M2.5 8 13.5 3 11 13l-3-4-5.5-1Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-            <path d="m11 13-3-4 5.5-6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    )
-}
-
-function TrashIcon() {
-    return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <path
-                d="M3.5 4.5h9M6 4.5V3a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1.5M5 4.5l.5 8a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1l.5-8"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
-        </svg>
-    )
-}
-
-function CopyIcon() {
-    return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <rect
-                x="5" y="2" width="9" height="11" rx="1.5"
-                stroke="currentColor" strokeWidth="1.4"
-            />
-            <rect
-                x="2" y="5" width="9" height="11" rx="1.5"
-                stroke="currentColor" strokeWidth="1.4"
-            />
-        </svg>
-    )
-}
-
-function ClockIcon() {
-    return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
-            <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M8 5v3l2 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    )
-}
-
-/**
- * Per-entry age indicator: clock icon with a tooltip showing
- * smart-relative time (e.g. "2m ago") and the absolute timestamp on a
- * second line, so an operator can tell at-a-glance how stale a note is.
- *
- * Renders nothing when no usable timestamp is available - this happens
- * for legacy localStorage entries that pre-date the v2 hub-sync work
- * (no `updatedAt` recorded) AND have no `createdAt` either, which is
- * vanishingly rare but still a guard against `NaN` titles.
- *
- * Falls back to `createdAt` when `updatedAt` is missing so newly-loaded
- * v1-only rows still get a useful tooltip during the migration window.
- */
-function EntryAgeIndicator({
-    entry,
-}: {
-    entry: ScratchlistEntry
-}) {
-    const { t } = useTranslation()
-    const stamp = entry.updatedAt ?? entry.createdAt
-    if (!Number.isFinite(stamp) || stamp <= 0) return null
-    const relative = formatRelativeTime(stamp, t)
-    if (!relative) return null
-    const absolute = formatAbsoluteDateTime(stamp)
-    const ariaLabel = t('scratchlist.entry.lastSavedAriaLabel', { time: relative })
-    const title = absolute
-        ? `${t('scratchlist.entry.lastSaved', { time: relative })}\n${absolute}`
-        : t('scratchlist.entry.lastSaved', { time: relative })
-    return (
-        <span
-            role="img"
-            aria-label={ariaLabel}
-            title={title}
-            data-testid="scratchlist-entry-age"
-            data-entry-age={relative}
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)]"
+        <svg
+            className="relative top-[0.03125rem] max-sm:-top-[0.0625rem] h-[0.8125rem] w-[0.8125rem] shrink-0"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+            data-testid="scratchlist-question-icon"
         >
-            <ClockIcon />
-        </span>
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4" />
+            <path
+                d="M6.25 6.25a1.75 1.75 0 1 1 2.9 1.33c-.72.55-1.15.87-1.15 1.67"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+            <circle cx="8" cy="12.1" r="0.9" fill="currentColor" />
+        </svg>
     )
 }
 
-function ClipboardCheckIcon() {
+function ScratchlistRemoveIcon() {
     return (
-        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
+        <svg
+            viewBox="0 0 12 12"
+            fill="none"
+            className="h-3 w-3"
+            aria-hidden="true"
+        >
             <path
-                d="M3 8.5l3 3 7-7"
+                d="m3 3 6 6M9 3 3 9"
                 stroke="currentColor"
-                strokeWidth="1.7"
+                strokeWidth="1.8"
                 strokeLinecap="round"
-                strokeLinejoin="round"
             />
         </svg>
     )
 }
 
-/**
- * Tracks which entry was most-recently copied to the clipboard so the UI
- * can briefly swap the copy icon to a check + the tooltip to "Copied".
- * Auto-clears after `clearAfterMs` (default 1500ms). Pure state machine -
- * the caller wires `safeCopyToClipboard` separately so the hook stays
- * easy to test and free of jsdom clipboard quirks.
- */
-const COPIED_FEEDBACK_MS = 1500
-function useCopiedFeedback(clearAfterMs: number = COPIED_FEEDBACK_MS) {
-    const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null)
-    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-    const signalCopied = useCallback((entryId: string) => {
-        setCopiedEntryId(entryId)
-        if (timerRef.current) clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setCopiedEntryId(null), clearAfterMs)
-    }, [clearAfterMs])
-    useEffect(() => () => {
-        if (timerRef.current) clearTimeout(timerRef.current)
-    }, [])
-    return { copiedEntryId, signalCopied }
+function ScratchlistHelpHint() {
+    const { t } = useTranslation()
+    const tooltipId = useId()
+    const [clickOpen, setClickOpen] = useState(false)
+    const containerRef = useRef<HTMLSpanElement>(null)
+
+    useEffect(() => {
+        if (!clickOpen) return
+
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            if (!containerRef.current?.contains(event.target as Node)) {
+                setClickOpen(false)
+            }
+        }
+        document.addEventListener('pointerdown', closeOnOutsidePointer)
+        return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+    }, [clickOpen])
+
+    const target = (
+        <button
+            type="button"
+            className="inline-flex h-3.5 w-3.5 items-center justify-center text-[var(--app-hint)]"
+            aria-label={t('scratchlist.drawerHintAriaLabel')}
+            aria-expanded={clickOpen}
+            aria-controls={tooltipId}
+            onClick={(event) => {
+                event.stopPropagation()
+                if (clickOpen) {
+                    event.currentTarget.blur()
+                }
+                setClickOpen((open) => !open)
+            }}
+            onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                    setClickOpen(false)
+                }
+            }}
+        >
+            <ScratchlistQuestionIcon />
+        </button>
+    )
+
+    return (
+        <HoverTooltip
+            id={tooltipId}
+            target={target}
+            side="bottom"
+            align="end"
+            open={clickOpen}
+            containerRef={containerRef}
+            hoverGroup="help"
+            tooltipClassName="pointer-events-auto w-56"
+        >
+            {t('scratchlist.drawerHint')}
+        </HoverTooltip>
+    )
 }
 
 /**
@@ -249,213 +220,1016 @@ function useCopiedFeedback(clearAfterMs: number = COPIED_FEEDBACK_MS) {
 function ScratchlistAttachmentThumbnails(props: {
     sessionId: string
     api: ApiClient
-    attachments: ScratchlistAttachmentMetadata[]
+    attachments: Array<ScratchlistAttachmentMetadata & { previewUrl?: string }>
+    onRemove: (attachmentId: string) => void
 }) {
-    const [urls, setUrls] = useState<Array<{ id: string; url: string; filename: string }>>([])
+    type Thumbnail = { id: string; url: string; filename: string }
+    const imageAttachments = useMemo(
+        () => props.attachments.filter((attachment) => isImageMimeType(attachment.mimeType)),
+        [props.attachments],
+    )
+    const imageAttachmentKey = useMemo(
+        () => imageAttachments
+            .map((attachment) => [
+                attachment.id,
+                attachment.filename,
+                attachment.mimeType,
+                attachment.size,
+                attachment.path,
+                attachment.previewUrl ?? '',
+            ].join('\u001f'))
+            .join('\u001e'),
+        [imageAttachments],
+    )
+    const resolveCachedThumbnails = useCallback((
+        attachments: Array<ScratchlistAttachmentMetadata & { previewUrl?: string }>,
+    ): Thumbnail[] => attachments.flatMap((attachment) => {
+        const url = getScratchlistAttachmentPreview(attachment)
+        return url ? [{ id: attachment.id, url, filename: attachment.filename }] : []
+    }), [])
+    const initialUrls = useMemo(
+        () => resolveCachedThumbnails(imageAttachments),
+        [imageAttachments, resolveCachedThumbnails],
+    )
+    const [urls, setUrls] = useState<Thumbnail[]>(initialUrls)
+    const imageAttachmentsRef = useRef(imageAttachments)
+    imageAttachmentsRef.current = imageAttachments
 
     useEffect(() => {
         let cancelled = false
-        const created: string[] = []
+        const attachments = imageAttachmentsRef.current
+        for (const attachment of attachments) {
+            rememberScratchlistAttachmentPreview(attachment, attachment.previewUrl)
+        }
+        setUrls(resolveCachedThumbnails(attachments))
         void (async () => {
-            const next: Array<{ id: string; url: string; filename: string }> = []
-            for (const attachment of props.attachments) {
-                if (!isImageMimeType(attachment.mimeType)) continue
+            const missing = attachments.filter((attachment) => !getScratchlistAttachmentPreview(attachment))
+            await Promise.all(missing.map(async (attachment) => {
                 try {
                     const blob = await props.api.fetchScratchlistAttachmentBlob(props.sessionId, attachment.id)
-                    const url = URL.createObjectURL(blob)
-                    created.push(url)
-                    next.push({ id: attachment.id, url, filename: attachment.filename })
+                    const objectUrl = URL.createObjectURL(blob)
+                    rememberScratchlistAttachmentObjectUrl(attachment, objectUrl)
                 } catch {
                     // Non-fatal: entry still shows text/actions.
                 }
-            }
+            }))
             if (!cancelled) {
-                setUrls(next)
-            } else {
-                for (const url of created) URL.revokeObjectURL(url)
+                setUrls(resolveCachedThumbnails(attachments))
             }
         })()
         return () => {
             cancelled = true
-            setUrls((prev) => {
-                for (const item of prev) URL.revokeObjectURL(item.url)
-                return []
-            })
         }
-    }, [props.api, props.sessionId, props.attachments])
+    }, [imageAttachmentKey, props.api, props.sessionId, resolveCachedThumbnails])
 
     if (urls.length === 0) return null
 
     return (
         <div
-            className="float-left mr-2 mb-1 flex max-w-[min(8rem,40%)] flex-col gap-1"
+            className="mt-0.5 mb-1 flex flex-wrap gap-1.5"
             data-testid="scratchlist-attachment-thumbs"
         >
             {urls.map((item) => (
-                <img
+                <div
                     key={item.id}
-                    src={item.url}
-                    alt={item.filename}
-                    className="max-h-20 w-full rounded border border-[var(--app-border)] object-cover"
+                    className="group relative h-16 w-24 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]"
                     data-testid="scratchlist-attachment-thumb"
-                />
+                >
+                    <ImagePreview
+                        src={item.url}
+                        fileName={item.filename}
+                        label={item.filename}
+                        galleryId={`scratchlist-attachments-${props.sessionId}`}
+                        buttonClassName="group h-full w-full cursor-zoom-in overflow-hidden rounded-lg text-left"
+                        imageClassName="h-full w-full object-cover transition-opacity group-hover:opacity-85"
+                        caption={(
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-3">
+                                <span className="block truncate text-[10px] leading-tight text-white">{item.filename}</span>
+                            </div>
+                        )}
+                    />
+                    <button
+                        type="button"
+                        data-scratchlist-action="remove-attachment"
+                        aria-label={`Remove attachment ${item.filename}`}
+                        title={`Remove attachment ${item.filename}`}
+                        onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            props.onRemove(item.id)
+                        }}
+                        className="absolute right-1 top-1 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-white transition-colors hover:bg-black/85 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
+                    >
+                        <ScratchlistRemoveIcon />
+                    </button>
+                </div>
             ))}
         </div>
     )
 }
 
+function ScratchlistFileAttachments(props: {
+    attachments: Array<ScratchlistAttachmentMetadata & { previewUrl?: string }>
+    onRemove: (attachmentId: string) => void
+}) {
+    const fileAttachments = props.attachments.filter((attachment) => !isImageMimeType(attachment.mimeType))
+    if (fileAttachments.length === 0) return null
+
+    return (
+        <div
+            className="mt-0.5 mb-1 flex min-w-0 flex-col gap-1"
+            data-testid="scratchlist-attachment-files"
+        >
+            {fileAttachments.map((attachment) => (
+                <div
+                    key={attachment.id}
+                    className="flex min-w-0 items-center gap-1.5 rounded-md bg-[var(--app-subtle-bg)] px-2 py-1"
+                    data-testid="scratchlist-attachment-file"
+                >
+                    <span
+                        className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]"
+                        title={attachment.filename}
+                    >
+                        {attachment.filename}
+                    </span>
+                    <button
+                        type="button"
+                        data-scratchlist-action="remove-attachment"
+                        aria-label={`Remove attachment ${attachment.filename}`}
+                        title={`Remove attachment ${attachment.filename}`}
+                        onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            props.onRemove(attachment.id)
+                        }}
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)]"
+                    >
+                        <ScratchlistRemoveIcon />
+                    </button>
+                </div>
+            ))}
+        </div>
+    )
+}
+
+const LONG_PRESS_TO_DRAG_MS = 450
+const DRAG_CANCEL_DISTANCE_PX = 8
+const COPY_SUCCESS_FEEDBACK_MS = 1000
+
+type PointerDragState = {
+    entryId: string
+    pointerId: number
+    startX: number
+    startY: number
+    row: HTMLLIElement
+    timer: number
+    active: boolean
+}
+
+type TouchDragState = {
+    entryId: string
+    touchId: number
+    startX: number
+    startY: number
+    currentX: number
+    currentY: number
+    row: HTMLLIElement
+    timer: number
+    active: boolean
+}
+
+function isScratchlistActionTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return true
+    if (target.closest('[data-scratchlist-action]')) return true
+    return Boolean(target.closest('textarea, input, select, a'))
+}
+
+function getScratchlistDropTarget(
+    clientX: number,
+    clientY: number,
+    fallbackTarget: EventTarget | null,
+): string | null {
+    const pointTarget = typeof document.elementFromPoint === 'function'
+        ? document.elementFromPoint(clientX, clientY)
+        : null
+    const target = pointTarget ?? fallbackTarget
+    if (!(target instanceof Element)) return null
+    return target.closest<HTMLElement>('[data-testid="scratchlist-entry"]')?.dataset.entryId ?? null
+}
+
+type TouchPoint = {
+    identifier: number
+    clientX: number
+    clientY: number
+}
+
+type TouchCollection = {
+    length: number
+    [index: number]: TouchPoint | undefined
+}
+
+function findTouch(touches: TouchCollection | undefined, touchId: number): TouchPoint | null {
+    if (!touches) return null
+    for (let index = 0; index < touches.length; index += 1) {
+        const touch = touches[index]
+        if (touch?.identifier === touchId) return touch
+    }
+    return null
+}
+
+type ScratchlistEntryAction = (entry: ScratchlistEntry) => void | Promise<boolean | void>
+type ScratchlistScheduleAction = (
+    entry: ScratchlistEntry,
+    pending: PendingSchedule,
+) => void | Promise<boolean | void>
+
+type ScratchlistMenuState = {
+    entryId: string
+    left: number
+    top: number
+}
+
+type ScratchlistDeleteRequest =
+    | { kind: 'entry'; entryId: string }
+    | {
+        kind: 'attachment'
+        entryId: string
+        attachmentId: string
+        attachmentFilename: string
+    }
+
+function clampScratchlistMenuPosition(left: number, top: number): { left: number; top: number } {
+    if (typeof window === 'undefined') return { left, top }
+    const menuWidth = 224
+    const menuHeight = 220
+    return {
+        left: Math.min(Math.max(8, left), Math.max(8, window.innerWidth - menuWidth - 8)),
+        top: Math.min(Math.max(8, top), Math.max(8, window.innerHeight - menuHeight - 8)),
+    }
+}
+
+function ScratchlistActionMenu({
+    entry,
+    position,
+    menuRef,
+    scheduleAnchorRef,
+    scheduleOpen,
+    onClose,
+    onCopy,
+    onDelete,
+    onSend,
+    onOpenSchedule,
+    onSchedule,
+    disabled,
+    actionPending,
+}: {
+    entry: ScratchlistEntry
+    position: ScratchlistMenuState
+    menuRef: RefObject<HTMLDivElement | null>
+    scheduleAnchorRef: RefObject<HTMLButtonElement | null>
+    scheduleOpen: boolean
+    onClose: () => void
+    onCopy: () => void
+    onDelete: () => void
+    onSend?: () => void
+    onOpenSchedule: () => void
+    onSchedule?: (pending: PendingSchedule) => void
+    disabled: boolean
+    actionPending: boolean
+}) {
+    const { t } = useTranslation()
+    const menu = (
+        <div
+            ref={menuRef}
+            role="menu"
+            aria-label={t('scratchlist.action.menuAriaLabel')}
+            data-testid="scratchlist-action-menu"
+            className="z-[60] min-w-56 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 text-sm text-[var(--app-fg)] shadow-xl"
+            style={{ position: 'fixed', left: position.left, top: position.top }}
+            onPointerDown={(event) => event.stopPropagation()}
+        >
+            <button
+                type="button"
+                role="menuitem"
+                data-scratchlist-action="copy"
+                aria-label={t('scratchlist.action.copy')}
+                className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                    onCopy()
+                    onClose()
+                }}
+                disabled={actionPending}
+            >
+                {t('scratchlist.action.copy')}
+            </button>
+            {onSend ? (
+                <button
+                    type="button"
+                    role="menuitem"
+                    data-scratchlist-action="send-now"
+                    className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={onSend}
+                    disabled={disabled || actionPending}
+                >
+                    {t('scratchlist.action.sendNow')}
+                </button>
+            ) : null}
+            {onSend && onSchedule ? (
+                <button
+                    ref={scheduleAnchorRef}
+                    type="button"
+                    role="menuitem"
+                    data-scratchlist-action="schedule"
+                    aria-expanded={scheduleOpen}
+                    className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={onOpenSchedule}
+                    disabled={disabled || actionPending}
+                >
+                    {t('scratchlist.action.scheduleSend')}
+                </button>
+            ) : null}
+            <div className="my-1 border-t border-[var(--app-border)]" role="separator" />
+            <button
+                type="button"
+                role="menuitem"
+                data-scratchlist-action="delete"
+                className="flex w-full items-center rounded-md px-3 py-2 text-left text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                    onDelete()
+                    onClose()
+                }}
+                disabled={disabled || actionPending}
+            >
+                {t('scratchlist.action.delete')}
+            </button>
+            {scheduleOpen && onSchedule ? (
+                <div data-scratchlist-schedule-picker="" onPointerDown={(event) => event.stopPropagation()}>
+                    <ScheduleTimePicker
+                        anchorRef={scheduleAnchorRef}
+                        onSchedule={onSchedule}
+                        onClose={onClose}
+                    />
+                </div>
+            ) : null}
+        </div>
+    )
+
+    return typeof document === 'undefined' ? null : createPortal(menu, document.body)
+}
+
 function ScratchlistInventory({
     entries,
-    busyEntryId,
-    onPromoteToComposer,
-    onPromoteToQueue,
+    onUpdate,
+    onReorder,
     onDelete,
-    onMove,
+    onSend,
+    onSchedule,
     sessionId,
     api,
     disabled = false,
+    listMarginClassName = 'mt-1',
+    emptyMarginClassName = 'mt-2',
 }: {
     entries: ScratchlistEntry[]
-    busyEntryId: string | null
-    onPromoteToComposer: (entry: ScratchlistEntry) => void | Promise<void>
-    onPromoteToQueue: (entry: ScratchlistEntry) => void | Promise<void>
-    onDelete: (entry: ScratchlistEntry) => void
-    onMove: (entry: ScratchlistEntry, direction: 'up' | 'down') => void
+    onUpdate: (
+        entry: ScratchlistEntry,
+        text: string,
+        attachments?: ScratchlistAttachmentMetadata[],
+    ) => void | Promise<void>
+    onReorder: (entryId: string, targetIndex: number) => void
+    onDelete: (entry: ScratchlistEntry) => void | Promise<void>
+    onSend?: ScratchlistEntryAction
+    onSchedule?: ScratchlistScheduleAction
     sessionId?: string
     api?: ApiClient
     disabled?: boolean
+    listMarginClassName?: string
+    emptyMarginClassName?: string
 }) {
     const { t } = useTranslation()
-    const { copiedEntryId, signalCopied } = useCopiedFeedback()
+    const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
+    const [editingText, setEditingText] = useState('')
+    const [copySuccessEntryId, setCopySuccessEntryId] = useState<string | null>(null)
+    const [draggingEntryId, setDraggingEntryId] = useState<string | null>(null)
+    const [dragOverEntryId, setDragOverEntryId] = useState<string | null>(null)
+    const [menuState, setMenuState] = useState<ScratchlistMenuState | null>(null)
+    const [scheduleEntryId, setScheduleEntryId] = useState<string | null>(null)
+    const [actionPendingEntryId, setActionPendingEntryId] = useState<string | null>(null)
+    const [deleteRequest, setDeleteRequest] = useState<ScratchlistDeleteRequest | null>(null)
+    const [deletePending, setDeletePending] = useState(false)
+    const pointerDragRef = useRef<PointerDragState | null>(null)
+    const touchDragRef = useRef<TouchDragState | null>(null)
+    const touchContextMenuRef = useRef(false)
+    const editingTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+    const menuRef = useRef<HTMLDivElement | null>(null)
+    const scheduleAnchorRef = useRef<HTMLButtonElement | null>(null)
+    const copySuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const suppressClickRef = useRef(false)
+    const editCompletionRef = useRef(false)
+    const scrollViewportRef = useRef<HTMLDivElement | null>(null)
+    const entriesRef = useRef(entries)
+    entriesRef.current = entries
+
+    useLayoutEffect(() => {
+        const viewport = scrollViewportRef.current
+        if (!viewport) return
+
+        const updateScrollbarGutter = () => {
+            const scrollbarWidth = Math.max(0, viewport.offsetWidth - viewport.clientWidth)
+            viewport.style.setProperty('--scratchlist-scrollbar-width', `${scrollbarWidth}px`)
+        }
+
+        updateScrollbarGutter()
+        if (typeof ResizeObserver === 'undefined') return
+
+        const observer = new ResizeObserver(updateScrollbarGutter)
+        observer.observe(viewport)
+        return () => observer.disconnect()
+    }, [entries.length])
+
+    const closeMenu = useCallback(() => {
+        setMenuState(null)
+        setScheduleEntryId(null)
+    }, [])
+
+    const openMenu = useCallback((entry: ScratchlistEntry, left: number, top: number) => {
+        const position = clampScratchlistMenuPosition(left, top)
+        setMenuState({ entryId: entry.id, ...position })
+        setScheduleEntryId(null)
+    }, [])
+
+    useEffect(() => {
+        if (!menuState) return
+
+        const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+            const target = event.target
+            if (target instanceof Node && menuRef.current?.contains(target)) return
+            if (target instanceof Element && target.closest('[data-scratchlist-schedule-picker]')) return
+            closeMenu()
+        }
+        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+            if (event.key === 'Escape') closeMenu()
+        }
+        const closeOnViewportChange = () => closeMenu()
+        document.addEventListener('pointerdown', closeOnOutsidePointer)
+        document.addEventListener('keydown', closeOnEscape)
+        window.addEventListener('resize', closeOnViewportChange)
+        return () => {
+            document.removeEventListener('pointerdown', closeOnOutsidePointer)
+            document.removeEventListener('keydown', closeOnEscape)
+            window.removeEventListener('resize', closeOnViewportChange)
+        }
+    }, [closeMenu, menuState])
+
+    useEffect(() => {
+        if (menuState && !entries.some((entry) => entry.id === menuState.entryId)) {
+            closeMenu()
+        }
+    }, [closeMenu, entries, menuState])
+
+    const runEntryAction = useCallback(async (
+        entry: ScratchlistEntry,
+        action: ScratchlistEntryAction | undefined,
+    ) => {
+        if (!action || disabled || actionPendingEntryId) return
+        setActionPendingEntryId(entry.id)
+        try {
+            await action(entry)
+        } finally {
+            setActionPendingEntryId(null)
+            closeMenu()
+        }
+    }, [actionPendingEntryId, closeMenu, disabled])
+
+    const handleContextMenu = useCallback((entry: ScratchlistEntry, event: ReactMouseEvent<HTMLLIElement>) => {
+        const sourceCapabilities = (event.nativeEvent as MouseEvent & {
+            sourceCapabilities?: { firesTouchEvents?: boolean } | null
+        }).sourceCapabilities
+        if (sourceCapabilities?.firesTouchEvents || touchContextMenuRef.current || touchDragRef.current) {
+            event.preventDefault()
+            return
+        }
+        if (isScratchlistActionTarget(event.target)) {
+            event.preventDefault()
+            return
+        }
+        event.preventDefault()
+        openMenu(entry, event.clientX, event.clientY)
+    }, [openMenu])
+
     const handleCopy = useCallback(async (entry: ScratchlistEntry) => {
         try {
             await safeCopyToClipboard(entry.text)
-            signalCopied(entry.id)
+            setCopySuccessEntryId(entry.id)
+            if (copySuccessTimerRef.current) clearTimeout(copySuccessTimerRef.current)
+            copySuccessTimerRef.current = setTimeout(() => {
+                setCopySuccessEntryId((current) => current === entry.id ? null : current)
+                copySuccessTimerRef.current = null
+            }, COPY_SUCCESS_FEEDBACK_MS)
         } catch {
             // safeCopyToClipboard exhausted both the navigator.clipboard
             // path and the execCommand fallback; nothing useful left to do.
             // Silently no-op rather than throw at the click handler.
         }
-    }, [signalCopied])
+    }, [])
+
+    useEffect(() => () => {
+        if (copySuccessTimerRef.current) clearTimeout(copySuccessTimerRef.current)
+    }, [])
+
+    const clearPointerDrag = useCallback((state: PointerDragState | null) => {
+        if (!state) return
+        window.clearTimeout(state.timer)
+        if (typeof state.row.hasPointerCapture === 'function' && state.row.hasPointerCapture(state.pointerId)) {
+            state.row.releasePointerCapture(state.pointerId)
+        }
+        if (pointerDragRef.current === state) pointerDragRef.current = null
+        setDraggingEntryId(null)
+        setDragOverEntryId(null)
+    }, [])
+
+    const finishPointerGesture = useCallback((event: ReactPointerEvent<HTMLLIElement>, commit: boolean) => {
+        const state = pointerDragRef.current
+        if (!state || state.pointerId !== event.pointerId) return
+
+        if (commit && state.active) {
+            const targetId = getScratchlistDropTarget(event.clientX, event.clientY, event.target)
+            const targetIndex = targetId
+                ? entriesRef.current.findIndex((entry) => entry.id === targetId)
+                : -1
+            if (targetIndex >= 0 && targetId !== state.entryId) {
+                onReorder(state.entryId, targetIndex)
+            }
+            // A long press is a drag gesture, even when it ends over the
+            // source row. Suppress the synthetic click that touch browsers
+            // dispatch after the gesture so it cannot unexpectedly open the
+            // inline editor.
+            if (state.active) {
+                suppressClickRef.current = true
+                window.setTimeout(() => {
+                    suppressClickRef.current = false
+                }, 250)
+            }
+        }
+        clearPointerDrag(state)
+    }, [clearPointerDrag, onReorder])
+
+    const clearTouchDrag = useCallback((state: TouchDragState | null) => {
+        if (!state) return
+        window.clearTimeout(state.timer)
+        if (touchDragRef.current === state) touchDragRef.current = null
+        setDraggingEntryId(null)
+        setDragOverEntryId(null)
+    }, [])
+
+    const finishTouchGesture = useCallback((event: ReactTouchEvent<HTMLLIElement>, commit: boolean) => {
+        const state = touchDragRef.current
+        if (!state) return
+
+        const touch = findTouch(event.changedTouches, state.touchId)
+            ?? findTouch(event.touches, state.touchId)
+        if (touch) {
+            state.currentX = touch.clientX
+            state.currentY = touch.clientY
+        }
+
+        if (commit && state.active) {
+            const targetId = getScratchlistDropTarget(state.currentX, state.currentY, state.row)
+            const targetIndex = targetId
+                ? entriesRef.current.findIndex((entry) => entry.id === targetId)
+                : -1
+            if (targetIndex >= 0 && targetId !== state.entryId) {
+                onReorder(state.entryId, targetIndex)
+            }
+            suppressClickRef.current = true
+            window.setTimeout(() => {
+                suppressClickRef.current = false
+            }, 250)
+        }
+        clearTouchDrag(state)
+    }, [clearTouchDrag, onReorder])
+
+    useEffect(() => () => {
+        const state = pointerDragRef.current
+        if (state) {
+            window.clearTimeout(state.timer)
+            if (typeof state.row.hasPointerCapture === 'function' && state.row.hasPointerCapture(state.pointerId)) {
+                state.row.releasePointerCapture(state.pointerId)
+            }
+        }
+        const touchState = touchDragRef.current
+        if (touchState) {
+            window.clearTimeout(touchState.timer)
+        }
+    }, [])
+
+    // A mobile browser may start native scrolling after a long press even
+    // though the row has entered drag mode. This non-passive listener lets the
+    // active touch gesture take over without disabling normal list scrolling
+    // before the long-press threshold is reached.
+    useEffect(() => {
+        const preventNativeTouchScroll = (event: globalThis.TouchEvent) => {
+            const state = touchDragRef.current
+            if (!state?.active) return
+            if (findTouch(event.touches, state.touchId) || findTouch(event.changedTouches, state.touchId)) {
+                event.preventDefault()
+            }
+        }
+        document.addEventListener('touchmove', preventNativeTouchScroll, { passive: false })
+        return () => document.removeEventListener('touchmove', preventNativeTouchScroll)
+    }, [])
+
+    useEffect(() => {
+        if (editingEntryId && !entries.some((entry) => entry.id === editingEntryId)) {
+            setEditingEntryId(null)
+            setEditingText('')
+        }
+    }, [editingEntryId, entries])
+
+    useLayoutEffect(() => {
+        if (!editingEntryId) return
+        const editor = editingTextareaRef.current
+        if (!editor) return
+
+        editor.focus()
+        const end = editor.value.length
+        editor.setSelectionRange(end, end)
+    }, [editingEntryId])
+
+    useLayoutEffect(() => {
+        if (!editingEntryId) return
+        const editor = editingTextareaRef.current
+        if (!editor) return
+
+        // Let the textarea follow its content instead of introducing a
+        // second, independently scrolling viewport inside the row.
+        editor.style.height = 'auto'
+        editor.style.height = `${editor.scrollHeight}px`
+    }, [editingEntryId, editingText])
+
+    const handlePointerDown = useCallback((entry: ScratchlistEntry, event: ReactPointerEvent<HTMLLIElement>) => {
+        if (disabled || editingEntryId || event.pointerType === 'touch' || event.button !== 0 || isScratchlistActionTarget(event.target)) return
+        const previous = pointerDragRef.current
+        if (previous) clearPointerDrag(previous)
+
+        const row = event.currentTarget
+        const state: PointerDragState = {
+            entryId: entry.id,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            row,
+            timer: window.setTimeout(() => {
+                if (pointerDragRef.current !== state) return
+                if (typeof state.row.setPointerCapture === 'function') {
+                    state.row.setPointerCapture(state.pointerId)
+                }
+                state.active = true
+                setDraggingEntryId(state.entryId)
+                setDragOverEntryId(null)
+            }, LONG_PRESS_TO_DRAG_MS),
+            active: false,
+        }
+        pointerDragRef.current = state
+    }, [clearPointerDrag, disabled, editingEntryId])
+
+    const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLLIElement>) => {
+        const state = pointerDragRef.current
+        if (!state || state.pointerId !== event.pointerId) return
+        const moved = Math.hypot(event.clientX - state.startX, event.clientY - state.startY)
+        if (!state.active) {
+            if (moved > DRAG_CANCEL_DISTANCE_PX) finishPointerGesture(event, false)
+            return
+        }
+
+        event.preventDefault()
+        const targetId = getScratchlistDropTarget(event.clientX, event.clientY, event.target)
+        setDragOverEntryId(targetId && targetId !== state.entryId ? targetId : null)
+    }, [finishPointerGesture])
+
+    const handleTouchStart = useCallback((entry: ScratchlistEntry, event: ReactTouchEvent<HTMLLIElement>) => {
+        touchContextMenuRef.current = true
+        window.setTimeout(() => {
+            touchContextMenuRef.current = false
+        }, 1000)
+        if (disabled || editingEntryId || isScratchlistActionTarget(event.target)) return
+        const touch = event.changedTouches[0] ?? event.touches[0]
+        if (!touch) return
+
+        const previous = touchDragRef.current
+        if (previous) clearTouchDrag(previous)
+
+        const row = event.currentTarget
+        const state: TouchDragState = {
+            entryId: entry.id,
+            touchId: touch.identifier,
+            startX: touch.clientX,
+            startY: touch.clientY,
+            currentX: touch.clientX,
+            currentY: touch.clientY,
+            row,
+            timer: window.setTimeout(() => {
+                if (touchDragRef.current !== state) return
+                state.active = true
+                setDraggingEntryId(state.entryId)
+                setDragOverEntryId(null)
+            }, LONG_PRESS_TO_DRAG_MS),
+            active: false,
+        }
+        touchDragRef.current = state
+    }, [clearTouchDrag, disabled, editingEntryId])
+
+    const handleTouchMove = useCallback((event: ReactTouchEvent<HTMLLIElement>) => {
+        const state = touchDragRef.current
+        if (!state) return
+        const touch = findTouch(event.touches, state.touchId)
+            ?? findTouch(event.changedTouches, state.touchId)
+        if (!touch) return
+
+        state.currentX = touch.clientX
+        state.currentY = touch.clientY
+        const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY)
+        if (!state.active) {
+            if (moved > DRAG_CANCEL_DISTANCE_PX) clearTouchDrag(state)
+            return
+        }
+
+        event.preventDefault()
+        const targetId = getScratchlistDropTarget(state.currentX, state.currentY, event.target)
+        setDragOverEntryId(targetId && targetId !== state.entryId ? targetId : null)
+    }, [clearTouchDrag])
+
+    const startEditing = useCallback((entry: ScratchlistEntry) => {
+        if (disabled) return
+        if (suppressClickRef.current) {
+            suppressClickRef.current = false
+            return
+        }
+        editCompletionRef.current = false
+        setEditingEntryId(entry.id)
+        setEditingText(entry.text)
+    }, [disabled])
+
+    const requestDeleteEntry = useCallback((entry: ScratchlistEntry) => {
+        if (disabled || actionPendingEntryId) return
+        setDeleteRequest({ kind: 'entry', entryId: entry.id })
+    }, [actionPendingEntryId, disabled])
+
+    const removeAttachment = useCallback((entry: ScratchlistEntry, attachmentId: string) => {
+        if (disabled || actionPendingEntryId) return
+        const attachments = entry.attachments ?? []
+        const attachment = attachments.find((candidate) => candidate.id === attachmentId)
+        if (!attachment) return
+        setDeleteRequest({
+            kind: 'attachment',
+            entryId: entry.id,
+            attachmentId: attachment.id,
+            attachmentFilename: attachment.filename,
+        })
+    }, [actionPendingEntryId, disabled])
+
+    const closeDeleteConfirmation = useCallback(() => {
+        if (deletePending) return
+        setDeleteRequest(null)
+    }, [deletePending])
+
+    const confirmDelete = useCallback(async () => {
+        if (!deleteRequest) return
+        setDeletePending(true)
+        try {
+            // The entry captured when the dialog opened may be stale after a
+            // cross-device update. Always apply the confirmed action to the
+            // latest row so removing one attachment cannot overwrite newer
+            // text or attachment changes.
+            const currentEntry = entriesRef.current.find((entry) => entry.id === deleteRequest.entryId)
+            if (!currentEntry) return
+
+            if (deleteRequest.kind === 'entry') {
+                for (const attachment of currentEntry.attachments ?? []) {
+                    releaseScratchlistAttachmentPreview(attachment.id)
+                }
+                await onDelete(currentEntry)
+                return
+            }
+
+            const currentAttachment = (currentEntry.attachments ?? [])
+                .find((attachment) => attachment.id === deleteRequest.attachmentId)
+            if (!currentAttachment) return
+
+            releaseScratchlistAttachmentPreview(currentAttachment.id)
+            const nextAttachments = (currentEntry.attachments ?? [])
+                .filter((attachment) => attachment.id !== currentAttachment.id)
+            if (currentEntry.text.trim().length === 0 && nextAttachments.length === 0) {
+                await onDelete(currentEntry)
+                return
+            }
+            await onUpdate(currentEntry, currentEntry.text, nextAttachments)
+        } finally {
+            setDeletePending(false)
+        }
+    }, [deleteRequest, onDelete, onUpdate])
+
+    const handleSend = useCallback((entry: ScratchlistEntry) => {
+        void runEntryAction(entry, onSend)
+    }, [onSend, runEntryAction])
+
+    const handleSchedule = useCallback((entry: ScratchlistEntry, pending: PendingSchedule) => {
+        if (!onSchedule) return
+        void runEntryAction(entry, (current) => onSchedule(current, pending))
+    }, [onSchedule, runEntryAction])
+
+    const finishEditing = useCallback((entry: ScratchlistEntry) => {
+        if (editCompletionRef.current) {
+            editCompletionRef.current = false
+            return
+        }
+        editCompletionRef.current = true
+        const nextText = editingText.trim()
+        setEditingEntryId(null)
+        setEditingText('')
+        const hasAttachments = (entry.attachments?.length ?? 0) > 0
+        if (nextText !== entry.text && (nextText.length > 0 || hasAttachments)) {
+            try {
+                void Promise.resolve(onUpdate(entry, nextText)).catch(() => {
+                    // Inline edits do not have a confirmation dialog to show
+                    // mutation errors; the hook rolls back and the next SSE
+                    // refresh reconciles the row. Delete confirmations await
+                    // the same callback and surface failures themselves.
+                })
+            } catch {
+                // Keep a synchronous callback failure from becoming an
+                // unhandled event-handler exception.
+            }
+        }
+    }, [editingText, onUpdate])
+
+    const cancelEditing = useCallback(() => {
+        editCompletionRef.current = true
+        setEditingEntryId(null)
+        setEditingText('')
+        window.setTimeout(() => {
+            editCompletionRef.current = false
+        }, 0)
+    }, [])
+
     if (entries.length === 0) {
         return (
-            <p className="mt-2 text-[11px] text-[var(--app-hint)]">
+            <p className={`${emptyMarginClassName} text-[11px] text-[var(--app-hint)]`}>
                 {t('scratchlist.emptyHint')}
             </p>
         )
     }
+
     return (
-        <ul
-            aria-label={t('scratchlist.listAriaLabel')}
-            className="mt-2 flex max-h-64 flex-col gap-1.5 overflow-y-auto"
+        <div
+            ref={scrollViewportRef}
+            className={`${listMarginClassName} scratchlist-scroll-y max-h-64`}
+            data-testid="scratchlist-scroll-viewport"
         >
-            {entries.map((entry, index) => {
-                const isFirst = index === 0
-                const isLast = index === entries.length - 1
-                const isBusy = busyEntryId === entry.id
-                const mutationsDisabled = disabled || isBusy
+            <ul
+                aria-label={t('scratchlist.listAriaLabel')}
+                className="scratchlist-scroll-content flex min-h-0 flex-col gap-1.5"
+            >
+                {entries.map((entry) => {
+                const isEditing = editingEntryId === entry.id
+                const isDragging = draggingEntryId === entry.id
+                const isDragOver = dragOverEntryId === entry.id
                 return (
                     <li
                         key={entry.id}
-                        className="flex flex-col gap-1 rounded-md bg-[var(--app-bg)] px-2 py-1.5 shadow-sm"
+                        data-entry-id={entry.id}
                         data-testid="scratchlist-entry"
+                        data-dragging={isDragging ? '' : undefined}
+                        data-drag-over={isDragOver ? '' : undefined}
+                        title={t('scratchlist.action.dragToReorder')}
+                        onPointerDown={(event) => handlePointerDown(entry, event)}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={(event) => finishPointerGesture(event, true)}
+                        onPointerCancel={(event) => finishPointerGesture(event, false)}
+                        onTouchStart={(event) => handleTouchStart(entry, event)}
+                        onTouchMove={handleTouchMove}
+                        onTouchEnd={(event) => finishTouchGesture(event, true)}
+                        onTouchCancel={(event) => finishTouchGesture(event, false)}
+                        onContextMenu={(event) => handleContextMenu(entry, event)}
+                        className={`group relative flex shrink-0 min-h-9 select-none flex-col gap-1 rounded-md bg-[var(--app-bg)] px-2 py-1.5 transition-[background-color,opacity,box-shadow] hover:bg-[var(--app-subtle-bg)] focus-within:bg-[var(--app-subtle-bg)] ${
+                            isDragging ? 'touch-none cursor-grabbing bg-[var(--app-subtle-bg)] opacity-90 ring-2 ring-inset ring-[var(--app-badge-warning-border)]' : 'touch-pan-y'
+                        } ${isDragOver ? 'ring-2 ring-inset ring-[var(--app-badge-warning-border)]' : ''}`}
+                        style={{ touchAction: isDragging ? 'none' : 'pan-y' }}
                     >
-                        <div className="flex items-start gap-2">
-                            <div className="min-w-0 flex-1 overflow-hidden">
+                        <div className="flex min-h-6 items-center gap-2">
+                            <div
+                                className="min-w-0 flex-1"
+                                data-testid="scratchlist-entry-content"
+                            >
                                 {sessionId && api && entry.attachments && entry.attachments.length > 0 ? (
                                     <ScratchlistAttachmentThumbnails
                                         sessionId={sessionId}
                                         api={api}
                                         attachments={entry.attachments}
+                                        onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
                                     />
                                 ) : null}
-                                <p
-                                    className={
-                                        entry.attachments?.length
-                                            ? 'whitespace-pre-wrap break-words text-sm text-[var(--app-fg)]'
-                                            : 'line-clamp-4 whitespace-pre-wrap break-words text-sm text-[var(--app-fg)]'
-                                    }
-                                >
-                                    {entry.text || (entry.attachments?.length ? t('scratchlist.attachmentOnly') : '')}
-                                </p>
+                                {entry.attachments && entry.attachments.length > 0 ? (
+                                    <ScratchlistFileAttachments
+                                        attachments={entry.attachments}
+                                        onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
+                                    />
+                                ) : null}
+                                {isEditing ? (
+                                    <textarea
+                                        ref={editingTextareaRef}
+                                        rows={1}
+                                        value={editingText}
+                                        maxLength={SCRATCHLIST_MAX_TEXT_LENGTH}
+                                        aria-label={t('scratchlist.action.editEntry')}
+                                        onChange={(event) => setEditingText(event.target.value)}
+                                        onBlur={() => finishEditing(entry)}
+                                        onKeyDown={(event) => {
+                                            if (event.key === 'Escape') {
+                                                event.preventDefault()
+                                                cancelEditing()
+                                            } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                                                event.preventDefault()
+                                                finishEditing(entry)
+                                            }
+                                        }}
+                                        className="block min-h-6 w-full resize-none overflow-hidden bg-transparent p-0 text-sm leading-6 text-[var(--app-fg)] focus:outline-none focus:ring-0"
+                                    />
+                                ) : (
+                                    <button
+                                        type="button"
+                                        data-testid="scratchlist-entry-text"
+                                        data-scratchlist-text=""
+                                        title={t('scratchlist.action.editEntry')}
+                                        onClick={() => startEditing(entry)}
+                                        disabled={disabled}
+                                        className="min-h-6 min-w-0 w-full cursor-text rounded text-left text-sm leading-6 text-[var(--app-fg)] outline-none line-clamp-4 whitespace-pre-wrap break-words focus-visible:ring-1 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        {entry.text}
+                                    </button>
+                                )}
                             </div>
-                            <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
-                            <EntryAgeIndicator entry={entry} />
                             <button
                                 type="button"
-                                aria-label={t('scratchlist.action.moveUp')}
-                                title={t('scratchlist.action.moveUp')}
-                                onClick={() => onMove(entry, 'up')}
-                                disabled={isFirst || mutationsDisabled}
-                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
+                                data-scratchlist-action="menu"
+                                data-scratchlist-copy-success={copySuccessEntryId === entry.id ? '' : undefined}
+                                aria-haspopup="menu"
+                                aria-expanded={menuState?.entryId === entry.id}
+                                aria-label={t('scratchlist.action.more')}
+                                title={t('scratchlist.action.more')}
+                                onClick={(event) => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    const rect = event.currentTarget.getBoundingClientRect()
+                                    openMenu(entry, rect.right - 224, rect.bottom + 4)
+                                }}
+                                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 sm:focus-visible:opacity-100 ${copySuccessEntryId === entry.id ? 'text-[var(--app-badge-success-text)]' : ''}`}
                             >
-                                <ArrowUpIcon />
-                            </button>
-                            <button
-                                type="button"
-                                aria-label={t('scratchlist.action.moveDown')}
-                                title={t('scratchlist.action.moveDown')}
-                                onClick={() => onMove(entry, 'down')}
-                                disabled={isLast || mutationsDisabled}
-                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                            >
-                                <ArrowDownIcon />
-                            </button>
-                            <button
-                                type="button"
-                                aria-label={t('scratchlist.action.promoteToComposer')}
-                                title={t('scratchlist.action.promoteToComposer')}
-                                onClick={() => onPromoteToComposer(entry)}
-                                disabled={mutationsDisabled}
-                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                            >
-                                <PencilIcon />
-                            </button>
-                            <button
-                                type="button"
-                                aria-label={t('scratchlist.action.promoteToQueue')}
-                                title={t('scratchlist.action.promoteToQueue')}
-                                onClick={() => onPromoteToQueue(entry)}
-                                disabled={mutationsDisabled}
-                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                            >
-                                <SendIcon />
-                            </button>
-                            <button
-                                type="button"
-                                aria-label={
-                                    copiedEntryId === entry.id
-                                        ? t('scratchlist.action.copied')
-                                        : t('scratchlist.action.copy')
-                                }
-                                title={
-                                    copiedEntryId === entry.id
-                                        ? t('scratchlist.action.copied')
-                                        : t('scratchlist.action.copy')
-                                }
-                                onClick={() => { void handleCopy(entry) }}
-                                disabled={isBusy}
-                                data-copied={copiedEntryId === entry.id ? '' : undefined}
-                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30 data-[copied]:text-[var(--app-badge-warning-text)]"
-                            >
-                                {copiedEntryId === entry.id ? <ClipboardCheckIcon /> : <CopyIcon />}
-                            </button>
-                            <button
-                                type="button"
-                                aria-label={t('scratchlist.action.delete')}
-                                title={t('scratchlist.action.delete')}
-                                onClick={() => onDelete(entry)}
-                                disabled={mutationsDisabled}
-                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                            >
-                                <TrashIcon />
+                                {copySuccessEntryId === entry.id
+                                    ? <CheckIcon className="h-3.5 w-3.5" />
+                                    : <MoreIcon />}
                             </button>
                         </div>
-                        </div>
+                        {menuState?.entryId === entry.id ? (
+                            <ScratchlistActionMenu
+                                entry={entry}
+                                position={menuState}
+                                menuRef={menuRef}
+                                scheduleAnchorRef={scheduleAnchorRef}
+                                scheduleOpen={scheduleEntryId === entry.id}
+                                onClose={closeMenu}
+                                onCopy={() => { void handleCopy(entry) }}
+                                onDelete={() => requestDeleteEntry(entry)}
+                                onSend={onSend ? () => handleSend(entry) : undefined}
+                                onOpenSchedule={() => setScheduleEntryId(entry.id)}
+                                onSchedule={(pending) => handleSchedule(entry, pending)}
+                                disabled={disabled}
+                                actionPending={actionPendingEntryId === entry.id}
+                            />
+                        ) : null}
                     </li>
-                )
-            })}
-        </ul>
+                    )
+                })}
+            </ul>
+            <ConfirmDialog
+                isOpen={deleteRequest !== null}
+                onClose={closeDeleteConfirmation}
+                title={deleteRequest?.kind === 'attachment'
+                    ? t('scratchlist.confirmDelete.attachmentTitle')
+                    : t('scratchlist.confirmDelete.title')}
+                description={deleteRequest?.kind === 'attachment'
+                    ? t('scratchlist.confirmDelete.attachmentDescription', {
+                        name: deleteRequest.attachmentFilename,
+                    })
+                    : t('scratchlist.confirmDelete.description')}
+                confirmLabel={t('dialog.delete.confirm')}
+                confirmingLabel={t('dialog.delete.confirming')}
+                onConfirm={confirmDelete}
+                isPending={deletePending}
+                destructive
+                centerTitle
+            />
+        </div>
     )
 }
 
@@ -468,63 +1242,40 @@ function ScratchlistInventory({
  */
 export function ScratchlistDrawer({
     entries,
-    onMove,
+    onUpdate,
+    onReorder,
     onDelete,
-    onPromoteToComposer,
-    onPromoteToQueue,
+    onSend,
+    onSchedule,
     sessionId,
     api,
     disabled = false,
 }: {
     entries: ScratchlistEntry[]
-    onMove: (id: string, direction: 'up' | 'down') => void
-    onDelete: (id: string) => void
-    onPromoteToComposer: (entry: ScratchlistEntry) => void | Promise<void>
-    onPromoteToQueue: (entry: ScratchlistEntry) => Promise<boolean>
+    onUpdate: (
+        id: string,
+        text: string,
+        attachments?: ScratchlistAttachmentMetadata[],
+    ) => void | Promise<void>
+    onReorder: (id: string, targetIndex: number) => void
+    onDelete: (id: string) => void | Promise<void>
+    onSend?: ScratchlistEntryAction
+    onSchedule?: ScratchlistScheduleAction
     sessionId: string
     api: ApiClient
     disabled?: boolean
 }) {
     const { t } = useTranslation()
-    const [busyEntryId, setBusyEntryId] = useState<string | null>(null)
-
     const summary = useMemo(() => {
-        if (entries.length === 0) return t('scratchlist.empty')
+        if (entries.length === 0) return null
         if (entries.length === 1) return t('scratchlist.count.one')
         return t('scratchlist.count.other', { n: entries.length })
     }, [entries.length, t])
 
     const handleDelete = useCallback((entry: ScratchlistEntry) => {
         if (disabled) return
-        if (shouldConfirmDelete(entry)) {
-            const confirmed = typeof window !== 'undefined'
-                ? window.confirm(t('scratchlist.confirmDelete'))
-                : true
-            if (!confirmed) return
-        }
-        onDelete(entry.id)
-    }, [disabled, onDelete, t])
-
-    const handleMove = useCallback((entry: ScratchlistEntry, direction: 'up' | 'down') => {
-        if (disabled) return
-        onMove(entry.id, direction)
-    }, [disabled, onMove])
-
-    const handlePromoteToComposer = useCallback((entry: ScratchlistEntry) => {
-        if (disabled) return
-        void onPromoteToComposer(entry)
-    }, [disabled, onPromoteToComposer])
-
-    const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
-        if (disabled || busyEntryId) return
-        setBusyEntryId(entry.id)
-        try {
-            const accepted = await onPromoteToQueue(entry)
-            if (accepted) onDelete(entry.id)
-        } finally {
-            setBusyEntryId(null)
-        }
-    }, [busyEntryId, disabled, onDelete, onPromoteToQueue])
+        return onDelete(entry.id)
+    }, [disabled, onDelete])
 
     return (
         <div className="mx-auto w-full max-w-content mb-1">
@@ -532,36 +1283,42 @@ export function ScratchlistDrawer({
                 className="rounded-lg border border-[var(--app-badge-warning-border)] bg-[var(--app-chat-user-surface-bg)]"
                 data-testid="scratchlist-drawer"
             >
-                <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--app-fg)]">
-                    <NoteIcon />
-                    <span className="flex-1 truncate">
-                        {t('scratchlist.title')}
-                    </span>
-                    <span
-                        className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-hint)]"
-                        aria-hidden="true"
-                    >
-                        {t('scratchlist.heldLabel')}
-                    </span>
-                    <span className="text-[var(--app-hint)] text-[11px] tabular-nums">
-                        {summary}
-                    </span>
-                </div>
-
-                <div className="px-3 pb-3">
-                    <p className="text-[11px] text-[var(--app-hint)] mb-1">
-                        {t('scratchlist.drawerHint')}
-                    </p>
+                <div className="px-3 pb-3 pt-2">
+                    <div className="flex h-4 items-center gap-0 text-xs font-medium leading-4 text-[var(--app-fg)]">
+                        <div className="flex min-w-0 flex-1 items-center">
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                <NoteIcon />
+                            </span>
+                            <span className="flex h-4 min-w-0 flex-1 items-center truncate">
+                                {t('scratchlist.title')}
+                            </span>
+                        </div>
+                        {summary ? (
+                            <span
+                                className="mr-[0.09375rem] shrink-0 whitespace-nowrap"
+                                data-testid="scratchlist-count"
+                            >
+                                {summary}
+                            </span>
+                        ) : null}
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                            <ScratchlistHelpHint />
+                        </span>
+                    </div>
                     <ScratchlistInventory
                         entries={entries}
-                        busyEntryId={busyEntryId}
                         sessionId={sessionId}
                         api={api}
                         disabled={disabled}
-                        onPromoteToComposer={handlePromoteToComposer}
-                        onPromoteToQueue={handlePromoteToQueue}
+                        onUpdate={(entry, text, attachments) => attachments === undefined
+                            ? onUpdate(entry.id, text)
+                            : onUpdate(entry.id, text, attachments)}
+                        onReorder={onReorder}
                         onDelete={handleDelete}
-                        onMove={handleMove}
+                        onSend={onSend}
+                        onSchedule={onSchedule}
+                        listMarginClassName="mt-2"
+                        emptyMarginClassName="mt-2"
                     />
                 </div>
             </div>
@@ -575,7 +1332,7 @@ export function ScratchlistDrawer({
  * Distinct from the queue (`QueuedMessagesBar`):
  * - Queue = conveyor belt: messages auto-fire in order once the agent is idle.
  * - Scratchlist = workbench: notes / drafts / parking-lot ideas held until the
- *   operator explicitly promotes them (to the composer or into the queue).
+ *   operator edits, copies, deletes, or otherwise acts on them.
  *
  * The "held -- not sent" pill plus a subtle amber border is the visual
  * signal that nothing here is being sent without an explicit action. The
@@ -585,47 +1342,20 @@ export function ScratchlistDrawer({
  */
 export function ScratchlistPanel({
     sessionId,
-    onPromoteToComposer,
-    onPromoteToQueue,
 }: {
     sessionId: string
-    /**
-     * Copies the entry text into the composer for editing. Called with the
-     * raw entry text. Implementation lives in SessionChat (it owns the
-     * AssistantUI runtime that exposes setText).
-     */
-    onPromoteToComposer: (text: string) => void
-    /**
-     * Sends the entry into the existing send-queue (same path as a normal
-     * composer send). Resolves true when the send was accepted, false when
-     * pre-mutation guards rejected it -- matches the contract of
-     * useSendMessage.sendMessage so the UI knows whether to remove the
-     * scratchlist entry on success.
-     */
-    onPromoteToQueue: (text: string) => Promise<boolean>
 }) {
     const { t } = useTranslation()
     const [entries, setEntries] = useState<ScratchlistEntry[]>(() => readScratchlist(sessionId))
     const [collapsed, setCollapsed] = useState<boolean>(() => readCollapsedPref(sessionId))
     const [draft, setDraft] = useState<string>('')
-    const [busyEntryId, setBusyEntryId] = useState<string | null>(null)
     const inputRef = useRef<HTMLTextAreaElement | null>(null)
-    const { copiedEntryId, signalCopied } = useCopiedFeedback()
-    const handleCopy = useCallback(async (entry: ScratchlistEntry) => {
-        try {
-            await safeCopyToClipboard(entry.text)
-            signalCopied(entry.id)
-        } catch {
-            // see ScratchlistInventory.handleCopy for rationale
-        }
-    }, [signalCopied])
 
     // Re-hydrate when the session id changes (route navigation between sessions).
     useEffect(() => {
         setEntries(readScratchlist(sessionId))
         setCollapsed(readCollapsedPref(sessionId))
         setDraft('')
-        setBusyEntryId(null)
     }, [sessionId])
 
     // Persist on every change. The storage layer swallows quota / serialization
@@ -681,38 +1411,20 @@ export function ScratchlistPanel({
     }, [draft, handleAdd])
 
     const handleDelete = useCallback((entry: ScratchlistEntry) => {
-        if (shouldConfirmDelete(entry)) {
-            const confirmed = typeof window !== 'undefined'
-                ? window.confirm(t('scratchlist.confirmDelete'))
-                : true
-            if (!confirmed) return
-        }
         setEntries((prev) => deleteScratchlistEntry(prev, entry.id))
-    }, [t])
-
-    const handleMove = useCallback((entry: ScratchlistEntry, direction: 'up' | 'down') => {
-        setEntries((prev) => moveScratchlistEntry(prev, entry.id, direction))
     }, [])
 
-    const handlePromoteToComposer = useCallback((entry: ScratchlistEntry) => {
-        onPromoteToComposer(entry.text)
-        // Promote-to-composer is a copy, not a move: the entry stays in the
-        // scratchlist so the operator can iterate. Promote-to-queue is the
-        // destructive variant.
-    }, [onPromoteToComposer])
+    const handleUpdate = useCallback((
+        entry: ScratchlistEntry,
+        text: string,
+        attachments?: ScratchlistAttachmentMetadata[],
+    ) => {
+        setEntries((prev) => updateScratchlistEntry(prev, entry.id, text, Date.now(), attachments))
+    }, [])
 
-    const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
-        if (busyEntryId) return
-        setBusyEntryId(entry.id)
-        try {
-            const accepted = await onPromoteToQueue(entry.text)
-            if (accepted) {
-                setEntries((prev) => deleteScratchlistEntry(prev, entry.id))
-            }
-        } finally {
-            setBusyEntryId(null)
-        }
-    }, [busyEntryId, onPromoteToQueue])
+    const handleReorder = useCallback((entryId: string, targetIndex: number) => {
+        setEntries((prev) => reorderScratchlistEntry(prev, entryId, targetIndex))
+    }, [])
 
     const summary = useMemo(() => {
         if (entries.length === 0) return t('scratchlist.empty')
@@ -796,105 +1508,12 @@ export function ScratchlistPanel({
                                 </p>
                             ) : null}
 
-                            {entries.length > 0 ? (
-                                <ul
-                                    aria-label={t('scratchlist.listAriaLabel')}
-                                    className="mt-2 flex max-h-64 flex-col gap-1.5 overflow-y-auto"
-                                >
-                                    {entries.map((entry, index) => {
-                                        const isFirst = index === 0
-                                        const isLast = index === entries.length - 1
-                                        const isBusy = busyEntryId === entry.id
-                                        return (
-                                            <li
-                                                key={entry.id}
-                                                className="flex items-start gap-2 rounded-md bg-[var(--app-bg)] px-2 py-1.5 shadow-sm"
-                                                data-testid="scratchlist-entry"
-                                            >
-                                                <span className="flex-1 min-w-0 whitespace-pre-wrap break-words text-sm text-[var(--app-fg)] line-clamp-4">
-                                                    {entry.text}
-                                                </span>
-                                                <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
-                                                    <EntryAgeIndicator entry={entry} />
-                                                    <button
-                                                        type="button"
-                                                        aria-label={t('scratchlist.action.moveUp')}
-                                                        title={t('scratchlist.action.moveUp')}
-                                                        onClick={() => handleMove(entry, 'up')}
-                                                        disabled={isFirst || isBusy}
-                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                                                    >
-                                                        <ArrowUpIcon />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label={t('scratchlist.action.moveDown')}
-                                                        title={t('scratchlist.action.moveDown')}
-                                                        onClick={() => handleMove(entry, 'down')}
-                                                        disabled={isLast || isBusy}
-                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                                                    >
-                                                        <ArrowDownIcon />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label={t('scratchlist.action.promoteToComposer')}
-                                                        title={t('scratchlist.action.promoteToComposer')}
-                                                        onClick={() => handlePromoteToComposer(entry)}
-                                                        disabled={isBusy}
-                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                                                    >
-                                                        <PencilIcon />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label={t('scratchlist.action.promoteToQueue')}
-                                                        title={t('scratchlist.action.promoteToQueue')}
-                                                        onClick={() => { void handlePromoteToQueue(entry) }}
-                                                        disabled={isBusy}
-                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                                                    >
-                                                        <SendIcon />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label={
-                                                            copiedEntryId === entry.id
-                                                                ? t('scratchlist.action.copied')
-                                                                : t('scratchlist.action.copy')
-                                                        }
-                                                        title={
-                                                            copiedEntryId === entry.id
-                                                                ? t('scratchlist.action.copied')
-                                                                : t('scratchlist.action.copy')
-                                                        }
-                                                        onClick={() => { void handleCopy(entry) }}
-                                                        disabled={isBusy}
-                                                        data-copied={copiedEntryId === entry.id ? '' : undefined}
-                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30 data-[copied]:text-[var(--app-badge-warning-text)]"
-                                                    >
-                                                        {copiedEntryId === entry.id ? <ClipboardCheckIcon /> : <CopyIcon />}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label={t('scratchlist.action.delete')}
-                                                        title={t('scratchlist.action.delete')}
-                                                        onClick={() => handleDelete(entry)}
-                                                        disabled={isBusy}
-                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
-                                                    >
-                                                        <TrashIcon />
-                                                    </button>
-                                                </div>
-                                            </li>
-                                        )
-                                    })}
-                                </ul>
-                            ) : (
-                                <p className="mt-2 text-[11px] text-[var(--app-hint)]">
-                                    {t('scratchlist.emptyHint')}
-                                </p>
-                            )}
+                            <ScratchlistInventory
+                                entries={entries}
+                                onUpdate={handleUpdate}
+                                onReorder={handleReorder}
+                                onDelete={handleDelete}
+                            />
                         </div>
                     </div>
                 </div>

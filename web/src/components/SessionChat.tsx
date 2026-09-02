@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
@@ -52,8 +61,12 @@ import {
     resolveMessageDeliveryMode,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
-import type { MessageDeliveryMode } from '@hapi/protocol'
-import { isSteeringSupportedForSession } from '@hapi/protocol'
+import {
+    isHubScratchlistAttachmentPath,
+    stripPreviewUrls,
+    isSteeringSupportedForSession,
+    type MessageDeliveryMode,
+} from '@hapi/protocol'
 import type { OlderLoadOutcome } from '@/lib/message-window-store'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
@@ -65,17 +78,15 @@ import {
     attachmentsNeedScratchlistMigration,
     finalizeMigratedScratchlistParkCleanup,
     prepareScratchlistParkAttachments,
-    rehydrateScratchlistAttachmentsToComposer,
     stageScratchlistAttachmentsForComposeSend,
     type PendingParkAttachment,
     type ScratchlistParkResult,
 } from '@/lib/scratchlistAttachmentFlow'
-import type { ScratchlistEntry } from '@/lib/scratchlist'
-import { isHubScratchlistAttachmentPath } from '@hapi/protocol'
 import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
+import type { ScratchlistEntry } from '@/lib/scratchlist'
 import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
@@ -313,6 +324,19 @@ export function shouldRouteToScratchlist(
     return (attachments ?? []).every((att) => isHubScratchlistAttachmentPath(att.path))
 }
 
+/**
+ * Hub-backed composer attachments can be staged into the normal CLI upload
+ * directory for immediate sends. Scheduled sends must preserve their Hub
+ * paths so the Hub can materialize them when the schedule matures.
+ */
+export function shouldStageScratchlistAttachmentsForComposeSend(
+    attachments: AttachmentMetadata[] | undefined,
+    scheduledAt: number | null | undefined,
+): boolean {
+    return scheduledAt == null
+        && (attachments ?? []).some((attachment) => isHubScratchlistAttachmentPath(attachment.path))
+}
+
 export function mergeStagedAttachmentsInOrder(
     attachments: readonly AttachmentMetadata[],
     staged: readonly AttachmentMetadata[],
@@ -386,62 +410,23 @@ export function ScratchlistDrawerHost(props: {
     sessionId: string
     api: ApiClient
     entries: ReturnType<typeof useHubScratchlist>['entries']
-    onMove: ReturnType<typeof useHubScratchlist>['move']
+    onUpdate: ReturnType<typeof useHubScratchlist>['update']
+    onReorder: ReturnType<typeof useHubScratchlist>['reorder']
     onDelete: ReturnType<typeof useHubScratchlist>['remove']
-    onSend: (
-        text: string,
-        attachments?: AttachmentMetadata[],
-        scheduledAt?: number | null,
-        deliveryMode?: MessageDeliveryMode,
-    ) => Promise<boolean | SendMessageAcceptance>
-    onExitScratchlistMode: () => void
+    onSend?: (entry: ScratchlistEntry) => Promise<boolean>
+    onSchedule?: (entry: ScratchlistEntry, pending: PendingSchedule) => Promise<boolean>
     disabled?: boolean
 }) {
-    const assistantApi = useAui()
-    const handlePromoteToComposer = useCallback(async (entry: ScratchlistEntry) => {
-        if (props.disabled) return
-        assistantApi.composer().setText(entry.text)
-        // Exit scratchlist mode before rehydrating attachments so addAttachment
-        // uses the normal chat upload adapter (not the scratchlist hub adapter).
-        flushSync(() => {
-            props.onExitScratchlistMode()
-        })
-        if (entry.attachments && entry.attachments.length > 0) {
-            await rehydrateScratchlistAttachmentsToComposer(
-                props.api,
-                props.sessionId,
-                entry.attachments,
-                assistantApi.composer()
-            )
-        }
-    }, [assistantApi, props.api, props.disabled, props.onExitScratchlistMode, props.sessionId])
-    const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
-        if (props.disabled) return false
-        let attachments: AttachmentMetadata[] | undefined
-        if (entry.attachments && entry.attachments.length > 0) {
-            attachments = await stageScratchlistAttachmentsForComposeSend(
-                props.api,
-                props.sessionId,
-                entry.attachments
-            )
-        }
-        // This action is explicitly labelled “Send to queue”. It must retain
-        // that contract even when the Pi session is actively thinking.
-        const accepted = await props.onSend(entry.text, attachments, undefined, 'queue')
-        if (accepted) {
-            props.onExitScratchlistMode()
-        }
-        return Boolean(accepted)
-    }, [props.api, props.disabled, props.onSend, props.onExitScratchlistMode, props.sessionId])
     return (
         <ScratchlistDrawer
             entries={props.entries}
             sessionId={props.sessionId}
             api={props.api}
-            onMove={props.onMove}
+            onUpdate={props.onUpdate}
+            onReorder={props.onReorder}
             onDelete={props.onDelete}
-            onPromoteToComposer={handlePromoteToComposer}
-            onPromoteToQueue={handlePromoteToQueue}
+            onSend={props.onSend}
+            onSchedule={props.onSchedule}
             disabled={props.disabled}
         />
     )
@@ -523,6 +508,12 @@ type SessionChatProps = {
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
     ) => Promise<SendMessageAcceptance | false>
+    onScratchlistSendAccepted: (
+        attemptId: string,
+        sessionId: string,
+        entryId: string,
+        expectedUpdatedAt: number,
+    ) => void
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
@@ -541,6 +532,149 @@ type SessionChatProps = {
     // Called when an `abort-restore` event arrives and the composer is not empty,
     // so the caller can surface the aborted text via the existing sendError path.
     onAbortRestore?: (text: string) => void
+}
+
+type ScratchlistSendTracker = (
+    attemptId: string,
+    sessionId: string,
+    entryId: string,
+    expectedUpdatedAt: number,
+) => void
+
+const MAX_SCRATCHLIST_CLEANUP_RETRIES = 3
+const SCRATCHLIST_CLEANUP_RETRY_BASE_MS = 1000
+
+type ScratchlistSendCleanupRegistry = {
+    track: ScratchlistSendTracker
+    observeSettlement: (settlement: SendMessageSettlement | null) => void
+}
+
+const ScratchlistSendCleanupContext = createContext<ScratchlistSendCleanupRegistry | null>(null)
+
+function useScratchlistSendCleanupRegistry(
+    api: Pick<ApiClient, 'deleteScratchlistEntryIfUnchanged'>,
+): ScratchlistSendCleanupRegistry {
+    const pendingSendsRef = useRef(new Map<string, {
+        sessionId: string
+        entryId: string
+        expectedUpdatedAt: number
+    }>())
+    const successfulAttemptsRef = useRef(new Set<string>())
+    const settlingSendsRef = useRef(new Set<string>())
+    const cleanupRetriesRef = useRef(new Map<string, number>())
+    const cleanupRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+    const clearCleanupRetry = useCallback((attemptId: string) => {
+        cleanupRetriesRef.current.delete(attemptId)
+        const timer = cleanupRetryTimersRef.current.get(attemptId)
+        if (timer !== undefined) {
+            clearTimeout(timer)
+            cleanupRetryTimersRef.current.delete(attemptId)
+        }
+    }, [])
+    const settlePendingSend = useCallback((attemptId: string) => {
+        const pending = pendingSendsRef.current.get(attemptId)
+        if (!pending || !successfulAttemptsRef.current.has(attemptId)) return
+        // Keep the source draft association through retryable failures. A
+        // retry reuses the same local id, so deleting it here would make a
+        // later successful retry unable to clean up the original draft.
+        if (
+            settlingSendsRef.current.has(attemptId)
+            || cleanupRetryTimersRef.current.has(attemptId)
+        ) return
+        settlingSendsRef.current.add(attemptId)
+        void api.deleteScratchlistEntryIfUnchanged(
+            pending.sessionId,
+            pending.entryId,
+            pending.expectedUpdatedAt,
+        ).then(() => {
+            // A false result is an intentional no-op when another client has
+            // edited or deleted the draft; in either case this send is settled.
+            pendingSendsRef.current.delete(attemptId)
+            successfulAttemptsRef.current.delete(attemptId)
+            clearCleanupRetry(attemptId)
+        }).catch(() => {
+            // Keep the association if the cleanup request itself failed and
+            // retry transient failures without making the send visible again.
+            const retries = cleanupRetriesRef.current.get(attemptId) ?? 0
+            if (retries >= MAX_SCRATCHLIST_CLEANUP_RETRIES) {
+                // The draft remains available for manual recovery, but do
+                // not retain an unbounded in-memory association forever.
+                pendingSendsRef.current.delete(attemptId)
+                successfulAttemptsRef.current.delete(attemptId)
+                cleanupRetriesRef.current.delete(attemptId)
+                return
+            }
+            const nextRetry = retries + 1
+            cleanupRetriesRef.current.set(attemptId, nextRetry)
+            const timer = setTimeout(() => {
+                cleanupRetryTimersRef.current.delete(attemptId)
+                settlePendingSend(attemptId)
+            }, SCRATCHLIST_CLEANUP_RETRY_BASE_MS * 2 ** (nextRetry - 1))
+            cleanupRetryTimersRef.current.set(attemptId, timer)
+        }).finally(() => {
+            settlingSendsRef.current.delete(attemptId)
+        })
+    }, [api, clearCleanupRetry])
+    const observeSettlement = useCallback((settlement: SendMessageSettlement | null) => {
+        if (settlement?.status !== 'success') return
+        // The observer also receives ordinary composer sends. Only retain a
+        // success for an attempt that was registered by the scratchlist
+        // sender, otherwise every successful chat message would accumulate in
+        // this long-lived provider's in-memory set.
+        if (!pendingSendsRef.current.has(settlement.attemptId)) return
+        successfulAttemptsRef.current.add(settlement.attemptId)
+        settlePendingSend(settlement.attemptId)
+    }, [settlePendingSend])
+    const track = useCallback((
+        attemptId: string,
+        sessionId: string,
+        entryId: string,
+        expectedUpdatedAt: number,
+    ) => {
+        pendingSendsRef.current.set(attemptId, { sessionId, entryId, expectedUpdatedAt })
+        settlePendingSend(attemptId)
+    }, [settlePendingSend])
+    useEffect(() => () => {
+        for (const timer of cleanupRetryTimersRef.current.values()) {
+            clearTimeout(timer)
+        }
+        cleanupRetryTimersRef.current.clear()
+    }, [])
+    return useMemo(() => ({ track, observeSettlement }), [observeSettlement, track])
+}
+
+export function ScratchlistSendCleanupProvider(props: {
+    api: Pick<ApiClient, 'deleteScratchlistEntryIfUnchanged'>
+    children: ReactNode
+}) {
+    const registry = useScratchlistSendCleanupRegistry(props.api)
+    return (
+        <ScratchlistSendCleanupContext.Provider value={registry}>
+            {props.children}
+        </ScratchlistSendCleanupContext.Provider>
+    )
+}
+
+export function useScratchlistSendSettlementObserver(): (settlement: SendMessageSettlement) => void {
+    const registry = useContext(ScratchlistSendCleanupContext)
+    return registry?.observeSettlement ?? (() => {})
+}
+
+export function usePendingScratchlistSendCleanup(
+    api: Pick<ApiClient, 'deleteScratchlistEntryIfUnchanged'>,
+    sendSettlement: SendMessageSettlement | null,
+): ScratchlistSendTracker {
+    const contextRegistry = useContext(ScratchlistSendCleanupContext)
+    const localRegistry = useScratchlistSendCleanupRegistry(api)
+    const registry = contextRegistry ?? localRegistry
+    useEffect(() => {
+        // A provider-backed registry receives settlement events directly from
+        // useSendMessage, including after this chat route unmounts. The local
+        // fallback keeps this hook independently testable and backwards
+        // compatible for callers outside the sessions route.
+        if (!contextRegistry) registry.observeSettlement(sendSettlement)
+    }, [contextRegistry, registry, sendSettlement])
+    return registry.track
 }
 
 /**
@@ -828,11 +962,13 @@ function SessionChatInner(props: SessionChatProps) {
                 return accepted ? { attemptId: null } : false
             }
             // If the user uploaded while scratchlist mode was on, then toggled
-            // it off before send, pending items still carry hub paths. Stage
-            // those through the normal CLI upload dir before chat send.
+            // it off before an immediate send, pending items still carry Hub
+            // paths. Stage those through the normal CLI upload dir. Scheduled
+            // sends must keep Hub paths so the Hub can materialize them at the
+            // scheduled time.
             const list = attachments ?? []
             const hubItems = list.filter((att) => isHubScratchlistAttachmentPath(att.path))
-            if (hubItems.length > 0) {
+            if (hubItems.length > 0 && shouldStageScratchlistAttachmentsForComposeSend(list, scheduledAt)) {
                 const staged = await stageScratchlistAttachmentsForComposeSend(
                     props.api,
                     props.session.id,
@@ -858,6 +994,68 @@ function SessionChatInner(props: SessionChatProps) {
         },
         [props.onSend, props.api, props.session.id, scratchlist, scratchlistMode],
     )
+
+    const sendScratchlistEntry = useCallback(async (
+        entry: ScratchlistEntry,
+        scheduledAt: number | null,
+    ): Promise<boolean> => {
+        const attachments = stripPreviewUrls(entry.attachments ?? [])
+        const hubItems = attachments.filter((attachment) => isHubScratchlistAttachmentPath(attachment.path))
+        let sendAttachments = attachments
+        let staged: AttachmentMetadata[] = []
+        if (hubItems.length > 0 && scheduledAt == null) {
+            const normalItems = attachments.filter((attachment) => !isHubScratchlistAttachmentPath(attachment.path))
+            try {
+                staged = await stageScratchlistAttachmentsForComposeSend(
+                    props.api,
+                    props.session.id,
+                    hubItems,
+                )
+            } catch {
+                return false
+            }
+            sendAttachments = [...normalItems, ...staged]
+        }
+
+        const accepted = await props.onSend(
+            entry.text,
+            sendAttachments.length > 0 ? sendAttachments : undefined,
+            scheduledAt,
+            'queue',
+        )
+        if (!accepted) {
+            await Promise.allSettled(staged.map((attachment) => props.api.deleteUploadFile(
+                props.session.id,
+                attachment.path,
+            )))
+            return false
+        }
+
+        // Keep the durable draft and its Hub attachments until the matching
+        // mutation settles successfully. The tracker removes the row after
+        // success, allowing the Hub to delete its attachments safely; a send
+        // failure therefore leaves the draft available for retry.
+        props.onScratchlistSendAccepted(
+            accepted.attemptId,
+            accepted.sessionId,
+            entry.id,
+            entry.updatedAt ?? entry.createdAt,
+        )
+        return true
+    }, [props.api, props.onSend, props.onScratchlistSendAccepted, props.session.id])
+
+    const handleSendScratchlistEntry = useCallback(
+        (entry: ScratchlistEntry) => sendScratchlistEntry(entry, null),
+        [sendScratchlistEntry],
+    )
+
+    const handleScheduleScratchlistEntry = useCallback(
+        (entry: ScratchlistEntry, pending: PendingSchedule) => (
+            sendScratchlistEntry(entry, resolvePendingSchedule(pending, Date.now()))
+        ),
+        [sendScratchlistEntry],
+    )
+
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
@@ -1859,11 +2057,19 @@ function SessionChatInner(props: SessionChatProps) {
                                     sessionId={props.session.id}
                                     api={props.api}
                                     entries={scratchlist.entries}
-                                    onMove={scratchlist.move}
+                                    onUpdate={scratchlist.update}
+                                    onReorder={scratchlist.reorder}
                                     onDelete={scratchlist.remove}
-                                    onSend={props.onSend}
-                                    onExitScratchlistMode={() => setScratchlistMode(false)}
-                                    disabled={props.isSending || isScratchlistParking}
+                                    // An inactive source session can be resumed
+                                    // by the generic composer flow, but these
+                                    // Hub-backed attachments are already owned
+                                    // by the source session. Hide actions here
+                                    // until the drawer is rendered for the
+                                    // resolved active session instead of
+                                    // starting a send that cannot re-stage them.
+                                    onSend={props.session.active ? handleSendScratchlistEntry : undefined}
+                                    onSchedule={props.session.active ? handleScheduleScratchlistEntry : undefined}
+                                    disabled={props.isSending || isScratchlistParking || scratchlist.isUpdating}
                                 />
                             ) : null}
                             <QueuedMessagesBar

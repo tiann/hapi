@@ -21,6 +21,7 @@ describe('Store V11→V12 migration: session_scratchlist table', () => {
         expect(cols).toContain('text')
         expect(cols).toContain('created_at')
         expect(cols).toContain('updated_at')
+        expect(cols).toContain('position')
     })
 
     it('fresh DB has the (session_id, created_at) index', () => {
@@ -28,6 +29,15 @@ describe('Store V11→V12 migration: session_scratchlist table', () => {
         const db: Database = (store as unknown as { db: Database }).db
         const rows = db.prepare(
             "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_session_scratchlist_session_created'"
+        ).all() as Array<{ name: string }>
+        expect(rows).toHaveLength(1)
+    })
+
+    it('fresh DB has the (session_id, position) index', () => {
+        const store = new Store(':memory:')
+        const db: Database = (store as unknown as { db: Database }).db
+        const rows = db.prepare(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_session_scratchlist_session_position'"
         ).all() as Array<{ name: string }>
         expect(rows).toHaveLength(1)
     })
@@ -134,6 +144,7 @@ describe('ScratchlistStore: CRUD through the typed-table wrapper', () => {
         expect(result.entry.entryId).toMatch(/[0-9a-f-]{8,}/)
         expect(result.entry.createdAt).toBeGreaterThan(0)
         expect(result.entry.updatedAt).toBe(result.entry.createdAt)
+        expect(result.entry.position).toBe(0)
     })
 
     it('create preserves caller-supplied entryId and createdAt for migration path', () => {
@@ -165,7 +176,7 @@ describe('ScratchlistStore: CRUD through the typed-table wrapper', () => {
         expect(result.outcome).toBe('session-not-found')
     })
 
-    it('list returns entries in createdAt DESC order (newest first)', () => {
+    it('list returns entries in insertion order (newest first by default)', () => {
         const { store, sessionId } = setup()
         const a = store.scratchlist.create(sessionId, 'oldest', { entryId: 'a', createdAt: 1000 })
         const b = store.scratchlist.create(sessionId, 'middle', { entryId: 'b', createdAt: 2000 })
@@ -175,6 +186,20 @@ describe('ScratchlistStore: CRUD through the typed-table wrapper', () => {
         expect(c.outcome).toBe('created')
         const entries = store.scratchlist.list(sessionId)
         expect(entries.map((e) => e.entryId)).toEqual(['c', 'b', 'a'])
+    })
+
+    it('reorder persists the requested order and normalizes positions', () => {
+        const { store, sessionId } = setup()
+        store.scratchlist.create(sessionId, 'first', { entryId: 'a' })
+        store.scratchlist.create(sessionId, 'second', { entryId: 'b' })
+        store.scratchlist.create(sessionId, 'third', { entryId: 'c' })
+
+        const reordered = store.scratchlist.reorder(sessionId, ['a', 'c', 'b'])
+        expect(reordered?.map((entry) => entry.entryId)).toEqual(['a', 'c', 'b'])
+        expect(reordered?.map((entry) => entry.position)).toEqual([0, 1, 2])
+        expect(store.scratchlist.list(sessionId).map((entry) => entry.entryId))
+            .toEqual(['a', 'c', 'b'])
+        expect(store.scratchlist.reorder(sessionId, ['a', 'missing', 'b'])).toBeNull()
     })
 
     it('update bumps updated_at without touching createdAt; returns null for missing entries', () => {
