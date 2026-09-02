@@ -48,25 +48,68 @@ function isRunnerCommand(commandLine: string): boolean {
   return /(?:^|\s)runner(?:\s|$)/.test(commandLine) && /(?:^|\s)start-sync(?:\s|$)/.test(commandLine);
 }
 
-export function isHapiRunnerProcess(pid: number): boolean {
+function getWindowsProcessCommandLine(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+
+  const powershell = spawn.sync('powershell', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`
+  ], { stdio: 'pipe', windowsHide: true });
+  if (!powershell.error && powershell.status === 0) {
+    const commandLine = powershell.stdout?.toString() ?? '';
+    if (commandLine.trim()) return commandLine;
+  }
+
+  const wmic = spawn.sync('wmic', [
+    'process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'
+  ], { stdio: 'pipe', windowsHide: true });
+  if (!wmic.error && wmic.status === 0) {
+    const commandLine = readWmicCommandLine(wmic.stdout?.toString() ?? '');
+    if (commandLine) return commandLine;
+  }
+
+  return null;
+}
+
+/**
+ * `wmic ... get CommandLine` prints the `CommandLine` column header even when
+ * the property itself is empty or unreadable, so the raw stdout is never empty
+ * on success. Drop the header before deciding whether a command line was read.
+ */
+function readWmicCommandLine(stdout: string): string | null {
+  const lines = stdout.split(/\r?\n/);
+  const headerIndex = lines.findIndex(line => line.trim() === 'CommandLine');
+  const value = (headerIndex === -1 ? lines : lines.slice(headerIndex + 1)).join('\n');
+  return value.trim() ? value : null;
+}
+
+/**
+ * `unknown` means the process is alive but its command line could not be read.
+ * Callers must not signal or clean up on that answer: the pid may belong to an
+ * unrelated process that reused it, and it may equally be a healthy runner.
+ */
+export type RunnerProcessIdentity = 'runner' | 'foreign' | 'unknown' | 'dead';
+
+export function getHapiRunnerProcessIdentity(pid: number): RunnerProcessIdentity {
   if (!isProcessAlive(pid)) {
-    return false;
+    return 'dead';
   }
-  if (isWindows()) {
-    const result = spawn.sync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'], { stdio: 'pipe' });
-    if (result.error) {
-      return true;
-    }
-    if (result.status !== 0) {
-      return isProcessAlive(pid);
-    }
-    return isRunnerCommand(result.stdout?.toString() ?? '');
+  const commandLine = isWindows()
+    ? getWindowsProcessCommandLine(pid)
+    : getPosixProcessCommandLine(pid);
+  if (commandLine === null) {
+    return isProcessAlive(pid) ? 'unknown' : 'dead';
   }
+  return isRunnerCommand(commandLine) ? 'runner' : 'foreign';
+}
+
+function getPosixProcessCommandLine(pid: number): string | null {
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
-  if (result.error || result.status !== 0) {
-    return isProcessAlive(pid);
-  }
-  return isRunnerCommand(result.stdout?.toString() ?? '');
+  if (result.error || result.status !== 0) return null;
+  const commandLine = result.stdout?.toString() ?? '';
+  return commandLine.trim() ? commandLine : null;
 }
 
 function killProcessWindows(pid: number, force: boolean): boolean {
