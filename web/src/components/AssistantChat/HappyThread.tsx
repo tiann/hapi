@@ -501,6 +501,10 @@ export function HappyThread(props: {
     const machineLabelsById = useMachineLabels(machines)
     const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
     const shareDialogOpen = shareTurn !== null
+    const getGeneratedMediaBlob = useCallback(
+        (imageId: string) => props.api.getGeneratedImageBlob(props.sessionId, imageId),
+        [props.api, props.sessionId]
+    )
     const shareTitle = shareTurn ? getSessionTitle(props.session) : ''
     const shareRelativeTimeTick = useMinuteTick(headerMetadata.lastActive && shareDialogOpen)
     const shareMetadataItems = useMemo(() => {
@@ -1709,6 +1713,7 @@ export function HappyThread(props: {
                     metadataItems={shareMetadataItems}
                     sourceSnapshots={shareTurn?.snapshots ?? []}
                     sourceContentWidth={shareTurn?.sourceContentWidth ?? null}
+                    getGeneratedMediaBlob={getGeneratedMediaBlob}
                     onClose={() => setShareTurn(null)}
                 />
             </ThreadPrimitive.Root>

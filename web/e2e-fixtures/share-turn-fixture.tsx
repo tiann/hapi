@@ -26,11 +26,19 @@ const portraitFixtureImage = 'data:image/svg+xml;charset=utf-8,' + encodeURIComp
     </svg>
 `)
 
+const includeGeneratedFile = new URLSearchParams(window.location.search).get('generatedFile') === '1'
+const generatedFileIsLoaded = new URLSearchParams(window.location.search).get('generatedFileState') === 'loaded'
+
+const longInlineError =
+    'useClientLookup: Index 0 out of bounds (length: 0); messageStore.getMessagesPage -> useSessionMessageWindow -> SessionChat render -> message epoch mismatch after rewind; requestId=rewind-20260812-162035; source=codex-session-history-replay; retry=0; snapshotHeadSeq=4; nextBeforeSeq=null; invariant=visible-message-window-consistency'
+
 const markdown = `## Complex response fixture
 
 ## ✅ AList 的 frp 和 Caddy 配置已彻底移除
 
 This paragraph contains **bold text**, *emphasis*, ~~strikethrough~~, inline \`code\`, a [safe link](https://example.com), 中文内容，以及一段足够长的文字，用于验证换行、行高和宽屏导出效果是否与原始 HAPI 页面保持一致。
+
+已复现：/rewind 返回 200，但随后前端进入错误页。错误为 \`${longInlineError}\`，Console 也有完整堆栈；我正在整理脱敏后的证据文件和截图。
 
 > A multi-line blockquote used to verify borders, indentation, colors, and wrapping.  \n> 第二行引用包含中文。
 
@@ -74,8 +82,16 @@ function App() {
     const sourceRef = useRef<HTMLDivElement>(null)
     const [snapshots, setSnapshots] = useState<Snapshot[]>([])
     const [open, setOpen] = useState(false)
-    const wideSource = new URLSearchParams(window.location.search).get('wide') === '1'
+    const searchParams = new URLSearchParams(window.location.search)
+    const wideSource = searchParams.get('wide') === '1'
+    const narrowInlineSource = searchParams.get('inlineWrap') === '1'
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
+    const getGeneratedMediaBlob = includeGeneratedFile
+        ? async (imageId: string) => {
+            if (imageId !== 'fixture-generated-file') throw new Error('Unexpected generated file')
+            return new Blob(['preview generated file'], { type: 'application/zip' })
+        }
+        : undefined
     const metadataItems = selectShareTurnMetadata(headerMetadata, {
         agent: { text: 'codex', flavor: 'codex' },
         machine: { text: `${headerMetadata.showLabels ? 'Machine: ' : ''}fixture-host` },
@@ -112,7 +128,7 @@ function App() {
 
     return (
         <I18nProvider>
-            <main className={`mx-auto max-w-full bg-[var(--app-bg)] p-5 text-[var(--app-fg)] ${wideSource ? 'w-[1120px]' : 'w-[960px]'}`}>
+            <main className={`mx-auto max-w-full bg-[var(--app-bg)] p-5 text-[var(--app-fg)] ${narrowInlineSource ? 'w-[865px]' : wideSource ? 'w-[1120px]' : 'w-[960px]'}`}>
                 <div ref={sourceRef} data-testid="source-turn" className="flex flex-col gap-3">
                     <div data-hapi-message-role="user" className="happy-message flex flex-col items-end">
                         <div className={getUserBubbleClassName()}>
@@ -132,6 +148,36 @@ function App() {
                         <p data-testid="before-hidden-tool">Visible content before the hidden tool.</p>
                         <div data-hapi-share-exclude="true" className="mt-3 rounded-xl border p-3">Excluded tool output</div>
                         <p data-testid="after-hidden-tool">Visible content after the hidden tool.</p>
+                        {includeGeneratedFile ? (
+                            <div
+                                className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3"
+                                data-hapi-generated-media-id="fixture-generated-file"
+                                data-hapi-generated-media-file-name="fixture-export.zip"
+                                data-hapi-generated-media-loaded={generatedFileIsLoaded ? 'true' : undefined}
+                            >
+                                <div className="mb-2 min-w-0 truncate text-xs font-medium text-[var(--app-hint)]">
+                                    Displayed file: fixture-export.zip
+                                </div>
+                                {generatedFileIsLoaded ? (
+                                    <a
+                                        href="blob:fixture-generated-file"
+                                        download="fixture-export.zip"
+                                        data-hapi-generated-media-download="true"
+                                        className="flex h-12 w-full items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-sm font-medium"
+                                    >
+                                        Download fixture-export.zip
+                                    </a>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        data-hapi-generated-media-download="true"
+                                        className="flex h-12 w-full items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-sm font-medium"
+                                    >
+                                        Prepare download
+                                    </button>
+                                )}
+                            </div>
+                        ) : null}
                         <div className="happy-message-actions mt-1 flex h-5 items-center gap-1" data-testid="localized-message-actions">
                             <button type="button" title="已复制" aria-label="已复制">Copied state control</button>
                         </div>
@@ -147,6 +193,7 @@ function App() {
                 metadataItems={metadataItems}
                 sourceSnapshots={snapshots}
                 sourceContentWidth={sourceRef.current?.getBoundingClientRect().width ?? null}
+                getGeneratedMediaBlob={getGeneratedMediaBlob}
                 onClose={() => setOpen(false)}
             />
         </I18nProvider>

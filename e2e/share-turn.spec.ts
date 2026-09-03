@@ -124,6 +124,36 @@ test('keeps a stripped tool-only assistant snapshot out of the export', async ({
     expect(size.height).toBeGreaterThan(1_000)
 })
 
+test('keeps long inline code aligned when exporting a wrapped message', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 900, height: 844 })
+    await page.goto('/e2e-fixtures/share-turn-fixture.html?inlineWrap=1')
+
+    const sourceCode = page.getByTestId('source-turn').locator('.aui-md-code').filter({ hasText: 'useClientLookup: Index 0 out of bounds' }).first()
+    await expect(sourceCode).toBeVisible()
+    await expect(sourceCode).toHaveCSS('display', 'inline')
+    await page.getByTestId('source-turn').screenshot({ path: testInfo.outputPath('inline-source.png') })
+
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+    const dialog = page.getByRole('dialog')
+    const previewCode = dialog.locator('.aui-md-code').filter({ hasText: 'useClientLookup: Index 0 out of bounds' }).first()
+    await expect(previewCode).toBeVisible()
+    await expect(previewCode).toHaveCSS('display', 'inline')
+    await dialog.screenshot({ path: testInfo.outputPath('inline-preview.png') })
+
+    const downloadPromise = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: 'Download' }).click()
+    const download = await downloadPromise
+    const path = testInfo.outputPath('inline-export.png')
+    await download.saveAs(path)
+    const bytes = await readFile(path)
+    const size = pngSize(bytes)
+    expect(size.width).toBe(1730)
+    expect(size.height).toBeGreaterThan(1_000)
+    expect(bytes).toMatchSnapshot('wrapped-inline-code-export.png', {
+        maxDiffPixelRatio: 0.005,
+    })
+})
+
 test('localizes the share dialog actions in Chinese', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('hapi-lang', 'zh-CN'))
     await page.goto('/e2e-fixtures/share-turn-fixture.html')
@@ -224,6 +254,62 @@ test('keeps code and image controls interactive in preview', async ({ page }, te
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: 'HAPI landscape export fixture' })).toHaveCount(0)
     await expect(dialog).toBeVisible()
+})
+
+test('downloads generated files from share preview controls', async ({ page }, testInfo) => {
+    await page.goto('/e2e-fixtures/share-turn-fixture.html?generatedFile=1')
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+
+    const dialog = page.getByRole('dialog')
+    const prepareButton = dialog.getByRole('button', { name: 'Prepare download', exact: true })
+    await expect(prepareButton).toBeVisible()
+
+    await prepareButton.click()
+    const downloadLink = dialog.locator('[data-hapi-generated-media-download="true"]')
+    await expect(downloadLink).toHaveText('Download fixture-export.zip')
+    await expect(downloadLink).toHaveAttribute('href', /^blob:/)
+
+    const downloadPromise = page.waitForEvent('download', { timeout: 5_000 })
+    await downloadLink.click()
+    const download = await downloadPromise
+    const path = testInfo.outputPath('generated-file-preview.zip')
+    await download.saveAs(path)
+    expect(download.suggestedFilename()).toBe('fixture-export.zip')
+    expect(await readFile(path)).toEqual(Buffer.from('preview generated file'))
+})
+
+test('downloads loaded generated files after the preview strips the original blob URL', async ({ page }, testInfo) => {
+    await page.goto('/e2e-fixtures/share-turn-fixture.html?generatedFile=1&generatedFileState=loaded')
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+
+    const dialog = page.getByRole('dialog')
+    const downloadLink = dialog.locator('[data-hapi-generated-media-download="true"]')
+    await expect(downloadLink).toHaveText('Download fixture-export.zip')
+    await expect(downloadLink.locator('xpath=ancestor::*[@data-hapi-generated-media-id][1]')).toHaveAttribute('data-hapi-generated-media-loaded', 'true')
+    await expect(downloadLink).not.toHaveAttribute('href')
+    await expect(downloadLink).toHaveAttribute('role', 'button')
+    await expect(downloadLink).toHaveAttribute('tabindex', '0')
+    await expect(downloadLink).toHaveCSS('cursor', 'pointer')
+
+    await dialog.focus()
+    let linkFocused = false
+    for (let index = 0; index < 32; index += 1) {
+        await page.keyboard.press('Tab')
+        linkFocused = await downloadLink.evaluate((element) => document.activeElement === element)
+        if (linkFocused) break
+    }
+    expect(linkFocused).toBe(true)
+
+    const downloadPromise = page.waitForEvent('download', { timeout: 5_000 }).catch(() => null)
+    await page.keyboard.press('Enter')
+    const download = await downloadPromise
+    expect(download).not.toBeNull()
+    if (!download) throw new Error('Expected generated file download')
+
+    const path = testInfo.outputPath('loaded-generated-file-preview.zip')
+    await download.saveAs(path)
+    expect(download.suggestedFilename()).toBe('fixture-export.zip')
+    expect(await readFile(path)).toEqual(Buffer.from('preview generated file'))
 })
 
 test('preserves the desktop source width but keeps mobile export width stable', async ({ page }, testInfo) => {
