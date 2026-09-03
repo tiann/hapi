@@ -13,6 +13,12 @@ import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import {
+    backfillMessageContentSearchLookup,
+    backfillMessageContentSearchShortIndex,
+    createMessageContentSearchTable,
+    rebuildMessageContentSearch
+} from './messageContentSearch'
 
 export type {
     NativeDevicePlatform,
@@ -42,11 +48,14 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 25
+const SCHEMA_VERSION: number = 28
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
+    'message_content_search',
+    'message_content_search_lookup',
+    'message_content_search_short',
     'message_epochs',
     'users',
     'push_subscriptions',
@@ -347,6 +356,9 @@ export class Store {
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
+            25: () => this.migrateFromV25ToV26(),
+            26: () => this.migrateFromV26ToV27(),
+            27: () => this.migrateFromV27ToV28(),
         })
 
         if (currentVersion === 0) {
@@ -592,6 +604,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
         `)
+        createMessageContentSearchTable(this.db)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -1035,6 +1048,24 @@ export class Store {
         `)
     }
 
+    /** Derived FTS index for opt-in session message-content search. */
+    private migrateFromV25ToV26(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.getMessageColumnNames().size === 0) return
+        rebuildMessageContentSearch(this.db)
+    }
+
+    /** Complete the derived message-content index lookup added after v26. */
+    private migrateFromV26ToV27(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchLookup(this.db)
+    }
+
+    /** Add the indexed short-query n-gram table to the message-content index. */
+    private migrateFromV27ToV28(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchShortIndex(this.db)
+    }
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))

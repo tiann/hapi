@@ -370,6 +370,31 @@ describe('SessionHeader', () => {
         await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('session-pin', 'global'))
     })
 
+    it('shows in-conversation search when a jump handler is provided', () => {
+        const api = {
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [] }),
+            searchSessionContentMatches: vi.fn().mockResolvedValue({ matches: [], total: 0 }),
+        } as unknown as ApiClient
+
+        render(
+            <QueryClientProvider client={new QueryClient()}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionHeader
+                            session={baseSession()}
+                            onBack={vi.fn()}
+                            api={api}
+                            onSearchMessage={vi.fn()}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByTestId('session-in-chat-search-toggle')).toBeInTheDocument()
+    })
+
     it('shows an error toast when toggling the pin fails', async () => {
         const api = {
             getScratchlist: vi.fn().mockResolvedValue({ entries: [] }),

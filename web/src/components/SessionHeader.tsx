@@ -27,6 +27,7 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
+import { SessionInChatSearch } from '@/components/SessionInChatSearch'
 import { markSessionUnread } from '@/lib/sessionLastSeen'
 
 /** Same preference order as session-list chips: display label → host → short id. */
@@ -146,6 +147,7 @@ export function SessionHeader(props: {
     outlineActive?: boolean
     onToggleTerminal?: () => void
     terminalActive?: boolean
+    onSearchMessage?: (messageId: string, query: string) => void
     api: ApiClient | null
     titleSuggestionAvailable?: boolean
     canReopen?: boolean
@@ -467,6 +469,14 @@ export function SessionHeader(props: {
                         >
                             <FilesIcon />
                         </button>
+                    ) : null}
+
+                    {api && props.onSearchMessage ? (
+                        <SessionInChatSearch
+                            api={api}
+                            sessionId={session.id}
+                            onSelectMatch={props.onSearchMessage}
+                        />
                     ) : null}
 
                     {props.onToggleOutline ? (

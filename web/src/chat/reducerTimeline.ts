@@ -792,6 +792,10 @@ export function reduceTimeline(
                     if (streamId) {
                         const existing = textBlocksByStreamId.get(streamId)
                         if (existing) {
+                            existing.sourceMessageIds ??= [existing.id.slice(0, existing.id.lastIndexOf(':'))]
+                            if (!existing.sourceMessageIds.includes(msg.id)) {
+                                existing.sourceMessageIds.push(msg.id)
+                            }
                             existing.text = c.text
                             existing.usage = msg.usage
                             existing.model = msg.model
@@ -804,6 +808,7 @@ export function reduceTimeline(
                     const block: AgentTextBlock = {
                         kind: 'agent-text',
                         id: `${msg.id}:${idx}`,
+                        sourceMessageIds: [msg.id],
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -840,6 +845,10 @@ export function reduceTimeline(
                     if (streamId) {
                         const existing = reasoningBlocksByStreamId.get(streamId)
                         if (existing) {
+                            existing.sourceMessageIds ??= [existing.id.slice(0, existing.id.lastIndexOf(':'))]
+                            if (!existing.sourceMessageIds.includes(msg.id)) {
+                                existing.sourceMessageIds.push(msg.id)
+                            }
                             existing.text = c.text
                             existing.usage = msg.usage
                             existing.model = msg.model
@@ -852,6 +861,7 @@ export function reduceTimeline(
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',
                         id: `${msg.id}:${idx}`,
+                        sourceMessageIds: [msg.id],
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,

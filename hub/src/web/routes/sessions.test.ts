@@ -1538,6 +1538,181 @@ describe('sessions routes', () => {
         expect(unlimitedBody.sessions).toHaveLength(3)
     })
 
+    it('searches message content only through the explicit content endpoint', async () => {
+        const session = createSession({ id: 'content-session' })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            searchSessionContent: (query: string, namespace: string, limit: number, sessionIds?: readonly string[]) => {
+                expect(query).toBe('needle')
+                expect(namespace).toBe('default')
+                expect(limit).toBe(7)
+                expect(sessionIds).toEqual([session.id])
+                return [{
+                    sessionId: session.id,
+                    messageId: 'message-1',
+                    role: 'assistant' as const,
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'context needle'
+                }]
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'needle',
+                limit: 7,
+                sessionIds: [session.id, 'unknown-session', session.id]
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            results: [{
+                session: expect.objectContaining({ id: session.id }),
+                match: {
+                    messageId: 'message-1',
+                    role: 'assistant',
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'context needle'
+                }
+            }]
+        })
+    })
+
+    it('allows scoped content-search requests with more than 500 session IDs', async () => {
+        const sessions = Array.from({ length: 501 }, (_, index) => createSession({ id: `session-${index}` }))
+        let receivedSessionIds: readonly string[] | undefined
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            searchSessionContent: (_query: string, _namespace: string, _limit: number, sessionIds?: readonly string[]) => {
+                receivedSessionIds = sessionIds
+                return []
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'needle',
+                sessionIds: Array.from({ length: 501 }, (_, index) => `session-${index}`)
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ results: [] })
+        expect(receivedSessionIds).toEqual(sessions.map((session) => session.id))
+    })
+
+    it('rejects an oversized content-search body before JSON parsing', async () => {
+        const engine = {
+            getSessionsByNamespace: () => [],
+            getFutureScheduledMessageCounts: () => new Map(),
+            getNextScheduledAtBySessionIds: () => new Map(),
+            searchSessionContent: () => []
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: 'x'.repeat(300 * 1024)
+        })
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: 'Content search request too large' })
+    })
+
+    it('lists all content matches for an opened session without exposing its session id', async () => {
+        const session = createSession({ id: 'content-session-matches' })
+        const engine = {
+            resolveSessionAccess: (sessionId: string, namespace: string) => {
+                expect(sessionId).toBe(session.id)
+                expect(namespace).toBe('default')
+                return { ok: true as const, sessionId, session }
+            },
+            searchSessionContentMatches: (query: string, namespace: string, sessionId: string, limit: number) => {
+                expect(query).toBe('needle')
+                expect(namespace).toBe('default')
+                expect(sessionId).toBe(session.id)
+                expect(limit).toBe(12)
+                return {
+                    total: 2,
+                    matches: [
+                        {
+                            sessionId,
+                            messageId: 'message-new',
+                            role: 'assistant' as const,
+                            seq: 8,
+                            createdAt: 456,
+                            snippet: 'new needle'
+                        },
+                        {
+                            sessionId,
+                            messageId: 'message-old',
+                            role: 'user' as const,
+                            seq: 3,
+                            createdAt: 123,
+                            snippet: 'old needle'
+                        }
+                    ]
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request(`/api/sessions/${session.id}/content-search?query=needle&limit=12`)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            matches: [
+                {
+                    messageId: 'message-new',
+                    role: 'assistant',
+                    seq: 8,
+                    createdAt: 456,
+                    snippet: 'new needle'
+                },
+                {
+                    messageId: 'message-old',
+                    role: 'user',
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'old needle'
+                }
+            ],
+            total: 2
+        })
+    })
+
     it('order=updatedAt truncates newest-first including inactive peers', async () => {
         const sessions = [
             createSession({ id: 'old-active', active: true, updatedAt: 10 }),
