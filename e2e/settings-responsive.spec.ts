@@ -26,9 +26,16 @@ test.describe('settings responsive layout', () => {
         const desktopNav = page.locator('aside nav')
         await expect(desktopNav).toBeVisible()
         await expect(desktopNav.getByRole('button', { name: 'Display' })).toHaveAttribute('aria-current', 'page')
-        await expect(page.getByRole('heading', { name: 'Display' })).toBeVisible()
+        await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
         await expect(page.getByText('Appearance, typography, and session list preferences.')).toBeVisible()
         await expect(page.getByText('Choose a category to adjust HAPI to your workflow.')).toBeHidden()
+
+        const appBadgeToggle = page.getByRole('checkbox', { name: 'Taskbar unread badge' })
+        await expect(appBadgeToggle).not.toBeChecked()
+        await appBadgeToggle.locator('xpath=..').click()
+        await expect(appBadgeToggle).toBeChecked()
+        await page.reload()
+        await expect(page.getByRole('checkbox', { name: 'Taskbar unread badge' })).toBeChecked()
 
         await page.setViewportSize({ width: 390, height: 844 })
         await expect(page.getByText('Choose a category to adjust HAPI to your workflow.')).toBeVisible()

@@ -851,6 +851,8 @@ export default {
   'settings.display.activeSessionsOnly.desc': '在侧边栏隐藏非活跃会话；当前打开的会话仍会保留显示。',
   'settings.display.pinInProgressSessions': '置顶进行中会话',
   'settings.display.pinInProgressSessions.desc': '将未置顶的已连接会话移到项目文件夹上方的分区：先运行中和待处理，再是安静的活跃会话（已执行完但仍在连接）。全局置顶仍在其上。关闭后全部保留在目录分组中。',
+  'settings.display.appBadge': '任务栏未读角标',
+  'settings.display.appBadge.desc': '在已安装的 Edge 或 Chrome PWA 图标上显示有新活动的会话数。角标样式由宿主浏览器控制；普通浏览器标签页不受影响。',
   'settings.display.sessionListStatus': '会话列表状态提示',
   'settings.display.sessionListStatus.standard': '基础',
   'settings.display.sessionListStatus.detailed': '扩展',

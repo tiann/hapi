@@ -11,6 +11,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - Machine list and remote session spawn.
 - File browser and git status/diff views.
 - PWA install prompt and offline banner.
+- Optional unread-session count on the Windows taskbar when installed as an Edge/Chrome PWA (toggleable in Display settings; off by default).
 
 ## Runtime behavior
 

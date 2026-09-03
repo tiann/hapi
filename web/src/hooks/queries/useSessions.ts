@@ -3,7 +3,11 @@ import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
-export function useSessions(api: ApiClient | null): {
+export type UseSessionsOptions = {
+    enabled?: boolean
+}
+
+export function useSessions(api: ApiClient | null, options: UseSessionsOptions = {}): {
     sessions: SessionSummary[]
     isLoading: boolean
     error: string | null
@@ -17,7 +21,7 @@ export function useSessions(api: ApiClient | null): {
             }
             return await api.getSessions()
         },
-        enabled: Boolean(api),
+        enabled: Boolean(api) && (options.enabled ?? true),
     })
 
     return {
