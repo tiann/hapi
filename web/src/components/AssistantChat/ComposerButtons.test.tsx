@@ -161,6 +161,94 @@ describe('UnifiedButton — default send intent', () => {
     })
 })
 
+describe('UnifiedButton — active dictation send action', () => {
+    afterEach(cleanup)
+
+    it('exposes a Send button next to Stop while dictation is connected and routes it through onSend', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const sendButton = getButton('Send')
+        fireEvent.click(sendButton)
+        // onSend('default') lands in handleSend's dictation branch, which runs
+        // stopAndSend bound to the target session (survives navigation).
+        expect(onSend).toHaveBeenCalledWith('default')
+        expect(onVoiceToggle).not.toHaveBeenCalled()
+    })
+
+    it('hides the dictation Send button when direct send is not eligible', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend={false}
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        // Attachments / pending schedule / scratchlist mode make handleSend
+        // fall back to dictation.toggle(); a "Send" label would be misleading.
+        expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+        expect(getButton('Stop')).toBeDefined()
+    })
+
+    it('keeps Stop stop-only during connected dictation', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        fireEvent.click(getButton('Stop'))
+        expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('does not show the dictation Send button while connecting', () => {
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connecting"
+                voiceEnabled
+                dictationEnabled
+                controlsDisabled={false}
+                onSend={() => {}}
+                onVoiceToggle={() => {}}
+            />,
+        )
+
+        expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+        expect(getButton(/Connecting/)).toBeDefined()
+    })
+})
+
 describe('DictationButton', () => {
     afterEach(cleanup)
 
