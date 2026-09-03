@@ -26,6 +26,7 @@ import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/u
 import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
@@ -1208,7 +1209,10 @@ export function SessionList(props: {
     // Transient unread lens — not a Settings preference. Cleared on reload; rows drop as they're seen.
     const [showUnreadOnly, setShowUnreadOnly] = useState(false)
     const { pinInProgressSessions } = usePinInProgressSessions()
+    const { pinInProgressSessionsMode } = usePinInProgressSessionsMode()
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
+    const isCombinedPinLayout = pinInProgressSessions
+        && pinInProgressSessionsMode === 'combined'
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchExpanded, setSearchExpanded] = useState(false)
@@ -1361,6 +1365,18 @@ export function SessionList(props: {
         ),
         [machineFilteredSessions, pinInProgressSessions]
     )
+    const combinedActiveGroups = useMemo(
+        () => isCombinedPinLayout
+            ? groupSessionsByDirectory(machineFilteredSessions.filter((session) => !session.globalPinned && session.active))
+            : [],
+        [machineFilteredSessions, isCombinedPinLayout]
+    )
+    const combinedArchivedGroups = useMemo(
+        () => isCombinedPinLayout
+            ? groupSessionsByDirectory(machineFilteredSessions.filter((session) => !session.globalPinned && !session.active))
+            : [],
+        [machineFilteredSessions, isCombinedPinLayout]
+    )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
     // stay available (no rows to group, but the project itself is live).
@@ -1386,14 +1402,18 @@ export function SessionList(props: {
     const [activeSectionCollapsed, setActiveSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
-    const isGroupCollapsed = (group: SessionGroup): boolean => {
+    const isGroupCollapsed = (
+        group: SessionGroup,
+        stateKey = group.key,
+        expandedByDefault = false
+    ): boolean => {
         if (isFiltering) return false
-        const override = collapseOverrides.get(group.key)
+        const override = collapseOverrides.get(stateKey)
         if (override !== undefined) return override
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
-        return !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
+        return !expandedByDefault && !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
@@ -1587,9 +1607,14 @@ export function SessionList(props: {
         )
     }
 
-    const renderDirectoryGroup = (group: SessionGroup) => {
-        const isCollapsed = isGroupCollapsed(group)
-        const visibleGroupSessions = getVisibleGroupSessions(group)
+    const renderDirectoryGroup = (
+        group: SessionGroup,
+        options: { showAllSessions?: boolean; stateKey?: string; expandedByDefault?: boolean } = {}
+    ) => {
+        const showAllSessions = options.showAllSessions ?? false
+        const stateKey = options.stateKey ?? group.key
+        const isCollapsed = isGroupCollapsed(group, stateKey, options.expandedByDefault)
+        const visibleGroupSessions = showAllSessions ? group.sessions : getVisibleGroupSessions(group)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -1610,10 +1635,10 @@ export function SessionList(props: {
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
-            <div key={group.key}>
+            <div key={stateKey}>
                 <div
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
-                    onClick={() => toggleGroup(group.key, isCollapsed)}
+                    onClick={() => toggleGroup(stateKey, isCollapsed)}
                     title={group.directory}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
@@ -1667,7 +1692,7 @@ export function SessionList(props: {
                                 />
                             </div>
                         ))}
-                        {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                        {!showAllSessions && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
                             <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
                                 {canShowFewerSessions ? (
                                     <button
@@ -1698,24 +1723,30 @@ export function SessionList(props: {
         )
     }
 
-    // Auto-expand group containing the selected session only when
-    // the selected-session/group pair changes. Without this guard, every live
-    // session-list refresh (for example tool-call updates from a running selected
-    // session) reopens a path the user just collapsed.
+    const visibleDirectoryGroups = useMemo(
+        () => isCombinedPinLayout
+            ? [
+                ...combinedActiveGroups.map((group) => ({ group, stateKey: `${group.key}::active` })),
+                ...combinedArchivedGroups.map((group) => ({ group, stateKey: `${group.key}::archived` })),
+            ]
+            : groups.map((group) => ({ group, stateKey: group.key })),
+        [combinedActiveGroups, combinedArchivedGroups, groups, isCombinedPinLayout]
+    )
+
+    // Auto-expand the directory containing the selected session only when the
+    // selected-session/group pair changes. Without this guard, every live
+    // session-list refresh (for example tool-call updates from a running
+    // selected session) reopens a path the user just collapsed.
     useEffect(() => {
         if (!selectedSessionId) {
             autoExpandedSelectedSessionKeyRef.current = null
             return
         }
 
-        // Pinned "in progress" sessions are not rendered inside directory
-        // groups, so only auto-expand when the selected session actually lives
-        // in a visible group. Using `allGroups` here would expand the group
-        // below whenever a running session is opened.
-        const group = groups.find(g =>
-            g.sessions.some(s => s.id === selectedSessionId)
+        const visibleGroup = visibleDirectoryGroups.find(({ group }) =>
+            group.sessions.some(s => s.id === selectedSessionId)
         )
-        if (!group) {
+        if (!visibleGroup) {
             // The selected session is not rendered inside any directory group
             // (e.g. it moved to the pinned "in progress" section). Drop the
             // guard so it auto-expands again when it transitions back into a
@@ -1724,12 +1755,12 @@ export function SessionList(props: {
             return
         }
 
-        const autoExpandKey = `${selectedSessionId}::${group.key}`
+        const autoExpandKey = `${selectedSessionId}::${visibleGroup.stateKey}`
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
-        setCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups])
+        setCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, { key: visibleGroup.stateKey }))
+    }, [selectedSessionId, visibleDirectoryGroups])
 
     // Clean up stale collapse overrides
     useEffect(() => {
@@ -1741,6 +1772,12 @@ export function SessionList(props: {
                 knownKeys.add(g.key)
                 knownKeys.add(`sessions::${g.key}`)
             }
+            for (const g of combinedActiveGroups) {
+                knownKeys.add(`${g.key}::active`)
+            }
+            for (const g of combinedArchivedGroups) {
+                knownKeys.add(`${g.key}::archived`)
+            }
             let changed = false
             for (const key of next.keys()) {
                 if (!knownKeys.has(key)) {
@@ -1750,7 +1787,7 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
-    }, [allGroups])
+    }, [allGroups, combinedActiveGroups, combinedArchivedGroups])
 
     // Clean up reveal caps for groups that no longer exist.
     useEffect(() => {
@@ -2038,26 +2075,48 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
-                {renderPinnedSection({
-                    sectionKey: 'running-section',
-                    titleKey: 'sessions.runningSection',
-                    collapsed: runningSectionCollapsed,
-                    onToggle: () => setRunningSectionCollapsed((value) => !value),
-                    pulse: true,
-                    count: runningSessionTotal,
-                    bucketKeys: ['working', 'pending'],
-                })}
-                {renderPinnedSection({
-                    sectionKey: 'active-section',
-                    titleKey: 'sessions.activeSection',
-                    collapsed: activeSectionCollapsed,
-                    onToggle: () => setActiveSectionCollapsed((value) => !value),
-                    pulse: false,
-                    count: activeSessionTotal,
-                    bucketKeys: ['active'],
-                })}
-                {groups.map(renderDirectoryGroup)}
-                {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                {isCombinedPinLayout ? (
+                    <>
+                        {combinedActiveGroups.map((group) => renderDirectoryGroup(group, {
+                            showAllSessions: true,
+                            stateKey: `${group.key}::active`,
+                        }))}
+                        {combinedActiveGroups.length > 0 && combinedArchivedGroups.length > 0 ? (
+                            <div
+                                role="separator"
+                                aria-label={t('sessions.archivedSection')}
+                                className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                            />
+                        ) : null}
+                        {combinedArchivedGroups.map((group) => renderDirectoryGroup(group, {
+                            stateKey: `${group.key}::archived`,
+                            expandedByDefault: true,
+                        }))}
+                    </>
+                ) : (
+                    <>
+                        {renderPinnedSection({
+                            sectionKey: 'running-section',
+                            titleKey: 'sessions.runningSection',
+                            collapsed: runningSectionCollapsed,
+                            onToggle: () => setRunningSectionCollapsed((value) => !value),
+                            pulse: true,
+                            count: runningSessionTotal,
+                            bucketKeys: ['working', 'pending'],
+                        })}
+                        {renderPinnedSection({
+                            sectionKey: 'active-section',
+                            titleKey: 'sessions.activeSection',
+                            collapsed: activeSectionCollapsed,
+                            onToggle: () => setActiveSectionCollapsed((value) => !value),
+                            pulse: false,
+                            count: activeSessionTotal,
+                            bucketKeys: ['active'],
+                        })}
+                        {groups.map((group) => renderDirectoryGroup(group))}
+                        {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                    </>
+                )}
             </div>
             </div>
             </div>

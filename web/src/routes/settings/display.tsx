@@ -7,6 +7,7 @@ import { getTerminalFontSizeOptions, useTerminalFontSize } from '@/hooks/useTerm
 import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { getPinInProgressSessionsModeOptions, usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
 import { MAX_SESSION_PREVIEW_LIMIT, MIN_SESSION_PREVIEW_LIMIT, normalizeSessionPreviewLimit, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { useSessionHeaderMetadata, type SessionHeaderMetadataKey } from '@/hooks/useSessionHeaderMetadata'
@@ -138,6 +139,7 @@ export default function SettingsDisplayPage() {
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const { pinInProgressSessions, setPinInProgressSessions } = usePinInProgressSessions()
+    const { pinInProgressSessionsMode, setPinInProgressSessionsMode } = usePinInProgressSessionsMode()
     const { preferences: sessionHeaderMetadata, setPreference: setSessionHeaderMetadata } = useSessionHeaderMetadata()
     const sessionHeaderOptions: ReadonlyArray<{ key: SessionHeaderMetadataKey; labelKey: string }> = [
         { key: 'showLabels', labelKey: 'settings.display.sessionHeader.showLabels' },
@@ -174,7 +176,17 @@ export default function SettingsDisplayPage() {
             <SettingsSection title={t('settings.display.sessions')}>
                 <SessionPreviewLimitControl />
                 <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
-                <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
+                <div data-testid="pin-in-progress-settings">
+                    <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
+                    <SettingsChoiceGroup
+                        label={t('settings.display.pinInProgressSessions.mode')}
+                        description={t('settings.display.pinInProgressSessions.mode.desc')}
+                        value={pinInProgressSessionsMode}
+                        options={getPinInProgressSessionsModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                        disabled={!pinInProgressSessions}
+                        onChange={setPinInProgressSessionsMode}
+                    />
+                </div>
                 <SettingsChoiceGroup
                     label={t('settings.display.sessionListStatus')}
                     description={t('settings.display.sessionListStatus.detailedDescription')}

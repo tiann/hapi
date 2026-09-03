@@ -82,6 +82,7 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
     value: T
     options: ReadonlyArray<{ value: T; label: string; description?: string }>
     onChange: (value: T) => void
+    disabled?: boolean
     columns?: 2 | 4 | 5
 }) {
     const columns = props.columns === 5 ? 'grid-cols-5' : props.columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
@@ -97,10 +98,13 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
                             type="button"
                             role="radio"
                             aria-checked={selected}
+                            disabled={props.disabled}
                             onClick={() => props.onChange(option.value)}
-                            className={`min-w-0 rounded-lg border px-2 py-2 text-center text-sm transition-colors ${selected
-                                ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)]'
-                                : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'}`}
+                            className={`min-w-0 rounded-lg border px-2 py-2 text-center text-sm transition-colors ${props.disabled
+                                ? 'cursor-not-allowed border-[var(--app-border)] bg-[var(--app-secondary-bg)] text-[var(--app-hint)] opacity-60'
+                                : selected
+                                    ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)]'
+                                    : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'}`}
                         >
                             <span className="block truncate font-medium">{option.label}</span>
                             {option.description ? <span className="mt-0.5 block text-xs text-[var(--app-hint)]">{option.description}</span> : null}

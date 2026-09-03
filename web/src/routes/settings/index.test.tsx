@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import SettingsHubPage from './index'
@@ -11,7 +11,7 @@ import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 
-const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice } = vi.hoisted(() => ({
+const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setPinInProgressSessionsMode, setVoice, pinSettingsState } = vi.hoisted(() => ({
     context: { token: '' },
     navigate: vi.fn(),
     setAppearance: vi.fn(),
@@ -20,7 +20,9 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setTerminalFontSize: vi.fn(),
     setComposerEnterBehavior: vi.fn(),
     setCodexExplorationCollapsed: vi.fn(),
+    setPinInProgressSessionsMode: vi.fn(),
     setVoice: vi.fn(),
+    pinSettingsState: { enabled: false },
 }))
 
 const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
@@ -82,7 +84,15 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
-    usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
+    usePinInProgressSessions: () => ({ pinInProgressSessions: pinSettingsState.enabled, setPinInProgressSessions: vi.fn() }),
+}))
+
+vi.mock('@/hooks/usePinInProgressSessionsMode', () => ({
+    usePinInProgressSessionsMode: () => ({ pinInProgressSessionsMode: 'detailed', setPinInProgressSessionsMode }),
+    getPinInProgressSessionsModeOptions: () => [
+        { value: 'combined', labelKey: 'settings.display.pinInProgressSessions.mode.combined' },
+        { value: 'detailed', labelKey: 'settings.display.pinInProgressSessions.mode.detailed' },
+    ],
 }))
 
 vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
@@ -219,6 +229,7 @@ describe('responsive settings pages', () => {
         getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
         updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
+        pinSettingsState.enabled = false
     })
 
     it('renders the mobile hub categories with current summaries', () => {
@@ -276,6 +287,32 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('radio', { name: 'Extended' })).toBeInTheDocument()
         expect(description.parentElement?.parentElement).toBe(choices.parentElement)
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('renders detailed as the default pinned-session layout and supports combined mode', () => {
+        pinSettingsState.enabled = true
+        renderPage(<SettingsDisplayPage />)
+
+        const choices = screen.getByRole('radiogroup', { name: 'Pin in-progress session layout' })
+        const pinSettings = screen.getByTestId('pin-in-progress-settings')
+        expect(screen.getByRole('radio', { name: 'Detailed' })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.getByRole('radio', { name: 'Combined' })).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByText('By default, Detailed keeps the “In progress” and “Active sessions” sections; Combined groups all active sessions by project directory.')).toBeInTheDocument()
+        expect(choices).toBeInTheDocument()
+        expect(within(pinSettings).getByRole('checkbox', { name: 'Pin in-progress sessions' })).toBeInTheDocument()
+        expect(within(pinSettings).getAllByRole('radio').map((radio) => radio.textContent?.trim())).toEqual(['Combined', 'Detailed'])
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Combined' }))
+        expect(setPinInProgressSessionsMode).toHaveBeenCalledWith('combined')
+    })
+
+    it('disables the pinned-session layout choices when pinning is off', () => {
+        renderPage(<SettingsDisplayPage />)
+
+        expect(screen.getByRole('radio', { name: 'Combined' })).toBeDisabled()
+        expect(screen.getByRole('radio', { name: 'Detailed' })).toBeDisabled()
+        fireEvent.click(screen.getByRole('radio', { name: 'Combined' }))
+        expect(setPinInProgressSessionsMode).not.toHaveBeenCalled()
     })
 
     it('keeps chat enum choices inline', () => {

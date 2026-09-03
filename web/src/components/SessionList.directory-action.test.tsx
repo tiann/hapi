@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -14,6 +14,7 @@ afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
     localStorage.removeItem('hapi-pin-in-progress-sessions')
+    localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -608,6 +609,72 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('/work/hapi').nextElementSibling).toBeNull()
         expect(screen.getByTitle('/work/other')).toBeInTheDocument()
         expect(screen.getByTitle('/work/other').nextElementSibling).toBeNull()
+    })
+
+    it('groups active sessions by project above an archived project divider without preview pagination', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        localStorage.setItem('hapi-session-preview-limit', '2')
+        const sessions = [
+            makeSession({
+                id: 'session-working',
+                active: true,
+                thinking: true,
+                updatedAt: 300,
+                metadata: { path: '/work/hapi', name: 'Working task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-pending',
+                active: true,
+                pendingRequestsCount: 1,
+                updatedAt: 200,
+                metadata: { path: '/work/hapi', name: 'Pending task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-quiet',
+                active: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Quiet task', flavor: 'codex' },
+            }),
+            ...Array.from({ length: 3 }, (_, index) => makeSession({
+                id: `session-archived-${index + 1}`,
+                updatedAt: 90 - index,
+                metadata: { path: '/work/hapi', name: `Archived task ${index + 1}`, flavor: 'codex' },
+            })),
+        ]
+
+        render(renderSessionList(sessions, null))
+
+        expect(screen.queryByTitle('Active sessions')).toBeNull()
+        const projectHeaders = screen.getAllByTitle('/work/hapi')
+        if (projectHeaders.length !== 2) {
+            throw new Error(`Expected separate active and archived project groups, got ${projectHeaders.length}`)
+        }
+        const activeHeader = projectHeaders[0]!
+        const archivedHeader = projectHeaders[1]!
+        const activePanel = activeHeader.nextElementSibling
+        if (!activePanel) {
+            throw new Error('Expected active project panel')
+        }
+        const activeContent = within(activePanel as HTMLElement)
+        expect(activeContent.getByRole('button', { name: /Working task/ })).toBeInTheDocument()
+        expect(activeContent.getByRole('button', { name: /Pending task/ })).toBeInTheDocument()
+        expect(activeContent.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(activeContent.queryByRole('button', { name: /Expand/ })).toBeNull()
+        expect(activeContent.getByRole('button', { name: /Working task/ })).not.toHaveTextContent('/work/hapi')
+
+        const divider = screen.getByRole('separator', { name: 'Archived project sessions' })
+        expect(activeHeader).toAppearBefore(divider)
+        expect(divider).toAppearBefore(archivedHeader)
+
+        const archivedPanel = archivedHeader.nextElementSibling
+        if (!archivedPanel) {
+            throw new Error('Expected archived project panel')
+        }
+        const archivedContent = within(archivedPanel as HTMLElement)
+        expect(archivedContent.getByRole('button', { name: /Archived task 1/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Expand 1' })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /Archived task 3/ })).toBeNull()
     })
 
     it('keeps new-session-in-directory actions for projects whose rows all floated', () => {
