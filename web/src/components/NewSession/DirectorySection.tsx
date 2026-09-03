@@ -3,6 +3,7 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { useTranslation } from '@/lib/use-translation'
+import { getPathDisplayName } from '@/utils/path'
 
 
 function CodexImportIcon(props: { className?: string }) {
@@ -126,8 +127,9 @@ export function DirectorySection(props: {
                                 disabled={props.isDisabled}
                                 className="rounded bg-[var(--app-subtle-bg)] px-2 py-1 text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] transition-colors truncate max-w-[200px] disabled:opacity-50"
                                 title={path}
+                                aria-label={path}
                             >
-                                {path}
+                                {getPathDisplayName(path)}
                             </button>
                         ))}
                     </div>
