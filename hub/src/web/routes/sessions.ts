@@ -26,6 +26,7 @@ import {
 } from '@hapi/protocol'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
+import { DeleteArchivedSessionsRequestSchema } from '@hapi/protocol/schemas'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -878,6 +879,30 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
+    app.post('/sessions/delete-archived', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = DeleteArchivedSessionsRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.deleteArchivedSessions(parsed.data.sessionIds, c.get('namespace'))
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to delete archived sessions'
+            if (message === 'Sessions are no longer archived') {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
+    })
+
     app.delete('/sessions/:id', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -891,6 +916,16 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         if (sessionResult.session.active) {
             return c.json({ error: 'Cannot delete active session. Archive it first.' }, 409)
+        }
+
+        // Bulk group-delete guard (#881): the web UI only enables "Delete
+        // Group" when every session in the group is archived, but the server
+        // re-checks so a stale client or a race cannot delete a session whose
+        // lifecycle state is no longer 'archived' (e.g. completed/imported
+        // stubs that are inactive but never formally archived).
+        if (c.req.query('requireArchived') === '1'
+            && sessionResult.session.metadata?.lifecycleState !== 'archived') {
+            return c.json({ error: 'Session is no longer archived' }, 409)
         }
 
         try {

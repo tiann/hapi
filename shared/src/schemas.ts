@@ -633,6 +633,13 @@ export const CancelMessageResponseSchema = z.discriminatedUnion('status', [
 
 export type CancelMessageResponse = z.infer<typeof CancelMessageResponseSchema>
 
+export const DeleteArchivedSessionsRequestSchema = z.object({
+    sessionIds: z.array(z.string().min(1)).min(1),
+    requireAllArchived: z.literal(true)
+})
+
+export type DeleteArchivedSessionsRequest = z.infer<typeof DeleteArchivedSessionsRequestSchema>
+
 export const SteerQueuedMessageResponseSchema = z.discriminatedUnion('status', [
     z.object({ status: z.literal('steered'), localId: z.string() }),
     z.object({ status: z.literal('invoked'), message: DecryptedMessageSchema }),
