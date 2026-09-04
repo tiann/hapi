@@ -312,7 +312,14 @@ function notifyImmediate(sessionId: string): void {
 
 function setState(sessionId: string, next: InternalState, immediate = false): void {
     states.set(sessionId, next)
-    schedulePersist(sessionId)
+    // A latest-reset state still contains the previous server snapshot. Do not
+    // persist that stale window while the authoritative replacement is in
+    // flight; a reload during the reset must not resurrect removed messages.
+    if (next.requiresLatestReset) {
+        pendingPersistSessionIds.delete(sessionId)
+    } else {
+        schedulePersist(sessionId)
+    }
     if (immediate) {
         notifyImmediate(sessionId)
     } else {
@@ -1089,6 +1096,59 @@ export function clearMessageWindow(sessionId: string): void {
         syncGeneration: previous.syncGeneration + 1,
         olderGeneration: previous.olderGeneration + 1
     }, true)
+}
+
+function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedMessage[]): void {
+    const previous = states.get(sessionId)
+    if (!previous) return
+
+    tailSyncControllers.delete(sessionId)
+    clearPersistedState(sessionId)
+    setState(sessionId, buildState(previous, {
+        messages,
+        epoch: null,
+        oldestPositionAt: null,
+        oldestPositionSeq: null,
+        newestPositionAt: null,
+        newestPositionSeq: null,
+        requiresLatestReset: true,
+        preferLatestOnActivation: false,
+        isSyncingTail: true,
+        isLoadingMore: false,
+        warning: null,
+        syncGeneration: previous.syncGeneration + 1,
+        olderGeneration: previous.olderGeneration + 1
+    }), true)
+}
+
+/**
+ * Mark the current window stale without exposing an empty transcript while a
+ * latest snapshot is fetched. The next tail sync sees `requiresLatestReset`
+ * and replaces server rows atomically with the authoritative response.
+ */
+export function invalidateMessageWindow(sessionId: string): void {
+    const previous = states.get(sessionId)
+    if (!previous) return
+
+    markMessageWindowForLatestReset(sessionId, previous.messages)
+}
+
+/**
+ * Apply the known local effect of a successful Rewind before the server
+ * snapshot arrives. Rewind removes the boundary message and every later row;
+ * retaining the earlier prefix keeps the chat usable and lets the current
+ * bottom position clamp directly to the new tail.
+ */
+export function rewindMessageWindow(sessionId: string, messageLocalId: string): void {
+    const previous = states.get(sessionId)
+    if (!previous) return
+
+    const boundaryIndex = previous.messages.findIndex((message) => message.localId === messageLocalId)
+    const messages = boundaryIndex >= 0
+        ? previous.messages.slice(0, boundaryIndex)
+        : previous.messages
+
+    markMessageWindowForLatestReset(sessionId, messages)
 }
 
 export function seedMessageWindowFromSession(fromSessionId: string, toSessionId: string): void {

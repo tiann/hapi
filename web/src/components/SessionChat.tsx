@@ -54,8 +54,8 @@ import {
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
-import type { OlderLoadOutcome } from '@/lib/message-window-store'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
+import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
 import {
     createScratchlistAttachmentAdapter,
@@ -510,7 +510,7 @@ type SessionChatProps = {
     historyVersion: number
     tailRevision: number
     onBack: () => void
-    onRefresh: () => void
+    onRefresh: () => void | Promise<void>
     onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
     onCancelLoadMore: () => void
     // Returns the accepted mutation's attempt id, or false when
@@ -588,7 +588,13 @@ function SessionChatInner(props: SessionChatProps) {
         setHistoryActionPending(true)
         try {
             await props.api.rewindConversation(props.session.id, messageLocalId)
-            props.onRefresh()
+            // Apply the deterministic local part immediately so the removed
+            // suffix cannot flash back while the authoritative refresh runs.
+            rewindMessageWindow(props.session.id, messageLocalId)
+            await props.onRefresh()
+            // Force the same tail behavior as a successful send after the
+            // refreshed message window has been committed.
+            setForceScrollToken((token) => token + 1)
         } finally {
             setHistoryActionPending(false)
         }

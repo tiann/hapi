@@ -16,7 +16,7 @@ import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, invalidateMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
@@ -291,7 +291,7 @@ function AppInner() {
         if (!api || event.sessionId !== selectedSessionId) {
             return
         }
-        clearMessageWindow(event.sessionId)
+        invalidateMessageWindow(event.sessionId)
         void syncTailMessages(api, event.sessionId)
     }, [api, selectedSessionId])
 

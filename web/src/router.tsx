@@ -739,9 +739,11 @@ function SessionPage() {
         getSlashSuggestions,
     ])
 
-    const refreshSelectedSession = useCallback(() => {
-        void refetchSession()
-        void refetchMessages()
+    const refreshSelectedSession = useCallback(async () => {
+        await Promise.all([
+            refetchSession(),
+            refetchMessages(),
+        ])
     }, [refetchMessages, refetchSession])
 
     const handleInitialOutlineConsumed = useCallback(() => {
