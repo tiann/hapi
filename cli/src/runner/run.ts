@@ -29,6 +29,7 @@ import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
+import { checkSpawnModel } from './spawnModelPreflight';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
 
@@ -512,6 +513,20 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           type: 'error',
           errorMessage,
           code: 'agent_unavailable',
+          agent
+        };
+      }
+      const modelCheck = checkSpawnModel(agent, options.model);
+      if (!modelCheck.ok) {
+        logger.debug(`[RUNNER RUN] Model preflight failed: ${modelCheck.message}`);
+        reportSpawnOutcomeToHub?.({
+          type: 'error',
+          details: { message: modelCheck.message }
+        });
+        return {
+          type: 'error',
+          errorMessage: modelCheck.message,
+          code: 'model_unavailable',
           agent
         };
       }

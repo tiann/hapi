@@ -193,7 +193,7 @@ export class RpcGateway {
         | {
             type: 'error'
             message: string
-            code?: 'agent_unavailable' | 'outside_workspace_roots'
+            code?: 'agent_unavailable' | 'model_unavailable' | 'outside_workspace_roots'
             agent?: AgentFlavor
         }
     > {
@@ -228,7 +228,7 @@ export class RpcGateway {
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
-                    const code = obj.code === 'agent_unavailable' || obj.code === 'outside_workspace_roots'
+                    const code = obj.code === 'agent_unavailable' || obj.code === 'model_unavailable' || obj.code === 'outside_workspace_roots'
                         ? obj.code
                         : undefined
                     const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
