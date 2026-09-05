@@ -445,8 +445,8 @@ html:has(.chat-scroll-y) #root {
 .markdown-content code { background: var(--app-inline-code-bg); padding: 0.1em 0.3em; border-radius: 4px; font-size: 0.9em; }
 .markdown-content blockquote { border-left: 3px solid var(--app-hint); padding-left: 0.75rem; margin: 0.5rem 0; opacity: 0.85; }
 .markdown-content ul, .markdown-content ol { padding-left: 1.5rem; margin: 0.5rem 0; }
-.markdown-content table { border-collapse: collapse; width: 100%; }
-.markdown-content th, .markdown-content td { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }
+.markdown-content table:not(.aui-md-table) { border-collapse: collapse; width: 100%; }
+.markdown-content th:not(.aui-md-th), .markdown-content td:not(.aui-md-td) { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }
 
 .aui-md {
     color: var(--app-fg);
@@ -477,6 +477,92 @@ html:has(.chat-scroll-y) #root {
 .happy-message-actions-first-line {
     align-self: flex-start;
     margin-top: max(0px, calc((var(--app-chat-line-height) - var(--app-message-action-size)) / 2));
+}
+
+/* Markdown tables keep their header as the first table row. Table actions sit
+ * in the top-right corner of that row, so they do not create a blank shelf. */
+.aui-md-table-frame {
+    position: relative;
+}
+
+.aui-md-table-frame:has(> .aui-md-table-actions) .aui-md-table > thead > tr > :last-child {
+    padding-right: 5rem;
+}
+
+.aui-md-table-actions {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    line-height: normal;
+    align-items: center;
+    z-index: 2;
+    transition: opacity 150ms ease;
+}
+
+[data-hapi-table-viewer-heading="true"] {
+    transform: translateY(1px);
+}
+
+/* Desktop fonts use a smaller title while keeping the same optical baseline. */
+@media (hover: hover) and (pointer: fine) {
+    [data-hapi-table-viewer-heading="true"] {
+        font-size: 1rem;
+        transform: none;
+    }
+
+    [data-hapi-table-viewer-toolbar="true"] {
+        padding-top: 0;
+        padding-bottom: 0;
+    }
+
+    [data-hapi-table-viewer-toolbar="true"] [data-hapi-table-viewer-control="true"] {
+        width: 32px;
+        height: 32px;
+    }
+
+    [data-hapi-table-viewer-toolbar="true"] [data-hapi-table-viewer-control="true"] > svg {
+        width: 18px;
+        height: 18px;
+    }
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .aui-md-table-actions {
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .aui-md-table-shell:hover .aui-md-table-actions,
+    .aui-md-table-shell:focus-within .aui-md-table-actions {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* Keep the header cells sticky instead of the whole thead. Sticky table
+ * sections have inconsistent painting behavior across mobile WebViews; the
+ * cells also let the header cover the viewer's top padding without leaving a
+ * visible gap while the table is being scrolled. */
+[data-hapi-table-viewer="true"] .aui-md-thead > tr > :is(th, td) {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--app-md-table-head-bg);
+}
+
+/* Fullscreen tables keep their readable, horizontally scrollable layout by
+ * default. The toolbar wrap toggle switches to a fixed-width table and lets
+ * every cell break long content so the viewport has no horizontal scrollbar. */
+[data-hapi-table-wrap="true"] {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: fixed !important;
+}
+
+[data-hapi-table-wrap="true"] :is(th, td) {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 @media (hover: hover) and (pointer: fine) {

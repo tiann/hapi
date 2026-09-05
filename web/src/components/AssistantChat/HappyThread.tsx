@@ -501,7 +501,10 @@ export function HappyThread(props: {
     const machineLabelsById = useMachineLabels(machines)
     const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
     const shareDialogOpen = shareTurn !== null
-    const shareTitle = shareTurn ? getSessionTitle(props.session) : ''
+    const sessionTitle = typeof props.session?.id === 'string'
+        ? getSessionTitle(props.session)
+        : undefined
+    const shareTitle = shareTurn ? (sessionTitle ?? '') : ''
     const shareRelativeTimeTick = useMinuteTick(headerMetadata.lastActive && shareDialogOpen)
     const shareMetadataItems = useMemo(() => {
         const agentFlavor = props.session.metadata?.flavor ?? null
@@ -1606,6 +1609,7 @@ export function HappyThread(props: {
         <HappyChatProvider value={{
             api: props.api,
             sessionId: props.sessionId,
+            sessionTitle,
             metadata: props.metadata,
             terminalToolDisplayMode,
             showSessionSummaryInChat,

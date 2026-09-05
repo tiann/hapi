@@ -6,18 +6,22 @@ export function useCopyToClipboard(resetDelay = 1500) {
     const [copied, setCopied] = useState(false)
     const { haptic } = usePlatform()
 
+    const markCopied = useCallback(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), resetDelay)
+    }, [resetDelay])
+
     const copy = useCallback(async (text: string) => {
         try {
             await safeCopyToClipboard(text)
             haptic.notification('success')
-            setCopied(true)
-            setTimeout(() => setCopied(false), resetDelay)
+            markCopied()
             return true
         } catch {
             haptic.notification('error')
             return false
         }
-    }, [haptic, resetDelay])
+    }, [haptic, markCopied])
 
-    return { copied, copy }
+    return { copied, copy, markCopied }
 }
