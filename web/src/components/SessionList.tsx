@@ -9,7 +9,7 @@ import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { CopyIcon, CheckIcon, MarkAllReadIcon } from '@/components/icons'
 
 function PinnedSectionIcon(props: { className?: string }) {
     return (
@@ -31,6 +31,8 @@ import {
     getSessionLastSeenAt,
     getSessionLastSeenSnapshot,
     getSessionManualUnreadAt,
+    getUnreadSessionCount,
+    markAllSessionsSeen,
     markSessionUnread,
     useSessionLastSeenVersion
 } from '@/lib/sessionLastSeen'
@@ -1214,6 +1216,7 @@ export function SessionList(props: {
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [customStart, setCustomStart] = useState('')
     const [customEnd, setCustomEnd] = useState('')
+    const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
     const [, setCodexImportedSessionsVersion] = useState(0)
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
@@ -1236,14 +1239,23 @@ export function SessionList(props: {
         return t('machine.unknown')
     }
 
+    const sidebarSessions = useMemo(
+        () => prepareSidebarSessions(props.sessions, selectedSessionId),
+        [props.sessions, selectedSessionId]
+    )
+    const readableSessions = useMemo(
+        () => props.sessions.filter(session => shouldShowSessionInSidebar(session, selectedSessionId)),
+        [props.sessions, selectedSessionId]
+    )
     const allSessions = useMemo(
-        () => {
-            const prepared = prepareSidebarSessions(props.sessions, selectedSessionId)
-            return showActiveSessionsOnly
-                ? filterActiveSessionsOnly(prepared, selectedSessionId)
-                : prepared
-        },
-        [props.sessions, selectedSessionId, showActiveSessionsOnly]
+        () => showActiveSessionsOnly
+            ? filterActiveSessionsOnly(sidebarSessions, selectedSessionId)
+            : sidebarSessions,
+        [sidebarSessions, selectedSessionId, showActiveSessionsOnly]
+    )
+    const unreadSessionCount = useMemo(
+        () => getUnreadSessionCount(readableSessions),
+        [lastSeenVersion, readableSessions]
     )
     const sessionActivityDates = useMemo(
         () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
@@ -1899,6 +1911,17 @@ export function SessionList(props: {
                                     onChange={setMachineFilter}
                                 />
                             ) : null}
+                            {unreadSessionCount > 0 ? (
+                                <button
+                                    type="button"
+                                    onClick={() => setMarkAllReadOpen(true)}
+                                    title={t('sessions.markAllRead.button', { count: unreadSessionCount })}
+                                    aria-label={t('sessions.markAllRead.button', { count: unreadSessionCount })}
+                                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                >
+                                    <MarkAllReadIcon className="h-5 w-5" />
+                                </button>
+                            ) : null}
                             <button
                                 type="button"
                                 onClick={() => setShowUnreadOnly(!showUnreadOnly)}
@@ -2061,6 +2084,20 @@ export function SessionList(props: {
             </div>
             </div>
             </div>
+            <ConfirmDialog
+                isOpen={markAllReadOpen}
+                onClose={() => setMarkAllReadOpen(false)}
+                title={t('sessions.markAllRead.title')}
+                description={t('sessions.markAllRead.description', { count: unreadSessionCount })}
+                confirmLabel={t('sessions.markAllRead.confirm')}
+                confirmingLabel={t('sessions.markAllRead.confirming')}
+                onConfirm={async () => {
+                    markAllSessionsSeen(readableSessions)
+                }}
+                isPending={false}
+                centerTitle
+                destructive
+            />
         </div>
     )
 }

@@ -147,6 +147,97 @@ export function getSessionLastSeenSnapshot(): Readonly<Record<string, number>> {
     return readStore()
 }
 
+type SessionReadStateInput = {
+    id: string
+    updatedAt: number
+}
+
+function latestSessionUpdates(sessions: Iterable<SessionReadStateInput>): Map<string, number> {
+    const latest = new Map<string, number>()
+    for (const session of sessions) {
+        if (!session.id || !Number.isFinite(session.updatedAt)) {
+            continue
+        }
+        const current = latest.get(session.id)
+        if (current === undefined || session.updatedAt > current) {
+            latest.set(session.id, session.updatedAt)
+        }
+    }
+    return latest
+}
+
+function hasUnreadActivity(
+    sessionId: string,
+    updatedAt: number,
+    store: LastSeenStore,
+    manualUnreadStore: ManualUnreadStore
+): boolean {
+    const lastSeenAt = store[sessionId]
+    const manualUnreadAt = manualUnreadStore[sessionId]
+    return updatedAt > (typeof lastSeenAt === 'number' && Number.isFinite(lastSeenAt) ? lastSeenAt : 0)
+        || manualUnreadAt === updatedAt
+}
+
+/** Count unread sessions in the supplied list using one localStorage snapshot. */
+export function getUnreadSessionCount(sessions: Iterable<SessionReadStateInput>): number {
+    const latest = latestSessionUpdates(sessions)
+    const store = readStore()
+    const manualUnreadStore = readManualUnreadStore()
+    let count = 0
+    for (const [sessionId, updatedAt] of latest) {
+        if (hasUnreadActivity(sessionId, updatedAt, store, manualUnreadStore)) {
+            count += 1
+        }
+    }
+    return count
+}
+
+/** Mark all supplied unread sessions as seen on this device. Returns changed count. */
+export function markAllSessionsSeen(sessions: Iterable<SessionReadStateInput>): number {
+    const latest = latestSessionUpdates(sessions)
+    if (latest.size === 0) {
+        return 0
+    }
+
+    const store = readStore()
+    const manualUnreadStore = readManualUnreadStore()
+    let count = 0
+    let seenChanged = false
+    let manualUnreadChanged = false
+
+    for (const [sessionId, updatedAt] of latest) {
+        if (!hasUnreadActivity(sessionId, updatedAt, store, manualUnreadStore)) {
+            continue
+        }
+
+        count += 1
+        const currentSeenAt = store[sessionId]
+        const nextSeenAt = Math.max(
+            typeof currentSeenAt === 'number' && Number.isFinite(currentSeenAt) ? currentSeenAt : 0,
+            updatedAt
+        )
+        if (store[sessionId] !== nextSeenAt) {
+            store[sessionId] = nextSeenAt
+            seenChanged = true
+        }
+        if (Object.prototype.hasOwnProperty.call(manualUnreadStore, sessionId)) {
+            delete manualUnreadStore[sessionId]
+            manualUnreadChanged = true
+        }
+    }
+
+    if (count === 0) {
+        return 0
+    }
+
+    const seenWritten = !seenChanged || writeStore(store)
+    const manualUnreadWritten = !manualUnreadChanged || writeManualUnreadStore(manualUnreadStore)
+    if (seenWritten || manualUnreadWritten) {
+        notifyStoreChanged()
+    }
+    return count
+}
+
 export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id: string; updatedAt: number }>): void {
     const storage = getLocalStorage()
     if (!storage) {
