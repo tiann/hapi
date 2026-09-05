@@ -631,6 +631,10 @@ export class SyncEngine {
         return this.store.scratchlist.count(sessionId)
     }
 
+    getScratchlistSessionIdsByNamespace(namespace: string): string[] {
+        return this.store.scratchlist.listSessionIdsByNamespace(namespace)
+    }
+
     sumScratchlistAttachmentBytes(sessionId: string): number {
         return this.store.scratchlist.sumAttachmentBytes(sessionId)
     }

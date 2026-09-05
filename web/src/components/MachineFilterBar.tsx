@@ -1,10 +1,21 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { CSSProperties } from 'react'
 import type { MachineHealthPresentation } from '@/lib/machineHealth'
 import { MachineHealthTooltipBody } from '@/components/MachineHealthIndicator'
 import { HoverTooltip } from '@/components/HoverTooltip'
 import { CheckIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
+import {
+    isSessionListFilterSelected,
+    SESSION_LIST_FILTER_OPTIONS,
+    toggleSessionListFilter,
+    type SessionListFilter,
+    type SessionListFilterState
+} from '@/lib/sessionListFilter'
+import {
+    SessionDateFilterMenuRow,
+    SessionDateRangePicker
+} from '@/components/SessionDateFilter'
 import { useTranslation } from '@/lib/use-translation'
 
 export type MachineFilterItem = {
@@ -18,7 +29,7 @@ const chipBaseClass = 'flex h-7 shrink-0 items-center gap-1.5 rounded-full borde
 const chipSelectedClass = 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)] font-medium'
 const chipIdleClass = 'border-[var(--app-border)] text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'
 
-function FilterIcon(props: { className?: string }) {
+export function FilterIcon(props: { className?: string }) {
     return (
         <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -30,6 +41,7 @@ function FilterIcon(props: { className?: string }) {
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden="true"
             className={props.className}
         >
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
@@ -162,17 +174,69 @@ function MachineFilterMenuRow(props: {
     )
 }
 
-// Clamp the menu to the space actually remaining left of/below the trigger
-// (the menu is right-anchored to the trigger): the rem-based design caps
-// (w-64 / max-h-80) grow with the font-scale setting, and safe-area insets
-// shrink usable space on notched devices. The height chain mirrors the body
-// sizing in index.css.
+function SessionFilterMenuRow(props: {
+    label: string
+    selected: boolean
+    onSelect: () => void
+}) {
+    return (
+        <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={props.selected}
+            onClick={props.onSelect}
+            className={cn(
+                'flex w-full items-center gap-2 rounded-lg py-2 pl-2.5 pr-2 text-left text-sm transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                props.selected && 'text-[var(--app-link)]'
+            )}
+        >
+            <span className="flex h-5 w-4 shrink-0 items-center justify-center text-[var(--app-link)]">
+                {props.selected ? <CheckIcon className="h-4 w-4" /> : null}
+            </span>
+            <span className="min-w-0 truncate whitespace-nowrap">{props.label}</span>
+        </button>
+    )
+}
+
+// Clamp the menu to the usable space below the trigger. The legacy right
+// alignment remains available for callers that need it; session menus use
+// centered positioning and are limited by the full usable viewport width.
+// Safe-area insets shrink usable space on notched devices.
 const MENU_VIEWPORT_MARGIN_PX = 8
 const MENU_TOP_GAP_PX = 4 // mt-1
 
-export function getMachineFilterMenuClampStyle(anchor: { right: number; bottom: number }): CSSProperties {
+export function getCenteredFilterMenuLeft(
+    anchor: { left: number; width: number },
+    menuWidth: number,
+    viewportWidth: number,
+    margin = MENU_VIEWPORT_MARGIN_PX
+): number {
+    const width = Math.max(0, menuWidth)
+    const desiredLeft = anchor.left + anchor.width / 2 - width / 2
+    const minLeft = margin
+    const maxLeft = Math.max(minLeft, viewportWidth - margin - width)
+    const clampedLeft = Math.min(maxLeft, Math.max(minLeft, desiredLeft))
+    return clampedLeft - anchor.left
+}
+
+export function getMachineFilterMenuClampStyle(
+    anchor: { right: number; bottom: number },
+    options: { widthCap?: string | null; horizontal?: 'right' | 'center' } = {}
+): CSSProperties {
+    const widthExpression = options.horizontal === 'center'
+        ? 'calc(100vw - '
+            + MENU_VIEWPORT_MARGIN_PX * 2
+            + 'px - env(safe-area-inset-left) - env(safe-area-inset-right))'
+        : 'calc('
+            + anchor.right
+            + 'px - '
+            + MENU_VIEWPORT_MARGIN_PX
+            + 'px - env(safe-area-inset-left))'
+    const maxWidth = options.widthCap === null
+        ? widthExpression
+        : 'min(' + (options.widthCap ?? '16rem') + ', ' + widthExpression + ')'
     return {
-        maxWidth: `min(16rem, calc(${anchor.right}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-left)))`,
+        maxWidth,
         maxHeight: `min(20rem, calc(var(--tg-viewport-stable-height, var(--app-viewport-height, 100dvh)) - ${anchor.bottom + MENU_TOP_GAP_PX}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-bottom)))`
     }
 }
@@ -187,17 +251,39 @@ export function MachineFilterMenu(props: {
     totalCount: number
     value: string | null
     onChange: (id: string | null) => void
+    sessionFilter?: SessionListFilterState
+    onSessionFilterChange?: (value: SessionListFilterState) => void
+    customStart?: string
+    customEnd?: string
+    sessionActivityDates?: ReadonlySet<string>
+    onDateRangeChange?: (start: string, end: string) => void
+    datePickerCenterRef?: RefObject<HTMLElement | null>
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
     const triggerRef = useRef<HTMLButtonElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
+    const dateFilterButtonRef = useRef<HTMLButtonElement>(null)
     const [anchor, setAnchor] = useState<{ right: number; bottom: number } | null>(null)
+    const [menuLeft, setMenuLeft] = useState<number | null>(null)
+    const [datePickerOpen, setDatePickerOpen] = useState(false)
+    const hasSessionFilter = props.sessionFilter !== undefined && props.onSessionFilterChange !== undefined
+    const hasDateFilter = props.customStart !== undefined
+        && props.customEnd !== undefined
+        && props.sessionActivityDates !== undefined
+        && props.onDateRangeChange !== undefined
+    const triggerLabel = hasSessionFilter ? t('sessions.filter.label') : t('sessions.machineFilter.label')
 
     const close = useCallback(() => {
         setOpen(false)
+        setDatePickerOpen(false)
         triggerRef.current?.focus()
+    }, [])
+
+    const closeDatePicker = useCallback(() => {
+        setDatePickerOpen(false)
+        dateFilterButtonRef.current?.focus()
     }, [])
 
     const select = (id: string | null) => {
@@ -205,20 +291,49 @@ export function MachineFilterMenu(props: {
         close()
     }
 
+    const selectSessionFilter = (value: Exclude<SessionListFilter, 'all'>) => {
+        if (!props.onSessionFilterChange) return
+        setDatePickerOpen(false)
+        props.onSessionFilterChange(toggleSessionListFilter(props.sessionFilter!, value))
+    }
+
+    const updateMenuPosition = useCallback(() => {
+        const wrapper = wrapperRef.current
+        const menu = menuRef.current
+        if (!wrapper || !menu) return
+
+        const wrapperRect = wrapper.getBoundingClientRect()
+        const menuRect = menu.getBoundingClientRect()
+        setAnchor({ right: wrapperRect.right, bottom: wrapperRect.bottom })
+        setMenuLeft(getCenteredFilterMenuLeft(
+            { left: wrapperRect.left, width: wrapperRect.width },
+            menuRect.width,
+            window.innerWidth
+        ))
+    }, [])
+
     useLayoutEffect(() => {
         if (!open) {
             setAnchor(null)
+            setMenuLeft(null)
             return
         }
-        const updateAnchor = () => {
-            const rect = wrapperRef.current?.getBoundingClientRect()
-            if (!rect) return
-            setAnchor({ right: rect.right, bottom: rect.bottom })
+
+        updateMenuPosition()
+        const frame = window.requestAnimationFrame(updateMenuPosition)
+        const resizeObserver = typeof ResizeObserver === 'undefined' || !menuRef.current
+            ? null
+            : new ResizeObserver(updateMenuPosition)
+        resizeObserver?.observe(menuRef.current!)
+        window.addEventListener('resize', updateMenuPosition)
+        window.addEventListener('scroll', updateMenuPosition, true)
+        return () => {
+            window.cancelAnimationFrame(frame)
+            resizeObserver?.disconnect()
+            window.removeEventListener('resize', updateMenuPosition)
+            window.removeEventListener('scroll', updateMenuPosition, true)
         }
-        updateAnchor()
-        window.addEventListener('resize', updateAnchor)
-        return () => window.removeEventListener('resize', updateAnchor)
-    }, [open])
+    }, [open, updateMenuPosition])
 
     // Focus the selected (or first) row on open; Escape closes and Arrow keys
     // move between rows, matching SessionActionMenu's keyboard behavior.
@@ -226,8 +341,10 @@ export function MachineFilterMenu(props: {
         if (!open) return
 
         const frame = window.requestAnimationFrame(() => {
-            const selected = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]')
-            const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"]')
+            const selected = menuRef.current?.querySelector<HTMLElement>(
+                '[role="menuitemradio"][aria-checked="true"], [role="menuitemcheckbox"][aria-checked="true"], [role="menuitem"][aria-expanded="true"]'
+            )
+            const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"], [role="menuitemcheckbox"], [role="menuitem"]')
             ;(selected ?? first)?.focus()
         })
 
@@ -239,7 +356,7 @@ export function MachineFilterMenu(props: {
             }
             if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
             const items = Array.from(
-                menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? []
+                menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"], [role="menuitemcheckbox"], [role="menuitem"]') ?? []
             )
             if (items.length === 0) return
             event.preventDefault()
@@ -264,14 +381,16 @@ export function MachineFilterMenu(props: {
                 ref={triggerRef}
                 type="button"
                 onClick={() => setOpen(value => !value)}
-                aria-label={t('sessions.machineFilter.label')}
-                title={t('sessions.machineFilter.label')}
+                aria-label={triggerLabel}
+                title={triggerLabel}
                 aria-haspopup="menu"
                 aria-expanded={open}
                 className="relative flex rounded-full p-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
             >
                 <FilterIcon className="h-5 w-5" />
-                {props.value !== null ? (
+                {props.value !== null
+                    || (props.sessionFilter !== undefined && (props.sessionFilter.unread || props.sessionFilter.scratchlist))
+                    || (hasDateFilter && Boolean(props.customStart && props.customEnd)) ? (
                     <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" />
                 ) : null}
             </button>
@@ -287,29 +406,113 @@ export function MachineFilterMenu(props: {
                     <div
                         ref={menuRef}
                         role="menu"
-                        aria-label={t('sessions.machineFilter.label')}
-                        style={anchor ? getMachineFilterMenuClampStyle(anchor) : undefined}
-                        className="absolute right-0 top-full z-30 mt-1 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
+                        aria-label={triggerLabel}
+                        style={{
+                            ...(anchor
+                                ? getMachineFilterMenuClampStyle(anchor, { widthCap: null, horizontal: 'center' })
+                                : {}),
+                            left: menuLeft === null ? '50%' : menuLeft,
+                            transform: menuLeft === null ? 'translateX(-50%)' : 'none'
+                        }}
+                        className="absolute top-full z-30 mt-1 max-h-80 w-max max-w-[calc(100vw-1rem)] overflow-x-hidden overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
                     >
-                        <MachineFilterMenuRow
-                            label={t('sessions.machineFilter.all')}
-                            count={props.totalCount}
-                            selected={props.value === null}
-                            healthPresentation={null}
-                            onSelect={() => select(null)}
-                        />
-                        {props.machines.map((machine) => (
-                            <MachineFilterMenuRow
-                                key={machine.id}
-                                label={machine.label}
-                                count={machine.sessionCount}
-                                selected={props.value === machine.id}
-                                healthPresentation={machine.healthPresentation}
-                                onSelect={() => select(machine.id)}
-                            />
-                        ))}
+                        {hasSessionFilter ? (
+                            <>
+                                <div role="group" aria-label={t('sessions.filter.section')}>
+                                    <div className="px-2.5 pb-1 pt-1 text-xs font-medium text-[var(--app-hint)]">
+                                        {t('sessions.filter.section')}
+                                    </div>
+                                    {SESSION_LIST_FILTER_OPTIONS.map((option) => (
+                                        <Fragment key={option.value}>
+                                            <SessionFilterMenuRow
+                                                label={t(option.labelKey)}
+                                                selected={isSessionListFilterSelected(props.sessionFilter!, option.value)}
+                                                onSelect={() => selectSessionFilter(option.value)}
+                                            />
+                                            {hasDateFilter && option.value === 'unread' ? (
+                                                <SessionDateFilterMenuRow
+                                                    start={props.customStart!}
+                                                    end={props.customEnd!}
+                                                    expanded={datePickerOpen}
+                                                    buttonRef={dateFilterButtonRef}
+                                                    onSelect={() => setDatePickerOpen(value => !value)}
+                                                />
+                                            ) : null}
+                                        </Fragment>
+                                    ))}
+                                </div>
+                                <div role="separator" className="my-1 border-t border-[var(--app-border)]" />
+                                <div role="group" aria-label={t('sessions.machineFilter.label')}>
+                                    <div className="px-2.5 pb-1 pt-1 text-xs font-medium text-[var(--app-hint)]">
+                                        {t('sessions.machineFilter.label')}
+                                    </div>
+                                    <MachineFilterMenuRow
+                                        label={t('sessions.machineFilter.all')}
+                                        count={props.totalCount}
+                                        selected={props.value === null}
+                                        healthPresentation={null}
+                                        onSelect={() => select(null)}
+                                    />
+                                    {props.machines.map((machine) => (
+                                        <MachineFilterMenuRow
+                                            key={machine.id}
+                                            label={machine.label}
+                                            count={machine.sessionCount}
+                                            selected={props.value === machine.id}
+                                            healthPresentation={machine.healthPresentation}
+                                            onSelect={() => select(machine.id)}
+                                        />
+                                    ))}
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                {hasDateFilter ? (
+                                    <SessionDateFilterMenuRow
+                                        start={props.customStart!}
+                                        end={props.customEnd!}
+                                        expanded={datePickerOpen}
+                                        buttonRef={dateFilterButtonRef}
+                                        onSelect={() => setDatePickerOpen(value => !value)}
+                                    />
+                                ) : null}
+                                <MachineFilterMenuRow
+                                    label={t('sessions.machineFilter.all')}
+                                    count={props.totalCount}
+                                    selected={props.value === null}
+                                    healthPresentation={null}
+                                    onSelect={() => select(null)}
+                                />
+                                {props.machines.map((machine) => (
+                                    <MachineFilterMenuRow
+                                        key={machine.id}
+                                        label={machine.label}
+                                        count={machine.sessionCount}
+                                        selected={props.value === machine.id}
+                                        healthPresentation={machine.healthPresentation}
+                                        onSelect={() => select(machine.id)}
+                                    />
+                                ))}
+                            </>
+                        )}
                     </div>
                 </>
+            ) : null}
+            {open && datePickerOpen && hasDateFilter ? (
+                <SessionDateRangePicker
+                    start={props.customStart!}
+                    end={props.customEnd!}
+                    sessionActivityDates={props.sessionActivityDates!}
+                    onChange={props.onDateRangeChange!}
+                    onClear={() => {
+                        props.onDateRangeChange!('', '')
+                        dateFilterButtonRef.current?.focus()
+                    }}
+                    onClose={closeDatePicker}
+                    align="right"
+                    anchorRef={dateFilterButtonRef}
+                    horizontalCenterRef={props.datePickerCenterRef}
+                />
             ) : null}
         </div>
     )

@@ -5,6 +5,7 @@ import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     filterActiveSessionsOnly,
+    filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
     getSessionTimeRange,
@@ -577,6 +578,28 @@ describe('filterUnreadSessionsOnly', () => {
         )
         expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
         expect(machineB).toEqual([])
+    })
+})
+
+describe('filterScratchlistSessionsOnly', () => {
+    it('keeps sessions with scratchlist entries and drops empty sessions', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'without-draft', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, null, new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft'])
+    })
+
+    it('keeps the selected session visible even without a scratchlist entry', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-quiet', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, 'selected-quiet', new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft', 'selected-quiet'])
     })
 })
 

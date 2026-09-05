@@ -51,6 +51,7 @@ See `src/router.tsx` for route definitions.
 - Pending permission request count.
 - Agent flavor label (claude/codex/gemini).
 - Model mode display.
+- Transient filters for unread sessions and sessions with scratchlist entries.
 
 ### Chat interface (`src/components/SessionChat.tsx`)
 
@@ -63,7 +64,7 @@ See `src/router.tsx` for route definitions.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
   - Add/delete/reorder entries; promote to composer (copy) or queue (send).
-  - Persists across reloads via `localStorage` keyed per session.
+  - Persists in the Hub and syncs across clients; `localStorage` is an offline cache and migration source.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)

@@ -14,7 +14,7 @@ import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
-import { queryKeys } from '@/lib/query-keys'
+import { getAppSseResyncQueryKeys } from '@/lib/sseResync'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -233,11 +233,14 @@ function AppInner() {
         // Clear disconnected state on successful connection
         reportSseConnect()
 
+        const isFirstConnect = isFirstConnectRef.current
+        const invalidationKeys = getAppSseResyncQueryKeys(info, isFirstConnect)
+
         // The hub replayed every event missed during the gap, so the caches
         // are already consistent - the full refetch below would only re-download
         // what the replay just delivered. First connects and long gaps arrive
         // with resumed=false and take the resync path.
-        if (info.resumed && !isFirstConnectRef.current) {
+        if (invalidationKeys.length === 0) {
             return
         }
 
@@ -247,21 +250,13 @@ function AppInner() {
         // Only force show banner on first connect (page load)
         // Subsequent connects (session switches) use non-forced mode
         // which only shows banner when returning from background
-        if (isFirstConnectRef.current) {
+        if (isFirstConnect) {
             isFirstConnectRef.current = false
             startSync({ force: true })
         } else {
             startSync()
         }
-        const invalidations = [
-            queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-            // Invalidate ALL cached session-detail entries on reconnect, not just
-            // the selected one.  With `SESSION_DETAIL_STALE_TIME_MS` extending the
-            // freshness window on `useSession`, a previously-viewed session that
-            // received updates during the SSE gap would otherwise serve stale
-            // cached data on remount.  See tiann/hapi#884.
-            queryClient.invalidateQueries({ queryKey: ['session'] })
-        ]
+        const invalidations = invalidationKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
         const refreshMessages = (selectedSessionId && api)
             ? syncTailMessages(api, selectedSessionId)
             : Promise.resolve()

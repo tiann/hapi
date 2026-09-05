@@ -48,6 +48,7 @@ export type {
     SlashCommandsResponse,
     SessionResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SpawnResponse,
     UploadFileResponse

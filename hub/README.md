@@ -88,6 +88,7 @@ See `src/web/routes/` for all endpoints.
 ### Sessions (`src/web/routes/sessions.ts`)
 
 - `GET /api/sessions` - List all sessions.
+- `GET /api/sessions/scratchlist-status` - List session IDs with scratchlist entries in the caller namespace.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Switch session to remote mode.
