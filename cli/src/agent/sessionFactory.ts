@@ -15,8 +15,12 @@ import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
+import { ensureHapiSessionControlSkill } from '@/modules/common/hapiSessionControlSkill'
 
 export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
+
+export const HAPI_RUNNER_SESSION_TYPE_ENV = 'HAPI_RUNNER_SESSION_TYPE'
+export const HAPI_RUNNER_WORKTREE_NAME_ENV = 'HAPI_RUNNER_WORKTREE_NAME'
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
@@ -87,6 +91,11 @@ export function buildSessionMetadata(options: {
 }): Metadata {
     const happyLibDir = runtimePath()
     const worktreeInfo = readWorktreeEnv()
+    const runnerSessionType = process.env[HAPI_RUNNER_SESSION_TYPE_ENV]
+    const sessionType = runnerSessionType === 'simple' || runnerSessionType === 'worktree'
+        ? runnerSessionType
+        : undefined
+    const worktreeName = process.env[HAPI_RUNNER_WORKTREE_NAME_ENV]?.trim() || worktreeInfo?.name
     const now = options.now ?? Date.now()
 
     return {
@@ -105,6 +114,8 @@ export function buildSessionMetadata(options: {
         lifecycleState: 'running',
         lifecycleStateSince: now,
         flavor: options.flavor,
+        sessionType,
+        worktreeName: sessionType === 'worktree' ? worktreeName : undefined,
         capabilities: {
             terminal: true
         },
@@ -135,6 +146,8 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.piResumeAttempt !== undefined) preserved.piResumeAttempt = metadata.piResumeAttempt
     if (metadata.ptyResumeAttempt !== undefined) preserved.ptyResumeAttempt = metadata.ptyResumeAttempt
     if (metadata.preferredPermissionMode !== undefined) preserved.preferredPermissionMode = metadata.preferredPermissionMode
+    if (metadata.sessionType !== undefined) preserved.sessionType = metadata.sessionType
+    if (metadata.worktreeName !== undefined) preserved.worktreeName = metadata.worktreeName
     if (metadata.tools !== undefined) preserved.tools = metadata.tools
     if (metadata.slashCommands !== undefined) preserved.slashCommands = metadata.slashCommands
     if (metadata.worktree !== undefined) preserved.worktree = metadata.worktree
@@ -198,6 +211,7 @@ async function reportSessionStarted(sessionId: string, metadata: Metadata): Prom
 
 export async function bootstrapSession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
     const workingDirectory = options.workingDirectory ?? getInvokedCwd()
+    await ensureHapiSessionControlSkill(options.flavor, workingDirectory)
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
@@ -246,6 +260,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
 
 export async function bootstrapLazySession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
     const workingDirectory = options.workingDirectory ?? getInvokedCwd()
+    await ensureHapiSessionControlSkill(options.flavor, workingDirectory)
     const startedBy = options.startedBy ?? 'terminal'
     if (startedBy !== 'terminal') {
         throw new Error('Lazy session bootstrap is only supported for terminal sessions')
@@ -337,6 +352,7 @@ export async function bootstrapExistingSession(options: {
     workingDirectory: string
     metadataOverrides?: Partial<Metadata>
 }): Promise<SessionBootstrapResult> {
+    await ensureHapiSessionControlSkill(options.flavor, options.workingDirectory)
     const startedBy = options.startedBy ?? 'terminal'
     const api = await ApiClient.create()
     const machineId = await getMachineIdOrExit()

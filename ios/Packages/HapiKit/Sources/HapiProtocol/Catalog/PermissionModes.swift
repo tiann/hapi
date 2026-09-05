@@ -92,9 +92,9 @@ extension AgentFlavor {
         case .codex, .gemini, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
-            return [.default, .auto, .plan, .bypassPermissions]
+            return [.default, .auto, .bypassPermissions]
         case .opencode:
-            return [.default, .plan, .yolo]
+            return [.default, .yolo]
         case .dsh:
             return []
         case .agy:

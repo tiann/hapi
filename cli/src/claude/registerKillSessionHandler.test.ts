@@ -2,11 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { registerKillSessionHandler } from './registerKillSessionHandler'
 
-// tiann/hapi#914: the KillSession RPC is the authoritative "user-terminated"
-// signal because the hub only sends it when the operator clicks Archive in
-// the web UI. Out-of-band SIGTERM (hub-restart cascade, host-level `kill`)
-// hits the SIGTERM signal handler in runnerLifecycle, which now keeps the
-// default reason 'Hub restart' so the audit trail stays correct.
+// tiann/hapi#914: archive requests are the authoritative "user-terminated"
+// signal. Process-only stops skip that metadata; out-of-band SIGTERM keeps the
+// default 'Hub restart' reason.
 describe('registerKillSessionHandler (tiann/hapi#914)', () => {
     function makeRegistry() {
         const handlers = new Map<string, (params?: unknown) => unknown>()
@@ -61,5 +59,25 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         await handler?.()
 
         expect(cleanupAndExit).toHaveBeenCalled()
+    })
+
+    it('uses the non-archiving stop path when requested', async () => {
+        const registry = makeRegistry()
+        const lifecycle = {
+            setArchiveReason: vi.fn(),
+            cleanupAndExit: vi.fn(async () => {}),
+            stopAndExit: vi.fn(async () => {})
+        }
+        registerKillSessionHandler(
+            registry as unknown as Parameters<typeof registerKillSessionHandler>[0],
+            lifecycle
+        )
+
+        const result = await registry.handlers.get(RPC_METHODS.KillSession)?.({ archive: false })
+
+        expect(result).toEqual({ success: true, message: 'Stopping hapi CLI process' })
+        expect(lifecycle.stopAndExit).toHaveBeenCalled()
+        expect(lifecycle.setArchiveReason).not.toHaveBeenCalled()
+        expect(lifecycle.cleanupAndExit).not.toHaveBeenCalled()
     })
 })

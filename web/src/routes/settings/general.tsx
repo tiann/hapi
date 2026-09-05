@@ -41,7 +41,7 @@ export default function SettingsGeneralPage() {
     })
 
     const hubSettingsMutation = useMutation({
-        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean }) => {
+        mutationFn: async (patch: { sessionSummaryInChat?: boolean }) => {
             if (!api) throw new Error('API unavailable')
             return await api.updateHubSettings(patch)
         },
@@ -59,15 +59,6 @@ export default function SettingsGeneralPage() {
                 <SettingsSection title={t('settings.general.agents.title')} description={t('settings.general.agents.description')}>
                     {hubSettingsQuery.data ? (
                         <>
-                            <SettingsSwitch
-                                label={t('settings.general.sessionSummaryContract')}
-                                description={t('settings.general.sessionSummaryContract.desc')}
-                                checked={hubSettingsQuery.data.sessionSummaryContract}
-                                onChange={(checked) => {
-                                    if (hubSettingsMutation.isPending) return
-                                    hubSettingsMutation.mutate({ sessionSummaryContract: checked })
-                                }}
-                            />
                             <SettingsSwitch
                                 label={t('settings.general.sessionSummaryInChat')}
                                 description={t('settings.general.sessionSummaryInChat.desc')}

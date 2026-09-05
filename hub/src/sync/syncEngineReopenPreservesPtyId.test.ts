@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'bun:test'
 import type { Session } from '@hapi/protocol/types'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
@@ -52,7 +53,13 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         const cache = (engine as unknown as { sessionCache: import('./sessionCache').SessionCache }).sessionCache
         ;(engine as unknown as { machineCache: unknown }).machineCache = {
             getOnlineMachinesByNamespace: () => [
-                { id: 'machine-x', metadata: { host: 'localhost' } }
+                {
+                    id: 'machine-x',
+                    metadata: {
+                        host: 'localhost',
+                        capabilities: [MACHINE_CAPABILITIES.SessionControlSkill]
+                    }
+                }
             ],
             expireInactive: () => {}
         }
@@ -237,7 +244,10 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
         const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         ;(restarted as any).machineCache = {
-            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }],
+            getOnlineMachinesByNamespace: () => [{
+                id: 'machine-x',
+                metadata: { host: 'localhost', capabilities: [MACHINE_CAPABILITIES.SessionControlSkill] }
+            }],
             expireInactive: () => {}
         }
         ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
@@ -263,7 +273,10 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
         const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         ;(restarted as any).machineCache = {
-            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }],
+            getOnlineMachinesByNamespace: () => [{
+                id: 'machine-x',
+                metadata: { host: 'localhost', capabilities: [MACHINE_CAPABILITIES.SessionControlSkill] }
+            }],
             expireInactive: () => {}
         }
         ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'already_gone'

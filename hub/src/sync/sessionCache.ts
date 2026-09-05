@@ -762,18 +762,13 @@ export class SessionCache {
     }
 
     /**
-     * tiann/hapi#916: hub-side write of the archive-metadata fields normally
-     * authored by the CLI's `archiveAndClose`. Called by `syncEngine.archiveSession`
-     * when the kill-RPC fails because the CLI is unreachable (e.g. the
-     * hub-restart cascade already killed it). Without this, the route would
-     * either 500 (pre-fix) or silently return ok=true while leaving
-     * `lifecycleState=running` on disk — both confuse the operator.
+     * Hub-owned write of archive metadata after an accepted archive request,
+     * including when the CLI is already unreachable. This keeps the lifecycle
+     * invariant independent of runner timing.
      *
      * Idempotent: if `lifecycleState` is already `archived` we return without
-     * touching the row to avoid resetting `lifecycleStateSince`. Best-effort:
-     * if every retry hits `version-mismatch` (genuine contention) the original
-     * `archiveSession` flow still marks the session inactive in cache via
-     * `handleSessionEnd`, just without flipping the persisted lifecycle.
+     * touching the row to avoid resetting `lifecycleStateSince`. Persistence
+     * failures and exhausted contention retries surface to the caller.
      */
     markSessionArchivedFromHub(sessionId: string, reason: string): void {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {

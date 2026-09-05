@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -19,7 +19,10 @@ function createMachine(overrides?: Partial<Machine>): Machine {
             host: 'localhost',
             platform: 'darwin',
             happyCliVersion: '1.0.0',
-            capabilities: [MACHINE_CAPABILITIES.AgentAvailability]
+            capabilities: [
+                MACHINE_CAPABILITIES.AgentAvailability,
+                MACHINE_CAPABILITIES.SessionControlSkill
+            ]
         },
         metadataVersion: 1,
         runnerState: null,
@@ -66,6 +69,56 @@ describe('machines routes', () => {
             error: 'This runner must be upgraded before creating sessions',
             code: 'runner_upgrade_required'
         })
+
+        const atomicSpawn = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                message: 'work',
+                remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+            })
+        })
+        expect(atomicSpawn.status).toBe(409)
+    })
+
+    it('fails closed when an older runner cannot guarantee skill delivery', async () => {
+        const machine = createMachine({
+            metadata: {
+                host: 'localhost',
+                platform: 'darwin',
+                happyCliVersion: '1.0.0',
+                capabilities: [MACHINE_CAPABILITIES.AgentAvailability]
+            }
+        })
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: () => { throw new Error('must not spawn') },
+            spawnSessionWithRemit: () => { throw new Error('must not spawn') }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const spawn = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/project', agent: 'claude' })
+        })
+        const atomicSpawn = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                message: 'work',
+                remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+            })
+        })
+
+        expect(await spawn.json()).toMatchObject({ code: 'runner_upgrade_required' })
+        expect(atomicSpawn.status).toBe(409)
+        expect(await atomicSpawn.json()).toMatchObject({ code: 'runner_upgrade_required' })
     })
 
     it('returns Agent availability and complete path boundary results', async () => {
@@ -152,6 +205,149 @@ describe('machines routes', () => {
 
         expect(response.status).toBe(200)
         expect(capturedPermissionMode).toBe('auto')
+    })
+
+    it('validates and forwards an atomic fresh-session remit', async () => {
+        const machine = createMachine()
+        let captured: unknown
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSessionWithRemit: async (machineId: string, namespace: string, request: unknown) => {
+                captured = { machineId, namespace, request }
+                return {
+                    type: 'success' as const,
+                    sessionId: '05d9f0f2-9273-4137-933c-07459a1146a2',
+                    remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c',
+                    name: 'Worker',
+                    session: {
+                        machineId,
+                        directory: '/tmp/project',
+                        agent: 'codex' as const,
+                        model: null,
+                        modelReasoningEffort: null,
+                        effort: null,
+                        permissionMode: 'safe-yolo' as const
+                    }
+                }
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project/',
+                message: 'implement issue',
+                name: 'Worker',
+                agent: 'codex',
+                permissionMode: 'safe-yolo',
+                remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(captured).toEqual({
+            machineId: 'machine-1',
+            namespace: 'default',
+            request: {
+                directory: '/tmp/project',
+                message: 'implement issue',
+                name: 'Worker',
+                agent: 'codex',
+                permissionMode: 'safe-yolo',
+                remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+            }
+        })
+    })
+
+    it('rejects a blank remit or invalid flavor permission before spawn', async () => {
+        const machine = createMachine()
+        const spawnSessionWithRemit = async () => { throw new Error('must not spawn') }
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSessionWithRemit
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+        const base = {
+            directory: '/tmp/project',
+            remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+        }
+
+        const blank = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...base, message: ' ' })
+        })
+        const invalidMode = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...base, message: 'work', agent: 'codex', permissionMode: 'auto' })
+        })
+        const ignoredYolo = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...base, message: 'work', agent: 'pi', yolo: true })
+        })
+        expect(blank.status).toBe(400)
+        expect(invalidMode.status).toBe(400)
+        expect(ignoredYolo.status).toBe(400)
+    })
+
+    it('requires an absolute directory using the target runner platform', async () => {
+        const machine = createMachine({
+            metadata: {
+                host: 'windows-runner',
+                platform: 'win32',
+                happyCliVersion: '1.0.0',
+                capabilities: [
+                    MACHINE_CAPABILITIES.AgentAvailability,
+                    MACHINE_CAPABILITIES.SessionControlSkill
+                ]
+            }
+        })
+        const spawnSessionWithRemit = mock(async (_machineId: string, _namespace: string, request: { directory: string; remitId: string }) => ({
+            type: 'success' as const,
+            sessionId: '05d9f0f2-9273-4137-933c-07459a1146a2',
+            remitId: request.remitId,
+            name: 'Worker',
+            session: {
+                machineId: 'machine-1',
+                directory: request.directory,
+                agent: 'claude' as const,
+                model: null,
+                modelReasoningEffort: null,
+                effort: null,
+                permissionMode: null
+            }
+        }))
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSessionWithRemit
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+        const body = {
+            message: 'work',
+            remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+        }
+
+        const relative = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, directory: '.\\project' })
+        })
+        const absolute = await app.request('/api/machines/machine-1/spawn-with-remit', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, directory: 'C:\\project\\' })
+        })
+
+        expect(relative.status).toBe(400)
+        expect(absolute.status).toBe(200)
+        expect(spawnSessionWithRemit).toHaveBeenCalledWith(
+            'machine-1',
+            'default',
+            expect.objectContaining({ directory: 'C:\\project' })
+        )
     })
 
     it('returns Codex models for an online machine', async () => {
@@ -305,6 +501,31 @@ describe('machines routes', () => {
         expect(response.status).toBe(200)
         // agy is headless-only now: no hub-side forcing, the CLI defaults to remote.
         expect(captured![15]).toBeUndefined()
+    })
+
+    it('rejects spawn bodies that include message/prompt/text instead of silently stripping', async () => {
+        const machine = createMachine()
+        const spawnSession = () => { throw new Error('must not spawn') }
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession,
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        for (const key of ['message', 'prompt', 'text'] as const) {
+            const response = await app.request('/api/machines/machine-1/spawn', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ directory: '/tmp/x', [key]: 'do the work' })
+            })
+            expect(response.status).toBe(400)
+            const body = await response.json() as { error?: string; code?: string }
+            expect(body.code).toBe('spawn_remit_not_supported')
+            expect(body.error).toMatch(/spawn-peer|messages/i)
+        }
     })
 
     it('accepts an explicit remote AGY machine spawn', async () => {

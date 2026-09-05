@@ -36,11 +36,6 @@ export interface Settings {
     /** Per-hub relay auth key issued by the relay server (/issue) */
     relayAuthKey?: string
     /**
-     * When true, CLI injects the AGENT_NOTIFY_SUMMARY trailing-line contract
-     * into supported flavor system / developer instructions. Default off.
-     */
-    sessionSummaryContract?: boolean
-    /**
      * When true, web chat shows a compact AGENT_NOTIFY_SUMMARY row.
      * Default off: render/copy strip the footer; store stays raw.
      */

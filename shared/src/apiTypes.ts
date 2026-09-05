@@ -50,15 +50,12 @@ export const CliMessagesResponseSchema = z.object({
 export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 
 export const CreateSessionResponseSchema = z.object({
-    session: SessionSchema,
-    /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
-    sessionSummaryContract: z.boolean().optional()
+    session: SessionSchema
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 
 export const HubSettingsResponseSchema = z.object({
-    sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean()
 })
@@ -67,11 +64,10 @@ export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
 
 export const UpdateHubSettingsRequestSchema = z
     .object({
-        sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional()
     })
     .refine(
-        (data) => data.sessionSummaryContract !== undefined || data.sessionSummaryInChat !== undefined,
+        (data) => data.sessionSummaryInChat !== undefined,
         { message: 'At least one hub setting field is required' }
     )
 
@@ -320,8 +316,11 @@ export const SessionServiceTierRequestSchema = z.object({
 
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
+/** Hub session display-name ceiling (`PATCH /api/sessions/:id`). */
+export const SESSION_NAME_MAX_LENGTH = 255
+
 export const RenameSessionRequestSchema = z.object({
-    name: z.string().min(1).max(255)
+    name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH)
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
@@ -624,6 +623,18 @@ export const SpawnSessionRequestSchema = z.object({
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
+
+export const SpawnSessionWithRemitRequestSchema = SpawnSessionRequestSchema.extend({
+    directory: z.string().trim().min(1),
+    message: z.string().refine((value) => value.trim().length > 0, {
+        message: 'message must contain non-whitespace'
+    }),
+    remitId: z.string().uuid(),
+    name: z.string().trim().min(1).max(SESSION_NAME_MAX_LENGTH).optional(),
+    waitActiveSecs: z.number().positive().max(300).optional()
+})
+
+export type SpawnSessionWithRemitRequest = z.infer<typeof SpawnSessionWithRemitRequestSchema>
 
 export const MachineListDirectoryRequestSchema = z.object({
     path: z.string().min(1),

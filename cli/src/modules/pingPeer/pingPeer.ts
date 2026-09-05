@@ -1,6 +1,5 @@
 /**
- * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages,
- * plus read-only inspectPeer (GET session + messages, never resume).
+ * Exact-id message, wait, inspect, stop, and archive operations.
  *
  * Shared by `hapi ping-peer` / `hapi inspect-peer` and MCP `ping_peer` /
  * `inspect_peer`. Uses the same hub JWT flow as the web app
@@ -8,7 +7,8 @@
  * Callers must not invent parallel auth or arbitrary hosts.
  */
 
-import axios, { type AxiosInstance } from 'axios'
+import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
+import { randomUUID } from 'node:crypto'
 import { extractAssistantPlainText, isObject } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
@@ -19,18 +19,22 @@ export type PingPeerErrorCode =
     | 'bad_args'
     | 'auth_failed'
     | 'not_found'
-    | 'ambiguous'
     | 'resume_failed'
+    | 'remit_conflict'
     | 'timeout'
     | 'send_failed'
+    | 'session_ended'
+    | 'lifecycle_failed'
 
 export class PingPeerError extends Error {
     readonly code: PingPeerErrorCode
+    readonly remitId?: string
 
-    constructor(code: PingPeerErrorCode, message: string) {
+    constructor(code: PingPeerErrorCode, message: string, remitId?: string) {
         super(message)
         this.name = 'PingPeerError'
         this.code = code
+        this.remitId = remitId
     }
 }
 
@@ -50,8 +54,9 @@ export type PingPeerSessionSummary = {
 }
 
 export type PingPeerOptions = {
-    sessionIdPrefix: string
+    sessionId: string
     message: string
+    remitId?: string
     waitActiveSecs?: number
     apiUrl?: string
     accessToken?: string
@@ -63,17 +68,19 @@ export type PingPeerOptions = {
 
 export type PingPeerResult = {
     sessionId: string
+    remitId: string
     name: string
     resumed: boolean
 }
 
-export type ListPeerSessionsOptions = {
-    apiUrl?: string
-    accessToken?: string
-    http?: AxiosInstance
-    limit?: number
-    /** Hub sort before limit truncation. Peer discovery defaults to newest updatedAt. */
-    order?: 'updatedAt'
+const EXACT_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+export function requireExactSessionId(raw: string): string {
+    const id = normalizeSessionIdPrefix(raw ?? '')
+    if (!EXACT_SESSION_ID_RE.test(id)) {
+        throw new PingPeerError('bad_args', 'an exact HAPI session UUID is required')
+    }
+    return id
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -87,7 +94,7 @@ function defaultSleep(ms: number): Promise<void> {
 const AUTH_RECOVERY_HINT =
     'On a remote runner, set HAPI_API_URL to the runner hub, and set CLI_API_TOKEN ' +
     'or run `hapi auth login` to save the token. Inside a HAPI session prefer MCP ' +
-    '`list_peers` / `ping_peer` / `inspect_peer`, which use the session CLI credentials.'
+    'peer tools, which use the session CLI credentials.'
 
 function resolveApiUrl(apiUrl?: string): string {
     const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
@@ -161,78 +168,6 @@ function authHeaders(jwt: string): Record<string, string> {
         Authorization: `Bearer ${jwt}`,
         'Content-Type': 'application/json'
     })
-}
-
-export function resolveSessionByPrefix(
-    sessions: PingPeerSessionSummary[],
-    prefix: string
-): PingPeerSessionSummary {
-    const trimmed = prefix.trim()
-    if (!trimmed) {
-        throw new PingPeerError('bad_args', 'session id prefix is required')
-    }
-
-    const exact = sessions.filter((session) => session.id === trimmed)
-    if (exact.length === 1) {
-        return exact[0]!
-    }
-
-    const matches = sessions.filter((session) => session.id.startsWith(trimmed))
-    if (matches.length === 0) {
-        throw new PingPeerError('not_found', `no session matching prefix '${trimmed}'`)
-    }
-    if (matches.length > 1) {
-        const sample = matches.slice(0, 5).map((session) => session.id.slice(0, 8)).join(', ')
-        throw new PingPeerError(
-            'ambiguous',
-            `prefix '${trimmed}' matches ${matches.length} sessions (${sample}${matches.length > 5 ? ', ...' : ''}); use a longer prefix`
-        )
-    }
-    return matches[0]!
-}
-
-async function listSessions(
-    apiUrl: string,
-    jwt: string,
-    http: AxiosInstance,
-    options: { limit?: number; order?: 'updatedAt' } = {}
-): Promise<PingPeerSessionSummary[]> {
-    const params: Record<string, string | number> = {}
-    if (options.limit !== undefined) {
-        params.limit = options.limit
-    }
-    if (options.order !== undefined) {
-        params.order = options.order
-    }
-    const response = await http.get(
-        `${apiUrl}/api/sessions`,
-        {
-            headers: authHeaders(jwt),
-            // Omit params when unbounded so ping/inspect keep full-namespace resolution.
-            ...(Object.keys(params).length > 0 ? { params } : {}),
-            timeout: 15_000,
-            validateStatus: () => true
-        }
-    )
-    if (response.status < 200 || response.status >= 300) {
-        const detail = typeof response.data?.error === 'string'
-            ? response.data.error
-            : `HTTP ${response.status}`
-        throw new PingPeerError(
-            'auth_failed',
-            `failed to list sessions (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
-        )
-    }
-    const body = response.data
-    const sessions = Array.isArray(body?.sessions)
-        ? body.sessions
-        : Array.isArray(body)
-            ? body
-            : null
-    if (!sessions) {
-        throw new PingPeerError('auth_failed', 'failed to list sessions (unexpected response)')
-    }
-    return sessions as PingPeerSessionSummary[]
 }
 
 async function getSession(
@@ -345,17 +280,24 @@ async function sendMessage(
     jwt: string,
     sessionId: string,
     message: string,
+    remitId: string,
     http: AxiosInstance
 ): Promise<void> {
-    const response = await http.post(
-        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message },
-        {
-            headers: authHeaders(jwt),
-            timeout: 30_000,
-            validateStatus: () => true
-        }
-    )
+    let response: AxiosResponse
+    try {
+        response = await http.post(
+            `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+            { text: message, localId: remitId },
+            {
+                headers: authHeaders(jwt),
+                timeout: 30_000,
+                validateStatus: () => true
+            }
+        )
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new PingPeerError('send_failed', `send failed: ${detail}`, remitId)
+    }
     if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
         return
     }
@@ -364,45 +306,13 @@ async function sendMessage(
         : typeof response.data?.code === 'string'
             ? response.data.code
             : `HTTP ${response.status}`
-    throw new PingPeerError('send_failed', `send failed: ${detail}`)
-}
-
-export async function listPeerSessions(
-    options: ListPeerSessionsOptions = {}
-): Promise<PingPeerSessionSummary[]> {
-    const apiUrl = resolveApiUrl(options.apiUrl)
-    const accessToken = resolveAccessToken(options.accessToken)
-    const http = options.http ?? axios
-    const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    return listSessions(apiUrl, jwt, http, {
-        limit: options.limit ?? 200,
-        order: options.order ?? 'updatedAt'
-    })
-}
-
-export type FormatPeerSessionsListOptions = {
-    /** Max rows to print (default 30). */
-    maxRows?: number
-    /** Omit this session id (the caller) from the shortlist. */
-    excludeSessionId?: string
-    /**
-     * When the fetch was intentionally bounded, signal overflow without claiming
-     * an exact omitted count from the sample.
-     */
-    hasMore?: boolean
+    if (response.status === 409 && response.data?.code === 'local_id_conflict') {
+        throw new PingPeerError('remit_conflict', `send failed: ${detail}`, remitId)
+    }
+    throw new PingPeerError('send_failed', `send failed: ${detail}`, remitId)
 }
 
 const MAX_PEER_LABEL_CHARS = 255
-
-/**
- * Hub fetch size for peer discovery: enough rows for the requested page, plus
- * padding for caller exclusion and an overflow probe. Caps at hub max (500).
- */
-export function peerListFetchLimit(requestedLimit: number, options?: { excludeCaller?: boolean }): number {
-    const limit = Math.max(1, Math.floor(requestedLimit))
-    const pad = options?.excludeCaller ? 2 : 1
-    return Math.min(500, limit + pad)
-}
 
 /**
  * Web-parity title for peer shortlists: name → summary.text → basename(path) → id prefix.
@@ -424,50 +334,24 @@ export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string
         : collapsed
 }
 
-/**
- * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
- * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
- */
-export function formatPeerSessionsList(
-    sessions: PingPeerSessionSummary[],
-    options: FormatPeerSessionsListOptions = {}
-): string {
-    const maxRows = options.maxRows ?? 30
-    const excludeId = options.excludeSessionId?.trim() ?? ''
-    const filtered = excludeId
-        ? sessions.filter((session) => session.id !== excludeId)
-        : sessions
-    if (filtered.length === 0) {
-        return 'No peer sessions found on this hub/namespace.'
-    }
-    const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-    const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
-        const flavor = session.metadata?.flavor ?? '?'
-        const name = resolvePeerSessionLabel(session)
-        return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
-    })
-    const omitted = sorted.length - rows.length
-    if (options.hasMore) {
-        rows.push('  … more sessions available (narrow with inspect_peer / ping_peer by id)')
-    } else if (omitted > 0) {
-        rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
-    }
-    return rows.join('\n')
-}
-
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
-    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
+    const sessionId = requireExactSessionId(options.sessionId)
     const message = options.message ?? ''
-    if (!prefix) {
-        throw new PingPeerError('bad_args', 'session id prefix is required')
-    }
     if (!message) {
         throw new PingPeerError('bad_args', 'message is required')
     }
 
     const waitActiveSecs = options.waitActiveSecs ?? DEFAULT_WAIT_ACTIVE_SECS
-    if (!Number.isFinite(waitActiveSecs) || waitActiveSecs <= 0) {
-        throw new PingPeerError('bad_args', 'waitActiveSecs must be a positive number')
+    if (!Number.isFinite(waitActiveSecs) || waitActiveSecs <= 0 || waitActiveSecs > 300) {
+        throw new PingPeerError('bad_args', 'waitActiveSecs must be between 1 and 300')
+    }
+    const providedRemitId = options.remitId?.trim()
+    if (options.remitId !== undefined && !providedRemitId) {
+        throw new PingPeerError('bad_args', 'an exact remit UUID is required')
+    }
+    const remitId = providedRemitId ?? randomUUID()
+    if (!EXACT_SESSION_ID_RE.test(remitId)) {
+        throw new PingPeerError('bad_args', 'an exact remit UUID is required')
     }
 
     const apiUrl = resolveApiUrl(options.apiUrl)
@@ -478,8 +362,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     const onProgress = options.onProgress
 
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    const sessions = await listSessions(apiUrl, jwt, http)
-    const matched = resolveSessionByPrefix(sessions, prefix)
+    const matched = await getSession(apiUrl, jwt, sessionId, http)
     const name = resolvePeerSessionLabel(matched)
     onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
 
@@ -497,8 +380,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         return getSession(apiUrl, jwt, matched.id, http)
     }
 
-    // Prefer the list snapshot for the first resume decision, then re-check before
-    // send so a flip to inactive between list and POST cannot 409 (#1195).
+    // Re-check before send so a flip to inactive cannot 409 (#1195).
     if (!matched.active) {
         await ensureActive('requesting resume...')
     }
@@ -516,10 +398,11 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     }
 
     onProgress?.(`sending message (${message.length} chars)...`)
-    await sendMessage(apiUrl, jwt, matched.id, message, http)
+    await sendMessage(apiUrl, jwt, matched.id, message, remitId, http)
 
     return {
         sessionId: matched.id,
+        remitId,
         name,
         resumed
     }
@@ -530,12 +413,14 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
         case 'bad_args':
         case 'auth_failed':
         case 'not_found':
-        case 'ambiguous':
+        case 'remit_conflict':
             return 2
         case 'resume_failed':
             return 3
         case 'timeout':
         case 'send_failed':
+        case 'session_ended':
+        case 'lifecycle_failed':
             return 4
         default:
             return 1
@@ -545,7 +430,7 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
 // ── inspect_peer (read twin; no resume) ─────────────────────────────────────
 
 export type InspectPeerOptions = {
-    sessionIdPrefix: string
+    sessionId: string
     /** Recent message page size (default 30, clamped 1..100). */
     messageLimit?: number
     apiUrl?: string
@@ -658,14 +543,11 @@ async function fetchSessionMessages(
 }
 
 /**
- * Resolve a peer by id/prefix and return metadata + recent text messages.
+ * Resolve a peer by exact id and return metadata + recent text messages.
  * Read-only: never resumes inactive sessions (unlike `pingPeer`).
  */
 export async function inspectPeer(options: InspectPeerOptions): Promise<InspectPeerResult> {
-    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
-    if (!prefix) {
-        throw new PingPeerError('bad_args', 'session id prefix is required')
-    }
+    const sessionId = requireExactSessionId(options.sessionId)
     const messageLimit = clampInspectMessageLimit(options.messageLimit)
 
     const apiUrl = resolveApiUrl(options.apiUrl)
@@ -673,15 +555,13 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
     const http = options.http ?? axios
 
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    const sessions = await listSessions(apiUrl, jwt, http)
-    const matched = resolveSessionByPrefix(sessions, prefix)
-    const live = await getSession(apiUrl, jwt, matched.id, http)
-    const meta = live.metadata ?? matched.metadata ?? null
-    const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
+    const live = await getSession(apiUrl, jwt, sessionId, http)
+    const meta = live.metadata ?? null
+    const messages = await fetchSessionMessages(apiUrl, jwt, sessionId, messageLimit, http)
 
     return {
-        sessionId: matched.id,
-        name: resolvePeerSessionLabel({ ...matched, metadata: meta ?? matched.metadata ?? null }),
+        sessionId,
+        name: resolvePeerSessionLabel(live),
         active: live.active,
         thinking: Boolean(live.thinking),
         flavor: typeof meta?.flavor === 'string' ? meta.flavor : null,
@@ -689,10 +569,174 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
         lifecycleState: typeof meta?.lifecycleState === 'string' ? meta.lifecycleState : null,
         updatedAt: typeof live.updatedAt === 'number'
             ? live.updatedAt
-            : typeof matched.updatedAt === 'number'
-                ? matched.updatedAt
-                : null,
+            : null,
         messages
+    }
+}
+
+export type WaitPeerOptions = {
+    sessionId: string
+    remitId: string
+    timeoutSecs?: number
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+    sleep?: (ms: number) => Promise<void>
+    now?: () => number
+}
+
+export type WaitPeerResult = {
+    sessionId: string
+    remitId: string
+    status: 'completed'
+    active: boolean
+    text: string
+    messages: InspectPeerMessage[]
+}
+
+function extractResultMessages(rows: unknown[], remitIndex: number): {
+    messages: InspectPeerMessage[]
+    boundaryReached: boolean
+} {
+    const result: InspectPeerMessage[] = []
+    let boundaryReached = false
+    for (const row of rows.slice(remitIndex + 1)) {
+        if (!isObject(row)) continue
+        if (!isObject(row.content)) continue
+        const role = typeof row.content.role === 'string' ? row.content.role : ''
+        if (role === 'user') {
+            if (typeof row.invokedAt === 'number') {
+                boundaryReached = true
+                break
+            }
+            continue
+        }
+        if (role !== 'agent' && role !== 'assistant') continue
+        const text = extractAssistantPlainText(row.content.content)
+        if (!text?.trim()) continue
+        result.push({
+            id: typeof row.id === 'string' ? row.id : '',
+            role,
+            text: text.trim(),
+            createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
+        })
+    }
+    return { messages: result, boundaryReached }
+}
+
+async function getMessagesFromRemit(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    remitId: string,
+    http: AxiosInstance
+): Promise<{ found: boolean; invoked: boolean; rows: unknown[] }> {
+    let before: { at: number; seq: number } | null = null
+    const newerPages: unknown[][] = []
+    while (true) {
+        const response: AxiosResponse<unknown> = await http.get(`${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+            headers: authHeaders(jwt),
+            params: {
+                limit: 200,
+                ...(before ? { beforeAt: before.at, beforeSeq: before.seq } : {})
+            },
+            timeout: 20_000,
+            validateStatus: () => true
+        })
+        if (response.status < 200 || response.status >= 300) {
+            throw new PingPeerError('not_found', `failed to load messages for ${sessionId}`)
+        }
+        const data = isObject(response.data) ? response.data : null
+        const rows = Array.isArray(data?.messages) ? data.messages as unknown[] : []
+        const remitIndex = rows.findIndex((row) => isObject(row) && row.localId === remitId)
+        if (remitIndex >= 0) {
+            const remit = rows[remitIndex]
+            return {
+                found: true,
+                invoked: isObject(remit) && typeof remit.invokedAt === 'number',
+                rows: [...rows.slice(remitIndex + 1), ...newerPages.reverse().flat()]
+            }
+        }
+
+        const page = isObject(data?.page) ? data.page : null
+        const nextBeforeAt = page?.nextBeforeAt
+        const nextBeforeSeq = page?.nextBeforeSeq
+        if (page?.hasMore !== true || typeof nextBeforeAt !== 'number' || typeof nextBeforeSeq !== 'number') {
+            return { found: false, invoked: false, rows: [] }
+        }
+        newerPages.push(rows)
+        before = { at: nextBeforeAt, seq: nextBeforeSeq }
+    }
+}
+
+export async function waitPeer(options: WaitPeerOptions): Promise<WaitPeerResult> {
+    const sessionId = requireExactSessionId(options.sessionId)
+    const remitId = options.remitId.trim()
+    if (!EXACT_SESSION_ID_RE.test(remitId)) throw new PingPeerError('bad_args', 'an exact remit UUID is required')
+    const timeoutSecs = options.timeoutSecs ?? 600
+    if (!Number.isFinite(timeoutSecs) || timeoutSecs <= 0 || timeoutSecs > 86_400) {
+        throw new PingPeerError('bad_args', 'timeoutSecs must be between 1 and 86400')
+    }
+
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const http = options.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, resolveAccessToken(options.accessToken), http)
+    const sleep = options.sleep ?? defaultSleep
+    const now = options.now ?? Date.now
+    const deadline = now() + timeoutSecs * 1000
+
+    while (now() <= deadline) {
+        const live = await getSession(apiUrl, jwt, sessionId, http)
+        const result = await getMessagesFromRemit(apiUrl, jwt, sessionId, remitId, http)
+        if (result.found) {
+            const { messages, boundaryReached } = extractResultMessages(result.rows, -1)
+            if (result.invoked && messages.length > 0 && (boundaryReached || !live.thinking)) {
+                return {
+                    sessionId,
+                    remitId,
+                    status: 'completed',
+                    active: live.active,
+                    text: messages.map((message) => message.text).join('\n\n'),
+                    messages
+                }
+            }
+            if (result.invoked && !live.active) {
+                throw new PingPeerError('session_ended', `session ${sessionId} ended before producing a result`)
+            }
+        } else if (!live.active) {
+            throw new PingPeerError('session_ended', `session ${sessionId} ended before accepting remit ${remitId}`)
+        }
+        if (now() >= deadline) break
+        await sleep(1_000)
+    }
+    throw new PingPeerError('timeout', `timed out waiting for remit ${remitId}`)
+}
+
+export async function controlPeer(options: {
+    sessionId: string
+    action: 'abort' | 'stop' | 'archive' | 'delete'
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+}): Promise<{ sessionId: string; action: 'abort' | 'stop' | 'archive' | 'delete'; alreadyStopped?: boolean; alreadyArchived?: boolean }> {
+    const sessionId = requireExactSessionId(options.sessionId)
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const http = options.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, resolveAccessToken(options.accessToken), http)
+    const config = { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true }
+    const base = `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}`
+    const response = options.action === 'delete'
+        ? await http.delete(base, config)
+        : await http.post(`${base}/${options.action}`, {}, config)
+    if (response.status < 200 || response.status >= 300 || response.data?.ok !== true) {
+        const detail = typeof response.data?.error === 'string' ? response.data.error : `HTTP ${response.status}`
+        throw new PingPeerError('lifecycle_failed', `${options.action} failed: ${detail}`)
+    }
+    return {
+        sessionId,
+        action: options.action,
+        ...(response.data?.alreadyStopped === true ? { alreadyStopped: true } : {}),
+        ...(response.data?.alreadyArchived === true ? { alreadyArchived: true } : {})
     }
 }
 

@@ -23,6 +23,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawn } from 'child_process';
 import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { tmpdir } from 'os';
 import path, { join } from 'path';
 import { configuration } from '@/configuration';
 import { 
@@ -220,6 +221,19 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     expect(await stopRunnerSession(spawnedSession.happySessionId)).toBe('stopped');
     expect(await stopRunnerSession(spawnedSession.happySessionId)).toBe('already_gone');
     expect(await stopRunnerSession('unknown-session-id')).toBe('still_alive');
+  });
+
+  it('records a pre-PID rejection as an idempotently stopped reserved session', async () => {
+    const sessionId = 'preflight-rejected-session';
+    const missingWorktreeBase = join(tmpdir(), `hapi-missing-worktree-${process.pid}-${Date.now()}`);
+    expect(existsSync(missingWorktreeBase)).toBe(false);
+
+    const response = await spawnRunnerSession(missingWorktreeBase, sessionId, { sessionType: 'worktree' });
+
+    expect(response).toHaveProperty('error');
+    expect(await stopRunnerSession(sessionId)).toBe('already_gone');
+    expect(await stopRunnerSession(sessionId)).toBe('already_gone');
+    expect(await listRunnerSessions()).toEqual([]);
   });
 
   it.skipIf(process.env.HAPI_RUN_STRESS_TESTS !== 'true')(

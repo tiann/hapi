@@ -1266,7 +1266,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
             deliveryMode: 'steer'
         })
         await service.sendMessage(session.id, {
-            text: 'retry requests queue',
+            text: 'original steer whose response is lost',
             localId: 'duplicate-steer',
             deliveryMode: 'queue'
         })
@@ -1285,6 +1285,22 @@ describe('MessageService.sendMessage deliveryMode', () => {
             content: { text: 'original steer whose response is lost' },
             meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
         })
+    })
+
+    it('rejects a duplicate localId bound to a different message payload', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'duplicate-payload')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        await service.sendMessage(session.id, { text: 'original', localId: 'same-id' })
+        await expect(service.sendMessage(session.id, {
+            text: 'different',
+            localId: 'same-id'
+        })).rejects.toThrow(/localId is already bound to a different message payload/)
+
+        expect(cliEmitted).toHaveLength(1)
+        expect(store.messages.getUninvokedLocalMessages(session.id)).toHaveLength(1)
     })
 
     it('downgrades a legacy persisted steer through the mature scheduled scan', () => {

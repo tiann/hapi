@@ -65,11 +65,11 @@ describe('parseRemoteAgentCommandOptions', () => {
         ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('default')
     })
 
-    it('accepts OpenCode plan permission mode', () => {
-        expect(parseRemoteAgentCommandOptions([
+    it('rejects OpenCode plan permission mode', () => {
+        expect(() => parseRemoteAgentCommandOptions([
             '--permission-mode',
             'plan'
-        ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('plan')
+        ], OPENCODE_PERMISSION_MODES)).toThrow('Invalid --permission-mode value')
     })
 
     it('keeps current unknown-arg behavior by ignoring unrecognized flags', () => {

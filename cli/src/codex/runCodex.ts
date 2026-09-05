@@ -73,7 +73,6 @@ export async function runCodex(opts: {
         model: mode.model,
         modelReasoningEffort: mode.modelReasoningEffort,
         collaborationMode: mode.collaborationMode,
-        proactiveMultiAgent: mode.proactiveMultiAgent,
         serviceTier: mode.serviceTier,
         personality: mode.personality
     }));
@@ -93,7 +92,6 @@ export async function runCodex(opts: {
     // `null` explicitly clears a HAPI override, and a string explicitly sets it.
     let currentModelReasoningEffort: ReasoningEffort | null | undefined = opts.modelReasoningEffort;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = opts.collaborationMode ?? 'default';
-    let currentProactiveMultiAgent: boolean | undefined;
     // Service tier (Fast mode), stored representation: `'fast'` and
     // `'standard'` are explicit user choices, `undefined`/`null` mean untouched
     // (use the account default). Prefer the spawn-time override (set by the hub
@@ -148,7 +146,6 @@ export async function runCodex(opts: {
         modelReasoningEffort?: ReasoningEffort | null;
         collaborationMode?: EnhancedMode['collaborationMode'];
         serviceTier?: string | null;
-        proactiveMultiAgent?: boolean;
         personality?: CodexPersonality;
     } | undefined): void => {
         if (!updates) return;
@@ -166,9 +163,6 @@ export async function runCodex(opts: {
         }
         if (updates.serviceTier !== undefined) {
             currentServiceTier = updates.serviceTier;
-        }
-        if (updates.proactiveMultiAgent !== undefined) {
-            currentProactiveMultiAgent = updates.proactiveMultiAgent;
         }
         if (updates.personality !== undefined) {
             currentPersonality = updates.personality;
@@ -214,7 +208,6 @@ export async function runCodex(opts: {
                     model: currentModel,
                     modelReasoningEffort: currentModelReasoningEffort ?? undefined,
                     serviceTier: currentServiceTier,
-                    proactiveMultiAgent: currentProactiveMultiAgent,
                     personality: currentPersonality
                 });
                 if (slash.kind === 'goal') {
@@ -275,7 +268,6 @@ export async function runCodex(opts: {
                     model: currentModel,
                     modelReasoningEffort: currentModelReasoningEffort ?? undefined,
                     collaborationMode: currentCollaborationMode,
-                    proactiveMultiAgent: currentProactiveMultiAgent,
                     serviceTier: currentServiceTier,
                     personality: currentPersonality
                 };
@@ -291,7 +283,6 @@ export async function runCodex(opts: {
                     model: currentModel,
                     modelReasoningEffort: currentModelReasoningEffort ?? undefined,
                     collaborationMode: currentCollaborationMode,
-                    proactiveMultiAgent: currentProactiveMultiAgent,
                     serviceTier: currentServiceTier,
                     personality: currentPersonality
                 };

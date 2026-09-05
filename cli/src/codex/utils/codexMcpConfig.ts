@@ -1,10 +1,10 @@
 /**
  * Utilities for building Codex CLI config arguments (-c) for MCP servers
- * hooks, MCP servers, and developer instructions.
+ * hooks and MCP servers.
  *
  * Codex CLI accepts -c / --config flags with TOML-formatted key=value pairs.
  * This module generates the appropriate arguments for passing MCP server
- * configuration and developer instructions at runtime.
+ * configuration at runtime.
  */
 
 import { createHash } from 'node:crypto';
@@ -169,20 +169,6 @@ export function buildMcpServerConfigArgs(
     }
 
     return configArgs;
-}
-
-/**
- * Build -c argument for developer instructions.
- *
- * Generates argument like:
- *   -c 'developer_instructions="<escaped instructions>"'
- *
- * @param instructions - Developer instructions text
- * @returns Array of CLI arguments to pass to codex
- */
-export function buildDeveloperInstructionsArg(instructions: string): string[] {
-    const escaped = escapeTomlString(instructions);
-    return ['-c', `developer_instructions="${escaped}"`];
 }
 
 export function buildModelReasoningEffortConfigArgs(effort: string): string[] {

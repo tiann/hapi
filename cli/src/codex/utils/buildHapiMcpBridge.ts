@@ -98,6 +98,9 @@ export async function buildHapiMcpBridge(
         },
         display_media: {
             approval_mode: 'prompt'
+        },
+        spawn_peer: {
+            approval_mode: 'prompt'
         }
     };
     if (options.enableChangeTitle !== false) {
@@ -105,13 +108,9 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
-    // Discovery shortlist only - same trust as skill_lookup / change_title.
-    tools.list_peers = {
-        approval_mode: 'approve'
-    };
     // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
-    // bridge, but are not auto-approved: they target another session (resume +
-    // inject, or read peer histories).
+    // bridge and inherit Codex approval policy. spawn_peer always prompts
+    // because it creates a session and injects its first message.
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

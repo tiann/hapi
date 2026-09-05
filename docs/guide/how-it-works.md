@@ -59,10 +59,11 @@ The CLI is a wrapper around AI coding agents. It supports multiple agent flavors
 hapi              # Start a session (Claude Code by default)
 hapi <agent>      # Start a session with another agent flavor (see Supported agents)
 hapi runner start # Run background service for remote session spawning
-hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
+hapi spawn-peer --dir /path --name Worker --message-file - --json
+hapi wait-peer <session-id> --remit-id <remit-id> --json
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub--remote-runner-peer-discovery).
+The Hub owns namespace, freshness, and lifecycle invariants. `spawn-peer` always creates a new session and delivers its first message through one atomic Hub operation; failures trigger compensating stop/archive cleanup. Existing-session commands accept only exact UUIDs. HAPI ships the session-control skill and installs it on the runtime's execution host before session registration; no HAPI workflow prose is injected into launch prompts.
 
 ### HAPI Hub
 

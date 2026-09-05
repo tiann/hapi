@@ -92,7 +92,14 @@ describe('claudeRemote async message handling', () => {
                 hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => nextCallCount++ === 0
-                    ? { message: 'Review this project', mode: { permissionMode: 'default' } }
+                    ? {
+                        message: 'Review this project',
+                        mode: {
+                            permissionMode: 'default',
+                            customSystemPrompt: 'User custom prompt',
+                            appendSystemPrompt: 'User appended prompt'
+                        }
+                    }
                     : null,
                 onReady: () => {},
                 isAborted: () => false,
@@ -103,6 +110,10 @@ describe('claudeRemote async message handling', () => {
 
             expect(onFirstResult).toHaveBeenCalledTimes(1);
             expect(onFirstResult).toHaveBeenCalledWith('Review this project');
+            const queryOptions = queryMock.mock.calls[0]?.[0]?.options;
+            expect(queryOptions.customSystemPrompt).toBe('User custom prompt');
+            expect(queryOptions.appendSystemPrompt).toBe('User appended prompt');
+            expect(JSON.stringify(queryOptions)).not.toContain('HAPI hub peer');
         } finally {
             queryMock.mockReset();
             querySpy.mockRestore();

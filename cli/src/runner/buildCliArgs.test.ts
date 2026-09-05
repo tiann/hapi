@@ -4,8 +4,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
+import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol/modes'
 
 describe('buildCliArgs', () => {
+    it('binds every creatable flavor to a Hub-reserved session id', () => {
+        for (const flavor of CREATABLE_AGENT_FLAVORS) {
+            const args = buildCliArgs(flavor, { directory: '/tmp', existingSessionId: 'fresh-hapi-session' })
+            expect(args[args.indexOf('--existing-session-id') + 1], flavor).toBe('fresh-hapi-session')
+        }
+    })
+
     it('adds --permission-mode for valid permission mode', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
@@ -164,11 +172,11 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--hapi-session-id')
     })
 
-    it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
+    it('passes --existing-session-id for cursor resume (#991)', () => {
         const args = buildCliArgs('cursor', {
             directory: '/tmp',
             resumeSessionId: 'cursor-csid-1',
-            sessionId: 'hapi-session-991',
+            existingSessionId: 'hapi-session-991',
         })
         expect(args).toContain('--existing-session-id')
         expect(args).toContain('hapi-session-991')

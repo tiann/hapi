@@ -4,14 +4,32 @@ import {
     MachineListDirectoryRequestSchema,
     MachinePathsExistsRequestSchema,
     RenameMachineRequestSchema,
-    SpawnSessionRequestSchema
+    SpawnSessionRequestSchema,
+    SpawnSessionWithRemitRequestSchema,
+    isPermissionModeAllowedForFlavor,
+    resolveHapiYoloPermissionMode
 } from '@hapi/protocol'
 import { Hono } from 'hono'
+import { posix, win32 } from 'node:path'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
+
+const SPAWN_REMIT_FIELDS = ['message', 'prompt', 'text'] as const
+
+function spawnRemitField(body: unknown): string | null {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return null
+    }
+    for (const key of SPAWN_REMIT_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(body, key)) {
+            return key
+        }
+    }
+    return null
+}
 
 export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -76,7 +94,10 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (machine instanceof Response) {
             return machine
         }
-        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)) {
+        if (
+            !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)
+            || !machine.metadata.capabilities.includes(MACHINE_CAPABILITIES.SessionControlSkill)
+        ) {
             return c.json({
                 type: 'error' as const,
                 message: 'This runner must be upgraded before creating sessions',
@@ -85,9 +106,20 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const body = await c.req.json().catch(() => null)
+        const remitField = spawnRemitField(body)
+        if (remitField) {
+            return c.json({
+                error: `POST /api/machines/:id/spawn does not accept '${remitField}'. Machine spawn creates an empty composer. Use hapi spawn-peer / MCP spawn_peer, or POST /api/sessions/:id/messages after spawn.`,
+                code: 'spawn_remit_not_supported'
+            }, 400)
+        }
         const parsed = SpawnSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
+        }
+        const flavor = parsed.data.agent ?? 'claude'
+        if (parsed.data.permissionMode && !isPermissionModeAllowedForFlavor(parsed.data.permissionMode, flavor)) {
+            return c.json({ error: `Invalid permission mode for ${flavor}` }, 400)
         }
         if (
             (parsed.data.agent === 'agy' || parsed.data.agent === 'dsh')
@@ -117,6 +149,48 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             startingMode
         )
         return c.json(result)
+    })
+
+    app.post('/machines/:id/spawn-with-remit', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) return machine
+        if (
+            !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)
+            || !machine.metadata.capabilities.includes(MACHINE_CAPABILITIES.SessionControlSkill)
+        ) {
+            return c.json({
+                type: 'error' as const,
+                message: 'This runner must be upgraded before creating sessions',
+                code: 'runner_upgrade_required' as const
+            }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SpawnSessionWithRemitRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
+        const targetPath = machine.metadata?.platform === 'win32' ? win32 : posix
+        if (!targetPath.isAbsolute(parsed.data.directory)) {
+            return c.json({ error: 'directory must be an absolute path on the target machine' }, 400)
+        }
+        const request = { ...parsed.data, directory: targetPath.resolve(parsed.data.directory) }
+
+        const flavor = request.agent ?? 'claude'
+        if (request.permissionMode && !isPermissionModeAllowedForFlavor(request.permissionMode, flavor)) {
+            return c.json({ error: `Invalid permission mode for ${flavor}` }, 400)
+        }
+        if (request.yolo && !request.permissionMode && resolveHapiYoloPermissionMode(flavor) === null) {
+            return c.json({ error: `Yolo mode is not supported by ${flavor}` }, 400)
+        }
+        if ((flavor === 'agy' || flavor === 'dsh') && request.startingMode && request.startingMode !== 'remote') {
+            return c.json({ error: `${flavor.toUpperCase()} only supports remote mode` }, 400)
+        }
+
+        const result = await engine.spawnSessionWithRemit(machineId, c.get('namespace'), request)
+        return c.json(result, result.type === 'success' ? 200 : 502)
     })
 
     app.get('/machines/:id/agent-availability', async (c) => {

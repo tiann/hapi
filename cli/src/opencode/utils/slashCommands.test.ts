@@ -8,33 +8,15 @@ const state = {
 };
 
 describe('resolveOpencodeSlashCommand', () => {
-    it('enables plan mode without sending a turn', () => {
+    it('reports that plan mode is unavailable without changing the session', () => {
         expect(resolveOpencodeSlashCommand('/plan', state)).toEqual({
             kind: 'handled',
-            message: 'OpenCode plan mode enabled',
-            updates: { permissionMode: 'plan' }
-        });
-    });
-
-    it('enables plan mode and sends prompt when /plan has text', () => {
-        expect(resolveOpencodeSlashCommand('/plan design the fix', state)).toEqual({
-            kind: 'replace',
-            text: 'design the fix',
-            message: 'OpenCode plan mode enabled',
-            updates: { permissionMode: 'plan' }
-        });
-    });
-
-    it('returns to default permission mode from /plan off', () => {
-        expect(resolveOpencodeSlashCommand('/plan off', { ...state, permissionMode: 'plan' })).toEqual({
-            kind: 'handled',
-            message: 'OpenCode plan mode disabled',
-            updates: { permissionMode: 'default' }
+            message: 'OpenCode plan mode is unavailable because the runtime has no native plan mode.'
         });
     });
 
     it('handles /default', () => {
-        expect(resolveOpencodeSlashCommand('/default', { ...state, permissionMode: 'plan' })).toEqual({
+        expect(resolveOpencodeSlashCommand('/default', { ...state, permissionMode: 'yolo' })).toEqual({
             kind: 'handled',
             message: 'OpenCode permission mode set to default',
             updates: { permissionMode: 'default' }
@@ -58,7 +40,8 @@ describe('resolveOpencodeSlashCommand', () => {
             updates: { permissionMode: 'yolo' }
         });
         expect(resolveOpencodeSlashCommand('/permission plan', state)).toMatchObject({
-            updates: { permissionMode: 'plan' }
+            kind: 'handled',
+            message: expect.stringContaining('Unknown OpenCode permission mode')
         });
     });
 
@@ -162,7 +145,7 @@ describe('resolveOpencodeSlashCommand', () => {
         expect(help).toMatchObject({ kind: 'handled' });
         if (help.kind === 'handled') {
             expect(help.message).toContain('Supported OpenCode slash commands');
-            expect(help.message).toContain('/plan');
+            expect(help.message).not.toContain('/plan');
             expect(help.message).toContain('/permissions');
             expect(help.message).toContain('/compact` — compact (summarize) the OpenCode session context (remote sessions only)');
             expect(help.message).toContain('/clear` — archive this HAPI session and open a fresh OpenCode session');

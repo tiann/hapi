@@ -1,7 +1,7 @@
 /**
  * HAPI MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, and `inspect_peer`.
+ * Minimal STDIO MCP server exposing selected HAPI tools.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -16,14 +16,21 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from '@/modules/common/displayImagePrompt';
+import {
+  HAPI_SESSION_CONTROL_SKILL_DESCRIPTION,
+  HAPI_SESSION_CONTROL_SKILL_NAME,
+} from '@/modules/common/hapiSessionControlSkill';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
   PING_PEER_TOOL_DESCRIPTION,
-  SESSION_ID_PREFIX_PARAM_DESCRIPTION,
+  SESSION_ID_PARAM_DESCRIPTION,
+  SPAWN_PEER_TOOL_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
+import { SESSION_NAME_MAX_LENGTH } from '@hapi/protocol';
+import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol/modes';
+import { PermissionModeSchema } from '@hapi/protocol/schemas';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'ping_peer', 'inspect_peer', 'spawn_peer'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -118,7 +125,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_image',
         {
-          description: `Display a local image file to the human user inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
+          description: 'Display a local image to the human user; this does not provide image input to the model and cannot inspect the image.',
           title: 'Display Image',
           inputSchema: displayImageInputSchema,
         },
@@ -148,7 +155,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_video',
         {
-          description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
+          description: 'Display a local mp4 or webm file in the current HAPI chat.',
           title: 'Display Video',
           inputSchema: displayVideoInputSchema,
         },
@@ -178,7 +185,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_media',
         {
-          description: `Send a local image, video, audio, or other file to the current HAPI chat session. ${DISPLAY_MEDIA_PROMPT_CURSOR}`,
+          description: 'Send a local file to the current HAPI chat.',
           title: 'Display Media',
           inputSchema: displayMediaInputSchema,
         },
@@ -197,8 +204,9 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
     }
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
-      sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
+      sessionId: z.string().uuid().describe(SESSION_ID_PARAM_DESCRIPTION),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
+      remitId: z.string().uuid().optional().describe('Stable retry id; reuse only for the same target and message'),
     });
 
     if (toolNames.has('ping_peer')) {
@@ -226,8 +234,49 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    const spawnPeerInputSchema: z.ZodTypeAny = z.object({
+      directory: z.string().trim().min(1).describe('Working directory for the new session'),
+      message: z.string().min(1).describe('Required first user message'),
+      name: z.string().trim().min(1).max(SESSION_NAME_MAX_LENGTH).optional().describe('Session display name'),
+      machineId: z.string().trim().min(1).optional().describe('Exact runner machine id'),
+      agent: z.enum(CREATABLE_AGENT_FLAVORS as unknown as [string, ...string[]]).optional()
+        .describe('Agent flavor; defaults to claude'),
+      model: z.string().trim().min(1).optional().describe('Runtime model id'),
+      effort: z.string().trim().min(1).optional().describe('Runtime reasoning effort'),
+      sessionType: z.enum(['simple', 'worktree']).optional()
+        .describe('Session directory mode'),
+      permissionMode: PermissionModeSchema.optional()
+        .describe('Permission mode for the new session.'),
+      remitId: z.string().uuid().optional().describe('Stable retry id; reuse only for the same spawn request'),
+    });
+
+    if (toolNames.has('spawn_peer')) {
+      server.registerTool<any, any>(
+        'spawn_peer',
+        {
+          description: SPAWN_PEER_TOOL_DESCRIPTION,
+          title: 'Spawn Peer Session',
+          inputSchema: spawnPeerInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'spawn_peer', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to spawn peer: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
     const inspectPeerInputSchema: z.ZodTypeAny = z.object({
-      sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
+      sessionId: z.string().uuid().describe(SESSION_ID_PARAM_DESCRIPTION),
       messageLimit: z.number().int().min(1).max(100).optional().describe(
         'Recent message page size (default 30, max 100). Text snippets only.'
       ),
@@ -258,46 +307,15 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
-    const listPeersInputSchema: z.ZodTypeAny = z.object({
-      limit: z.number().int().min(1).max(100).optional().describe(
-        'Max sessions to return (default 30, max 100). Newest updatedAt first.'
-      ),
-    });
-
-    if (toolNames.has('list_peers')) {
-      server.registerTool<any, any>(
-        'list_peers',
-        {
-          description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id.',
-          title: 'List Peer Sessions',
-          inputSchema: listPeersInputSchema,
-        },
-        async (args: Record<string, unknown>) => {
-          try {
-            const client = await ensureHttpClient();
-            const response = await client.callTool({ name: 'list_peers', arguments: args });
-            return response as any;
-          } catch (error) {
-            return {
-              content: [
-                { type: 'text' as const, text: `Failed to list peers: ${error instanceof Error ? error.message : String(error)}` },
-              ],
-              isError: true,
-            };
-          }
-        }
-      );
-    }
-
     const skillLookupInputSchema: z.ZodTypeAny = z.object({
-      name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
+      name: z.string().trim().min(1).max(128).describe('Exact skill name from the catalog'),
     });
 
     if (toolNames.has('skill_lookup')) {
       server.registerTool<any, any>(
         'skill_lookup',
         {
-          description: 'Load a HAPI skill by exact name. When a user message starts with $name, call this tool with that name before acting.',
+          description: `Load one skill body by exact name. Catalog: ${HAPI_SESSION_CONTROL_SKILL_NAME} — ${HAPI_SESSION_CONTROL_SKILL_DESCRIPTION}`,
           title: 'Look Up Skill',
           inputSchema: skillLookupInputSchema,
         },

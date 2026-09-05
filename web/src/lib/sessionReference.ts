@@ -2,7 +2,6 @@ import type { SessionSummary } from '@/types/api'
 import { normalizeSearch, prepareSidebarSessions, sessionMatchesQuery } from '@/components/SessionList'
 import { truncateGraphemes } from '@/lib/graphemes'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
-import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
 export function buildSessionReferencePath(sessionId: string): string {
     const base = import.meta.env.BASE_URL ?? '/'
@@ -21,7 +20,7 @@ export function buildSessionReferenceText(sessionTitle: string, sessionId: strin
     const base = title
         ? `See session ${JSON.stringify(title)} (${path}) for context`
         : `See HAPI session ${path} for context`
-    return `${base}.${SESSION_REFERENCE_STEER_SUFFIX}`
+    return `${base}.`
 }
 
 export type MatchSessionsForMentionOptions = {

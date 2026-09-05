@@ -179,7 +179,7 @@ describe('NewSession preferences', () => {
 
     it.each([
         ['kimi', 'safe-yolo'],
-        ['opencode', 'plan']
+        ['opencode', 'yolo']
     ] as const)('restores remembered permission modes for %s', (agent, permissionMode) => {
         savePreferredLaunchSettings('machine-1', agent, {
             model: 'auto',

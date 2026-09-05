@@ -23,18 +23,18 @@ describe('buildGrokLocalArgs', () => {
         ])
     })
 
-    it('resumes with low effort and plan mode using official Grok flags', () => {
+    it('resumes with low effort and bypass mode using official Grok flags', () => {
         expect(buildGrokLocalArgs({
             sessionId: 'grok-session-1',
             resume: true,
             model: 'grok-4.5',
             effort: 'low',
-            permissionMode: 'plan'
+            permissionMode: 'bypassPermissions'
         })).toEqual([
             '--resume', 'grok-session-1',
             '--model', 'grok-4.5',
             '--reasoning-effort', 'low',
-            '--permission-mode', 'plan'
+            '--permission-mode', 'bypassPermissions'
         ])
     })
 

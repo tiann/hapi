@@ -12,7 +12,6 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'status', description: 'Show Claude Code status including version, model, account, and API connectivity', source: 'builtin' },
     ],
     codex: [
-        { name: 'agent', description: 'Toggle proactive Codex multi-agent delegation', source: 'builtin' },
         { name: 'clear', description: 'Clear current Codex thread context', source: 'builtin' },
         { name: 'compact', description: 'Compact current Codex thread context', source: 'builtin' },
         { name: 'goal', description: 'Set, view, pause, resume, or clear a persistent Codex goal', source: 'builtin' },
@@ -45,7 +44,6 @@ export const BUILTIN_SLASH_COMMANDS = {
     opencode: [
         { name: 'help', description: 'Show supported HAPI OpenCode slash commands', source: 'builtin' },
         { name: 'status', description: 'Show current OpenCode session config', source: 'builtin' },
-        { name: 'plan', description: 'Enable plan mode; use /plan off to return to default', source: 'builtin' },
         { name: 'default', description: 'Return OpenCode permission mode to default', source: 'builtin' },
         { name: 'init', description: 'Generate or refresh AGENTS.md for this project', source: 'builtin' },
     ],

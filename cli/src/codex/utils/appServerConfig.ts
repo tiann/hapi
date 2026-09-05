@@ -1,7 +1,6 @@
 import type { EnhancedMode } from '../loop';
 import type { CodexCliOverrides } from './codexCliOverrides';
 import type { McpServersConfig } from './buildHapiMcpBridge';
-import { getCodexSystemPrompt } from './systemPrompt';
 import type {
     ApprovalPolicy,
     SandboxMode,
@@ -12,14 +11,6 @@ import type {
     UserInput
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
-
-export const codexCollaborationSpawnAgentInstructions = [
-    'Codex sub-agent spawning rules:',
-    '- Treat omitted fork_context the same as fork_context: true: a full-history fork inherits the parent agent type, model, and reasoning effort.',
-    '- If you call spawn_agent with fork_context omitted or true, do not set agent_type, model, or reasoning_effort.',
-    '- If you need a specific agent_type, model, or reasoning_effort, set fork_context: false and include only the necessary context in the message.',
-    '- Do not rely on parent turn reasoning settings for spawned agents; only set reasoning_effort on spawn_agent when the chosen child model supports it.'
-].join('\n');
 
 const MODELS_WITHOUT_REASONING_SUMMARY = new Set([
     'gpt-5.3-codex-spark'
@@ -114,26 +105,11 @@ function buildMcpServerConfig(mcpServers: McpServersConfig): Record<string, unkn
 function resolveInstructions(args: {
     baseInstructions?: string;
     developerInstructions?: string;
-}): { baseInstructions: string | undefined; developerInstructions: string } {
-    const baseInstructions = args.baseInstructions;
-    const hapiDeveloperInstructions = getCodexSystemPrompt();
-    const developerInstructions = args.developerInstructions
-        ? `${hapiDeveloperInstructions}\n\n${args.developerInstructions}`
-        : hapiDeveloperInstructions;
+}): { baseInstructions: string | undefined; developerInstructions: string | undefined } {
     return {
-        baseInstructions,
-        developerInstructions
+        baseInstructions: args.baseInstructions,
+        developerInstructions: args.developerInstructions
     };
-}
-
-function appendCollaborationInstructions(developerInstructions: string, proactiveMultiAgent?: boolean): string {
-    if (proactiveMultiAgent === undefined) {
-        return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
-    }
-    const multiAgentMode = proactiveMultiAgent
-        ? 'Proactive multi-agent delegation is active. Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies. Use sub-agents when parallel work would materially improve speed or quality. This mode remains active until a later multi-agent mode developer message changes it.'
-        : 'Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.';
-    return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}\n\n<multi_agent_mode>${multiAgentMode}</multi_agent_mode>`;
 }
 
 function mentionNameFromPath(path: string): string {
@@ -211,7 +187,7 @@ export function buildThreadStartParams(args: {
     } = resolveInstructions(args);
     const configWithInstructions = {
         ...config,
-        developer_instructions: resolvedDeveloperInstructions,
+        ...(resolvedDeveloperInstructions !== undefined ? { developer_instructions: resolvedDeveloperInstructions } : {}),
         ...(args.mode.modelReasoningEffort ? { model_reasoning_effort: args.mode.modelReasoningEffort } : {})
     };
 
@@ -220,7 +196,7 @@ export function buildThreadStartParams(args: {
         approvalPolicy: resolvedApprovalPolicy,
         sandbox: resolvedSandbox,
         ...(baseInstructions !== undefined ? { baseInstructions } : {}),
-        developerInstructions: resolvedDeveloperInstructions,
+        ...(resolvedDeveloperInstructions !== undefined ? { developerInstructions: resolvedDeveloperInstructions } : {}),
         ...(Object.keys(configWithInstructions).length > 0 ? { config: configWithInstructions } : {})
     };
 
@@ -306,7 +282,7 @@ export function buildTurnStartParams(args: {
                 ...(modelReasoningEffort !== undefined ? { reasoning_effort: modelReasoningEffort } : {}),
                 developer_instructions: collaborationMode === 'plan'
                     ? null
-                    : appendCollaborationInstructions(resolveInstructions(args).developerInstructions, args.mode?.proactiveMultiAgent)
+                    : resolveInstructions(args).developerInstructions ?? null
             }
         };
     } else if (model) {

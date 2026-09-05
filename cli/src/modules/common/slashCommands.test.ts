@@ -194,14 +194,13 @@ describe('listSlashCommands', () => {
         expect(names).toEqual(expect.arrayContaining([
             'help',
             'status',
-            'plan',
             'default',
             'init',
         ]))
         // Anything covered by composer buttons, plus aliases and unsupported
         // placeholders, must stay out of the autocomplete menu — the resolver
         // still accepts them when typed manually.
-        for (const hidden of ['model', 'reasoning', 'effort', 'permissions', 'permission', 'clear', 'compact']) {
+        for (const hidden of ['plan', 'model', 'reasoning', 'effort', 'permissions', 'permission', 'clear', 'compact']) {
             expect(names).not.toContain(hidden)
         }
     })

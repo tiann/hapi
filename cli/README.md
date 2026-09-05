@@ -37,8 +37,17 @@ Run Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, or DeepSeek Harness 
 - `hapi dsh` - Start DeepSeek Harness through ACP. See `src/dsh/runDsh.ts`.
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
-- `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
-- `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
+- `hapi machines [--machine ID] --json` - List or exactly resolve runner machine IDs and advertised workspace roots.
+- `hapi spawn-peer --dir PATH --name TITLE --message-file - --json` - Create a fresh session and atomically deliver its remit; failed delivery stops and archives the child. Automation may pass `--remit-id UUID` and reuse it only when retrying the same request. `--effort` supports Claude/Grok/Pi/AGY and maps to reasoning effort for Codex/OpenCode; unsupported flavors fail before spawning.
+- `hapi wait-peer <exact-session-id> --remit-id UUID --json` - Wait for that remit's result.
+- `hapi inspect-peer <exact-session-id> --json` - Read metadata and recent message text without resuming.
+- `hapi ping-peer <exact-session-id> --message-file - --json` - Resume if needed and message one explicitly selected session. After an ambiguous response failure, retry the identical message with the returned `remitId` via `--remit-id UUID`.
+- `hapi abort-peer <exact-session-id> --json` - Abort the current turn.
+- `hapi stop-peer <exact-session-id> --json` - Idempotently stop the session process without archiving.
+- `hapi archive-peer <exact-session-id> --json` - Idempotently stop and archive the session.
+- `hapi delete-peer <exact-session-id> --json` - Delete an inactive session record.
+
+The peer commands reject prefixes. Successful `--json` output has `ok: true`; errors use `ok: false`, a stable error code, and a non-zero exit status.
 
 ### Resume a remote session locally
 
@@ -147,9 +156,15 @@ controls for DSH.
 - `HAPI_WORKTREE_PATH` - Full worktree path.
 - `HAPI_WORKTREE_CREATED_AT` - Creation timestamp (ms).
 
+### Session-control skill
+
+HAPI ships `skills/hapi-session-control/SKILL.md`. Before a fresh local, runner-spawned, or resumed session touches the hub, the CLI installs and verifies this canonical skill in the selected runtime's native user skill directory on the execution host. A conflicting higher-priority skill fails the launch closed. Generic ACP runtimes receive a capability-gated `skill_lookup` tool whose catalog exposes only skill names and descriptions; bodies load only by exact name.
+
+HAPI does not add its own system, developer, appended, or synthetic-user prompt prose. Runtime/user custom prompts remain unchanged.
+
 ### Set for the wrapped agent
 
-- `HAPI_SESSION_ID` - The hub session id for the current run, exported into the wrapped agent/CLI child environment at spawn for every flavor (claude / codex / copilot / cursor / gemini / opencode / kimi / grok / pi), both runner-spawned and locally started sessions. Agents can read it to self-target "this chat" over the hub REST API or shell helpers without listing `/api/sessions`. Prefer the MCP `display_image` tool for inline media when it is available; use `HAPI_SESSION_ID` for hub REST / shell tooling where MCP is not. To **list** peers on the same hub/namespace, prefer MCP `list_peers` (works from runner-spawned sessions without sitting on the hub host; excludes the calling session). To **read** another session, prefer MCP `inspect_peer` or `hapi inspect-peer`. To **message** another session, prefer MCP `ping_peer` or `hapi ping-peer` — do not reinvent JWT+curl. User citations look like `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`; pass that `<id>` as `sessionIdPrefix`. Do not Grep/Glob `/sessions/<id>` as a local filesystem path. On a remote runner, configure matching `HAPI_API_URL` + `CLI_API_TOKEN` (or `hapi auth login` / `~/.hapi/settings.json`) on the runner host so shell `hapi ping-peer --list` works; session CLI may export an explicit non-default hub URL into child env, but never mirrors `CLI_API_TOKEN` into wrapped agents.
+- `HAPI_SESSION_ID` - The exact hub session id for the current run, exported to every wrapped flavor for fresh local, runner-spawned, and resumed sessions. The session CLI may also export an explicit non-default `HAPI_API_URL`; it never copies `CLI_API_TOKEN` into the wrapped agent environment.
 
   Lazy Codex (terminal) sessions export the id only after the hub row is materialized, which happens when the MCP bridge starts — before the agent process is spawned — so path-only self-targeting does not race a missing hub row.
 
@@ -158,8 +173,6 @@ controls for DSH.
   ```bash
   bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
   ```
-
-  Explicit other session (prefix or full uuid) still works; that path may list sessions.
 
 ## Storage
 

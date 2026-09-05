@@ -20,6 +20,7 @@ export type RunnerLifecycle = {
     cleanup: () => Promise<void>
     cleanupConfirmed: (options?: { timeoutMs?: number }) => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
+    stopAndExit: (codeOverride?: number) => Promise<void>
     registerProcessHandlers: () => void
 }
 
@@ -55,21 +56,23 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
 
     const logPrefix = `[${options.logTag}]`
 
-    const archiveAndClose = async () => {
-        options.session.updateMetadata((currentMetadata) => ({
-            ...currentMetadata,
-            lifecycleState: 'archived',
-            lifecycleStateSince: Date.now(),
-            archivedBy: 'cli',
-            archiveReason
-        }))
+    const close = async (archive: boolean) => {
+        if (archive) {
+            options.session.updateMetadata((currentMetadata) => ({
+                ...currentMetadata,
+                lifecycleState: 'archived',
+                lifecycleStateSince: Date.now(),
+                archivedBy: 'cli',
+                archiveReason
+            }))
+        }
 
         options.session.sendSessionDeath(sessionEndReason)
         await options.session.flush({ timeoutMs: 1_000 })
         await options.session.close()
     }
 
-    const cleanup = async () => {
+    const beginCleanup = async (archive: boolean) => {
         if (cleanupPromise) {
             return cleanupPromise
         }
@@ -82,7 +85,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
             try {
                 options.stopKeepAlive?.()
                 await options.onBeforeClose?.()
-                await archiveAndClose()
+                await close(archive)
                 logger.debug(`${logPrefix} Cleanup complete`)
             } finally {
                 try {
@@ -95,6 +98,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
 
         return cleanupPromise
     }
+    const cleanup = async () => await beginCleanup(true)
 
     const cleanupConfirmed = async (confirmedOptions?: { timeoutMs?: number }) => {
         if (confirmedCleanupComplete) {
@@ -142,6 +146,17 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
             process.exit(exitCode)
         } catch (error) {
             logger.debug(`${logPrefix} Error during cleanup:`, error)
+            process.exit(1)
+        }
+    }
+
+    const stopAndExit = async (codeOverride?: number) => {
+        if (codeOverride !== undefined) exitCode = codeOverride
+        try {
+            await beginCleanup(false)
+            process.exit(exitCode)
+        } catch (error) {
+            logger.debug(`${logPrefix} Error during stop:`, error)
             process.exit(1)
         }
     }
@@ -217,6 +232,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         cleanup,
         cleanupConfirmed,
         cleanupAndExit,
+        stopAndExit,
         registerProcessHandlers
     }
 }

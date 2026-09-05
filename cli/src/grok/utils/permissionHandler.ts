@@ -23,14 +23,12 @@ function deriveToolInput(request: PermissionRequest): unknown {
 
 function pickOptionId(
     request: PermissionRequest,
-    preferredKinds: string[],
-    options: { fallbackToFirst?: boolean } = {}
+    preferredKinds: string[]
 ): string | null {
     for (const kind of preferredKinds) {
         const match = request.options.find((option) => option.kind === kind)
         if (match) return match.optionId
     }
-    if (options.fallbackToFirst === false) return null
     return request.options[0]?.optionId ?? null
 }
 
@@ -48,11 +46,6 @@ function mapDecisionToOutcome(
         return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' }
     }
     const optionId = pickOptionId(request, ['reject_once', 'reject_always'])
-    return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' }
-}
-
-function planDenial(request: PermissionRequest): PermissionResponse {
-    const optionId = pickOptionId(request, ['reject_once', 'reject_always'], { fallbackToFirst: false })
     return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' }
 }
 
@@ -84,11 +77,6 @@ export class GrokPermissionHandler extends BasePermissionHandler<PermissionRespo
             void this.autoApprove(request, toolName, toolInput, autoDecision)
             return
         }
-        if (mode === 'plan') {
-            void this.denyForPlanMode(request, toolName, toolInput)
-            return
-        }
-
         this.pendingBackendRequests.set(request.id, request)
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
@@ -115,32 +103,6 @@ export class GrokPermissionHandler extends BasePermissionHandler<PermissionRespo
                     completedAt: Date.now(),
                     status: 'approved',
                     decision
-                }
-            }
-        }))
-    }
-
-    private async denyForPlanMode(
-        request: PermissionRequest,
-        toolName: string,
-        toolInput: unknown
-    ): Promise<void> {
-        const outcome = planDenial(request)
-        await this.backend.respondToPermission(request.sessionId, request, outcome)
-        const status = outcome.outcome === 'selected' ? 'denied' : 'canceled'
-        const timestamp = Date.now()
-        this.client.updateAgentState((currentState) => ({
-            ...currentState,
-            completedRequests: {
-                ...currentState.completedRequests,
-                [request.id]: {
-                    tool: toolName,
-                    arguments: toolInput,
-                    createdAt: timestamp,
-                    completedAt: timestamp,
-                    status,
-                    reason: 'Plan mode blocks tool execution',
-                    decision: status === 'denied' ? 'denied' : 'abort'
                 }
             }
         }))

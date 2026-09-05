@@ -8,6 +8,11 @@ declare module '*.tar.gz' {
     export default path;
 }
 
+declare module '*.md' {
+    const path: string;
+    export default path;
+}
+
 declare module '*-LICENSE' {
     const path: string;
     export default path;

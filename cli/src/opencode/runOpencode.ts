@@ -42,10 +42,6 @@ export async function runOpencode(opts: {
     const startingMode: 'local' | 'remote' = opts.startingMode
         ?? (startedBy === 'runner' ? 'remote' : 'local');
 
-    if (opts.permissionMode === 'plan' && startingMode !== 'remote') {
-        throw new Error('OpenCode plan mode is only supported in remote mode');
-    }
-
     const initialState: AgentState = {
         controlledByUser: false
     };

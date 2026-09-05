@@ -7,7 +7,6 @@ import { logger } from "@/lib";
 import { PushableAsyncIterable } from "@/utils/PushableAsyncIterable";
 import { getProjectPath } from "./utils/path";
 import { awaitFileExist } from "@/modules/watcher/awaitFileExist";
-import { getSystemPrompt } from "./utils/systemPrompt";
 import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
@@ -157,7 +156,6 @@ export async function claudeRemote(opts: {
 
     // Prepare SDK options. For --fork-session, start query() before waiting for the
     // first child prompt so the native fork materializes at the clicked source state.
-    const hapiSystemPrompt = getSystemPrompt();
     const sdkOptions: Options = {
         additionalArgs: filterCatalogAffectingClaudeArgs(opts.claudeArgs),
         cwd: opts.path,
@@ -168,12 +166,8 @@ export async function claudeRemote(opts: {
         model: bootstrapMode.model,
         effort: bootstrapMode.effort,
         fallbackModel: bootstrapMode.fallbackModel,
-        customSystemPrompt: bootstrapMode.customSystemPrompt
-            ? bootstrapMode.customSystemPrompt + '\n\n' + hapiSystemPrompt
-            : undefined,
-        appendSystemPrompt: bootstrapMode.appendSystemPrompt
-            ? bootstrapMode.appendSystemPrompt + '\n\n' + hapiSystemPrompt
-            : hapiSystemPrompt,
+        customSystemPrompt: bootstrapMode.customSystemPrompt,
+        appendSystemPrompt: bootstrapMode.appendSystemPrompt,
         allowedTools: bootstrapMode.allowedTools
             ? bootstrapMode.allowedTools.concat(opts.allowedTools)
             : opts.allowedTools,
@@ -195,12 +189,8 @@ export async function claudeRemote(opts: {
         sdkOptions.model = first.mode.model;
         sdkOptions.effort = first.mode.effort;
         sdkOptions.fallbackModel = first.mode.fallbackModel;
-        sdkOptions.customSystemPrompt = first.mode.customSystemPrompt
-            ? first.mode.customSystemPrompt + '\n\n' + hapiSystemPrompt
-            : undefined;
-        sdkOptions.appendSystemPrompt = first.mode.appendSystemPrompt
-            ? first.mode.appendSystemPrompt + '\n\n' + hapiSystemPrompt
-            : hapiSystemPrompt;
+        sdkOptions.customSystemPrompt = first.mode.customSystemPrompt;
+        sdkOptions.appendSystemPrompt = first.mode.appendSystemPrompt;
         sdkOptions.allowedTools = first.mode.allowedTools
             ? first.mode.allowedTools.concat(opts.allowedTools)
             : opts.allowedTools;

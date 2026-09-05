@@ -110,6 +110,15 @@ ${chalk.bold('Usage:')}
   hapi server            Alias for hapi hub
   hapi runner            Manage background service that allows
                             to spawn new sessions away from your computer
+  hapi machines          List available session targets
+  hapi spawn-peer        Create a fresh session and deliver its remit
+  hapi wait-peer         Wait for an exact remit result
+  hapi inspect-peer      Inspect an exact session ID
+  hapi ping-peer         Message an exact session ID
+  hapi abort-peer        Cancel the current turn in an exact session ID
+  hapi stop-peer         Stop an exact session ID without archiving
+  hapi archive-peer      Stop and archive an exact session ID
+  hapi delete-peer       Delete an inactive exact session ID
   hapi doctor            System diagnostics & troubleshooting
 
 ${chalk.bold('Examples:')}

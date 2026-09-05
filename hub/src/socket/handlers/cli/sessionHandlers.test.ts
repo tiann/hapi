@@ -402,7 +402,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'spawnRemitOperation'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -420,7 +420,15 @@ describe('cli session handlers', () => {
                     path: '/tmp/project',
                     [field]: field === 'supersededBySessionId'
                         ? 'foreign-session'
-                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                        : field === 'opencodeClearOperation'
+                            ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                            : {
+                                remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c',
+                                requestHash: 'a'.repeat(64),
+                                machineId: 'machine-1',
+                                state: 'pending',
+                                updatedAt: Date.now()
+                            }
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)

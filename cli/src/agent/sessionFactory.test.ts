@@ -7,25 +7,28 @@ const {
     getOrCreateMachineMock,
     sessionSyncClientMock,
     notifyRunnerSessionStartedMock,
-    readSettingsMock
+    readSettingsMock,
+    ensureSkillMock,
+    apiCreateMock
 } = vi.hoisted(() => ({
     getSessionMock: vi.fn(),
     getOrCreateSessionMock: vi.fn(),
     getOrCreateMachineMock: vi.fn(),
     sessionSyncClientMock: vi.fn(),
     notifyRunnerSessionStartedMock: vi.fn(async () => ({})),
-    readSettingsMock: vi.fn()
+    readSettingsMock: vi.fn(),
+    ensureSkillMock: vi.fn(async () => '/tmp/skill/SKILL.md'),
+    apiCreateMock: vi.fn()
 }))
 
 vi.mock('@/api/api', () => ({
     ApiClient: {
-        create: async () => ({
-            getSession: getSessionMock,
-            getOrCreateSession: getOrCreateSessionMock,
-            getOrCreateMachine: getOrCreateMachineMock,
-            sessionSyncClient: sessionSyncClientMock
-        })
+        create: apiCreateMock
     }
+}))
+
+vi.mock('@/modules/common/hapiSessionControlSkill', () => ({
+    ensureHapiSessionControlSkill: ensureSkillMock
 }))
 
 vi.mock('@/runner/controlClient', () => ({
@@ -57,8 +60,17 @@ import {
     bootstrapLazySession,
     bootstrapSession,
     buildMachineMetadata,
-    buildSessionMetadata
+    buildSessionMetadata,
+    HAPI_RUNNER_SESSION_TYPE_ENV,
+    HAPI_RUNNER_WORKTREE_NAME_ENV
 } from './sessionFactory'
+
+apiCreateMock.mockImplementation(async () => ({
+    getSession: getSessionMock,
+    getOrCreateSession: getOrCreateSessionMock,
+    getOrCreateMachine: getOrCreateMachineMock,
+    sessionSyncClient: sessionSyncClientMock
+}))
 
 function createSession(): Session {
     return {
@@ -93,6 +105,9 @@ function createSession(): Session {
 
 describe('bootstrapExistingSession', () => {
     beforeEach(() => {
+        ensureSkillMock.mockReset()
+        ensureSkillMock.mockResolvedValue('/tmp/skill/SKILL.md')
+        apiCreateMock.mockClear()
         getSessionMock.mockReset()
         getOrCreateSessionMock.mockReset()
         getOrCreateMachineMock.mockReset()
@@ -100,6 +115,24 @@ describe('bootstrapExistingSession', () => {
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
         delete process.env[HAPI_SESSION_ID_ENV]
+        delete process.env[HAPI_RUNNER_SESSION_TYPE_ENV]
+        delete process.env[HAPI_RUNNER_WORKTREE_NAME_ENV]
+    })
+
+    afterEach(() => {
+        delete process.env[HAPI_RUNNER_SESSION_TYPE_ENV]
+        delete process.env[HAPI_RUNNER_WORKTREE_NAME_ENV]
+    })
+
+    it('fails before touching the hub when skill delivery cannot be verified', async () => {
+        ensureSkillMock.mockRejectedValueOnce(new Error('skill unavailable'))
+
+        await expect(bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })).rejects.toThrow('skill unavailable')
+        expect(apiCreateMock).not.toHaveBeenCalled()
     })
 
     it('loads an existing HAPI session and reports it to the runner', async () => {
@@ -136,6 +169,7 @@ describe('bootstrapExistingSession', () => {
     })
 
     it('preserves existing native resume metadata when reactivating a session', async () => {
+        process.env[HAPI_RUNNER_SESSION_TYPE_ENV] = 'simple'
         const session = createSession()
         const existingMetadata = session.metadata
         if (!existingMetadata) throw new Error('expected test session metadata')
@@ -164,6 +198,8 @@ describe('bootstrapExistingSession', () => {
                 text: 'resume me',
                 updatedAt: 100
             },
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
@@ -210,6 +246,8 @@ describe('bootstrapExistingSession', () => {
                 text: 'resume me',
                 updatedAt: 100
             },
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
@@ -224,6 +262,8 @@ describe('bootstrapExistingSession', () => {
         expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
         }))
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
@@ -231,6 +271,8 @@ describe('bootstrapExistingSession', () => {
             expect.objectContaining({
                 codexSessionId: 'codex-thread-1',
                 grokSessionId: 'grok-thread-1',
+                sessionType: 'worktree',
+                worktreeName: 'feature-x',
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })
         )
@@ -247,16 +289,51 @@ describe('bootstrapExistingSession', () => {
 
         expect(metadata.capabilities?.terminal).toBe(true)
     })
+
+    it('reports runner-applied worktree selection in session metadata', () => {
+        process.env[HAPI_RUNNER_SESSION_TYPE_ENV] = 'worktree'
+        process.env[HAPI_RUNNER_WORKTREE_NAME_ENV] = 'feature-x'
+        try {
+            const metadata = buildSessionMetadata({
+                flavor: 'codex',
+                startedBy: 'runner',
+                workingDirectory: '/tmp/project',
+                machineId: 'machine-1',
+                now: 123
+            })
+
+            expect(metadata).toEqual(expect.objectContaining({
+                sessionType: 'worktree',
+                worktreeName: 'feature-x'
+            }))
+        } finally {
+            delete process.env[HAPI_RUNNER_SESSION_TYPE_ENV]
+            delete process.env[HAPI_RUNNER_WORKTREE_NAME_ENV]
+        }
+    })
 })
 
 describe('bootstrapLazySession', () => {
     beforeEach(() => {
+        ensureSkillMock.mockReset()
+        ensureSkillMock.mockResolvedValue('/tmp/skill/SKILL.md')
+        apiCreateMock.mockClear()
         getOrCreateSessionMock.mockReset()
         getOrCreateMachineMock.mockReset()
         sessionSyncClientMock.mockReset()
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
         delete process.env[HAPI_SESSION_ID_ENV]
+    })
+
+    it('fails before touching the hub when skill delivery cannot be verified', async () => {
+        ensureSkillMock.mockRejectedValueOnce(new Error('skill unavailable'))
+
+        await expect(bootstrapLazySession({
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })).rejects.toThrow('skill unavailable')
+        expect(apiCreateMock).not.toHaveBeenCalled()
     })
 
     it('does not export HAPI_SESSION_ID until the hub row is materialized', async () => {
@@ -340,12 +417,25 @@ describe('bootstrapLazySession', () => {
 
 describe('bootstrapSession HAPI_SESSION_ID export', () => {
     beforeEach(() => {
+        ensureSkillMock.mockReset()
+        ensureSkillMock.mockResolvedValue('/tmp/skill/SKILL.md')
+        apiCreateMock.mockClear()
         getOrCreateSessionMock.mockReset()
         getOrCreateMachineMock.mockReset()
         sessionSyncClientMock.mockReset()
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
         delete process.env[HAPI_SESSION_ID_ENV]
+    })
+
+    it('fails before touching the hub when skill delivery cannot be verified', async () => {
+        ensureSkillMock.mockRejectedValueOnce(new Error('skill unavailable'))
+
+        await expect(bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project'
+        })).rejects.toThrow('skill unavailable')
+        expect(apiCreateMock).not.toHaveBeenCalled()
     })
 
     it('exports the hub session id so spawned agents inherit it', async () => {

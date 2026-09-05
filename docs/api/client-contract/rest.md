@@ -41,7 +41,8 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `POST /api/sessions/:id/resume` | `{permissionMode?}` (`ResumeSessionRequestSchema`) | `{type: 'success', sessionId}` |
 | `POST /api/sessions/:id/reopen` | `{}` | `{ok: true, sessionId, resumed: boolean, cursorSessionProtocol?}` (`ReopenSessionResponseSchema`); `422 {error, missing[]}` if metadata is incomplete |
 | `POST /api/sessions/:id/abort` | `{}` | `{ok: true}` (active sessions only) |
-| `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; 409 for a plain inactive session |
+| `POST /api/sessions/:id/stop` | `{}` | `{ok: true, alreadyStopped: boolean}`; stops the process without archiving |
+| `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; idempotent for inactive sessions |
 | `DELETE /api/sessions/:id` | — | `{ok: true}`; 409 while active (archive first) |
 | `PATCH /api/sessions/:id` | `{name}` (1–255 chars) | `{ok: true}` (rename) |
 | `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
@@ -117,10 +118,13 @@ Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `
 | `GET /api/machines` | — | `{machines: Machine[]}` (online machines in the caller's namespace) |
 | `PATCH /api/machines/:id` | `{displayName}` (trimmed; ≤ 64 chars; empty clears back to hostname) | `{ok: true}` |
 | `GET /api/machines/:id/agent-availability` | — | `{agents: {agent, available, reason?: 'not_found'\|'invalid_configuration'}[]}`; 409 `runner_upgrade_required` on old runners |
-| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy accepts only `remote`) |
+| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy/dsh accept only `remote`) |
+| `POST /api/machines/:id/spawn-with-remit` | Spawn fields plus required `{message, remitId}`, optional `{name, waitActiveSecs}` | `{type: 'success', sessionId, remitId, name, session: {machineId, directory, agent, model, modelReasoningEffort, effort, permissionMode}}`; failures are HTTP 502 with `{type: 'error', code, message, childSessionId?, cleanedUp?}` |
 | `POST /api/machines/:id/list-directory` | `{path, includeHidden?}` | `{success, entries?: (DirectoryEntry & {isGitRepo?})[], error?}` |
 | `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>, outsideWorkspaceRoots?: string[]}` |
 | `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code: 'machine_not_found' \| 'machine_offline'` |
+
+For automation, `hapi machines --json` returns exact machine IDs plus `workspaceRoots`; `--machine ID` performs exact resolution without prefix matching.
 
 Note the spawn response is discriminated on `type`, not HTTP status — a failed
 spawn is still HTTP 200. Stable spawn failure codes are
@@ -230,7 +234,7 @@ Source: `hub/src/web/routes/hubSettings.ts`.
 
 | Method & path | Response |
 |---|---|
-| `GET /api/hub-settings` | `{sessionSummaryContract: boolean, sessionSummaryInChat: boolean}` — readable by any namespace |
+| `GET /api/hub-settings` | `{sessionSummaryInChat: boolean}` — readable by any namespace |
 
 ### SSE
 
