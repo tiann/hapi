@@ -1173,10 +1173,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const eventId = randomUUID();
         const atTs = Date.now();
         // Fail closed on silently truncated prompts — Bridge must replay exact text.
+        // Also fail closed after tool side effects: Bridge re-sends lastUserMessage
+        // and would re-run completed shell/edit tools (same gate as ordinary retry).
         const fullMessage = this.lastUserMessage ?? '';
         const fitsBridgeLimit = fullMessage.length <= MAX_LAST_USER_MESSAGE_CHARS;
         const isPassThroughCommand = parseCursorSpecialCommand(fullMessage).type === 'pass-through';
-        const bridgeable = opts?.bridgeable !== false && fitsBridgeLimit && !isPassThroughCommand;
+        const bridgeable = opts?.bridgeable !== false
+            && fitsBridgeLimit
+            && !isPassThroughCommand
+            && !this.attemptProducedToolActivity;
         const lastUserMessage = bridgeable ? fullMessage : '';
 
         logger.debug(
