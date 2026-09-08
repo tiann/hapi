@@ -19,6 +19,8 @@ export type NewSessionFormDraft = {
     machineId: string | null
     effort: LaunchEffort
     modelReasoningEffort: CodexReasoningEffort
+    codexProfile?: string
+    codexProvider?: string
     serviceTier: NewSessionServiceTier
     collaborationMode: CodexCollaborationMode
     copilotAgentMode: CopilotAgentMode
@@ -66,6 +68,8 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
             modelReasoningEffort: agentPreserved
                 ? ((parsed.modelReasoningEffort as CodexReasoningEffort | undefined) ?? 'default')
                 : 'default',
+            codexProfile: agentPreserved && typeof parsed.codexProfile === 'string' ? parsed.codexProfile : '',
+            codexProvider: agentPreserved && typeof parsed.codexProvider === 'string' ? parsed.codexProvider : '',
             serviceTier: agentPreserved && parsed.serviceTier === 'fast' ? 'fast' : 'standard',
             collaborationMode: agentPreserved && parsed.collaborationMode === 'plan' ? 'plan' : 'default',
             copilotAgentMode: agentPreserved

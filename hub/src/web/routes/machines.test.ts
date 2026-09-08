@@ -29,6 +29,37 @@ function createMachine(overrides?: Partial<Machine>): Machine {
 }
 
 describe('machines routes', () => {
+    it('forwards selected Codex profile and provider when spawning', async () => {
+        const machine = createMachine()
+        let captured: unknown[] = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (...args: unknown[]) => {
+                captured = args
+                return { type: 'success' as const, sessionId: 'session-profile' }
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'codex',
+                codexProfile: 'work',
+                codexProvider: 'custom-proxy'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(captured[16]).toBe('work')
+        expect(captured[17]).toBe('custom-proxy')
+    })
+
     it('blocks spawn and availability inspection when the runner needs an upgrade', async () => {
         const machine = createMachine({
             metadata: {

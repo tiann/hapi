@@ -117,6 +117,41 @@ describe('getOrCreateSession: requested identity', () => {
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
+    it('preserves Codex launch profile across sparse lifecycle updates', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'codex-profile-preservation',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'codex',
+                codexProfile: 'work',
+                codexProvider: 'custom-provider'
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'codex',
+                lifecycleState: 'archived'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)).toMatchObject({
+            codexProfile: 'work',
+            codexProvider: 'custom-provider'
+        })
+        store.close()
+    })
+
     it('preserves cursorSessionId when archive payload omits it (Cursor crash-archive)', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(

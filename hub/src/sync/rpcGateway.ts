@@ -187,7 +187,9 @@ export class RpcGateway {
         // Hub session id to reuse for this spawn. When set, the runner boots the
         // CLI with `--hapi-session-id`, so the child reuses the existing hub
         // session row (same id) instead of minting a new one.
-        forkSession?: boolean
+        forkSession?: boolean,
+        codexProfile?: string,
+        codexProvider?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -207,6 +209,8 @@ export class RpcGateway {
                     agent,
                     model,
                     modelReasoningEffort,
+                    codexProfile,
+                    codexProvider,
                     yolo,
                     sessionType,
                     worktreeName,

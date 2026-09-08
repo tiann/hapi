@@ -392,4 +392,19 @@ describe('SessionHeader', () => {
 
         expect(await screen.findByText('Could not update pin: Network unavailable')).toBeInTheDocument()
     })
+
+    it('shows selected Codex profile and provider', () => {
+        renderHeader(baseSession({
+            metadata: {
+                flavor: 'codex',
+                path: '/repo',
+                host: 'machine',
+                codexProfile: 'work',
+                codexProvider: 'custom-proxy'
+            }
+        }))
+
+        expect(screen.getByTestId('session-header-profile')).toHaveTextContent('Profile: work')
+        expect(screen.getByTestId('session-header-provider')).toHaveTextContent('Provider: custom-proxy')
+    })
 })

@@ -618,6 +618,8 @@ export const SpawnSessionRequestSchema = z.object({
     model: z.string().optional(),
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
+    codexProfile: z.string().trim().min(1).max(255).optional(),
+    codexProvider: z.string().trim().min(1).max(255).optional(),
     yolo: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
@@ -761,6 +763,8 @@ export type CodexModelSummary = {
 export type CodexModelsResponse = {
     success: boolean
     models?: CodexModelSummary[]
+    profiles?: string[]
+    providers?: string[]
     error?: string
 }
 

@@ -121,6 +121,8 @@ export const MetadataSchema = z.object({
     // Durable in-progress state for runner-backed OpenCode /clear.
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
+    codexProfile: z.string().optional(),
+    codexProvider: z.string().optional(),
     preferredCopilotAgentMode: CopilotAgentModeSchema.optional(),
     flavor: z.string().nullish(),
     // Launch mode, surfaced so the web can show the agent-terminal toggle only

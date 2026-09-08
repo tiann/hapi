@@ -198,6 +198,21 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.hapiMcpUrl).toBe('http://127.0.0.1:42133/')
     })
 
+    it('includes Codex profile and provider in summary metadata', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'codex',
+                codexProfile: 'work',
+                codexProvider: 'custom-proxy'
+            }
+        }))
+
+        expect(summary.metadata?.codexProfile).toBe('work')
+        expect(summary.metadata?.codexProvider).toBe('custom-proxy')
+    })
+
     it('includes structured pendingRequests for hover-tooltip copy', () => {
         const summary = toSessionSummary(makeSession({
             updatedAt: 5000,

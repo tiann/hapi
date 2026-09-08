@@ -69,6 +69,7 @@ async function runCodexResumeScenario(
     options?: {
         archived?: boolean
         concurrentMetadata?: Record<string, unknown>
+        codexProfile?: string
     }
 ) {
     const store = new Store(':memory:')
@@ -86,6 +87,7 @@ async function runCodexResumeScenario(
             machineId: 'machine-1',
             flavor: 'codex',
             ...(codexSessionId ? { codexSessionId } : {}),
+            ...(options?.codexProfile ? { codexProfile: options.codexProfile } : {}),
             ...(options?.archived
                 ? {
                     lifecycleState: 'archived',
@@ -122,7 +124,9 @@ async function runCodexResumeScenario(
     }
     const before = store.sessions.getSession(session.id)!
     const capturedResumeSessionIds: Array<string | undefined> = []
+    const capturedCodexProfiles: Array<string | undefined> = []
     ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+        capturedCodexProfiles.push(args[17])
         capturedResumeSessionIds.push(args[8])
         return { type: 'success', sessionId: session.id }
     }
@@ -136,6 +140,7 @@ async function runCodexResumeScenario(
         return {
             result,
             capturedResumeSessionIds,
+            capturedCodexProfiles,
             before,
             after,
             persistedCodexSessionId: (after.metadata as { codexSessionId?: string } | null)?.codexSessionId,
@@ -1704,6 +1709,18 @@ describe('session model', () => {
             metadataVersion: outcome.before.metadataVersion,
             updatedAt: outcome.before.updatedAt
         })
+    })
+
+    it('uses the stored Codex profile when resuming a history session', async () => {
+        const outcome = await runCodexResumeScenario(
+            [],
+            'metadata-codex-thread',
+            { codexProfile: 'work' }
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedCodexProfiles).toEqual(['work'])
+        expect(outcome.capturedResumeSessionIds).toEqual(['metadata-codex-thread'])
     })
 
     it('does not recover a Codex thread from before an explicit context reset', async () => {

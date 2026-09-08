@@ -1568,6 +1568,12 @@ export function buildCliArgs(
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
+  if (options.codexProfile && agent === 'codex') {
+    args.push('-p', options.codexProfile);
+  }
+  if (options.codexProvider && agent === 'codex') {
+    args.push('--codex-provider', options.codexProvider);
+  }
   if (options.serviceTier && agent === 'codex') {
     args.push('--service-tier', options.serviceTier);
   }
