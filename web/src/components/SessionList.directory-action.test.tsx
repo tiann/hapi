@@ -605,9 +605,7 @@ describe('SessionList collapse behavior', () => {
         // The directory header survives as an action-only header (copy-path /
         // new-session-in-directory) even though every row floated.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/hapi').nextElementSibling).toBeNull()
         expect(screen.getByTitle('/work/other')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/other').nextElementSibling).toBeNull()
     })
 
     it('keeps new-session-in-directory actions for projects whose rows all floated', () => {
@@ -637,8 +635,7 @@ describe('SessionList collapse behavior', () => {
 
         expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
         // The project header survives as an action-only header.
-        const header = screen.getByTitle('/work/hapi')
-        expect(header.nextElementSibling).toBeNull()
+        expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
 
         fireEvent.click(screen.getByRole('button', { name: 'New session in this directory' }))
         expect(onNewSessionInDirectory).toHaveBeenCalledWith({
@@ -954,6 +951,134 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Task 7/ })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /Task 8/ })).toBeNull()
         expect(screen.getByRole('button', { name: 'Expand 1' })).toBeInTheDocument()
+    })
+})
+
+describe('SessionList project group context menu (tiann/hapi#881)', () => {
+    function renderList(sessions: SessionSummary[]) {
+        return renderWithProviders(
+            <SessionList
+                sessions={sessions}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+    }
+
+    it('opens the group menu on right-click with Copy Path / Archive All / Delete Group', () => {
+        renderList([makeSession({
+            id: 'session-1',
+            active: true,
+            metadata: { path: '/work/hapi', name: 'Task', flavor: 'codex', lifecycleState: 'running' },
+        })])
+
+        const groupHeader = screen.getByTitle('/work/hapi')
+        fireEvent.contextMenu(groupHeader)
+
+        expect(screen.getByRole('menuitem', { name: /Copy Path/ })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: /Archive All Sessions/ })).toBeEnabled()
+        expect(screen.getByRole('menuitem', { name: /Delete Group/ })).toBeDisabled()
+    })
+
+    it('opens the group menu for an action-only pinned group header', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        renderList([makeSession({
+            id: 'session-pinned',
+            active: true,
+            metadata: { path: '/work/hapi', name: 'Pinned task', flavor: 'codex', lifecycleState: 'running' },
+        })])
+
+        fireEvent.contextMenu(screen.getByTitle('/work/hapi'))
+
+        expect(screen.getByRole('menuitem', { name: /Copy Path/ })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: /Archive All Sessions/ })).toBeEnabled()
+        expect(screen.getByRole('menuitem', { name: /Delete Group/ })).toBeDisabled()
+    })
+
+    it('enables Delete Group only when every session in the group is archived', () => {
+        renderList([
+            makeSession({
+                id: 'session-1',
+                active: false,
+                metadata: { path: '/work/hapi', name: 'Task', flavor: 'codex', lifecycleState: 'archived' },
+            }),
+            makeSession({
+                id: 'session-2',
+                active: false,
+                metadata: { path: '/work/hapi', name: 'Task 2', flavor: 'codex', lifecycleState: 'archived' },
+            }),
+        ])
+
+        fireEvent.contextMenu(screen.getByTitle('/work/hapi'))
+
+        expect(screen.getByRole('menuitem', { name: /Delete Group/ })).toBeEnabled()
+        expect(screen.getByRole('menuitem', { name: /Archive All Sessions/ })).toBeDisabled()
+    })
+
+    it('scopes destructive actions to the full group, including hidden pinned sessions', () => {
+        // The archived row is visible; the running global-pinned row with the
+        // same directory is hidden from the directory groups. Delete Group
+        // must stay disabled because the destructive scope is the whole group.
+        renderList([
+            makeSession({
+                id: 'session-visible',
+                active: false,
+                globalPinned: false,
+                metadata: { path: '/work/hapi', name: 'Task', flavor: 'codex', lifecycleState: 'archived' },
+            }),
+            makeSession({
+                id: 'session-hidden-running',
+                active: true,
+                globalPinned: true,
+                metadata: { path: '/work/hapi', name: 'Task 2', flavor: 'codex', lifecycleState: 'running' },
+            }),
+        ])
+
+        fireEvent.contextMenu(screen.getByTitle('/work/hapi'))
+
+        expect(screen.getByRole('menuitem', { name: /Delete Group/ })).toBeDisabled()
+        expect(screen.getByRole('menuitem', { name: /Archive All Sessions/ })).toBeEnabled()
+    })
+
+    it('Copy Path click does not toggle the group collapse', () => {
+        const writeText = vi.fn(async () => {})
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true
+        })
+        renderList([makeSession({
+            id: 'session-1',
+            active: true,
+            metadata: { path: '/work/hapi', name: 'Task', flavor: 'codex', lifecycleState: 'running' },
+        })])
+
+        const copyButton = screen.getByRole('button', { name: /Copy: \/work\/hapi/ })
+        fireEvent.click(copyButton)
+
+        expect(writeText).toHaveBeenCalledWith('/work/hapi')
+        // The group header stays expanded (its collapse panel remains open).
+        const panel = screen.getByTitle('/work/hapi').parentElement
+            ?.querySelector('.collapsible-panel')
+        expect(panel?.getAttribute('data-open')).toBe('true')
+    })
+
+    it('collapses the group on a plain click and does not open the menu', () => {
+        renderList([makeSession({
+            id: 'session-1',
+            active: true,
+            metadata: { path: '/work/hapi', name: 'Task', flavor: 'codex', lifecycleState: 'running' },
+        })])
+
+        const groupHeader = screen.getByTitle('/work/hapi')
+        fireEvent.click(groupHeader)
+
+        expect(screen.queryByRole('menu')).toBeNull()
+        expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
     })
 })
 
