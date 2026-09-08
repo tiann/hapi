@@ -250,6 +250,32 @@ describe('classifyCursorAgentMessage', () => {
         expect(result?.raw).toBe(exactWire)
     })
 
+    it('marks RetriableError [internal] as transient for auto-bridge', () => {
+        // Operator ask 2026-09-08 (videoagent / castle bumper): Cursor emitted
+        // "Error: RetriableError: [internal] No exec result" and the banner
+        // showed unknown_t_prefix with no auto-Bridge. Catch-all was fail-closed
+        // (transient:false). RetriableError+[internal] is a Cursor-labeled
+        // hiccup — treat like other RetriableError brackets. Keep bare
+        // Error: T: [internal] on the non-transient catch-all.
+        const exactWire = 'Error: RetriableError: [internal] No exec result'
+        const result = classifyCursorAgentMessage(exactWire)
+        expect(result).not.toBeNull()
+        expect(result?.kind).toBe('internal')
+        expect(result?.transient).toBe(true)
+        expect(result?.source).toBe('text')
+        expect(result?.raw).toBe(exactWire)
+
+        const leadingNewlines = '\n\nError: RetriableError: [internal] No exec result'
+        expect(classifyCursorAgentMessage(leadingNewlines)?.kind).toBe('internal')
+        expect(classifyCursorAgentMessage(leadingNewlines)?.transient).toBe(true)
+
+        // Error: T: form stays fail-closed (unknown catch-all).
+        const tForm = 'Error: T: [internal] No exec result'
+        const tResult = classifyCursorAgentMessage(tForm)
+        expect(tResult?.kind).toBe('unknown_t_prefix')
+        expect(tResult?.transient).toBe(false)
+    })
+
     it('classifies error appended to in-flight agent text (real session e7d9b44b)', () => {
         // Regression: 2026-06-13 session e7d9b44b. cursor-agent appended
         // a gRPC stringification to the END of a normal narrative output

@@ -19,6 +19,7 @@ export type CursorAgentStreamFailureKind =
     | 'deadline_exceeded'
     | 'unavailable'
     | 'connection_stalled'
+    | 'internal'              // RetriableError: [internal] (Cursor-labeled hiccup)
     | 'context_window'
     | 'capacity_exhausted'
     | 'unknown_t_prefix'
@@ -128,6 +129,14 @@ const PATTERNS: Pattern[] = [
         test: (t) => /^[ \t]*Error: T: Connection stalled/im.test(t)
             || /^[ \t]*Error: RetriableError: Connection stalled/im.test(t),
         kind: 'connection_stalled',
+        transient: true
+    },
+    // RetriableError [internal] only — Cursor labeled the failure retriable
+    // (dogfood 2026-09-08: "No exec result"). Keep Error: T: [internal] on
+    // the non-transient catch-all, same split as resource_exhausted.
+    {
+        test: (t) => /^[ \t]*Error: RetriableError: \[internal\]/im.test(t),
+        kind: 'internal',
         transient: true
     },
     {

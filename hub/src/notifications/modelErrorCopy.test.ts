@@ -20,6 +20,7 @@ describe('formatModelErrorTitle', () => {
         expect(formatModelErrorTitle('agent_crashed')).toBe('Agent crashed')
         expect(formatModelErrorTitle('rpc_timeout')).toBe('Agent request timed out')
         expect(formatModelErrorTitle('context_window')).toBe('Context window exceeded')
+        expect(formatModelErrorTitle('internal')).toBe('Internal agent error')
     })
 
     it('falls back to generic Model error for unknown kinds', () => {

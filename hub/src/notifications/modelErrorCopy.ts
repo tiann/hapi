@@ -28,6 +28,7 @@ export function formatModelErrorTitle(kind: string): string {
         case 'deadline_exceeded':     return 'Deadline exceeded'
         case 'unavailable':           return 'Service unavailable'
         case 'canceled':              return 'Agent canceled'
+        case 'internal':              return 'Internal agent error'
         case 'prompt_failed':         return 'Prompt failed'
         case 'unknown_stderr':
         case 'unknown_t_prefix':
