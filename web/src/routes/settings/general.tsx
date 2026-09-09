@@ -1,8 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+    CREATABLE_AGENT_FLAVORS,
+    getPermissionModeOptionsForFlavor,
+    type AgentFlavor,
+    type PermissionMode
+} from '@hapi/protocol'
+import type { UpdateHubSettingsRequest } from '@hapi/protocol/apiTypes'
+import type { ResolvedPeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults'
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { CompanionPairing } from '@/components/settings/CompanionPairing'
-import { SettingsChoiceGroup, SettingsPageContent, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
+import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { queryKeys } from '@/lib/query-keys'
 
 const locales: ReadonlyArray<{ value: Locale; label: string }> = [
@@ -41,7 +49,7 @@ export default function SettingsGeneralPage() {
     })
 
     const hubSettingsMutation = useMutation({
-        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean }) => {
+        mutationFn: async (patch: UpdateHubSettingsRequest) => {
             if (!api) throw new Error('API unavailable')
             return await api.updateHubSettings(patch)
         },
@@ -49,6 +57,26 @@ export default function SettingsGeneralPage() {
             queryClient.setQueryData(queryKeys.hubSettings, data)
         },
     })
+
+    const peerDefaults = hubSettingsQuery.data?.peerSpawnDefaults
+    const agentOptions = CREATABLE_AGENT_FLAVORS.map((value) => ({ value, label: value }))
+    const permissionOptions = getPermissionModeOptionsForFlavor(peerDefaults?.agent).map((option) => ({
+        value: option.mode,
+        label: option.label
+    }))
+
+    function updatePeerSpawnDefaults(next: ResolvedPeerSpawnDefaults) {
+        if (hubSettingsMutation.isPending) return
+        hubSettingsMutation.mutate({
+            peerSpawnDefaults: {
+                agent: next.agent,
+                permissionMode: next.permissionMode,
+                models: next.models
+            }
+        })
+    }
+
+    const currentModel = peerDefaults?.models[peerDefaults.agent] ?? ''
 
     return (
         <SettingsPageContent description={t('settings.general.description')}>
@@ -77,6 +105,57 @@ export default function SettingsGeneralPage() {
                                     hubSettingsMutation.mutate({ sessionSummaryInChat: checked })
                                 }}
                             />
+                            {peerDefaults ? (
+                                <>
+                                    <SettingsChoiceGroup
+                                        hideLabel
+                                        label={t('settings.general.peerSpawn.agent')}
+                                        description={t('settings.general.peerSpawn.agent.desc')}
+                                        value={peerDefaults.agent}
+                                        options={agentOptions}
+                                        columns={5}
+                                        onChange={(agent) => {
+                                            updatePeerSpawnDefaults({
+                                                ...peerDefaults,
+                                                agent: agent as AgentFlavor
+                                            })
+                                        }}
+                                    />
+                                    <SettingsChoiceGroup
+                                        hideLabel
+                                        label={t('settings.general.peerSpawn.permissionMode')}
+                                        description={t('settings.general.peerSpawn.permissionMode.desc')}
+                                        value={peerDefaults.permissionMode}
+                                        options={permissionOptions}
+                                        columns={4}
+                                        onChange={(permissionMode) => {
+                                            updatePeerSpawnDefaults({
+                                                ...peerDefaults,
+                                                permissionMode: permissionMode as PermissionMode
+                                            })
+                                        }}
+                                    />
+                                    <SettingsRow label={t('settings.general.peerSpawn.model')} description={t('settings.general.peerSpawn.model.desc')}>
+                                        <input
+                                            key={`${peerDefaults.agent}:${currentModel}`}
+                                            type="text"
+                                            defaultValue={currentModel}
+                                            onBlur={(event) => {
+                                                const model = event.target.value.trim()
+                                                if (!model || model === currentModel) return
+                                                updatePeerSpawnDefaults({
+                                                    ...peerDefaults,
+                                                    models: {
+                                                        ...peerDefaults.models,
+                                                        [peerDefaults.agent]: model
+                                                    }
+                                                })
+                                            }}
+                                            className="w-full max-w-xs rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)]"
+                                        />
+                                    </SettingsRow>
+                                </>
+                            ) : null}
                         </>
                     ) : null}
                 </SettingsSection>

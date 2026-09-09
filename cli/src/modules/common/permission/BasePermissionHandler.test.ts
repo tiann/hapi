@@ -62,6 +62,26 @@ describe('resolveToolAutoApprovalDecision ping_peer', () => {
     })
 })
 
+describe('resolveToolAutoApprovalDecision spawn_peer', () => {
+    it.each([
+        'spawn_peer',
+        'mcp__hapi__spawn_peer',
+        'hapi_spawn_peer',
+        'Spawn Peer Session'
+    ])('does not auto-approve %s in default mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
+    })
+
+    it.each([
+        'spawn_peer',
+        'mcp__hapi__spawn_peer',
+        'hapi_spawn_peer',
+        'Spawn Peer Session'
+    ])('does not auto-approve %s in read-only mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+    })
+})
+
 describe('resolveToolAutoApprovalDecision inspect_peer', () => {
     it.each([
         'inspect_peer',

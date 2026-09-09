@@ -23,8 +23,20 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setVoice: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const hubSettingsFixture = {
+    sessionSummaryContract: false,
+    sessionSummaryInChat: false,
+    peerSpawnDefaults: {
+        agent: 'claude' as const,
+        permissionMode: 'bypassPermissions' as const,
+        models: { claude: 'sonnet' }
+    }
+}
+const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
+const updateHubSettings = vi.fn().mockResolvedValue({
+    ...hubSettingsFixture,
+    sessionSummaryContract: true
+})
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -216,8 +228,11 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue(hubSettingsFixture)
+        updateHubSettings.mockResolvedValue({
+            ...hubSettingsFixture,
+            sessionSummaryContract: true
+        })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 

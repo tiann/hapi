@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
     SESSION_REFERENCE_STEER_SUFFIX,
+    SPAWN_PEER_TOOL_DESCRIPTION,
     buildSessionCitationSteerInstruction,
     extractSessionCitationIds,
     normalizeSessionIdPrefix,
@@ -111,5 +112,25 @@ describe('buildSessionCitationSteerInstruction', () => {
         expect(text).toContain('mcp__hapi__ping_peer')
         expect(text).toContain('mcp__hapi__list_peers')
         expect(text.toLowerCase()).toMatch(/not.*(grep|glob|filesystem|local file)/i)
+    })
+
+    it('teaches spawn_peer for new peers with work and forbids stuffing remit into machine spawn', () => {
+        const text = buildSessionCitationSteerInstruction({
+            inspectTool: 'mcp__hapi__inspect_peer',
+            pingTool: 'mcp__hapi__ping_peer',
+            listPeersTool: 'mcp__hapi__list_peers',
+            spawnTool: 'mcp__hapi__spawn_peer',
+        })
+        expect(text).toContain('mcp__hapi__spawn_peer')
+        expect(text).toMatch(/spawn-peer|spawn_peer/)
+        expect(text.toLowerCase()).toMatch(/400|reject/)
+        expect(text.toLowerCase()).not.toMatch(/strip/)
+    })
+})
+
+describe('SPAWN_PEER_TOOL_DESCRIPTION', () => {
+    it('tells agents the hub rejects a spawn-body remit instead of stripping it', () => {
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/reject/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).not.toMatch(/strip/)
     })
 })

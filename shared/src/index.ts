@@ -1,3 +1,4 @@
+export * from './peerSpawnDefaults'
 export * from './scratchlistAttachments'
 export * from './workGraph'
 export * from './apiTypes'
