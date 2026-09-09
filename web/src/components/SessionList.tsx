@@ -903,6 +903,7 @@ export function SessionListSearch(props: {
 function SessionItem(props: {
     session: SessionSummary
     onSelect: (sessionId: string) => void
+    compact?: boolean
     showPath?: boolean
     api: ApiClient | null
     titleSuggestionAvailable?: boolean
@@ -918,6 +919,7 @@ function SessionItem(props: {
     const {
         session: s,
         onSelect,
+        compact = false,
         showPath = true,
         api,
         titleSuggestionAvailable = false,
@@ -1027,20 +1029,21 @@ function SessionItem(props: {
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
     const { attentionId, scheduleId, describedBy } = useSessionRowTooltipIds(
         Boolean(attention),
-        hasScheduleTooltip
+        hasScheduleTooltip && !compact
     )
     return (
         <>
             <button
                 type="button"
                 {...longPressHandlers}
-                className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                className={`session-list-item group/session-row flex w-full flex-col text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${compact ? 'gap-0 py-1 pl-1.5 pr-1' : 'gap-1 py-2 pl-2.5 pr-2'} ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                 style={{ WebkitTouchCallout: 'none' }}
                 aria-current={selected ? 'page' : undefined}
                 aria-describedby={describedBy}
             >
                 <SessionRowSummary
                     session={s}
+                    compact={compact}
                     showPath={showPath}
                     showDetailedStatus={showDetailedStatus}
                     selected={selected}
@@ -1048,7 +1051,9 @@ function SessionItem(props: {
                     attentionTooltipId={attentionId}
                     lastSeenVersion={lastSeenVersion}
                     scheduleTooltipId={scheduleId}
-                    inRunningSection={inRunningSection}
+                    // Compact rows keep activity as a dot/spinner rather than
+                    // expanding into status labels that would crowd the rail.
+                    inRunningSection={compact || inRunningSection}
                     projectLabel={projectLabel}
                     machineLabel={machineLabel}
                 />
@@ -1190,6 +1195,8 @@ export function SessionList(props: {
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
+    /** Compact directory/session index used while the detail sidebar is collapsed. */
+    compact?: boolean
 }) {
     const { t } = useTranslation()
     const {
@@ -1197,6 +1204,7 @@ export function SessionList(props: {
         api,
         titleSuggestionAvailable = false,
         selectedSessionId,
+        compact = false,
         machineLabelsById = {},
         machinesById = {},
         onNewSessionInDirectory
@@ -1285,10 +1293,13 @@ export function SessionList(props: {
         }),
         [machineFilters, machinesById]
     )
-    const showMachineFilterBar = machineFilters.length >= 2
+    const hasMachineFilter = machineFilters.length >= 2
+    // Keep the selected machine filter active in compact mode; only hide the
+    // controls that cannot fit in the narrow rail.
+    const showMachineFilterBar = !compact && hasMachineFilter
     // A persisted filter whose machine no longer has sessions falls back to
     // "All"; with at most one machine the bar is hidden and never filters.
-    const activeMachineFilter = showMachineFilterBar && machineFilter !== null
+    const activeMachineFilter = hasMachineFilter && machineFilter !== null
         && machineFilters.some(mg => (mg.machineId ?? UNKNOWN_MACHINE_ID) === machineFilter)
         ? machineFilter
         : null
@@ -1528,6 +1539,7 @@ export function SessionList(props: {
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
+                                            compact={compact}
                                             showPath={false}
                                             api={api}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
@@ -1589,7 +1601,7 @@ export function SessionList(props: {
 
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
-        const visibleGroupSessions = getVisibleGroupSessions(group)
+        const visibleGroupSessions = compact ? group.sessions : getVisibleGroupSessions(group)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -1606,22 +1618,26 @@ export function SessionList(props: {
         const canStartInGroupDirectory = group.directory !== 'Other'
         // With multiple machines in the unfiltered view, disambiguate
         // same-named directories by suffixing the machine label.
-        const groupTitle = showMachineFilterBar && activeMachineFilter === null
+        const groupTitle = hasMachineFilter && activeMachineFilter === null
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
             <div key={group.key}>
                 <div
-                    className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
+                    className={cn(
+                        'group/project sticky top-0 z-10 flex items-center bg-[var(--app-bg)] text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none',
+                        compact ? 'gap-1' : 'gap-2',
+                        compact ? 'py-1 pl-1.5 pr-1' : 'py-1.5 pl-2 pr-2'
+                    )}
                     onClick={() => toggleGroup(group.key, isCollapsed)}
                     title={group.directory}
                 >
-                    <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
-                    <span className="font-medium text-sm truncate flex-1">
+                    <ChevronIcon className={compact ? 'h-3 w-3 text-[var(--app-hint)] shrink-0' : 'h-3.5 w-3.5 text-[var(--app-hint)] shrink-0'} collapsed={isCollapsed} />
+                    <span className={cn('font-medium truncate flex-1 min-w-0', compact ? 'text-[10px]' : 'text-sm')}>
                         {groupTitle}
                     </span>
-                    <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                    {onNewSessionInDirectory && canStartInGroupDirectory ? (
+                    {!compact ? <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" /> : null}
+                    {!compact && onNewSessionInDirectory && canStartInGroupDirectory ? (
                         <button
                             type="button"
                             onClick={(event) => {
@@ -1638,7 +1654,7 @@ export function SessionList(props: {
                             <PlusIcon className="h-3.5 w-3.5" />
                         </button>
                     ) : null}
-                    <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
+                    <span className={cn('tabular-nums text-[var(--app-hint)] shrink-0', compact ? 'text-[9px]' : 'text-[10px]')}>
                         ({group.sessions.length})
                     </span>
                 </div>
@@ -1658,6 +1674,7 @@ export function SessionList(props: {
                                 <SessionItem
                                     session={s}
                                     onSelect={props.onSelect}
+                                    compact={compact}
                                     showPath={false}
                                     api={api}
                                     titleSuggestionAvailable={titleSuggestionAvailable}
@@ -1667,7 +1684,7 @@ export function SessionList(props: {
                                 />
                             </div>
                         ))}
-                        {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                        {!compact && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
                             <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
                                 {canShowFewerSessions ? (
                                     <button
@@ -1772,7 +1789,7 @@ export function SessionList(props: {
     // The search control unmounts when the list empties; reset the expansion so
     // it cannot suppress header actions (or re-expand on its own when sessions
     // return) while no search control is rendered.
-    const showSearch = props.sessions.length > 0
+    const showSearch = !compact && props.sessions.length > 0
     useEffect(() => {
         if (!showSearch) setSearchExpanded(false)
     }, [showSearch])
@@ -1872,7 +1889,7 @@ export function SessionList(props: {
         <div className="flex min-h-0 w-full flex-1 flex-col">
             <div className="session-list-scrollbar-offset mx-auto w-full max-w-content shrink-0">
             {showHeaderRow ? (
-                <div className="flex items-center gap-1 px-2 py-1">
+                <div className={cn('flex items-center gap-1 py-1', compact ? 'px-1' : 'px-2')}>
                     {showSearch ? (
                         <SessionListSearch
                             value={searchQuery}
@@ -1899,30 +1916,32 @@ export function SessionList(props: {
                                     onChange={setMachineFilter}
                                 />
                             ) : null}
-                            <button
-                                type="button"
-                                onClick={() => setShowUnreadOnly(!showUnreadOnly)}
-                                aria-pressed={showUnreadOnly}
-                                title={t('sessions.unreadFilter.toggle')}
-                                aria-label={t('sessions.unreadFilter.toggle')}
-                                className={cn(
-                                    'flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
-                                    showUnreadOnly
-                                        ? 'bg-[var(--app-subtle-bg)]'
-                                        : 'hover:bg-[var(--app-subtle-bg)]'
-                                )}
-                            >
-                                {/* Same shape/color language as session-row unread dots (SessionAttentionIndicator). */}
-                                <span
-                                    aria-hidden
+                            {!compact ? (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowUnreadOnly(!showUnreadOnly)}
+                                    aria-pressed={showUnreadOnly}
+                                    title={t('sessions.unreadFilter.toggle')}
+                                    aria-label={t('sessions.unreadFilter.toggle')}
                                     className={cn(
-                                        'inline-flex h-2.5 w-2.5 shrink-0 rounded-full',
+                                        'flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
                                         showUnreadOnly
-                                            ? 'bg-[var(--app-link)]'
-                                            : 'bg-[var(--app-hint)]'
+                                            ? 'bg-[var(--app-subtle-bg)]'
+                                            : 'hover:bg-[var(--app-subtle-bg)]'
                                     )}
-                                />
-                            </button>
+                                >
+                                    {/* Same shape/color language as session-row unread dots (SessionAttentionIndicator). */}
+                                    <span
+                                        aria-hidden
+                                        className={cn(
+                                            'inline-flex h-2.5 w-2.5 shrink-0 rounded-full',
+                                            showUnreadOnly
+                                                ? 'bg-[var(--app-link)]'
+                                                : 'bg-[var(--app-hint)]'
+                                        )}
+                                    />
+                                </button>
+                            ) : null}
                             {renderHeader ? (
                                 <button
                                     type="button"
@@ -2021,6 +2040,7 @@ export function SessionList(props: {
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
+                                            compact={compact}
                                             showPath={false}
                                             api={api}
                                             titleSuggestionAvailable={titleSuggestionAvailable}

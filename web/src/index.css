@@ -431,6 +431,13 @@ html:has(.chat-scroll-y) #root {
     opacity: 0.6;
 }
 
+.sidebar-collapsed-rail {
+    /* Keep a compact session index visible instead of reducing the sidebar to
+       an empty toggle rail. The list still preserves directory grouping while
+       leaving the main detail pane substantially wider than the full sidebar. */
+    width: 96px;
+}
+
 /*
  * Keep message layout fully realized while scrolling. `content-visibility: auto`
  * made Chromium replace rough intrinsic heights as older messages entered view,
