@@ -839,3 +839,59 @@ describe('archiveSession', () => {
         expect(handleSessionEnd).toHaveBeenCalledWith(expect.objectContaining({ sid: SESSION_ID }))
     })
 })
+
+describe('deleteSession', () => {
+    it.each(['stopped', 'already_gone', 'still_alive', 'unreachable'] as const)(
+        'confirms runner exit before deleting an inactive row: %s', async (status) => {
+            for (const runnerMetadata of [{ startedBy: 'runner' }, { startedFromRunner: true }]) {
+                const events: string[] = []
+                const harness = {
+                    getSession: () => ({
+                        active: false,
+                        metadata: { machineId: 'machine-1', ...runnerMetadata }
+                    }),
+                    stopSession: SyncEngine.prototype.stopSession,
+                    rpcGateway: {
+                        stopRunnerSession: mock(async () => {
+                            events.push('runner')
+                            if (status === 'unreachable') throw new Error('Runner unavailable')
+                            return status
+                        })
+                    },
+                    sessionCache: { deleteSession: mock(async () => { events.push('deleted') }) }
+                }
+                const result = SyncEngine.prototype.deleteSession.call(harness as unknown as SyncEngine, SESSION_ID)
+                if (status === 'still_alive' || status === 'unreachable') {
+                    await expect(result).rejects.toThrow(status === 'still_alive' ? /still running/ : /unavailable/)
+                    expect(events).toEqual(['runner'])
+                    expect(harness.sessionCache.deleteSession).not.toHaveBeenCalled()
+                } else {
+                    expect(events).toEqual(['runner'])
+                    await result
+                    expect(events).toEqual(['runner', 'deleted'])
+                    expect(harness.sessionCache.deleteSession).toHaveBeenCalledWith(SESSION_ID)
+                }
+                expect(harness.rpcGateway.stopRunnerSession).toHaveBeenCalledWith('machine-1', SESSION_ID)
+            }
+        }
+    )
+
+    it.each([true, false])('preserves the active-session deletion guard: active=%s', async (active) => {
+        const stopSession = mock(async () => ({ alreadyStopped: false }))
+        const deleteSession = mock(async () => {})
+        const result = SyncEngine.prototype.deleteSession.call({
+            getSession: () => ({ active, metadata: { startedBy: active ? 'runner' : 'terminal' } }),
+            stopSession,
+            sessionCache: { deleteSession }
+        } as unknown as SyncEngine, SESSION_ID)
+
+        if (active) {
+            await expect(result).rejects.toThrow(/Cannot delete active session/)
+            expect(deleteSession).not.toHaveBeenCalled()
+        } else {
+            await result
+            expect(deleteSession).toHaveBeenCalledWith(SESSION_ID)
+        }
+        expect(stopSession).not.toHaveBeenCalled()
+    })
+})

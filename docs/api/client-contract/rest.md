@@ -43,7 +43,7 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `POST /api/sessions/:id/abort` | `{}` | `{ok: true}` (active sessions only) |
 | `POST /api/sessions/:id/stop` | `{}` | `{ok: true, alreadyStopped: boolean}`; stops the process without archiving |
 | `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; idempotent for inactive sessions |
-| `DELETE /api/sessions/:id` | — | `{ok: true}`; 409 while active (archive first) |
+| `DELETE /api/sessions/:id` | — | `{ok: true}` after runner exit confirmation; 409 while active (archive first); failed confirmation preserves the record |
 | `PATCH /api/sessions/:id` | `{name}` (1–255 chars) | `{ok: true}` (rename) |
 | `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |

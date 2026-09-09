@@ -45,7 +45,7 @@ Run Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, or DeepSeek Harness 
 - `hapi abort-peer <exact-session-id> --json` - Abort the current turn.
 - `hapi stop-peer <exact-session-id> --json` - Idempotently stop the session process without archiving.
 - `hapi archive-peer <exact-session-id> --json` - Idempotently stop and archive the session.
-- `hapi delete-peer <exact-session-id> --json` - Delete an inactive session record.
+- `hapi delete-peer <exact-session-id> --json` - Delete an inactive session record after confirming runner process exit; failed confirmation preserves the record.
 
 The peer commands reject prefixes. Successful `--json` output has `ok: true`; errors use `ok: false`, a stable error code, and a non-zero exit status.
 

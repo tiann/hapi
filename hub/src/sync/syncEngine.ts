@@ -1995,6 +1995,11 @@ export class SyncEngine {
     }
 
     async deleteSession(sessionId: string): Promise<void> {
+        const session = this.getSession(sessionId)
+        if (session?.active) throw new Error('Cannot delete active session')
+        if (session?.metadata?.startedBy === 'runner' || session?.metadata?.startedFromRunner === true) {
+            await this.stopSession(sessionId)
+        }
         await this.sessionCache.deleteSession(sessionId)
     }
 
