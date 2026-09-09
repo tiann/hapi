@@ -470,8 +470,13 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 }
                 return result
             }) as typeof store.abortOpenCodeClearOperation
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
+            const replacementId = currentReplacementId(engine, source.id)
+            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(true)
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+            expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(true)
+            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
             expect(store.messages.getAllMessages(source.id)).toEqual([
                 expect.objectContaining({ localId: 'restore-once', invokedAt: null })
             ])
