@@ -3124,6 +3124,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (isTerminalEvent) {
+                if (!shouldRetrySameThread && !shouldCompactAndRetrySameThread && !suppressReadyForThisTerminalEvent) {
+                    session.sendAgentMessage({
+                        type: 'turn_complete',
+                        stopReason: msgType === 'task_complete' ? 'success' : msgType === 'turn_aborted' ? 'cancelled' : 'error'
+                    });
+                }
                 setTurnInFlight(false);
                 this.conversationHistory.setBusy(false);
                 allowAnonymousTerminalEvent = false;

@@ -42,6 +42,7 @@ export type CodexMessage =
     }
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string }
+    | { type: 'turn_complete'; stopReason: string }
     | {
         type: 'generated-image';
         imageId: string;
@@ -132,7 +133,7 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
         case 'error':
             return { type: 'error', message: message.message };
         case 'turn_complete':
-            return null;
+            return { type: 'turn_complete', stopReason: message.stopReason };
         default: {
             // Unreachable while every AgentMessage variant is handled above —
             // the `never` binding is what enforces that at compile time. The

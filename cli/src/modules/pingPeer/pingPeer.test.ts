@@ -11,6 +11,9 @@ import {
 
 const SESSION_ID = '05d9f0f2-9273-4137-933c-07459a1146a2'
 const REMIT_ID = '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+const terminal = (stopReason: string) => ({
+    content: { role: 'agent', content: { type: 'codex', data: { type: 'turn_complete', stopReason } } }
+})
 
 type MockResponse = { status: number; data: unknown }
 
@@ -179,6 +182,7 @@ describe('peer lifecycle operations', () => {
                                 { id: 'u1', localId: REMIT_ID, invokedAt: 1, content: { role: 'user', content: { text: 'task' } } },
                                 { id: 'queued', content: { role: 'user', content: { text: 'scheduled later' } } },
                                 { id: 'a1', createdAt: 2, content: { role: 'assistant', content: { type: 'codex', data: { type: 'message', message: 'done' } } } },
+                                terminal('success'),
                                 { id: 'u2', createdAt: 3, invokedAt: 3, content: { role: 'user', content: { text: 'later turn' } } },
                                 { id: 'a2', createdAt: 4, content: { role: 'assistant', content: { type: 'codex', data: { type: 'message', message: 'must not leak' } } } }
                             ]
@@ -246,7 +250,8 @@ describe('peer lifecycle operations', () => {
                     status: 200,
                     data: {
                         messages: [
-                            { id: 'a2', seq: 201, createdAt: 201, content: { role: 'assistant', content: { type: 'codex', data: { type: 'message', message: 'part two' } } } }
+                            { id: 'a2', seq: 201, createdAt: 201, content: { role: 'assistant', content: { type: 'codex', data: { type: 'message', message: 'part two' } } } },
+                            terminal('success')
                         ],
                         page: { hasMore: true, nextBeforeAt: 200, nextBeforeSeq: 200 }
                     }
@@ -261,6 +266,69 @@ describe('peer lifecycle operations', () => {
             accessToken: 'token',
             http: http as never
         })).resolves.toMatchObject({ status: 'completed', text: 'part one\n\npart two' })
+    })
+
+    it.each(['expired', 'idle', 'cancelled', 'error'] as const)(
+        'does not report partial commentary as completed: %s', async (state) => {
+            let elapsed = 0
+            const http = createHttpMock({
+                post: (url) => authResponse(url)!,
+                get: (url) => url.endsWith('/messages')
+                    ? { status: 200, data: { messages: [
+                        { localId: REMIT_ID, invokedAt: 1 },
+                        { content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Still working...' } } } },
+                        ...(['cancelled', 'error'].includes(state) ? [terminal(state)] : [])
+                    ] } }
+                    : { status: 200, data: { session: { id: SESSION_ID, active: state !== 'expired', thinking: false } } }
+            })
+            await expect(waitPeer({
+                sessionId: SESSION_ID, remitId: REMIT_ID, apiUrl: 'http://hub.test', accessToken: 'token',
+                http: http as never, timeoutSecs: 1, now: () => elapsed, sleep: async (ms) => { elapsed += ms }
+            })).rejects.toMatchObject({ code: state === 'idle' ? 'timeout' : 'session_ended' })
+        }
+    )
+
+    it.each([REMIT_ID, '6acb2b8a-1334-4955-b0c6-86f5a22656d2'])(
+        'returns the shared result for either remit consumed in one batch: %s', async (remitId) => {
+            let elapsed = 0
+            const http = createHttpMock({
+                post: (url) => authResponse(url)!,
+                get: (url) => url.endsWith('/messages')
+                    ? { status: 200, data: { messages: [
+                        { localId: REMIT_ID, invokedAt: 1, content: { role: 'user' } },
+                        { localId: '6acb2b8a-1334-4955-b0c6-86f5a22656d2', invokedAt: 1, content: { role: 'user' } },
+                        { content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Both tasks done' } } } },
+                        terminal('end_turn'),
+                        { invokedAt: 2, content: { role: 'user' } },
+                        { content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Later answer' } } } }
+                    ] } }
+                    : { status: 200, data: { session: { id: SESSION_ID, active: false, thinking: false } } }
+            })
+            await expect(waitPeer({
+                sessionId: SESSION_ID, remitId, apiUrl: 'http://hub.test', accessToken: 'token',
+                http: http as never, timeoutSecs: 1, now: () => elapsed, sleep: async (ms) => { elapsed += ms }
+            })).resolves.toMatchObject({ status: 'completed', text: 'Both tasks done' })
+        }
+    )
+
+    it.each([false, true])('uses the Claude native result outcome, is_error=%s', async (isError) => {
+        const http = createHttpMock({
+            post: (url) => authResponse(url)!,
+            get: (url) => url.endsWith('/messages')
+                ? { status: 200, data: { messages: [
+                    { localId: REMIT_ID, invokedAt: 1 },
+                    { content: { role: 'agent', content: { type: 'output', data: {
+                        type: 'system', subtype: 'turn_duration',
+                        resultSummary: { subtype: isError ? 'error_max_turns' : 'success', is_error: isError }
+                    } } } }
+                ] } }
+                : { status: 200, data: { session: { id: SESSION_ID, active: false, thinking: false } } }
+        })
+        const result = waitPeer({
+            sessionId: SESSION_ID, remitId: REMIT_ID, apiUrl: 'http://hub.test', accessToken: 'token', http: http as never
+        })
+        if (isError) await expect(result).rejects.toMatchObject({ code: 'session_ended' })
+        else await expect(result).resolves.toMatchObject({ status: 'completed', text: '', messages: [] })
     })
 
     it.each(['abort', 'stop', 'archive', 'delete'] as const)('sends %s to the exact session', async (action) => {

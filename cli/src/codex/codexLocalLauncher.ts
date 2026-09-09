@@ -325,12 +325,20 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 dispatchTranscriptActions(convertTranscriptEvent(event), context);
                 if (event.type === 'event_msg' && event.payload && typeof event.payload === 'object') {
                     const payload = event.payload as Record<string, unknown>;
+                    if (['task_complete', 'turn_aborted', 'task_failed'].includes(String(payload.type))) {
+                        if (typeof payload.turn_id === 'string') {
+                            if (completedTurns.has(payload.turn_id)) return;
+                            completedTurns.add(payload.turn_id);
+                        }
+                        if (!context.replayedHistory) session.sendAgentMessage({
+                            type: 'turn_complete',
+                            stopReason: payload.type === 'task_complete' ? 'success' : payload.type === 'turn_aborted' ? 'cancelled' : 'error'
+                        });
+                    }
                     if (payload.type === 'task_started' || payload.type === 'user_message'
                         || payload.type === 'turn_aborted' || payload.type === 'task_failed') {
                         cancelReady();
                     } else if (payload.type === 'task_complete' && typeof payload.turn_id === 'string') {
-                        if (completedTurns.has(payload.turn_id)) return;
-                        completedTurns.add(payload.turn_id);
                         if (context.replayedHistory || shuttingDown) return;
                         cancelReady();
                         // Finish forwarding this scan before notifying. A following turn in

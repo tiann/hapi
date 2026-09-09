@@ -280,7 +280,7 @@ export function convertCursorEventToAgentMessage(event: CursorStreamEvent): Agen
             };
         }
         case 'result':
-            return { type: 'turn_complete', stopReason: 'success' };
+            return { type: 'turn_complete', stopReason: event.subtype === 'success' && !event.is_error ? 'success' : 'error' };
         default:
             return null;
     }

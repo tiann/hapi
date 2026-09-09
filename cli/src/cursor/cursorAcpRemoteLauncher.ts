@@ -626,6 +626,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.promptInFlight = true;
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
+            let stopReason: string | null = null;
 
             try {
                 this.promptInFlight = true;
@@ -635,17 +636,21 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pendingRetryableFromStderr = false;
                     this.pendingInlineRetryableError = false;
                     this.attemptProducedToolActivity = false;
-                    let turnCompleted = false;
+                    let nativeStopReason: string | null = null;
                     try {
                         await backend.prompt(acpSessionId, promptContent, (message) => {
-                            if (message.type === 'turn_complete') turnCompleted = true;
-                            this.handleAgentMessage(message);
+                            if (message.type === 'turn_complete') {
+                                nativeStopReason = message.stopReason;
+                            } else {
+                                this.handleAgentMessage(message);
+                            }
                         });
                         if (this.userAbortRequested) break;
-                        if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
+                        if (nativeStopReason && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
                             this.pendingRetryableError = null;
                         }
                         if (!this.pendingRetryableError) {
+                            stopReason = nativeStopReason;
                             void backend.refreshSessionInfo(acpSessionId, session.path);
                             break;
                         }
@@ -653,6 +658,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         logger.warn('[cursor-acp] prompt failed', error);
                         if (this.userAbortRequested) break;
                         if (!isRetryableCursorError(error)) {
+                            stopReason = 'error';
                             this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
                             break;
                         }
@@ -660,6 +666,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
 
                     if (this.attemptProducedToolActivity) {
+                        stopReason = 'error';
                         this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
                         break;
                     }
@@ -667,6 +674,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         this.surfaceRetry(retryAttempt + 1);
                         continue;
                     }
+                    stopReason = 'error';
                     this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
                 }
             } finally {
@@ -695,6 +703,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                     this.softSteerWaiters = [];
                 }
+                if (this.userAbortRequested) stopReason = 'cancelled';
+                if (stopReason) this.handleAgentMessage({ type: 'turn_complete', stopReason });
                 this.activePromptModeHash = null;
                 this.pendingRetryableError = null;
                 this.pendingRetryableFromStderr = false;

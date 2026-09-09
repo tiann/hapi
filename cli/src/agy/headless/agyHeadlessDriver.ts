@@ -539,6 +539,13 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                         this.session.client.emitSessionReady();
                         void this.syncTitleIfKnown();
                     };
+                    if (['user-input', 'planner-delta', 'tool', 'result'].includes(event.kind)) {
+                        accepted = true;
+                        if (!deliveryAcked && localIds.length > 0) {
+                            deliveryAcked = true;
+                            this.session.client.emitMessagesConsumed(localIds);
+                        }
+                    }
                     switch (event.kind) {
                             case 'init': {
                                 // The conversation id is known from the very first
@@ -555,11 +562,6 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 if (event.conversationId) {
                                     adoptStreamConversationId(event.conversationId);
                                 }
-                                accepted = true;
-                                if (!deliveryAcked && localIds.length > 0) {
-                                    deliveryAcked = true;
-                                    this.session.client.emitMessagesConsumed(localIds);
-                                }
                                 break;
                             }
                             case 'planner-delta': {
@@ -570,7 +572,6 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 // was accepted and the turn is running — a later
                                 // pre-result failure must NOT trigger a retry that
                                 // re-executes destructive tool effects.
-                                accepted = true;
                                 const entry = planner.feedDelta(event.stepIndex, event.delta, event.isDone);
                                 if (entry) {
                                     void sendPlanner(entry);
@@ -583,7 +584,6 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 }
                                 // Only the DONE state carries the result; the ACTIVE
                                 // line is the invocation start (parameters only).
-                                accepted = true;
                                 if (event.isDone) {
                                     sendTool(event.entry, event.toolCall);
                                 }
@@ -621,7 +621,6 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                         void sendPlanner(entry);
                                     }
                                 }
-                                accepted = true;
                                 // The authoritative result arrived: seal the turn so
                                 // a Stop/kill before child close cannot restore it.
                                 this.turnCompleted = true;
@@ -763,6 +762,13 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                         this.session.client.sendSessionEvent({
                             type: 'message',
                             message: `A tool call was auto-denied (no allow-rule)${detail}. Approve it in agy's settings.json or switch to always-proceed, then resend.`,
+                        });
+                    }
+                    if (accepted) {
+                        this.session.client.sendAgentMessage({
+                            type: 'turn_complete',
+                            stopReason: sawResult && !resultFailure ? 'success'
+                                : this.turnAbortController?.signal.aborted ? 'cancelled' : 'error',
                         });
                     }
                     resolveTurn();

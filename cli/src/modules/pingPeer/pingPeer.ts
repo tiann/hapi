@@ -594,25 +594,39 @@ export type WaitPeerResult = {
     messages: InspectPeerMessage[]
 }
 
-function extractResultMessages(rows: unknown[], remitIndex: number): {
+function extractResultMessages(rows: unknown[], remitInvokedAt: number): {
     messages: InspectPeerMessage[]
-    boundaryReached: boolean
+    outcome: 'completed' | 'failed' | 'aborted' | null
 } {
     const result: InspectPeerMessage[] = []
-    let boundaryReached = false
-    for (const row of rows.slice(remitIndex + 1)) {
+    let outcome: 'completed' | 'failed' | 'aborted' | null = null
+    for (const row of rows) {
         if (!isObject(row)) continue
         if (!isObject(row.content)) continue
         const role = typeof row.content.role === 'string' ? row.content.role : ''
         if (role === 'user') {
-            if (typeof row.invokedAt === 'number') {
-                boundaryReached = true
+            if (typeof row.invokedAt === 'number' && row.invokedAt !== remitInvokedAt) {
                 break
             }
             continue
         }
         if (role !== 'agent' && role !== 'assistant') continue
-        const text = extractAssistantPlainText(row.content.content)
+        const content = isObject(row.content.content) ? row.content.content : null
+        const data = isObject(content?.data) ? content.data : null
+        if (data?.isSidechain === true || data?.parent_tool_use_id) continue
+        if (content?.type === 'codex' && data?.type === 'turn_complete' && typeof data.stopReason === 'string') {
+            outcome = ['end_turn', 'success', 'stop'].includes(data.stopReason)
+                ? 'completed'
+                : ['cancelled', 'aborted'].includes(data.stopReason) ? 'aborted' : 'failed'
+            break
+        }
+        const summary = isObject(data?.resultSummary) ? data.resultSummary : null
+        if (content?.type === 'output' && data?.type === 'system' && data.subtype === 'turn_duration'
+            && typeof summary?.subtype === 'string') {
+            outcome = summary.subtype === 'success' && summary.is_error === false ? 'completed' : 'failed'
+            break
+        }
+        const text = extractAssistantPlainText(content)
         if (!text?.trim()) continue
         result.push({
             id: typeof row.id === 'string' ? row.id : '',
@@ -621,7 +635,7 @@ function extractResultMessages(rows: unknown[], remitIndex: number): {
             createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
         })
     }
-    return { messages: result, boundaryReached }
+    return { messages: result, outcome }
 }
 
 async function getMessagesFromRemit(
@@ -630,7 +644,7 @@ async function getMessagesFromRemit(
     sessionId: string,
     remitId: string,
     http: AxiosInstance
-): Promise<{ found: boolean; invoked: boolean; rows: unknown[] }> {
+): Promise<{ found: boolean; invokedAt: number | null; rows: unknown[] }> {
     let before: { at: number; seq: number } | null = null
     const newerPages: unknown[][] = []
     while (true) {
@@ -653,7 +667,7 @@ async function getMessagesFromRemit(
             const remit = rows[remitIndex]
             return {
                 found: true,
-                invoked: isObject(remit) && typeof remit.invokedAt === 'number',
+                invokedAt: isObject(remit) && typeof remit.invokedAt === 'number' ? remit.invokedAt : null,
                 rows: [...rows.slice(remitIndex + 1), ...newerPages.reverse().flat()]
             }
         }
@@ -662,7 +676,7 @@ async function getMessagesFromRemit(
         const nextBeforeAt = page?.nextBeforeAt
         const nextBeforeSeq = page?.nextBeforeSeq
         if (page?.hasMore !== true || typeof nextBeforeAt !== 'number' || typeof nextBeforeSeq !== 'number') {
-            return { found: false, invoked: false, rows: [] }
+            return { found: false, invokedAt: null, rows: [] }
         }
         newerPages.push(rows)
         before = { at: nextBeforeAt, seq: nextBeforeSeq }
@@ -688,9 +702,12 @@ export async function waitPeer(options: WaitPeerOptions): Promise<WaitPeerResult
     while (now() <= deadline) {
         const live = await getSession(apiUrl, jwt, sessionId, http)
         const result = await getMessagesFromRemit(apiUrl, jwt, sessionId, remitId, http)
-        if (result.found) {
-            const { messages, boundaryReached } = extractResultMessages(result.rows, -1)
-            if (result.invoked && messages.length > 0 && (boundaryReached || !live.thinking)) {
+        if (result.found && result.invokedAt !== null) {
+            const { messages, outcome } = extractResultMessages(result.rows, result.invokedAt)
+            if (outcome === 'failed' || outcome === 'aborted') {
+                throw new PingPeerError('session_ended', `Remit ${remitId} ${outcome}`)
+            }
+            if (outcome === 'completed') {
                 return {
                     sessionId,
                     remitId,
@@ -702,7 +719,7 @@ export async function waitPeer(options: WaitPeerOptions): Promise<WaitPeerResult
             }
         }
         if (!live.active) {
-            throw new PingPeerError('session_ended', result.invoked
+            throw new PingPeerError('session_ended', result.invokedAt !== null
                 ? `session ${sessionId} ended before producing a result`
                 : `session ${sessionId} ended before accepting remit ${remitId}`)
         }

@@ -241,6 +241,9 @@ describe('codexLocalLauncher', () => {
             await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'live' }) + event({ type: 'task_complete', turn_id: 'old' }));
             await wait(300);
             expect(sessionEvents.filter(e => e.type === 'ready')).toHaveLength(1);
+            expect(agentMessages.filter(e => (e as { type?: string }).type === 'turn_complete')).toEqual([{
+                type: 'turn_complete', stopReason: 'success'
+            }]);
         } finally {
             release();
             await running;

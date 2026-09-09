@@ -801,11 +801,12 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.promptMessageBatches = [[
             { type: 'text', text: 'Error: RetriableError: [canceled] http/2 stream closed' },
             { type: 'turn_complete', stopReason: 'end_turn' }
-        ]];
+        ], [{ type: 'turn_complete', stopReason: 'end_turn' }]];
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient();
         const session = new CursorSession({
             api: {} as never,
-            client: makeClient(),
+            client,
             path: '/tmp/project',
             logPath: '/tmp/log',
             sessionId: null,
@@ -823,6 +824,8 @@ describe('cursorAcpRemoteLauncher', () => {
         await cursorAcpRemoteLauncher(session);
 
         expect(harness.promptCalls).toBe(2);
+        expect(vi.mocked(client.sendAgentMessage).mock.calls.filter(([message]) => (message as { type?: string }).type === 'turn_complete'))
+            .toEqual([[{ type: 'turn_complete', stopReason: 'end_turn' }]]);
     });
 
     it('does not retry when Stop resolves a prompt after a retryable stderr signal', async () => {

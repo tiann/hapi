@@ -2199,12 +2199,15 @@ describe('codexRemoteLauncher', () => {
         }));
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(session.thinking).toBe(false);
+        expect(codexMessages.filter(message => (message as { type?: string }).type === 'turn_complete')).toEqual([{
+            type: 'turn_complete', stopReason: 'success'
+        }]);
     });
 
     it('ignores a stale same-thread failure after retry has started', async () => {
         harness.remainingThreadSystemErrors = 1;
         harness.emitStaleTaskFailedAfterRetry = true;
-        const { session, sessionEvents } = createSessionStub(['first message']);
+        const { session, sessionEvents, codexMessages } = createSessionStub(['first message']);
 
         const exitReason = await codexRemoteLauncher(session as never);
 
@@ -2212,6 +2215,9 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(session.thinking).toBe(false);
+        expect(codexMessages.filter(message => (message as { type?: string }).type === 'turn_complete')).toEqual([{
+            type: 'turn_complete', stopReason: 'success'
+        }]);
     });
 
     it('ignores a stale thread-status failure after retry has started', async () => {
@@ -2229,7 +2235,7 @@ describe('codexRemoteLauncher', () => {
     it('ignores a first-turn completion while the second retry is running', async () => {
         harness.remainingThreadSystemErrors = 2;
         harness.emitFirstTurnTaskCompleteAfterSecondRetry = true;
-        const { session, sessionEvents } = createSessionStub(['first message']);
+        const { session, sessionEvents, codexMessages } = createSessionStub(['first message']);
 
         const exitReason = await codexRemoteLauncher(session as never);
 
@@ -2237,6 +2243,9 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1', 'thread-1']);
         expect(sessionEvents.filter((event) => event.type === 'ready')).toHaveLength(1);
         expect(session.thinking).toBe(false);
+        expect(codexMessages.filter(message => (message as { type?: string }).type === 'turn_complete')).toEqual([{
+            type: 'turn_complete', stopReason: 'success'
+        }]);
     });
 
     it('still retries a generic systemError when an empty failed turn completion confirms it', async () => {
