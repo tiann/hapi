@@ -2081,6 +2081,7 @@ export class SyncEngine {
             }, latest.metadataVersion, namespace, required)
             if (result.result === 'success') {
                 this.sessionCache.refreshSession(sessionId)
+                this.sessionCache.refreshConversationContent(current.replacementSessionId)
                 return { type: 'success', sessionId }
             }
             if (result.result !== 'version-mismatch') break
