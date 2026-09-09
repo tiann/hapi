@@ -24,9 +24,13 @@ device know. The relay (and Apple) forward opaque bytes; the iOS
 Notification Service Extension decrypts locally on the device
 (`mutable-content: 1` with a fixed placeholder alert of "HAPI / New
 activity" that the extension rewrites). What the relay *can* observe is
-metadata: the APNs device token, request timing, and envelope size. It
-stores nothing and logs no payloads — log lines carry only a hashed token
-prefix (first 12 hex chars of SHA-256) and the outcome.
+metadata: the APNs device token, the connecting hub/proxy IP, request timing,
+and envelope size. It does not persist payloads in a database or log them.
+It does retain token/IP rate-limit state in bounded process memory, and log
+lines carry a stable hashed token prefix (first 12 hex chars of SHA-256) and
+the outcome. The hash can correlate events for a device; it is not complete
+anonymization. Container/proxy log retention depends on deployment settings,
+not this service's in-memory storage policy.
 
 **No client authentication, by design.** Possession of a device token *is*
 the capability, the same trust model FCM uses: APNs device tokens are
@@ -40,7 +44,8 @@ the relay, which is exactly what HAPI avoids. Mitigations instead:
 - per-client-IP rate limit: 300 pushes/minute (token bucket, burst 300)
 - envelope size cap: 3200 bytes (base64 as transmitted), plus a 64 KB cap
   on the whole request body
-- rate-limit state is in-memory and bounded (LRU-pruned), no persistence
+- rate-limit state is in-memory and bounded (LRU-pruned), no persistence;
+  entries have no fixed expiry and may remain until eviction or restart
 
 ## API
 
