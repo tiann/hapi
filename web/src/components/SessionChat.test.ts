@@ -7,13 +7,36 @@ import {
     isScratchlistToggleHotkey,
     isSelectAllTargetBlocked,
     mergeStagedAttachmentsInOrder,
+    opencodeEffortOptionsInvalidationKey,
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    shouldClearReasoningEffortForModelChange,
     shouldRouteToScratchlist,
+    isRewindForkFallbackError,
 } from './SessionChat'
+import { ApiError } from '@/api/client'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+
+describe('isRewindForkFallbackError', () => {
+    it('recognizes the structured safe-Fork boundary code', () => {
+        expect(isRewindForkFallbackError(new ApiError(
+            'native boundary is ambiguous',
+            409,
+            'ambiguous_native_boundary_fork_safe'
+        ))).toBe(true)
+    })
+
+    it('does not classify unsafe or message-only errors as fallback candidates', () => {
+        expect(isRewindForkFallbackError(new ApiError(
+            'native boundary is ambiguous',
+            409,
+            'ambiguous_native_boundary'
+        ))).toBe(false)
+        expect(isRewindForkFallbackError(new Error('ambiguous native boundary'))).toBe(false)
+    })
+})
 
 describe('applyModelChangeWithReasoningRollback', () => {
     it('restores the previous effort when the model switch fails after clearing it', async () => {
@@ -48,6 +71,42 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('shouldClearReasoningEffortForModelChange', () => {
+    it('preserves an OpenCode effort for backend validation and rollback', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: 'high',
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
+    })
+
+    it('does not clear an unset OpenCode effort', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: null,
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
+    })
+})
+
+describe('opencodeEffortOptionsInvalidationKey', () => {
+    it('returns the effort options query key for opencode sessions', () => {
+        expect(opencodeEffortOptionsInvalidationKey('opencode', 'session-1')).toEqual([
+            'session-opencode-reasoning-effort-options',
+            'session-1',
+        ])
+    })
+
+    it('returns null for other flavors and missing flavor', () => {
+        expect(opencodeEffortOptionsInvalidationKey('codex', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey('grok', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(null, 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(undefined, 'session-1')).toBeNull()
     })
 })
 

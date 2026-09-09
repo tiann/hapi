@@ -63,7 +63,7 @@ export class CodexSessionTitles {
                 this.sync(threadId, thread.name);
                 return;
             }
-            const { config: effective } = await this.client.readConfig(this.cwd, signal);
+            const { config: effective } = await this.client.readConfig({ cwd: this.cwd, includeLayers: false }, { signal });
             const config: Record<string, unknown> = {
                 ...Object.fromEntries(DISABLED_FEATURES.map(feature => [`features.${feature}`, false])),
                 'orchestrator.skills.enabled': false,

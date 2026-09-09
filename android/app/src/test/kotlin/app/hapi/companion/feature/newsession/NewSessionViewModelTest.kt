@@ -164,7 +164,7 @@ private fun encode(request: SpawnSessionRequest): JsonObject =
 class SpawnBodyTest {
 
     @Test
-    fun `claude simple session with model, effort and yolo off`() {
+    fun `claude simple session with model, effort and permission mode`() {
         val body = encode(
             NewSessionLogic.buildSpawnRequest(
                 NewSessionForm(
@@ -173,23 +173,27 @@ class SpawnBodyTest {
                     agent = "claude",
                     model = "opus",
                     effort = "high",
-                    yolo = false,
+                    permissionMode = "plan",
+                    yolo = true,
                 ),
                 codexFastTierVisible = false,
             ),
         )
-        // Exact SpawnSessionRequestSchema field set — yolo false IS sent for
-        // claude; permissionMode / reasoning / codex fields are absent.
+        // Exact SpawnSessionRequestSchema field set — claude is on the native
+        // permission select now, so permissionMode IS sent (even a picked
+        // non-default mode) and yolo is absent, even when set on the form (a
+        // stale toggle value from before the flavor switch).
         assertEquals(
-            setOf("directory", "agent", "model", "effort", "yolo", "sessionType"),
+            setOf("directory", "agent", "model", "effort", "permissionMode", "sessionType"),
             body.keys,
         )
         assertEquals("/data/github/hapi", body["directory"]!!.jsonPrimitive.content)
         assertEquals("claude", body["agent"]!!.jsonPrimitive.content)
         assertEquals("opus", body["model"]!!.jsonPrimitive.content)
         assertEquals("high", body["effort"]!!.jsonPrimitive.content)
-        assertEquals(false, body["yolo"]!!.jsonPrimitive.boolean)
+        assertEquals("plan", body["permissionMode"]!!.jsonPrimitive.content)
         assertEquals("simple", body["sessionType"]!!.jsonPrimitive.content)
+        assertNull(body["yolo"])
     }
 
     @Test
@@ -907,6 +911,12 @@ class NewSessionViewModelTest {
         assertTrue(vm.uiState.value.permission is PermissionUi.Managed)
 
         vm.setAgent("claude")
+        advanceUntilIdle()
+        // Claude is on the native select now; the YOLO toggle only remains for
+        // the flavors still carrying it (cursor here).
+        assertTrue(vm.uiState.value.permission is PermissionUi.NativeSelect)
+
+        vm.setAgent("cursor")
         advanceUntilIdle()
         val toggle = vm.uiState.value.permission
         assertTrue(toggle is PermissionUi.YoloToggle)

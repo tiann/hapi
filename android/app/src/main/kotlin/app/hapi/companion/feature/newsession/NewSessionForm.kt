@@ -56,28 +56,37 @@ object NewSessionLogic {
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS
 
-    /** Flavors whose permission control is the native-mode select. */
+    /**
+     * Flavors whose permission control is the native-mode select. claude and
+     * grok do not share the codex-family mode set, but they render through
+     * the same native select (web `usesNativePermissionSelect`,
+     * `web/src/lib/codexFamilyPermissionAgents.ts`).
+     */
     fun usesNativePermissionSelect(flavor: String?): Boolean =
-        flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
+        flavor == "claude" || flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
 
     /**
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
      * - `model`/`effort` only for flavors whose picker exists in this v1
      *   (claude static list, codex machine catalog; others send no model);
-     * - `yolo` for non-grok/non-codex-family flavors — **including `false`**;
-     * - `permissionMode` for grok + codex-family — including `'default'`;
+     * - `yolo` only for flavors still on the YOLO toggle (not
+     *   `usesNativePermissionSelect`) — **including `false`**;
+     * - `permissionMode` for every `usesNativePermissionSelect` flavor —
+     *   including `'default'`;
      * - `sessionType` always; `worktreeName` only for worktree and non-blank;
      * - `serviceTier` only while the codex fast tier is visible (then also
      *   `'standard'`); `collaborationMode` only when not `'default'`;
      * - `copilotAgentMode` always for copilot;
      * - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
      *   remote; pty is deferred, matching the web create form).
+     *
+     * Unlike web, Android has no persistent YOLO preference to migrate: the
+     * toggle only lives in the in-memory form / a draft that is deleted on
+     * success, so there is nothing to bridge into `permissionMode` here.
      */
     fun buildSpawnRequest(form: NewSessionForm, codexFastTierVisible: Boolean): SpawnSessionRequest {
         val agent = form.agent
-        val codexFamily = usesCodexFamilyPermissionModes(agent)
-        val isGrok = agent == "grok"
         val resolvedModel = when {
             // v1 model pickers: claude (static presets) and codex (machine
             // catalog). Other flavors' discovery endpoints are TODO(M3d+),
@@ -95,8 +104,8 @@ object NewSessionLogic {
             } else {
                 null
             },
-            yolo = if (agent == "dsh" || isGrok || codexFamily) null else form.yolo,
-            permissionMode = if (isGrok || codexFamily) form.permissionMode else null,
+            yolo = if (agent == "dsh" || usesNativePermissionSelect(agent)) null else form.yolo,
+            permissionMode = if (usesNativePermissionSelect(agent)) form.permissionMode else null,
             sessionType = form.sessionType,
             worktreeName = if (form.sessionType == SESSION_TYPE_WORKTREE) {
                 form.worktreeName.trim().ifEmpty { null }

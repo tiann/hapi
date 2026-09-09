@@ -19,9 +19,11 @@ struct NewSessionSpawnBodyTests {
         return String(decoding: data, as: UTF8.self)
     }
 
-    @Test func claudeSimpleSessionWithModelEffortAndYoloOff() throws {
-        // Exact SpawnSessionRequestSchema field set — yolo false IS sent for
-        // claude; permissionMode / reasoning / codex fields are absent.
+    @Test func claudeSimpleSessionWithModelEffortAndPermissionMode() throws {
+        // Exact SpawnSessionRequestSchema field set — claude is on the
+        // native permission select now, so permissionMode IS sent (even a
+        // picked non-default mode) and yolo is absent, even when set on the
+        // form (a stale toggle value from before the flavor switch).
         let body = try canonicalBody(
             NewSessionForm(
                 machineId: "m1",
@@ -29,13 +31,14 @@ struct NewSessionSpawnBodyTests {
                 agent: .claude,
                 model: "opus",
                 effort: "high",
-                yolo: false
+                permissionMode: .plan,
+                yolo: true
             ),
             codexFastTierVisible: false
         )
         #expect(body == """
         {"agent":"claude","directory":"/data/github/hapi","effort":"high",\
-        "model":"opus","sessionType":"simple","yolo":false}
+        "model":"opus","permissionMode":"plan","sessionType":"simple"}
         """)
     }
 

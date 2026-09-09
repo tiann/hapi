@@ -32,8 +32,8 @@ import Observation
 final class ChatSession {
     let sessionId: String
 
-    /// Session-pipe connection state, for the chat header/banner.
-    private(set) var connectionState: SSEConnectionState = .idle
+    /// Session-pipe notice, delayed and stable across transport retry phases.
+    let reconnectNotice = SSEReconnectNotice()
     /// From this pipe's latest handshake; needed for `POST /api/visibility`
     /// (M3b) — new on every reconnect.
     private(set) var subscriptionId: String?
@@ -41,8 +41,8 @@ final class ChatSession {
     /// state stream and calls its `fetchOlder`/`syncTail`.
     private(set) var windowController: MessageWindowController?
 
-    /// Fired (on the main actor) after every handled SSE event so the chat
-    /// model can re-run its pipeline over the freshly patched stores.
+    /// Fired (on the main actor) after SSE events that can update stores so
+    /// the chat model can re-run its pipeline over the freshly patched data.
     @ObservationIgnored var onStoreActivity: (@MainActor () -> Void)?
 
     private let baseURL: URL
@@ -121,7 +121,7 @@ final class ChatSession {
         onStoreActivity = nil
         consumeTask?.cancel()
         consumeTask = nil
-        connectionState = .idle
+        reconnectNotice.update(.idle)
         // Nobody observes the detail once the chat closes (mirror of the
         // Android `sessionStore.releaseDetail`).
         sessionStore.releaseDetail(sessionId)
@@ -182,7 +182,9 @@ final class ChatSession {
     private func handle(_ event: SSEClientEvent) async {
         switch event {
         case .stateChanged(let state):
-            connectionState = state
+            reconnectNotice.update(state)
+            // Transport phases do not change the stores or transcript.
+            return
         case .handshake(let resume, let subscriptionId):
             self.subscriptionId = subscriptionId
             onHandshake(subscriptionId)

@@ -9,21 +9,37 @@ public struct NetworkPathUpdate: Equatable, Sendable {
     public var isSatisfied: Bool
     /// Cellular / personal-hotspot style paths (informational).
     public var isExpensive: Bool
+    /// Interfaces carrying the path; preserves same-cost route changes.
+    public var usedInterfaces: Set<String>
+    /// Default gateways distinguish route changes on the same interface.
+    public var gateways: Set<String>
 
-    public init(isSatisfied: Bool, isExpensive: Bool = false) {
+    public init(
+        isSatisfied: Bool,
+        isExpensive: Bool = false,
+        usedInterfaces: Set<String> = [],
+        gateways: Set<String> = []
+    ) {
         self.isSatisfied = isSatisfied
         self.isExpensive = isExpensive
+        self.usedInterfaces = usedInterfaces
+        self.gateways = gateways
+    }
+
+    func requiresReconnect(from previous: Self) -> Bool {
+        isSatisfied != previous.isSatisfied
+            || usedInterfaces != previous.usedInterfaces
+            || gateways != previous.gateways
     }
 }
 
 /// Source of network-path change notifications for `SSEClient`.
 ///
 /// The stream's FIRST element is the baseline path reported on subscription
-/// (NWPathMonitor always fires once immediately); every subsequent element is
-/// an actual change. `SSEClient` skips the baseline and treats any later
-/// update while connected as a transport error — the old socket is almost
-/// certainly routed over a path that no longer exists, and reconnecting
-/// immediately beats waiting for the 90 s staleness watchdog.
+/// (NWPathMonitor always fires once immediately). Later callbacks can repeat
+/// the route or change only metadata such as cost; those must not tear down
+/// a healthy stream. Reachability, interface, or gateway changes invalidate
+/// the old route and reconnect without waiting for the staleness watchdog.
 public protocol NetworkPathObserving: Sendable {
     func pathUpdates() -> AsyncStream<NetworkPathUpdate>
 }
@@ -46,7 +62,11 @@ public struct NWPathObserver: NetworkPathObserving {
             box.monitor.pathUpdateHandler = { path in
                 continuation.yield(NetworkPathUpdate(
                     isSatisfied: path.status == .satisfied,
-                    isExpensive: path.isExpensive
+                    isExpensive: path.isExpensive,
+                    usedInterfaces: Set(path.availableInterfaces
+                        .filter { path.usesInterfaceType($0.type) }
+                        .map(\.name)),
+                    gateways: Set(path.gateways.map { String(describing: $0) })
                 ))
             }
             box.monitor.start(queue: DispatchQueue(label: "run.hapi.sse.path-monitor"))

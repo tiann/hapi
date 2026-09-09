@@ -1,7 +1,7 @@
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types'
 import type { GrokPermissionMode } from '@hapi/protocol/types'
-import { deriveToolName } from '@/agent/utils'
+import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
     BasePermissionHandler,
@@ -15,10 +15,6 @@ interface PermissionResponseMessage {
     approved: boolean
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     reason?: string
-}
-
-function deriveToolInput(request: PermissionRequest): unknown {
-    return request.rawInput !== undefined ? request.rawInput : request.rawOutput
 }
 
 function pickOptionId(

@@ -526,6 +526,9 @@ export async function runOpencode(opts: {
                 }
                 notifyHubModeChange(mode);
             },
+            onModelRollback: (model) => {
+                sessionModel = model;
+            },
             onReasoningEffortRollback: (effort) => {
                 sessionModelReasoningEffort = effort;
             },

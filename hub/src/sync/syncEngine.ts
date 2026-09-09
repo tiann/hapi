@@ -12,7 +12,7 @@ import {
     MACHINE_CAPABILITIES,
     cliBinaryUpdatedOnDisk,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse, SpawnSessionWithRemitRequest } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SpawnSessionWithRemitRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -30,6 +30,7 @@ import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
 import { selectForkTranscriptPrefix } from './forkTranscript'
+import { buildForkSessionSummary } from './forkSessionSummary'
 import {
     RpcGateway,
     RpcTargetMissingError,
@@ -47,6 +48,7 @@ import {
     type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
+    type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -80,6 +82,7 @@ export type {
     RpcListPiSessionsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
+    RpcListOpencodeModelVariantsResponse,
     RpcListGrokModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -1504,11 +1507,13 @@ export class SyncEngine {
         const copiedLocalIds = new Set(
             prefix.flatMap((message) => (message.localId ? [message.localId] : []))
         )
+        const forkSummary = buildForkSessionSummary(source.metadata)
         const childMetadata: Record<string, unknown> = {
             path: directory,
             host: source.metadata?.host ?? 'unknown',
             machineId,
             flavor,
+            ...(forkSummary ? { summary: forkSummary } : {}),
             forkedFrom: sessionId,
             startedBy: 'runner',
             capabilities: source.metadata?.capabilities,
@@ -1669,7 +1674,7 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId: string
-    ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
+    ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
@@ -1685,7 +1690,7 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId: string
-    ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
+    ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
@@ -1721,7 +1726,11 @@ export class SyncEngine {
         }
 
         if (rpcResult?.success !== true) {
-            return { type: 'error', message: rpcResult?.error ?? 'Native rewind failed' }
+            return {
+                type: 'error',
+                message: rpcResult?.error ?? 'Native rewind failed',
+                ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+            }
         }
 
         try {
@@ -1732,7 +1741,13 @@ export class SyncEngine {
             )
             this.scrubHistoryLocators(sessionId, namespace)
             this.sessionCache.rebuildTodosFromTranscript(sessionId)
-            this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace })
+            this.eventPublisher.emit({
+                type: 'messages-invalidated',
+                sessionId,
+                namespace,
+                reason: 'rewind',
+                truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
+            })
             this.sessionCache.refreshSession(sessionId)
             return { type: 'success' }
         } catch (error) {
@@ -4403,6 +4418,10 @@ export class SyncEngine {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    async listOpencodeModelVariantsForMachine(machineId: string, cwd?: string | null): Promise<RpcListOpencodeModelVariantsResponse> {
+        return await this.rpcGateway.listOpencodeModelVariantsForMachine(machineId, cwd)
     }
 
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {

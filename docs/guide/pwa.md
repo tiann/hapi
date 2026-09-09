@@ -129,6 +129,10 @@ In addition to Web Push, the hub can send notifications through Firebase Cloud M
 If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./notifications.md#telegram-setup) instead.
 :::
 
+### Windows taskbar badge
+
+When HAPI is installed as a PWA from Microsoft Edge or Chrome on Windows, users can show the number of sessions with activity newer than the local last-seen watermark on its taskbar icon. The setting is disabled by default because some Edge/Windows configurations render the same host badge as overlapping layers, with one layer offset and clipped by the taskbar. Use Settings > Display > Session list > Taskbar unread badge to opt in or out for this PWA. The badge is updated while the PWA has a current session snapshot; it is not shown for a normal browser tab, and the read state remains local to that browser/PWA profile.
+
 ## Managing Your PWA
 
 ### Check Install Status

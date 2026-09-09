@@ -209,7 +209,22 @@ export const AgentStateCompletedRequestSchema = z.object({
 
 export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedRequestSchema>
 
+const CodexUsageWindowSchema = z.object({
+    remainingPercent: z.number().min(0).max(100).nullable(),
+    windowDurationMins: z.number().positive().nullable(),
+    resetsAt: z.number().nonnegative().nullable()
+})
+
+const CodexUsageBucketSchema = z.object({
+    primary: CodexUsageWindowSchema.nullable(),
+    secondary: CodexUsageWindowSchema.nullable()
+})
+
 export const AgentStateSchema = z.object({
+    codexUsage: z.object({
+        ordinary: CodexUsageBucketSchema,
+        reserve: CodexUsageBucketSchema.nullable()
+    }).nullish(),
     controlledByUser: z.boolean().nullish(),
     // True while the CLI is delivering a queued message into the active turn
     // (Steer). Surfaced so the web can reflect the inject in progress.
@@ -575,7 +590,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         message: DecryptedMessageSchema
     }),
     SessionChangedSchema.extend({
-        type: z.literal('messages-invalidated')
+        type: z.literal('messages-invalidated'),
+        reason: z.literal('rewind').optional(),
+        truncateFromLocalId: z.string().min(1).optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('scheduled-matured')

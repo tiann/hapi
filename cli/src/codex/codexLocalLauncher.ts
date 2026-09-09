@@ -48,7 +48,7 @@ function extractTurnContextModel(event: CodexSessionEvent): string | null | unde
     const model = (event.payload as Record<string, unknown>).model;
     if (model === null) return null;
     if (typeof model !== 'string' || !model.trim()) return undefined;
-    return model.trim();
+    return model.trim() === 'gpt-reserve' ? 'gpt-5.6-luna' : model.trim();
 }
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
@@ -221,12 +221,13 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         : primarySessionId
                             ? {
                                 ...message,
+                                flavor: 'codex',
                                 model: transcriptModel,
                                 threadId: primarySessionId,
                                 thread_id: primarySessionId,
                                 hapiUsageScope: 'managed'
                             }
-                            : { ...message, model: transcriptModel };
+                            : { ...message, flavor: 'codex', model: transcriptModel };
                 session.sendAgentMessage(scopedMessage);
             }
         }
@@ -416,7 +417,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             await codexLocal({
                 path: session.path,
                 sessionId: resumeSessionId,
-                modelReasoningEffort: (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
+                modelReasoningEffort: resumeSessionId ? undefined : (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,
                 codexArgs,

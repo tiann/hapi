@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import SettingsHubPage from './index'
@@ -11,7 +11,7 @@ import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 
-const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice } = vi.hoisted(() => ({
+const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled } = vi.hoisted(() => ({
     context: { token: '' },
     navigate: vi.fn(),
     setAppearance: vi.fn(),
@@ -21,6 +21,7 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setComposerEnterBehavior: vi.fn(),
     setCodexExplorationCollapsed: vi.fn(),
     setVoice: vi.fn(),
+    setAppBadgeEnabled: vi.fn(),
 }))
 
 const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryInChat: false })
@@ -83,6 +84,10 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
     usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
+}))
+
+vi.mock('@/hooks/useAppBadgePreference', () => ({
+    useAppBadgePreference: () => ({ appBadgeEnabled: false, setAppBadgeEnabled }),
 }))
 
 vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
@@ -245,9 +250,26 @@ describe('responsive settings pages', () => {
         renderPage(<SettingsGeneralPage />)
         expect(screen.getByText('Companion')).toBeInTheDocument()
         expect(screen.getByText('Companion pairing')).toBeInTheDocument()
-        expect(await screen.findByRole('checkbox', { name: 'Show session status summary in chat' })).toBeInTheDocument()
+        expect(await screen.findByRole('checkbox', { name: 'Show status summaries in chat' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
+    })
+
+    it('offers summary display without restoring agent prompt controls', async () => {
+        updateHubSettings.mockImplementation(async (patch: { sessionSummaryInChat?: boolean }) => ({
+            sessionSummaryInChat: patch.sessionSummaryInChat ?? false,
+        }))
+
+        renderPage(<SettingsGeneralPage />)
+
+        expect(await screen.findByRole('heading', { name: 'Session status summaries' })).toBeInTheDocument()
+        expect(screen.getByText('Choose whether available session status summaries appear in chat.')).toBeInTheDocument()
+        expect(screen.queryByRole('checkbox', { name: 'Emit status summaries' })).not.toBeInTheDocument()
+        const displayToggle = await screen.findByRole('checkbox', { name: 'Show status summaries in chat' })
+        fireEvent.click(displayToggle)
+        await waitFor(() => {
+            expect(updateHubSettings).toHaveBeenCalledWith({ sessionSummaryInChat: true })
+        })
     })
 
     it('renders compact display controls without dropdown popovers', () => {
@@ -257,6 +279,10 @@ describe('responsive settings pages', () => {
         expect(setColorTheme).toHaveBeenCalledWith('nord')
         expect(screen.getByRole('radio', { name: '120%' })).toBeInTheDocument()
         expect(screen.getByRole('spinbutton', { name: 'Sessions Before Folding' })).toHaveValue(8)
+        const appBadgeToggle = screen.getByRole('checkbox', { name: 'Taskbar unread badge' })
+        expect(appBadgeToggle).not.toBeChecked()
+        fireEvent.click(appBadgeToggle)
+        expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()

@@ -9,6 +9,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import type { CodexMcpServerConfig } from './codexMcpServers';
 
 /**
  * MCP server entry configuration.
@@ -19,7 +20,7 @@ export interface McpServerToolConfig {
     approval_mode?: McpToolApprovalMode;
 }
 
-export interface McpServerEntry {
+export interface McpServerEntry extends CodexMcpServerConfig {
     command: string;
     args: string[];
     tools?: Record<string, McpServerToolConfig>;

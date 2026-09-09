@@ -4,6 +4,7 @@ import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import type {
+    ThreadSettingsUpdateParams,
     CollaborationModeListResponse,
     InitializeParams,
     InitializeResponse,
@@ -29,6 +30,8 @@ import type {
     TurnSteerResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
+    ConfigReadParams,
+    ConfigReadResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadGoalGetParams,
@@ -224,6 +227,11 @@ export class CodexAppServerClient extends JsonLineParser {
         });
         this.process = child;
 
+        child.stdin.on('error', (error) => {
+            if (this.process !== child) return;
+            logger.debug('[CodexAppServer] stdin error', error);
+        });
+
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
             if (this.process === child) this.feed(chunk);
@@ -288,8 +296,17 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as InitializeResponse;
     }
 
-    async readConfig(cwd: string, signal?: AbortSignal): Promise<{ config: Record<string, unknown> }> {
-        return await this.sendRequest('config/read', { cwd, includeLayers: false }, { signal, timeoutMs: 30_000 }) as { config: Record<string, unknown> };
+    async readConfig(params: ConfigReadParams, options?: { signal?: AbortSignal }): Promise<ConfigReadResponse> {
+        const response = await this.sendRequest('config/read', params, { signal: options?.signal, timeoutMs: 30_000 });
+        return response as ConfigReadResponse;
+    }
+
+    async readAccountRateLimits(supportsLunaReserve = false): Promise<unknown> {
+        return this.sendRequest('account/rateLimits/read', supportsLunaReserve ? { supportsLunaReserve: true } : null, { timeoutMs: 30_000 });
+    }
+
+    async updateThreadSettings(params: ThreadSettingsUpdateParams): Promise<void> {
+        await this.sendRequest('thread/settings/update', params, { timeoutMs: 30_000 });
     }
 
     async setThreadName(threadId: string, name: string, signal?: AbortSignal): Promise<void> {
@@ -356,7 +373,7 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as ThreadForkResponse;
     }
 
-    async supportsMethod(method: 'thread/fork' | 'thread/rollback'): Promise<boolean> {
+    async supportsMethod(method: 'thread/fork' | 'thread/rollback' | 'thread/settings/update'): Promise<boolean> {
         try {
             await this.sendRequest(method, { threadId: '__hapi_capability_probe__' }, { timeoutMs: 30_000 });
             return true;
@@ -691,10 +708,13 @@ export class CodexAppServerClient extends JsonLineParser {
 
             if ('id' in message && message.id !== undefined) {
                 const requestId = message.id;
+                const sourceProcess = this.process;
                 void this.handleIncomingRequest({
                     id: requestId,
                     method,
                     params
+                }, sourceProcess).catch((error) => {
+                    logger.debug('[CodexAppServer] Error handling incoming request', error);
                 });
                 return;
             }
@@ -708,7 +728,10 @@ export class CodexAppServerClient extends JsonLineParser {
         }
     }
 
-    private async handleIncomingRequest(request: { id: unknown; method: string; params?: unknown }): Promise<void> {
+    private async handleIncomingRequest(
+        request: { id: unknown; method: string; params?: unknown },
+        sourceProcess: ChildProcessWithoutNullStreams | null
+    ): Promise<void> {
         const responseId = typeof request.id === 'number' || typeof request.id === 'string'
             ? request.id
             : null;
@@ -721,7 +744,7 @@ export class CodexAppServerClient extends JsonLineParser {
                     code: -32601,
                     message: `Method not found: ${request.method}`
                 }
-            } satisfies JsonRpcLiteResponse);
+            } satisfies JsonRpcLiteResponse, sourceProcess);
             return;
         }
 
@@ -730,7 +753,7 @@ export class CodexAppServerClient extends JsonLineParser {
             this.writePayload({
                 id: responseId,
                 result
-            } satisfies JsonRpcLiteResponse);
+            } satisfies JsonRpcLiteResponse, sourceProcess);
         } catch (error) {
             this.writePayload({
                 id: responseId,
@@ -738,7 +761,7 @@ export class CodexAppServerClient extends JsonLineParser {
                     code: -32603,
                     message: error instanceof Error ? error.message : 'Internal error'
                 }
-            } satisfies JsonRpcLiteResponse);
+            } satisfies JsonRpcLiteResponse, sourceProcess);
         }
     }
 
@@ -778,9 +801,28 @@ export class CodexAppServerClient extends JsonLineParser {
         return error;
     }
 
-    private writePayload(payload: JsonRpcLiteRequest | JsonRpcLiteNotification | JsonRpcLiteResponse): void {
+    private writePayload(
+        payload: JsonRpcLiteRequest | JsonRpcLiteNotification | JsonRpcLiteResponse,
+        targetProcess: ChildProcessWithoutNullStreams | null = this.process
+    ): void {
+        if (!targetProcess || targetProcess !== this.process) {
+            return;
+        }
+
+        const stdin = targetProcess.stdin;
+        if (!stdin || stdin.destroyed || stdin.writableEnded || stdin.writable === false) {
+            return;
+        }
+
         const serialized = JSON.stringify(payload);
-        this.process?.stdin.write(`${serialized}\n`);
+        try {
+            stdin.write(`${serialized}\n`);
+        } catch (error) {
+            // The app-server can close stdin while an async request handler is
+            // still completing. Dropping that late response is safe; the
+            // transport is already unavailable and must not crash the runner.
+            logger.debug('[CodexAppServer] Ignoring payload write after process shutdown', error);
+        }
     }
 
     private resetParserState(): void {

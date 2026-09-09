@@ -9,31 +9,9 @@ import SwiftUI
 /// action footers (via `\.chatInteractions`), the session config sheet
 /// (toolbar gear), supersede renavigation, and toast notices.
 ///
-/// Scrolling model (iOS 17 APIs, kept deliberately simple):
-/// - `defaultScrollAnchor(.bottom)` opens the thread at the newest message
-///   AND keeps the bottom edge pinned while the reader is at the bottom —
-///   that is the auto-stick;
-/// - `scrollPosition(id:anchor:.top)` is used for the two programmatic
-///   jumps: the new-messages pill (scroll to the bottom sentinel) and
-///   **older-page re-anchoring** — before `loadOlder()` the current top
-///   block id is captured, and when `historyVersion` bumps (rows were
-///   prepended above the viewport, which shifts a non-bottom-anchored
-///   scroll view) the position is re-set to that id so the reader stays on
-///   the block they were looking at. Lazy estimated layout makes this
-///   re-anchor approximate to the row, which is the documented trade-off;
-/// - at-bottom detection uses a 1 pt bottom sentinel's lazy realization
-///   (`onAppear`/`onDisappear`) — slightly eager because of lazy prefetch,
-///   which errs toward sticking, the harmless direction.
+/// Transcript layout and scroll intent live in `ChatTranscriptView`.
 struct ChatView: View {
     @State private var model: ChatModel
-    /// Scroll position binding (anchor `.top`, so it tracks/targets the
-    /// top-visible block).
-    @State private var positionID: String?
-    @State private var isAtBottom = true
-    /// Newest block id last seen while at the bottom (new-messages pill).
-    @State private var newestSeenID: String?
-    /// Top-visible block captured when an older page was requested.
-    @State private var pendingAnchorID: String?
     /// Session config sheet (toolbar gear).
     @State private var configSheetOpen = false
     /// Files browser push (toolbar folder, A-M4a).
@@ -50,8 +28,6 @@ struct ChatView: View {
     /// Kept for the files/viewer pushes (the model owns its own reference).
     private let session: HubSession
     private let sessionId: String
-
-    private static let bottomSentinelID = "chat-bottom-sentinel"
 
     init(
         session: HubSession,
@@ -73,11 +49,16 @@ struct ChatView: View {
             } else if model.blocks.isEmpty {
                 emptyState
             } else {
-                blockList
+                ChatTranscriptView(model: model)
             }
         }
+        // Reconnection must not resize the transcript and trigger its
+        // viewport/bottom-follow layout handlers. Keep it below any warning.
+        .overlay(alignment: .top) {
+            reconnectNotice
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
-            banners
+            warningBanner
         }
         // Toast overlays the thread; applying it before the bottom inset
         // anchors it just above the composer instead of on top of it.
@@ -198,171 +179,65 @@ struct ChatView: View {
         }
     }
 
-    // MARK: - Thread
-
-    private var blockList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                if model.hasMore || model.isLoadingOlder {
-                    OlderHistoryRow(isLoading: model.isLoadingOlder)
-                        .onAppear {
-                            requestOlderPage()
-                        }
-                }
-                ForEach(model.blocks, id: \.stableId) { block in
-                    ChatBlockCard(block: block, basePath: model.basePath)
-                }
-                bottomSentinel
-            }
-            .scrollTargetLayout()
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-        }
-        .defaultScrollAnchor(.bottom)
-        .scrollPosition(id: $positionID, anchor: .top)
-        .scrollDismissesKeyboard(.interactively)
-        .overlay(alignment: .bottom) {
-            newMessagesPill
-        }
-        .onChange(of: model.historyVersion) {
-            reanchorAfterPrepend()
-        }
-        .onChange(of: newestBlockID) {
-            if isAtBottom {
-                newestSeenID = newestBlockID
-            }
-        }
-    }
-
-    private var bottomSentinel: some View {
-        Color.clear
-            .frame(height: 1)
-            .id(Self.bottomSentinelID)
-            .onAppear {
-                isAtBottom = true
-                newestSeenID = newestBlockID
-            }
-            .onDisappear {
-                isAtBottom = false
-            }
-    }
-
-    private var newestBlockID: String? {
-        model.blocks.last?.stableId
-    }
-
-    /// Capture the anchor BEFORE the prepend lands, then ask for the page.
-    private func requestOlderPage() {
-        if pendingAnchorID == nil {
-            let id = positionID
-            // The binding may currently point at chrome rows; fall back to
-            // the oldest real block.
-            let isBlock = id.map { candidate in
-                model.blocks.contains { $0.stableId == candidate }
-            } ?? false
-            pendingAnchorID = isBlock ? id : model.blocks.first?.stableId
-        }
-        model.loadOlder()
-    }
-
-    /// `historyVersion` bumped: rows were prepended above the viewport.
-    /// Re-set the position to the captured block on the next runloop turn
-    /// (after SwiftUI laid the new rows out).
-    private func reanchorAfterPrepend() {
-        guard let anchor = pendingAnchorID else { return }
-        pendingAnchorID = nil
-        guard !isAtBottom else { return } // bottom-anchored: nothing shifted
-        Task { @MainActor in
-            positionID = anchor
-        }
-    }
-
-    // MARK: - New-messages pill
-
-    private var unseenCount: Int {
-        guard !isAtBottom, let seen = newestSeenID else { return 0 }
-        guard let index = model.blocks.lastIndex(where: { $0.stableId == seen }) else { return 0 }
-        return model.blocks.count - 1 - index
-    }
-
-    @ViewBuilder
-    private var newMessagesPill: some View {
-        let count = unseenCount
-        if count > 0 {
-            Button {
-                newestSeenID = newestBlockID
-                positionID = Self.bottomSentinelID
-            } label: {
-                Text(count == 1
-                    ? String(localized: "1 new message ↓")
-                    : String(format: String(localized: "%lld new messages ↓"), Int64(count)))
-                    .font(.footnote.weight(.medium))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(.tint, in: Capsule())
-                    .foregroundStyle(.white)
-                    .shadow(radius: 3, y: 1)
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, 12)
-        }
-    }
-
     // MARK: - Chrome
 
     private var headerTitle: some View {
-        HStack(spacing: 8) {
-            StatusDot(active: model.header.active, thinking: model.header.thinking)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.header.title)
-                    .font(.headline)
-                    .lineLimit(1)
-                if let subtitle = model.header.subtitle {
-                    HStack(spacing: 4) {
-                        if model.header.flavor != nil {
-                            // Inherits .secondary like the meta text (web:
-                            // currentColor under --app-hint); color variants
-                            // ignore the tint.
-                            AgentFlavorIconView(flavor: model.header.flavor, size: 12)
-                        }
-                        Text(subtitle)
-                            .font(.caption2)
-                            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(model.header.title)
+                .font(.headline)
+                .lineLimit(1)
+            if let subtitle = model.header.subtitle {
+                HStack(spacing: 4) {
+                    if model.header.flavor != nil {
+                        // Inherits .secondary like the meta text (web:
+                        // currentColor under --app-hint); color variants
+                        // ignore the tint.
+                        AgentFlavorIconView(flavor: model.header.flavor, size: 12)
                     }
-                    .foregroundStyle(.secondary)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .lineLimit(1)
                 }
+                .foregroundStyle(.secondary)
             }
         }
     }
 
     @ViewBuilder
-    private var banners: some View {
-        VStack(spacing: 0) {
-            if let warning = model.warning {
-                HStack(spacing: 8) {
-                    Text(LocalizedNoticeMapper.map(warning))
-                        .font(.footnote)
-                        .lineLimit(2)
-                    Spacer(minLength: 8)
-                    Button("Retry") {
-                        model.retry()
-                    }
-                    .font(.footnote.weight(.semibold))
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity)
-                .background(.red.opacity(0.14))
-                .foregroundStyle(.red)
-            }
-            if case .backoff = model.connectionState {
-                Text("Live updates interrupted — reconnecting…")
+    private var warningBanner: some View {
+        if let warning = model.warning {
+            HStack(spacing: 8) {
+                Text(LocalizedNoticeMapper.map(warning))
                     .font(.footnote)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 5)
-                    .background(.orange.opacity(0.15))
-                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                Button("Retry") {
+                    model.retry()
+                }
+                .font(.footnote.weight(.semibold))
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(.red.opacity(0.14))
+            .foregroundStyle(.red)
+        }
+    }
+
+    @ViewBuilder
+    private var reconnectNotice: some View {
+        if model.isReconnecting {
+            Text("Live updates interrupted — reconnecting…")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .foregroundStyle(.orange)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(radius: 4, y: 2)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .allowsHitTesting(false)
         }
     }
 
@@ -397,28 +272,5 @@ struct ChatView: View {
         } description: {
             Text("Messages will appear here as the agent works.")
         }
-    }
-}
-
-/// Centered "· · ·" / spinner row doubling as the load-older top sentinel.
-private struct OlderHistoryRow: View {
-    let isLoading: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Loading older messages…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("· · ·")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
     }
 }

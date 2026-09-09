@@ -127,6 +127,9 @@ struct SessionListView: View {
             onOpenSession(row.id)
         } label: {
             SessionRowView(row: row, now: now)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Plain buttons otherwise ignore the label's empty space.
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         // Default separator color reads heavy against these rows; the theme
@@ -293,34 +296,6 @@ struct SessionRowView: View {
             }
             .padding(.top, 2)
         }
-    }
-}
-
-/// Solid green for active (pulsing while thinking), muted gray when idle.
-/// Chat-header use only — list rows express liveness by dimming instead
-/// (web parity: no per-row presence dot).
-struct StatusDot: View {
-    let active: Bool
-    let thinking: Bool
-
-    var body: some View {
-        let dot = Circle()
-            .fill(active ? Color.green : Color.gray.opacity(0.45))
-            .frame(width: 10, height: 10)
-        Group {
-            if thinking {
-                dot.phaseAnimator([1.0, 0.25]) { view, opacity in
-                    view.opacity(opacity)
-                } animation: { _ in
-                    .easeInOut(duration: 0.7)
-                }
-            } else {
-                dot
-            }
-        }
-        .accessibilityLabel(active
-            ? (thinking ? String(localized: "Thinking") : String(localized: "Active"))
-            : String(localized: "Inactive"))
     }
 }
 

@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { runCodex } from './runCodex'
 
 const mockCodexSession = vi.hoisted(() => ({
+    getPermissionMode: vi.fn<() => string | undefined>(),
+    getModel: vi.fn<() => string | null | undefined>(),
+    getModelReasoningEffort: vi.fn<() => string | null | undefined>(),
+    getServiceTier: vi.fn<() => string | null | undefined>(),
+    getCollaborationMode: vi.fn<() => string | undefined>(),
     setPermissionMode: vi.fn(),
     setModel: vi.fn(),
     setModelReasoningEffort: vi.fn(),
@@ -122,6 +127,11 @@ describe('runCodex', () => {
         harness.session.onUserMessage.mockReset()
         harness.session.onCancelQueuedMessage.mockReset()
         harness.session.rpcHandlerManager.registerHandler.mockReset()
+        mockCodexSession.getPermissionMode.mockReset()
+        mockCodexSession.getModel.mockReset()
+        mockCodexSession.getModelReasoningEffort.mockReset()
+        mockCodexSession.getServiceTier.mockReset()
+        mockCodexSession.getCollaborationMode.mockReset()
         mockCodexSession.setPermissionMode.mockReset()
         mockCodexSession.setModel.mockReset()
         mockCodexSession.setModelReasoningEffort.mockReset()
@@ -266,6 +276,20 @@ describe('runCodex', () => {
 
         expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(1, 'max')
         expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(2, 'extreme')
+    })
+
+    it('preserves native fallback settings when changing another session setting', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project', model: 'gpt-5.6', modelReasoningEffort: 'high' })
+        mockCodexSession.getModel.mockReturnValue('gpt-5.6-luna')
+        mockCodexSession.getModelReasoningEffort.mockReturnValue('medium')
+        mockCodexSession.getServiceTier.mockReturnValue('standard')
+        const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(
+            ([method]) => method === RPC_METHODS.SetSessionConfig
+        )?.[1] as (payload: unknown) => Promise<unknown>
+        expect(await handler({ permissionMode: 'yolo' })).toEqual({
+            applied: expect.objectContaining({ modelReasoningEffort: 'medium', serviceTier: 'standard' })
+        })
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenLastCalledWith('medium')
     })
 
     it('still persists an explicit reasoning effort reset as null', async () => {

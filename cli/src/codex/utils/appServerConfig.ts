@@ -1,6 +1,6 @@
 import type { EnhancedMode } from '../loop';
 import type { CodexCliOverrides } from './codexCliOverrides';
-import type { McpServersConfig } from './buildHapiMcpBridge';
+import type { CodexMcpServersConfig } from './codexMcpServers';
 import type {
     ApprovalPolicy,
     SandboxMode,
@@ -11,6 +11,11 @@ import type {
     UserInput
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
+
+export type CodexContextManagementConfig = {
+    modelContextWindow?: number;
+    modelAutoCompactTokenLimit?: number;
+};
 
 const MODELS_WITHOUT_REASONING_SUMMARY = new Set([
     'gpt-5.3-codex-spark'
@@ -88,15 +93,11 @@ export function supportsReasoningSummary(model: string | undefined): boolean {
     return !MODELS_WITHOUT_REASONING_SUMMARY.has(modelName);
 }
 
-function buildMcpServerConfig(mcpServers: McpServersConfig): Record<string, unknown> {
+function buildMcpServerConfig(mcpServers: CodexMcpServersConfig): Record<string, unknown> {
     const config: Record<string, unknown> = {};
 
     for (const [name, server] of Object.entries(mcpServers)) {
-        config[`mcp_servers.${name}`] = {
-            command: server.command,
-            args: server.args,
-            ...(server.tools ? { tools: server.tools } : {})
-        };
+        config[`mcp_servers.${name}`] = { ...server };
     }
 
     return config;
@@ -168,10 +169,11 @@ export function buildUserInputFromMessage(
 export function buildThreadStartParams(args: {
     cwd: string;
     mode: EnhancedMode;
-    mcpServers: McpServersConfig;
+    mcpServers: CodexMcpServersConfig;
     cliOverrides?: CodexCliOverrides;
     baseInstructions?: string;
     developerInstructions?: string;
+    contextManagementConfig?: CodexContextManagementConfig;
 }): ThreadStartParams {
     const approvalPolicy = resolveApprovalPolicy(args.mode);
     const sandbox = resolveSandbox(args.mode);
@@ -188,7 +190,13 @@ export function buildThreadStartParams(args: {
     const configWithInstructions = {
         ...config,
         ...(resolvedDeveloperInstructions !== undefined ? { developer_instructions: resolvedDeveloperInstructions } : {}),
-        ...(args.mode.modelReasoningEffort ? { model_reasoning_effort: args.mode.modelReasoningEffort } : {})
+        ...(args.mode.modelReasoningEffort ? { model_reasoning_effort: args.mode.modelReasoningEffort } : {}),
+        ...(args.contextManagementConfig?.modelContextWindow !== undefined
+            ? { model_context_window: args.contextManagementConfig.modelContextWindow }
+            : {}),
+        ...(args.contextManagementConfig?.modelAutoCompactTokenLimit !== undefined
+            ? { model_auto_compact_token_limit: args.contextManagementConfig.modelAutoCompactTokenLimit }
+            : {})
     };
 
     const params: ThreadStartParams = {
@@ -299,4 +307,14 @@ export function buildTurnStartParams(args: {
     }
 
     return params;
+}
+
+/** Resume the actual task settings before reconciling HAPI's queued configuration. */
+export function withoutCodexModelOverrides(params: ThreadStartParams): ThreadStartParams {
+    const { model, serviceTier, ...rest } = params;
+    const config = { ...rest.config };
+    delete config.model;
+    delete config.model_reasoning_effort;
+    delete config.service_tier;
+    return { ...rest, config };
 }

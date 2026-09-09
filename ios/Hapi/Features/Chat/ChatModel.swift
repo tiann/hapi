@@ -61,8 +61,8 @@ final class ChatModel {
     /// navigation entry with this one.
     private(set) var supersededSessionId: String?
 
-    /// Session-pipe connection state (observed through the chat session).
-    var connectionState: SSEConnectionState { chat.connectionState }
+    /// Delayed session-pipe notice; stable until the hub handshake arrives.
+    var isReconnecting: Bool { chat.reconnectNotice.isVisible }
 
     // MARK: Wiring
 
@@ -208,16 +208,18 @@ final class ChatModel {
 
     // MARK: - Actions
 
-    /// Top sentinel reached: one older page. No-ops while one is in flight
-    /// or while a tail sync could race the cursor (Android gate).
-    func loadOlder() {
-        guard olderTask == nil, let controller = chat.windowController else { return }
+    /// Reader requested older history: one page. Returns whether it started;
+    /// busy/tail-sync rejections must not change the view's saved anchor.
+    @discardableResult
+    func loadOlder() -> Bool {
+        guard olderTask == nil, let controller = chat.windowController else { return false }
         guard let windowState, windowState.hasMore,
-              !windowState.isLoadingMore, !windowState.isSyncingTail else { return }
+              !windowState.isLoadingMore, !windowState.isSyncingTail else { return false }
         olderTask = Task { [weak self] in
             _ = await controller.fetchOlder()
             self?.olderTask = nil
         }
+        return true
     }
 
     /// Error state → try again (detail + a tail sync past any in-flight run).
@@ -289,7 +291,11 @@ final class ChatModel {
         summary: SessionSummary?,
         machines: [Machine]
     ) {
-        blocks = visible
+        // Session/machine status events can arrive without new messages.
+        // Do not invalidate the entire lazy transcript for identical output.
+        if blocks != visible {
+            blocks = visible
+        }
         header = Self.buildHeader(
             sessionId: sessionId,
             detail: detail,

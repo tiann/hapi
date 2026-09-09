@@ -212,6 +212,8 @@ On first run, HAPI:
 | `HAPI_TITLE_PROVIDER_MODEL` | - | - | Server-only lightweight model used for generated session titles |
 | `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | - | Maximum title suggestions per session in the rate-limit window |
 | `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | - | Title suggestion rate-limit window in milliseconds |
+| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `64` | - | Maximum completion-token budget per generated title; raise for reasoning-model providers |
+| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | - | Title provider request timeout in milliseconds |
 </details>
 
 The session rename dialog's **Generate** action is unavailable until all three

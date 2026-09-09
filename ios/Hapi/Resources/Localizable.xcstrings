@@ -1921,6 +1921,16 @@
         }
       }
     },
+    "Load older messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载更早消息"
+          }
+        }
+      }
+    },
     "Loading machines…": {
       "localizations": {
         "zh-Hans": {
@@ -2647,6 +2657,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hub 启动时打印，也显示在网页版「设置 → 伴侣应用配对」中。将完整配对链接粘贴到任一输入框同样有效。"
+          }
+        }
+      }
+    },
+    "Privacy Policy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私政策"
           }
         }
       }

@@ -1,13 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
 
 const harness = vi.hoisted(() => ({
+    appServerConnected: true,
+    abandonTransport: null as (() => void) | null,
+    resumeModel: 'gpt-5.4',
+    reserveUsage: null as Record<string, unknown> | null,
+    reserveSettingsCalls: [] as Array<Record<string, unknown>>,
     notifications: [] as Array<{ method: string; params: unknown }>,
     dispatchNotification: null as ((method: string, params: unknown) => void) | null,
     registerRequestCalls: [] as string[],
     requestHandlers: new Map<string, (params: unknown) => Promise<unknown> | unknown>(),
     initializeCalls: [] as unknown[],
+    configReadCalls: [] as unknown[],
+    configReadResponse: { config: {} } as { config: Record<string, unknown> },
+    failConfigRead: false,
     setFeatureEnablementCalls: [] as unknown[],
     failSetFeatureEnablement: false,
     listCollaborationModeCalls: 0,
@@ -102,14 +113,14 @@ vi.mock('./codexAppServerClient', () => {
         private notificationHandler: ((method: string, params: unknown) => void) | null = null;
         private stderrHandler: ((text: string) => void) | null = null;
 
-        async connect(): Promise<void> {}
+        async connect(): Promise<void> { harness.appServerConnected = true; }
 
         isConnected(): boolean {
-            return true;
+            return harness.appServerConnected;
         }
 
         isInitialized(): boolean {
-            return true;
+            return harness.appServerConnected;
         }
 
         async initialize(params: unknown): Promise<{ protocolVersion: number }> {
@@ -117,12 +128,20 @@ vi.mock('./codexAppServerClient', () => {
             return { protocolVersion: 1 };
         }
 
+        async readConfig(params: unknown): Promise<{ config: Record<string, unknown> }> {
+            harness.configReadCalls.push(params);
+            if (harness.failConfigRead) {
+                throw new Error('config/read unsupported');
+            }
+            return harness.configReadResponse;
+        }
+
         setNotificationHandler(handler: ((method: string, params: unknown) => void) | null): void {
             this.notificationHandler = handler;
             harness.dispatchNotification = handler;
         }
 
-        setTransportAbandonedHandler(_handler: (() => void) | null): void {}
+        setTransportAbandonedHandler(handler: (() => void) | null): void { harness.abandonTransport = handler; }
 
         setStderrHandler(handler: ((text: string) => void) | null): void {
             this.stderrHandler = handler;
@@ -134,6 +153,25 @@ vi.mock('./codexAppServerClient', () => {
                 throw new Error('collaborationMode/list failed');
             }
             return harness.collaborationModeResponse;
+        }
+
+        async readAccountRateLimits(): Promise<unknown> {
+            if (!harness.reserveUsage) throw new Error('Unsupported');
+            return structuredClone(harness.reserveUsage);
+        }
+
+        async supportsMethod(): Promise<boolean> { return true; }
+
+        async listModels(): Promise<unknown> {
+            return { data: [
+                { id: 'gpt-reserve', hidden: true, defaultReasoningEffort: 'medium' },
+                { id: 'gpt-5.4', hidden: false, defaultReasoningEffort: 'high' }
+            ] };
+        }
+
+        async updateThreadSettings(params: Record<string, unknown>): Promise<void> {
+            harness.reserveSettingsCalls.push(params);
+            this.notificationHandler?.('thread/settings/updated', { threadId: params.threadId, threadSettings: params });
         }
 
         async listSkills(params: unknown): Promise<unknown> {
@@ -168,7 +206,7 @@ vi.mock('./codexAppServerClient', () => {
             if (harness.failResumeThreadIds.includes(id)) {
                 throw new Error('resume failed');
             }
-            return { thread: { id }, model: 'gpt-5.4' };
+            return { thread: { id }, model: harness.resumeModel };
         }
 
         async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
@@ -1103,6 +1141,7 @@ import { INDETERMINATE_SYMBOL } from './codexAppServerClient';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 type FakeAgentState = {
+    codexUsage?: import('@hapi/protocol').AgentState['codexUsage'];
     requests: Record<string, unknown>;
     completedRequests: Record<string, unknown>;
 };
@@ -1199,6 +1238,10 @@ function createSessionStub(
         setModelReasoningEffort(nextEffort: EnhancedMode['modelReasoningEffort']) {
             currentModelReasoningEffort = nextEffort;
         },
+        getModelReasoningEffort() { return currentModelReasoningEffort; },
+        pushKeepAlive() {},
+        getServiceTier() { return undefined; },
+        setServiceTier() {},
         getCollaborationMode() {
             return currentCollaborationMode;
         },
@@ -1394,11 +1437,19 @@ describe('codexRemoteLauncher', () => {
         session.queue.close();
     });
     afterEach(() => {
+        harness.appServerConnected = true;
+        harness.abandonTransport = null;
+        harness.resumeModel = 'gpt-5.4';
+        harness.reserveUsage = null;
+        harness.reserveSettingsCalls = [];
         harness.notifications = [];
         harness.dispatchNotification = null;
         harness.registerRequestCalls = [];
         harness.requestHandlers = new Map();
         harness.initializeCalls = [];
+        harness.configReadCalls = [];
+        harness.configReadResponse = { config: {} };
+        harness.failConfigRead = false;
         harness.setFeatureEnablementCalls = [];
         harness.failSetFeatureEnablement = false;
         harness.listCollaborationModeCalls = 0;
@@ -1512,6 +1563,10 @@ describe('codexRemoteLauncher', () => {
                 experimentalApi: true
             }
         }]);
+        expect(harness.configReadCalls).toEqual([{
+            cwd: '/tmp/hapi-update',
+            includeLayers: false
+        }]);
         expect(harness.setFeatureEnablementCalls).toEqual([{ enablement: { goals: true } }]);
         expect(harness.notifications.map((entry) => entry.method)).toEqual([
             'turn/started',
@@ -1522,6 +1577,111 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('forwards effective Codex context settings for fresh and resumed threads', async () => {
+        harness.configReadResponse = {
+            config: {
+                model_context_window: 400_000,
+                model_auto_compact_token_limit: 300_000
+            }
+        };
+
+        const fresh = createSessionStub();
+        await codexRemoteLauncher(fresh.session as never);
+        expect(harness.startThreadParams[0]?.config).toMatchObject({
+            model_context_window: 400_000,
+            model_auto_compact_token_limit: 300_000
+        });
+
+        harness.startThreadParams = [];
+        const resumed = createSessionStub();
+        resumed.session.sessionId = 'thread-existing';
+        await codexRemoteLauncher(resumed.session as never);
+        expect(harness.resumeThreadParams[0]?.config).toMatchObject({
+            model_context_window: 400_000,
+            model_auto_compact_token_limit: 300_000
+        });
+    });
+
+    it('forwards user-configured MCP servers into fresh and resumed threads', async () => {
+        harness.configReadResponse = {
+            config: {
+                mcp_servers: {
+                    'package-manager': {
+                        command: 'uvx',
+                        args: ['example-mcp', 'serve'],
+                        environment_id: 'local',
+                        enabled: true,
+                        tool_timeout_sec: 60
+                    },
+                    remote: {
+                        url: 'https://example.test/mcp',
+                        bearer_token_env_var: 'REMOTE_MCP_TOKEN'
+                    }
+                }
+            }
+        };
+
+        const fresh = createSessionStub();
+        await codexRemoteLauncher(fresh.session as never);
+        const freshConfig = harness.startThreadParams[0]?.config as Record<string, unknown> | undefined;
+        const freshPackageManager = freshConfig?.['mcp_servers.package-manager'] as {
+            command?: string;
+            args?: string[];
+        } | undefined;
+        expect(harness.startThreadParams[0]?.config).toMatchObject({
+            'mcp_servers.remote': {
+                url: 'https://example.test/mcp',
+                bearer_token_env_var: 'REMOTE_MCP_TOKEN'
+            }
+        });
+        expect(freshPackageManager).toEqual(expect.objectContaining({
+            environment_id: 'local',
+            enabled: true,
+            tool_timeout_sec: 60
+        }));
+        if (process.platform === 'win32') {
+            expect(freshPackageManager?.args).toContain('mcp-proxy');
+        } else {
+            expect(freshPackageManager).toMatchObject({
+                command: 'uvx',
+                args: ['example-mcp', 'serve']
+            });
+        }
+
+        harness.startThreadParams = [];
+        const resumed = createSessionStub();
+        resumed.session.sessionId = 'thread-existing';
+        await codexRemoteLauncher(resumed.session as never);
+        const resumedConfig = harness.resumeThreadParams[0]?.config as Record<string, unknown> | undefined;
+        const resumedPackageManager = resumedConfig?.['mcp_servers.package-manager'] as {
+            command?: string;
+            args?: string[];
+        } | undefined;
+        expect(harness.resumeThreadParams[0]?.config).toMatchObject({
+            'mcp_servers.remote': {
+                url: 'https://example.test/mcp'
+            }
+        });
+        expect(resumedPackageManager).toBeDefined();
+        if (process.platform === 'win32') {
+            expect(resumedPackageManager?.args).toContain('mcp-proxy');
+        } else {
+            expect(resumedPackageManager).toMatchObject({
+                command: 'uvx',
+                args: ['example-mcp', 'serve']
+            });
+        }
+    });
+
+    it('keeps remote sessions working when config/read is unavailable', async () => {
+        harness.failConfigRead = true;
+        const { session } = createSessionStub();
+
+        await expect(codexRemoteLauncher(session as never)).resolves.toBe('exit');
+        expect(harness.startThreadParams).toHaveLength(1);
+        expect(harness.startThreadParams[0]?.config).toBeUndefined();
     });
 
     it('uses the native skill catalog for completion and structured turn input', async () => {
@@ -2542,6 +2702,118 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
+    it('preserves queued model settings when resuming an ordinary thread', async () => {
+        const { session } = createSessionStub(['first'], {
+            ...createMode(), model: 'gpt-5.6', modelReasoningEffort: 'high', serviceTier: 'fast'
+        }, true);
+        session.sessionId = 'thread-old';
+        await codexRemoteLauncher(session as never);
+        expect(harness.startTurnParams[0]).toMatchObject({
+            collaborationMode: { settings: { model: 'gpt-5.6', reasoning_effort: 'high' } },
+            serviceTier: 'priority'
+        });
+    });
+
+    it.each([
+        ['transient', 'Codex thread entered systemError', 2, false],
+        ['context', "Codex ran out of room in the model's context window.", 2, true],
+        ['usage', 'Usage limit exceeded', 1, false]
+    ] as const)('preserves %s failure handling during Reserve', async (_kind, error, attempts, compact) => {
+        harness.resumeModel = 'gpt-reserve';
+        harness.remainingThreadSystemErrors = 1;
+        harness.nextThreadSystemErrorMessage = error;
+        harness.reserveUsage = {
+            accountId: 'account-a', ordinaryUsageAllowed: false,
+            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } }
+        };
+        const { session } = createSessionStub(['first'], createMode(), true);
+        session.sessionId = 'thread-reserve';
+        await codexRemoteLauncher(session as never);
+        expect(harness.startTurnMessages).toEqual(Array(attempts).fill('first'));
+        expect(harness.compactThreadIds).toEqual(compact ? ['thread-reserve'] : []);
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnParams[0]).toMatchObject({
+            collaborationMode: { settings: { model: 'gpt-reserve' } }
+        });
+    });
+
+    it('reconciles a resumed Reserve task before waiting for the first user message', async () => {
+        harness.resumeModel = 'gpt-reserve';
+        harness.reserveUsage = {
+            accountId: 'account-a', ordinaryUsageAllowed: false,
+            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } },
+            rateLimitsByLimitId: { base_model_inference: { limitName: 'gpt-reserve', primary: { usedPercent: 20 } } }
+        };
+        const { session, getModel, getAgentState } = createSessionStub([], createMode(), false, false);
+        session.sessionId = 'thread-reserve';
+        const run = codexRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(getAgentState().codexUsage?.reserve?.primary?.remainingPercent).toBe(80));
+            expect(getModel()).toBe('gpt-5.6-luna');
+            expect(harness.resumeThreadIds).toEqual(['thread-reserve']);
+            expect(harness.startTurnMessages).toEqual([]);
+        } finally {
+            session.queue.close();
+            await run;
+        }
+    });
+
+    it('reads native settings after transport loss without replaying the interrupted message', async () => {
+        harness.resumeModel = 'gpt-reserve';
+        harness.suppressTurnCompletion = true;
+        harness.reserveUsage = {
+            accountId: 'account-a', ordinaryUsageAllowed: false,
+            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } }
+        };
+        const { session, getModel, getAgentState } = createSessionStub(['first'], createMode(), false, false);
+        session.sessionId = 'thread-reserve';
+        const run = codexRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
+            harness.resumeModel = 'gpt-5.4';
+            harness.reserveUsage.ordinaryUsageAllowed = true;
+            harness.appServerConnected = false;
+            harness.abandonTransport?.();
+            await vi.waitFor(() => expect(harness.resumeThreadIds).toEqual(['thread-reserve', 'thread-reserve']));
+            await vi.waitFor(() => expect(getAgentState().codexUsage?.reserve).toBeNull());
+            expect(getModel()).toBe('gpt-5.4');
+            expect(harness.startTurnMessages).toEqual(['first']);
+        } finally {
+            session.queue.close();
+            await run;
+        }
+    });
+
+    it('uses accepted Reserve settings for queued turns in the same conversation without replay', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-reserve-launcher-'));
+        vi.stubEnv('CODEX_HOME', home);
+        try {
+            harness.reserveUsage = {
+                accountId: 'account-a', ordinaryUsageAllowed: false,
+                rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } },
+                rateLimitsByLimitId: { base_model_inference: { limitName: 'gpt-reserve', primary: { usedPercent: 20 } } },
+                rateLimitUpsell: { banner_type: 'luna_reserve', blocked_model_slug: 'gpt-5.4' }
+            };
+            const { session, getModel, sessionEvents } = createSessionStub(['first', 'second'], createMode(), true);
+            session.sessionId = '01900000-0000-7000-8000-000000000001';
+            await codexRemoteLauncher(session as never);
+            expect(harness.resumeThreadIds).toEqual([session.sessionId]);
+            expect(harness.resumeThreadParams[0]).not.toHaveProperty('model');
+            expect(harness.reserveSettingsCalls).toHaveLength(1);
+            expect(harness.startTurnMessages).toEqual(['first', 'second']);
+            expect(harness.startTurnParams).toHaveLength(2);
+            for (const params of harness.startTurnParams) {
+                expect(params.collaborationMode).toMatchObject({ settings: { model: 'gpt-reserve', reasoning_effort: 'medium' } });
+                expect(params.threadId).toBe(session.sessionId);
+            }
+            expect(getModel()).toBe('gpt-5.6-luna');
+            expect(sessionEvents.filter(event => String(event.message).includes('Luna Reserve'))).toHaveLength(1);
+        } finally {
+            vi.unstubAllEnvs();
+            await rm(home, { recursive: true, force: true });
+        }
+    });
+
     it('does not create a new thread when an existing conversation cannot be resumed', async () => {
         harness.failResumeThreadIds = ['thread-old'];
         const { session, sessionEvents } = createSessionStub(['first message']);
@@ -2969,6 +3241,7 @@ describe('codexRemoteLauncher', () => {
 
         expect(codexMessages).toContainEqual(expect.objectContaining({
             type: 'token_count',
+            flavor: 'codex',
             thread_id: 'thread-1',
             usageSchema: 'hapi.usage.v1',
             inputTokenSemantics: 'includes-cache',

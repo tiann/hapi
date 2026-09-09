@@ -427,6 +427,7 @@ describe('codexLocalLauncher', () => {
         expect(getModelReasoningEffort()).toBeNull();
         expect(agentMessages).toContainEqual(expect.objectContaining({
             type: 'token_count',
+            flavor: 'codex',
             model: 'gpt-5.4',
             usageSchema: 'hapi.usage.v1',
             inputTokenSemantics: 'includes-cache'
@@ -758,8 +759,10 @@ describe('codexLocalLauncher', () => {
             usageSchema: 'hapi.usage.v1',
             inputTokenSemantics: 'includes-cache'
         });
+        expect(tokenMessages[0]).not.toHaveProperty('flavor');
         expect(tokenMessages[0]).not.toHaveProperty('thread_id');
         expect(tokenMessages[1]).toMatchObject({
+            flavor: 'codex',
             threadId: 'codex-thread-import',
             thread_id: 'codex-thread-import',
             hapiUsageScope: 'managed',

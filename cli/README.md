@@ -109,6 +109,23 @@ See `src/ui/doctor.ts`.
 - `hapi hub` - Start the bundled hub (single binary workflow).
 - `hapi server` - Alias for `hapi hub`.
 
+### Codex MCP servers
+
+Codex sessions keep the MCP servers configured in the user's Codex
+`config.toml`. HAPI adds its own `hapi` bridge without replacing other user
+servers. Runner-spawned Codex sessions copy only `config.toml` into their
+temporary `CODEX_HOME`, so MCP settings are preserved while authentication
+state remains isolated. The `hapi` server name is reserved by HAPI.
+
+On Windows, known package-manager shims (`uvx`, `npx`, `npm`, `pnpm`, `yarn`,
+`bunx`, and `.cmd`/`.bat` commands) use a short-lived HAPI stdio compatibility
+proxy before reaching the configured MCP server. The proxy keeps the original
+command and arguments in a session-temporary file and forwards MCP JSON-RPC
+bytes without putting environment-variable values into arguments or that file.
+Secret and network variables still need to be listed in the MCP entry's
+`env_vars` (or supplied through `env`); HAPI does not forward the whole host
+environment automatically.
+
 ## Configuration
 
 See `src/configuration.ts` for all options.
@@ -232,3 +249,25 @@ bun run build:single-exe
 
 - `../hub/README.md`
 - `../web/README.md`
+
+### Codex Luna Reserve
+
+Remote sessions read Codex's account usage through app-server. Luna Reserve is
+shown only while the task is using the backend-authorized Reserve route; an
+unused Reserve allowance never adds a row or a model option. Ordinary and
+Reserve windows remain separate, and unavailable percentages stay unknown.
+
+HAPI applies the official fallback with `thread/settings/update` and restores
+the task's saved model and reasoning effort after a fresh account read permits
+ordinary usage. It does not replay the blocked turn. Resume first reconciles
+Codex's task settings; the task-local return record uses Codex's
+`CODEX_HOME/tui-luna-reserve/<thread-id>.json` format for TUI handoff.
+
+This requires the newer app-server protocol with `ordinaryUsageAllowed`,
+`supportsLunaReserve`, the hidden Reserve catalog entry, and thread settings
+updates. Verified against official source
+[`ac192cd7937`](https://github.com/openai/codex/tree/ac192cd7937b0d73edc6dffe009940ae53782dd4).
+Codex 0.153.4 does not expose the required usage capability; no minimum released
+version is claimed. Older servers keep their ordinary usage display without
+advertising Reserve activation. Real eligible-account exhaustion, Reserve
+exhaustion, and recovery still require account-level validation.

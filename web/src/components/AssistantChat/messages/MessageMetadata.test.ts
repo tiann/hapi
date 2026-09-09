@@ -149,6 +149,22 @@ describe('buildMessageMetadataLabels', () => {
         ])
     })
 
+    it('labels a top-level Codex turn with Round', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'gpt-5.4': { inputTokens: 100, outputTokens: 10 }
+                },
+                numTurns: 1
+            }
+        })).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Round: 1 turn'
+        ])
+    })
+
     it('keeps the existing formatter byte-identical when no result summary is present', () => {
         expect(buildMessageMetadataLabels({
             durationMs: 1234,

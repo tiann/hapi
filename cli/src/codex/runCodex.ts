@@ -364,6 +364,7 @@ export async function runCodex(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
+        syncCurrentConfigFromSession();
         const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown; serviceTier?: unknown };
 
         if (config.permissionMode !== undefined) {

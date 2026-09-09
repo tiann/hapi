@@ -67,7 +67,7 @@ struct ChatComposerView: View {
                 HStack(spacing: 2) {
                     addAttachmentButton
                     Spacer()
-                    if let dictation {
+                    if let dictation, dictation.isAvailable {
                         micButton(dictation)
                     }
                     primaryActionButton(composer, attachments: attachments)
@@ -86,6 +86,9 @@ struct ChatComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .task(id: dictation.map { ObjectIdentifier($0) }) {
+            await dictation?.refreshAvailability()
+        }
         .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
             Button("Photo library") {
                 photosPickerOpen = true

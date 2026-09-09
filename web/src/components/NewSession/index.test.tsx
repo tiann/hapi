@@ -25,7 +25,11 @@ const mocks = vi.hoisted(() => ({
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
     copilotModelsLoading: false,
     opencodeModels: [] as Array<{ modelId: string; name?: string }>,
+    opencodeCurrentModelId: null as string | null,
     opencodeModelsLoading: false,
+    opencodeVariants: null as Record<string, string[]> | null,
+    opencodeVariantsLoading: false,
+    opencodeVariantsEnabled: false,
     piDialogSelection: ['pi-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
@@ -126,11 +130,21 @@ vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
 vi.mock('@/hooks/queries/useOpencodeModelsForCwd', () => ({
     useOpencodeModelsForCwd: () => ({
         availableModels: mocks.opencodeModels,
-        currentModelId: null,
+        currentModelId: mocks.opencodeCurrentModelId,
         isLoading: mocks.opencodeModelsLoading,
         error: null,
         refetch: vi.fn()
     })
+}))
+vi.mock('@/hooks/queries/useOpencodeModelVariants', () => ({
+    useOpencodeModelVariants: (args: { enabled: boolean }) => {
+        mocks.opencodeVariantsEnabled = args.enabled
+        return {
+            variants: mocks.opencodeVariants,
+            isLoading: mocks.opencodeVariantsLoading,
+            error: null
+        }
+    }
 }))
 vi.mock('@/hooks/queries/useGrokModelsForCwd', () => ({
     useGrokModelsForCwd: () => ({
@@ -197,9 +211,14 @@ vi.mock('./PermissionField', () => ({
         onNativeChange: (mode: string) => void
         onYoloToggle: (value: boolean) => void
     }) => (
-        <button type="button" data-testid="permission-mode" onClick={() => props.onNativeChange('yolo')}>
-            {props.nativeValue}
-        </button>
+        <>
+            <button type="button" data-testid="permission-mode" onClick={() => props.onNativeChange('yolo')}>
+                {props.nativeValue}
+            </button>
+            <button type="button" data-testid="permission-mode-plan" onClick={() => props.onNativeChange('plan')}>
+                {props.nativeValue}
+            </button>
+        </>
     )
 }))
 vi.mock('./CopilotAgentModeSelector', () => ({ CopilotAgentModeSelector: () => null }))
@@ -220,9 +239,10 @@ vi.mock('./AgyModelSelector', () => ({
     )
 }))
 vi.mock('./EffortField', () => ({
-    EffortField: (props: { effort: string; reasoningEffort: string; onReasoningEffortChange: (v: string) => void }) => (
+    EffortField: (props: { effort: string; reasoningEffort: string; opencodeVariantOptions?: string[] | null; onReasoningEffortChange: (v: string) => void }) => (
         <>
             <div data-testid="launch-effort">{props.effort}</div>
+            <div data-testid="opencode-variants">{props.opencodeVariantOptions?.join(',') ?? 'static'}</div>
             <button type="button" data-testid="reasoning" onClick={() => props.onReasoningEffortChange('max')}>
                 {props.reasoningEffort}
             </button>
@@ -281,7 +301,11 @@ describe('NewSession launch preferences', () => {
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
         mocks.opencodeModels = [{ modelId: 'provider/current', name: 'Current' }]
+        mocks.opencodeCurrentModelId = 'provider/current'
         mocks.opencodeModelsLoading = false
+        mocks.opencodeVariants = null
+        mocks.opencodeVariantsLoading = false
+        mocks.opencodeVariantsEnabled = false
         mocks.piDialogSelection = ['pi-native-1']
         mocks.piModels = []
         mocks.piModelsLoading = false
@@ -560,7 +584,7 @@ describe('NewSession launch preferences', () => {
         saveNewSessionFormDraft({
             agent: 'agy', model: 'gemini-3.6-flash-low', cursorSelectedBase: 'auto', machineId: 'machine-1',
             effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
-            copilotAgentMode: 'interactive', yoloMode: false, codexFamilyPermissionMode: 'default',
+            copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
             grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
         })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
@@ -572,7 +596,7 @@ describe('NewSession launch preferences', () => {
         saveNewSessionFormDraft({
             agent: 'agy', model: 'removed-model', cursorSelectedBase: 'auto', machineId: 'machine-1',
             effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
-            copilotAgentMode: 'interactive', yoloMode: false, codexFamilyPermissionMode: 'default',
+            copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
             grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
         })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
@@ -609,6 +633,72 @@ describe('NewSession launch preferences', () => {
         }))
     })
 
+    it('lets Claude create with a chosen permission mode instead of the global YOLO toggle', async () => {
+        savePreferredAgent('claude')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('claude-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude',
+            yolo: undefined,
+            permissionMode: 'plan'
+        }))
+    })
+
+    it('does not carry a permission mode picked under another flavor into the Claude spawn payload', async () => {
+        savePreferredAgent('codex')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        // Starts as codex; picking the mocked native-select button sets the
+        // shared nativePermissionMode state to 'yolo', a value 'claude' does
+        // not carry in its own permission catalog.
+        await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
+        fireEvent.click(screen.getByTestId('permission-mode'))
+        fireEvent.click(screen.getByDisplayValue('claude'))
+        await waitFor(() => expect(screen.getByDisplayValue('claude')).toBeChecked())
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('claude-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude',
+            permissionMode: 'default'
+        }))
+    })
+
+    it('migrates a legacy YOLO value owned by Claude to bypassPermissions', async () => {
+        savePreferredAgent('claude')
+        savePreferredYoloMode(true)
+
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('bypassPermissions')
+        })
+    })
+
+    it('does not preselect bypassPermissions for Claude from a legacy YOLO value owned by another flavor', async () => {
+        // hapi:newSession:yolo is a flavor-agnostic global key. The legacyYoloAgent
+        // snapshot (captured once at mount, see index.tsx) is what stops a YOLO
+        // toggle left on under cursor from silently preselecting bypassPermissions
+        // the next time Claude is picked.
+        savePreferredAgent('cursor')
+        savePreferredYoloMode(true)
+
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByDisplayValue('cursor')).toBeChecked())
+        fireEvent.click(screen.getByDisplayValue('claude'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+        })
+    })
+
     it('keeps an explicit OpenCode Default selection instead of restoring a concrete model', async () => {
         savePreferredAgent('opencode')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'opencode-session' })
@@ -622,6 +712,38 @@ describe('NewSession launch preferences', () => {
         // Spawn omits model and the explicit Default choice sticks.
         expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'opencode', model: undefined }))
         expect(screen.getByTestId('opencode-model')).toHaveTextContent('default')
+    })
+
+    it('uses the probed current model variants for an explicit OpenCode Default selection', async () => {
+        savePreferredAgent('opencode')
+        mocks.opencodeVariants = { 'provider/current': ['low', 'high'] }
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('opencode-model-default'))
+        await waitFor(() => expect(screen.getByTestId('opencode-variants')).toHaveTextContent('low,high'))
+        expect(mocks.opencodeVariantsEnabled).toBe(true)
+    })
+
+    it('waits for OpenCode variants before launching a non-default effort', async () => {
+        savePreferredAgent('opencode')
+        mocks.opencodeVariantsLoading = true
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('reasoning'))
+        expect(screen.getByTestId('create')).toBeDisabled()
+
+        mocks.opencodeVariantsLoading = false
+        mocks.opencodeVariants = { 'provider/current': ['max'] }
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+    })
+
+    it('does not probe OpenCode variants until the working directory is verified', () => {
+        savePreferredAgent('opencode')
+        mocks.directoryExists = undefined
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        expect(mocks.opencodeVariantsEnabled).toBe(false)
     })
 
     it('restores a remembered OpenCode model when it is still advertised', async () => {
@@ -899,7 +1021,7 @@ describe('NewSession launch preferences', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
