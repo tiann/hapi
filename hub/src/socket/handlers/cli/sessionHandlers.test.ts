@@ -4,6 +4,7 @@ import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { CliSocketWithData } from '../../socketTypes'
 import { registerSessionHandlers } from './sessionHandlers'
+import { MessageService } from '../../../sync/messageService'
 
 class FakeSocket {
     readonly roomEvents: Array<{ room: string; event: string; data: unknown }> = []
@@ -53,6 +54,32 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it('persists accepted steering through REST reads, duplicate ACKs and history copies', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('steer-boundary', {}, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        store.messages.addMessage(session.id, { role: 'user', meta: { deliveryMode: 'steer' } }, 'queued')
+        store.messages.addMessage(session.id, { role: 'user' }, 'accepted')
+        const service = new MessageService(store, {} as never, {} as never)
+        expect(service.getMessagesPage(session.id, { limit: 200 }).messages.every(row => !row.steered)).toBe(true)
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['accepted'] })
+        const invokedAt = store.messages.getAllMessages(session.id).find(row => row.localId === 'accepted')!.invokedAt
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['accepted'], steered: true })
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['accepted'], steered: false })
+        const rows = service.getMessagesPage(session.id, { limit: 200 }).messages
+        expect(rows.find(row => row.localId === 'accepted')).toMatchObject({ invokedAt, steered: true })
+        expect(rows.find(row => row.localId === 'queued')?.steered).toBeUndefined()
+        const copied = store.sessions.getOrCreateSession('steer-copy', {}, null, 'default')
+        store.messages.copyMessagesToSession(copied.id, store.messages.getAllMessages(session.id))
+        expect(service.getMessagesPage(copied.id, { limit: 200 }).messages.find(row => row.localId === 'accepted')?.steered).toBe(true)
+        store.close()
+    })
+
     it('preserves immediate queued rows for cleared handoff transfer', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('clear-end', {}, null, 'default')

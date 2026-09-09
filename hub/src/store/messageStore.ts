@@ -65,7 +65,7 @@ export class MessageStore {
 
     copyMessageToSession(
         sessionId: string,
-        message: Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'>
+        message: Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState' | 'steered'>
     ): StoredMessage {
         // 中文注释：重复会话合并时需要保留源消息的时间戳和排队信息，因此走专门的复制入口而不是普通 addMessage。
         return copyStoredMessageToSession(this.db, sessionId, message)
@@ -73,7 +73,7 @@ export class MessageStore {
 
     copyMessagesToSession(
         sessionId: string,
-        messages: Array<Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'>>
+        messages: Array<Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState' | 'steered'>>
     ): number {
         return copyStoredMessagesToSession(this.db, sessionId, messages)
     }
@@ -175,8 +175,8 @@ export class MessageStore {
         return claimIndeterminateMessage(this.db, sessionId, messageId)
     }
 
-    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
-        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number, steered = false): number {
+        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt, steered)
     }
 
     markMessagesIndeterminate(sessionId: string, localIds: string[]): number {

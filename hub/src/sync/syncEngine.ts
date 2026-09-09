@@ -1158,7 +1158,8 @@ export class SyncEngine {
                     content: message.content,
                     createdAt: message.createdAt,
                     invokedAt: message.invokedAt,
-                    scheduledAt: message.scheduledAt
+                    scheduledAt: message.scheduledAt,
+                    ...(message.steered ? { steered: true } : {})
                 }
             }
         }
@@ -1576,7 +1577,8 @@ export class SyncEngine {
                     createdAt: message.createdAt,
                     localId: message.localId,
                     invokedAt: message.invokedAt,
-                    scheduledAt: message.scheduledAt
+                    scheduledAt: message.scheduledAt,
+                    ...(message.steered ? { steered: true } : {})
                 }))
             )
             this.sessionCache.rebuildTodosFromTranscript(childId)

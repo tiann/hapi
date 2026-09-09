@@ -71,6 +71,8 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 | `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
 | `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync optimistic sends after reconnect |
 
+Message rows retain `steered: true` after the CLI confirms mid-turn acceptance. This is an accepted-delivery fact, not the requested delivery mode; remits and their accepted steers share the same completion window.
+
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
 ### Permissions

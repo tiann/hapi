@@ -42,7 +42,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 26
+const SCHEMA_VERSION: number = 27
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -138,10 +138,11 @@ export class Store {
         sessionId: string,
         localIds: string[],
         invokedAt: number,
-        namespace: string
+        namespace: string,
+        steered = false
     ): number {
         return this.db.transaction(() => {
-            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt, steered)
             if (changes > 0) {
                 this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
             }
@@ -348,6 +349,7 @@ export class Store {
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
             25: () => this.migrateFromV25ToV26(),
+            26: () => this.migrateFromV26ToV27(),
         })
 
         if (currentVersion === 0) {
@@ -448,6 +450,7 @@ export class Store {
                 invoked_at INTEGER,
                 scheduled_at INTEGER,
                 delivery_state TEXT NOT NULL DEFAULT 'queued',
+                steered INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
@@ -994,6 +997,13 @@ export class Store {
                   AND scheduled_at IS NULL
                   AND delivery_state = 'queued';
         `)
+    }
+
+    private migrateFromV26ToV27(): void {
+        const columns = this.getMessageColumnNames()
+        if (columns.size > 0 && !columns.has('steered')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN steered INTEGER NOT NULL DEFAULT 0')
+        }
     }
 
     /**

@@ -311,6 +311,30 @@ describe('peer lifecycle operations', () => {
         }
     )
 
+    it.each([true, false])('keeps accepted steering inside the remit window: %s', async (steered) => {
+        let elapsed = 0
+        const http = createHttpMock({
+            post: (url) => authResponse(url)!,
+            get: (url) => url.endsWith('/messages')
+                ? { status: 200, data: { messages: [
+                    { localId: REMIT_ID, invokedAt: 1, content: { role: 'user' } },
+                    { invokedAt: 2, steered, content: { role: 'user' } },
+                    { content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Final answer' } } } },
+                    terminal('success'),
+                    { invokedAt: 3, content: { role: 'user' } },
+                    { content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Later answer' } } } },
+                    terminal('success')
+                ] } }
+                : { status: 200, data: { session: { id: SESSION_ID, active: true, thinking: false } } }
+        })
+        const result = waitPeer({
+            sessionId: SESSION_ID, remitId: REMIT_ID, apiUrl: 'http://hub.test', accessToken: 'token',
+            http: http as never, timeoutSecs: 1, now: () => elapsed, sleep: async (ms) => { elapsed += ms }
+        })
+        if (steered) await expect(result).resolves.toMatchObject({ text: 'Final answer', messages: [{ text: 'Final answer' }] })
+        else await expect(result).rejects.toMatchObject({ code: 'timeout' })
+    })
+
     it.each([false, true])('uses the Claude native result outcome, is_error=%s', async (isError) => {
         const http = createHttpMock({
             post: (url) => authResponse(url)!,

@@ -18,6 +18,7 @@ type DbMessageRow = {
     invoked_at: number | null
     scheduled_at: number | null
     delivery_state: string | null
+    steered: number
 }
 
 export type MessagePosition = {
@@ -91,13 +92,14 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
+        ...(row.steered === 1 ? { steered: true } : {}),
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {})
     }
 }
 
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
-    'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
+    'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState' | 'steered'
 >
 
 export function addMessage(
@@ -205,9 +207,9 @@ export function copyMessageToSession(
     const id = randomUUID()
     db.prepare(`
         INSERT INTO messages (
-            id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+            id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state, steered
         ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state, @steered
         )
     `).run({
         id,
@@ -220,7 +222,8 @@ export function copyMessageToSession(
         local_id: localId ?? null,
         invoked_at: invokedAt ?? null,
         scheduled_at: message.scheduledAt ?? null,
-        delivery_state: message.deliveryState ?? 'queued'
+        delivery_state: message.deliveryState ?? 'queued',
+        steered: message.steered === true ? 1 : 0
     })
 
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
@@ -250,9 +253,9 @@ export function copyMessagesToSession(
         let nextSeq = getMaxSeq(db, sessionId) + 1
         const insert = db.prepare(`
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state, steered
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state, @steered
             )
         `)
         const collisionCheck = db.prepare(
@@ -281,7 +284,8 @@ export function copyMessagesToSession(
                 local_id: localId ?? null,
                 invoked_at: invokedAt ?? null,
                 scheduled_at: message.scheduledAt ?? null,
-                delivery_state: message.deliveryState ?? 'queued'
+                delivery_state: message.deliveryState ?? 'queued',
+                steered: message.steered === true ? 1 : 0
             })
             nextSeq += 1
         }
@@ -878,17 +882,25 @@ export function markMessagesInvoked(
     db: Database,
     sessionId: string,
     localIds: string[],
-    invokedAt: number
+    invokedAt: number,
+    steered = false
 ): number {
     if (localIds.length === 0) return 0
     const placeholders = localIds.map(() => '?').join(', ')
-    return db.prepare(
+    const changes = db.prepare(
         `UPDATE messages
-         SET invoked_at = ?, delivery_state = 'queued'
+         SET invoked_at = ?, delivery_state = 'queued', steered = ?
          WHERE session_id = ?
            AND local_id IN (${placeholders})
            AND invoked_at IS NULL`
-    ).run(invokedAt, sessionId, ...localIds).changes
+    ).run(invokedAt, steered ? 1 : 0, sessionId, ...localIds).changes
+    // A cancel probe may stamp invocation before the accepted-steer ACK arrives.
+    if (steered) {
+        db.prepare(`UPDATE messages SET steered = 1
+            WHERE session_id = ? AND local_id IN (${placeholders}) AND invoked_at IS NOT NULL`)
+            .run(sessionId, ...localIds)
+    }
+    return changes
 }
 
 /** Move an uninvoked steer through its durable delivery states. */

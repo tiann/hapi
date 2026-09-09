@@ -605,7 +605,7 @@ function extractResultMessages(rows: unknown[], remitInvokedAt: number): {
         if (!isObject(row.content)) continue
         const role = typeof row.content.role === 'string' ? row.content.role : ''
         if (role === 'user') {
-            if (typeof row.invokedAt === 'number' && row.invokedAt !== remitInvokedAt) {
+            if (typeof row.invokedAt === 'number' && row.invokedAt !== remitInvokedAt && row.steered !== true) {
                 break
             }
             continue

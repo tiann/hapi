@@ -47,6 +47,7 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
         createdAt: message.createdAt,
         invokedAt: message.invokedAt,
         scheduledAt: message.scheduledAt,
+        ...(message.steered ? { steered: true } : {}),
         ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
     }
 }
@@ -471,6 +472,7 @@ export class MessageService {
             createdAt: message.createdAt,
             invokedAt: message.invokedAt,
             scheduledAt: message.scheduledAt,
+            ...(message.steered ? { steered: true } : {}),
             ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
         }))
     }
@@ -936,6 +938,7 @@ export class MessageService {
                 createdAt: msg.createdAt,
                 invokedAt: msg.invokedAt,
                 scheduledAt: msg.scheduledAt,
+                ...(msg.steered ? { steered: true } : {}),
                 ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {})
             }
         })
