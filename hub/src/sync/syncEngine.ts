@@ -18,6 +18,7 @@ import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMe
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
+import { posix, win32 } from 'node:path'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -2290,11 +2291,20 @@ export class SyncEngine {
         child = matchedChild
         const expectedPermissionMode = request.permissionMode
             ?? (request.yolo ? resolveHapiYoloPermissionMode(expectedAgent) : undefined)
+        const targetPath = this.getMachineByNamespace(machineId, namespace)?.metadata?.platform === 'win32' ? win32 : posix
+        const worktreeBase = childMetadata.worktree?.basePath
+        const relativeToBase = worktreeBase && targetPath.isAbsolute(worktreeBase)
+            ? targetPath.relative(worktreeBase, request.directory)
+            : '..'
+        const worktreeBaseMatches = relativeToBase === ''
+            || (relativeToBase !== '..'
+                && !relativeToBase.startsWith(`..${targetPath.sep}`)
+                && !targetPath.isAbsolute(relativeToBase))
         const directoryMatches = childMetadata.path === request.directory
             || (
                 request.sessionType === 'worktree'
                 && childMetadata.sessionType === 'worktree'
-                && Boolean(childMetadata.worktree?.basePath)
+                && worktreeBaseMatches
             )
         const selectionMatches = childMetadata.flavor === expectedAgent
             && directoryMatches

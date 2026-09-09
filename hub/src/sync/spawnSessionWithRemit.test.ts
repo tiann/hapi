@@ -44,6 +44,7 @@ function callSpawn(harness: Record<string, unknown>, request: SpawnSessionWithRe
             spawnSessionWithRemitOnce: SyncEngine['spawnSessionWithRemit']
         }).spawnSessionWithRemitOnce,
         getOrCreateSession: () => reserved,
+        getMachineByNamespace: () => ({ metadata: { platform: 'linux' } }),
         getQueuedState: () => ({ queuedLocalIds: [], invokedLocalMessages: [] }),
         persistSpawnRemitOperation: () => true,
         isSpawnRemitStored: (SyncEngine.prototype as unknown as {
@@ -422,10 +423,21 @@ describe('spawnSessionWithRemit', () => {
         })
     })
 
-    it('accepts a runner-normalized worktree root and name hint', async () => {
+    it.each([
+        ['linux', '/tmp/project', '/tmp/project/packages/app', true],
+        ['linux', '/tmp/project', '/tmp/project', true],
+        ['linux', '/tmp/other', '/tmp/project', false],
+        ['linux', '/tmp/pro', '/tmp/project', false],
+        ['linux', '/tmp/project', '/tmp/project/../other', false],
+        ['linux', '', '/tmp/project', false],
+        ['linux', 'project', '/tmp/project', false],
+        ['win32', 'C:\\repo', 'c:\\repo\\packages\\app', true],
+        ['win32', 'C:\\repo', 'C:\\repository', false],
+        ['win32', 'C:\\repo', 'D:\\repo', false]
+    ])('validates %s worktree base %s against %s', async (platform, basePath, directory, matches) => {
         const request = {
             ...REQUEST,
-            directory: '/tmp/project/packages/app',
+            directory,
             sessionType: 'worktree' as const,
             worktreeName: 'Feature X'
         }
@@ -442,7 +454,7 @@ describe('spawnSessionWithRemit', () => {
                 sessionType: 'worktree' as const,
                 worktreeName: 'feature-x-a1b2',
                 worktree: {
-                    basePath: '/tmp/project',
+                    basePath,
                     branch: 'hapi-feature-x-a1b2',
                     name: 'feature-x-a1b2',
                     worktreePath: '/tmp/project-worktrees/feature-x-a1b2'
@@ -455,6 +467,7 @@ describe('spawnSessionWithRemit', () => {
         }
 
         const result = await callSpawn({
+            getMachineByNamespace: () => ({ metadata: { platform } }),
             getSessions: () => [],
             spawnSession: async () => ({ type: 'success', sessionId: SESSION_ID }),
             waitForSessionActive: async () => true,
@@ -465,8 +478,14 @@ describe('spawnSessionWithRemit', () => {
             cleanupSpawnedSession
         }, request)
 
-        expect(result).toMatchObject({ type: 'success', sessionId: SESSION_ID })
-        expect(cleanupSpawnedSession).not.toHaveBeenCalled()
+        expect(delivered).toBe(matches)
+        if (matches) {
+            expect(result).toMatchObject({ type: 'success', sessionId: SESSION_ID })
+            expect(cleanupSpawnedSession).not.toHaveBeenCalled()
+        } else {
+            expect(result).toMatchObject({ type: 'error', code: 'spawn_selection_mismatch', cleanedUp: true })
+            expect(cleanupSpawnedSession).toHaveBeenCalledTimes(1)
+        }
     })
 
     it('cleans up without delivering when the fresh child ends before ready', async () => {
