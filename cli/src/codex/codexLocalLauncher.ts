@@ -58,6 +58,14 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let scanner: CodexSessionScanner | null = null;
     let hookReady = false;
     let shuttingDown = false;
+    let readyTimer: ReturnType<typeof setTimeout> | null = null;
+    const completedTurns = new Set<string>();
+    const cancelReady = (): void => {
+        if (readyTimer !== null) {
+            clearTimeout(readyTimer);
+            readyTimer = null;
+        }
+    };
     let pendingScannerSetup: Promise<void> | null = null;
     let transcriptLocator: CodexTranscriptLocator | null = null;
     let scannerTranscriptPath: string | null = null;
@@ -315,6 +323,26 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     session.setModelReasoningEffort(observedReasoningEffort);
                 }
                 dispatchTranscriptActions(convertTranscriptEvent(event), context);
+                if (event.type === 'event_msg' && event.payload && typeof event.payload === 'object') {
+                    const payload = event.payload as Record<string, unknown>;
+                    if (payload.type === 'task_started' || payload.type === 'user_message'
+                        || payload.type === 'turn_aborted' || payload.type === 'task_failed') {
+                        cancelReady();
+                    } else if (payload.type === 'task_complete' && typeof payload.turn_id === 'string') {
+                        if (completedTurns.has(payload.turn_id)) return;
+                        completedTurns.add(payload.turn_id);
+                        if (context.replayedHistory || shuttingDown) return;
+                        cancelReady();
+                        // Finish forwarding this scan before notifying. A following turn in
+                        // the same batch cancels the alert; replay and shutdown never alert.
+                        readyTimer = setTimeout(() => {
+                            readyTimer = null;
+                            if (!shuttingDown && session.queue.size() === 0) {
+                                session.sendSessionEvent({ type: 'ready' });
+                            }
+                        }, 0);
+                    }
+                }
             }
         });
         if (shuttingDown) {
@@ -448,6 +476,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         return await launcher.run();
     } finally {
         shuttingDown = true;
+        cancelReady();
         session.removeTranscriptPathCallback(handleTranscriptPathCallback);
         hookServer.stop();
         const activeLocator = transcriptLocator;
