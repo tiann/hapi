@@ -2059,9 +2059,11 @@ export class SyncEngine {
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (operation.state === 'aborted') {
-            return replacementSessionId === operation.replacementSessionId
-                ? { type: 'success', sessionId }
-                : { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            if (replacementSessionId !== operation.replacementSessionId) {
+                return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            }
+            this.sessionCache.refreshConversationContent(operation.replacementSessionId)
+            return { type: 'success', sessionId }
         }
         const required = { replacementSessionId, state: expectedState, requireInactive }
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -2070,6 +2072,7 @@ export class SyncEngine {
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
             if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
+                this.sessionCache.refreshConversationContent(current.replacementSessionId)
                 return { type: 'success', sessionId }
             }
             if ((required.requireInactive && latest.active)
