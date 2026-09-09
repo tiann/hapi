@@ -15,7 +15,7 @@ import {
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
-import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -213,6 +213,16 @@ export class SyncEngine {
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.eventPublisher.subscribe((event) => {
+            if (event.type === 'message-received') {
+                if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
+                    && hasConversationMessageContent(event.message.content)) {
+                    this.sessionCache.refreshConversationContent(event.sessionId)
+                }
+            } else if (event.type === 'message-cancelled' || event.type === 'messages-invalidated') {
+                this.sessionCache.refreshConversationContent(event.sessionId)
+            }
+        })
         this.machineCache = new MachineCache(store, this.eventPublisher)
         this.messageService = new MessageService(
             store,
