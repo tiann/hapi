@@ -324,6 +324,25 @@ export default {
   'mermaid.loading': 'Loading diagram…',
   'mermaid.renderError': 'Could not render diagram.',
 
+  // Markdown tables
+  'table.openFullscreen': 'Open table full screen',
+  'table.closeFullscreen': 'Close table full screen',
+  'table.viewerTitle': 'Table',
+  'table.copyMarkdown': 'Copy Markdown',
+  'table.copyMarkdownButton': 'Copy table as Markdown',
+  'table.copiedMarkdown': 'Table Markdown copied',
+  'table.copy': 'Copy table',
+  'table.copyImage': 'Copy image',
+  'table.copyingImage': 'Copying image…',
+  'table.imageActionFailed': 'Could not process table image.',
+  'table.wrap.enable': 'Enable table wrapping',
+  'table.wrap.disable': 'Disable table wrapping',
+  'table.saveImage': 'Save table as image',
+  'table.savingImage': 'Saving image…',
+  'table.download': 'Download table',
+  'table.downloadPng': 'Download PNG',
+  'table.downloadCsv': 'Download CSV',
+
   // Common buttons
   'button.cancel': 'Cancel',
   'button.save': 'Save',

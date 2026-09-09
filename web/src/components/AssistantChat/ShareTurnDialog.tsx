@@ -1,10 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
+import {
+    enterMobileTableViewer,
+    isMobileTableViewerViewport,
+    leaveMobileTableViewer,
+    TableViewerFromElement,
+} from '@/components/assistant-ui/MarkdownTable'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import type { ShareTurnMetadataItem } from '@/lib/shareTurnMetadata'
+import { getShareImageFileName } from '@/lib/share-image-filename'
 
 type ShareTurnDialogProps = {
     isOpen: boolean
@@ -33,7 +40,7 @@ function nextFrame(): Promise<void> {
     })
 }
 
-function stripCaptureOnlyControls(root: HTMLElement): void {
+export function stripCaptureOnlyControls(root: HTMLElement): void {
     for (const element of Array.from(root.querySelectorAll(SHARE_HIDDEN_CONTENT_SELECTOR))) {
         if (!(element instanceof HTMLElement) || !root.contains(element)) continue
 
@@ -58,6 +65,10 @@ function stripCaptureOnlyControls(root: HTMLElement): void {
         element.remove()
     }
     for (const anchor of Array.from(root.querySelectorAll('a'))) {
+        const href = anchor.getAttribute('href')
+        if (href && !anchor.dataset.hapiMarkdownHref) {
+            anchor.dataset.hapiMarkdownHref = href
+        }
         anchor.removeAttribute('href')
         anchor.removeAttribute('target')
         anchor.removeAttribute('rel')
@@ -71,8 +82,8 @@ function stripCaptureOnlyControls(root: HTMLElement): void {
     }
 }
 
-function stripExportControls(root: HTMLElement): void {
-    for (const element of Array.from(root.querySelectorAll('[data-hapi-share-export-exclude="true"]'))) {
+export function stripExportControls(root: HTMLElement): void {
+    for (const element of Array.from(root.querySelectorAll('[data-hapi-share-export-exclude="true"], .aui-md-table-actions'))) {
         element.remove()
     }
     for (const imageButton of Array.from(root.querySelectorAll('button:has(img)'))) {
@@ -108,38 +119,6 @@ function setPreviewCodeWrap(control: HTMLElement, enabled: boolean): void {
         cell.style.whiteSpace = enabled ? 'pre-wrap' : 'pre'
         cell.style.wordBreak = enabled ? 'break-word' : ''
     }
-}
-
-function formatShareTimestamp(date = new Date()): string {
-    const pad = (value: number) => String(value).padStart(2, '0')
-    return [
-        date.getFullYear(),
-        pad(date.getMonth() + 1),
-        pad(date.getDate()),
-        pad(date.getHours()),
-        pad(date.getMinutes()),
-        pad(date.getSeconds())
-    ].join('')
-}
-
-function sanitizeShareFileNamePart(title: string): string {
-    const withoutControlCharacters = Array.from(title.normalize('NFKC'))
-        .filter((character) => {
-            const codePoint = character.codePointAt(0) ?? 0
-            return codePoint >= 32 && codePoint !== 127
-        })
-        .join('')
-    const sanitized = withoutControlCharacters
-        .replace(/[<>:"/\\|?*]+/g, '-')
-        .replace(/\s+/g, ' ')
-        .replace(/-+/g, '-')
-        .replace(/^[ .-]+|[ .-]+$/g, '')
-        .trim()
-    return Array.from(sanitized || 'Shared turn').slice(0, 80).join('').trim()
-}
-
-function getShareFileName(title: string): string {
-    return `HAPI-${sanitizeShareFileNamePart(title)}-${formatShareTimestamp()}.png`
 }
 
 function prepareExportElement(element: HTMLElement, exportWidth: number, preserveSourceLayout: boolean): HTMLElement {
@@ -531,6 +510,11 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         naturalWidth: number
         naturalHeight: number
     } | null>(null)
+    const [previewTable, setPreviewTable] = useState<HTMLTableElement | null>(null)
+    const previewTableRef = useRef<HTMLTableElement | null>(null)
+    const previewTableOpenRef = useRef(false)
+    const previewTableMobileRef = useRef(false)
+    const previewTableFullscreenRef = useRef(false)
     const showNativeShareButton = true
     const usesCoarsePrimaryPointer = window.matchMedia('(pointer: coarse)').matches
     const preserveSourceLayout = Boolean(
@@ -542,6 +526,37 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     const exportWidth = preserveSourceLayout
         ? Math.min(1240, Math.max(480, Math.ceil((props.sourceContentWidth ?? 0) + SHARE_EXPORT_HORIZONTAL_PADDING)))
         : SHARE_EXPORT_WIDTH
+
+    const closeTablePreview = useCallback(() => {
+        const wasMobile = previewTableMobileRef.current
+        const enteredFullscreen = previewTableFullscreenRef.current
+        previewTableOpenRef.current = false
+        previewTableRef.current = null
+        previewTableMobileRef.current = false
+        previewTableFullscreenRef.current = false
+        setPreviewTable(null)
+        if (wasMobile) leaveMobileTableViewer(enteredFullscreen)
+    }, [])
+
+    const openTablePreview = useCallback((table: HTMLTableElement) => {
+        previewTableRef.current = table
+        previewTableOpenRef.current = true
+        const isMobile = isMobileTableViewerViewport()
+        previewTableMobileRef.current = isMobile
+        previewTableFullscreenRef.current = false
+        setPreviewTable(table)
+        if (!isMobile) return
+
+        // Start the browser activation-sensitive request directly from the
+        // table button click. The viewer itself is rendered after state updates.
+        void enterMobileTableViewer(() => previewTableOpenRef.current).then((enteredFullscreen) => {
+            if (!previewTableOpenRef.current || previewTableRef.current !== table) {
+                leaveMobileTableViewer(enteredFullscreen)
+                return
+            }
+            previewTableFullscreenRef.current = enteredFullscreen
+        })
+    }, [])
 
     useLayoutEffect(() => {
         setReady(false)
@@ -576,6 +591,10 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
             if (!appendedSnapshot && isTextOnlySnapshot) appendTextFallback(fragment, snapshot)
         }
         body.replaceChildren(fragment)
+        // Run one final pass over the assembled preview. This also covers
+        // capture-only controls nested in a snapshot root that was assembled
+        // from multiple top-level nodes.
+        stripCaptureOnlyControls(body)
 
         if ((body.innerText || body.textContent || '').trim().length === 0 && textLength > 0) {
             for (const snapshot of props.sourceSnapshots) {
@@ -589,6 +608,24 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         setPreviewImage(null)
         return undefined
     }, [props.isOpen, props.sourceSnapshots, restoreTick])
+
+    useEffect(() => {
+        if (props.isOpen) return undefined
+        closeTablePreview()
+        return undefined
+    }, [closeTablePreview, props.isOpen])
+
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            if (!previewTableOpenRef.current || !previewTableMobileRef.current || !previewTableFullscreenRef.current) return
+            if (document.fullscreenElement) return
+            closeTablePreview()
+        }
+        document.addEventListener('fullscreenchange', handleFullscreenChange)
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }, [closeTablePreview])
+
+    useEffect(() => () => closeTablePreview(), [closeTablePreview])
 
     useEffect(() => {
         const capture = captureRef.current
@@ -612,6 +649,15 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     const handlePreviewClick = (event: ReactMouseEvent<HTMLElement>) => {
         const target = event.target
         if (!(target instanceof Element)) return
+
+        const tableAction = target.closest<HTMLButtonElement>('.aui-md-table-actions button')
+        if (tableAction) {
+            event.preventDefault()
+            event.stopPropagation()
+            const table = tableAction.closest<HTMLElement>('.aui-md-table-frame')?.querySelector<HTMLTableElement>('table')
+            if (table) openTablePreview(table)
+            return
+        }
 
         const wrapButton = target.closest<HTMLButtonElement>('[data-hapi-code-wrap-toggle="true"]')
         if (wrapButton) {
@@ -714,7 +760,8 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     }
 
     return (
-        <Dialog open={props.isOpen} onOpenChange={(open) => { if (!open) props.onClose() }}>
+        <>
+            <Dialog open={props.isOpen} onOpenChange={(open) => { if (!open) props.onClose() }}>
             <DialogContent
                 className="max-h-[calc(100vh-24px)] max-w-3xl overflow-hidden p-4 [&>button:last-child]:top-4"
                 aria-describedby={undefined}
@@ -818,7 +865,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                                 if (preparedBlob) {
                                     runBlobAction(
                                         preparedBlob,
-                                        (blob) => shareImageBlob(blob, getShareFileName(props.title)),
+                                        (blob) => shareImageBlob(blob, getShareImageFileName(props.title)),
                                         'share'
                                     )
                                 }
@@ -832,7 +879,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     <button
                         type="button"
                         onClick={() => {
-                            void withPng((blob) => downloadBlob(blob, getShareFileName(props.title)), 'download')
+                            void withPng((blob) => downloadBlob(blob, getShareImageFileName(props.title)), 'download')
                         }}
                         disabled={busy !== null || !ready}
                         className="rounded-md bg-[var(--app-button)] px-3 py-2 text-sm text-[var(--app-button-text)] disabled:opacity-50 sm:w-32"
@@ -841,6 +888,15 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     </button>
                 </div>
             </DialogContent>
-        </Dialog>
+            </Dialog>
+            {previewTable ? (
+                <TableViewerFromElement
+                    open
+                    onClose={closeTablePreview}
+                    table={previewTable}
+                    imageTitle={props.title}
+                />
+            ) : null}
+        </>
     )
 }

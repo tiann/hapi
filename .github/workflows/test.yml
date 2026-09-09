@@ -14,6 +14,7 @@ jobs:
             - run: bun typecheck
             - run: bunx playwright install --with-deps chromium
             - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts
+            - run: cd web && bunx playwright test --config playwright.config.ts e2e/markdown-table.spec.ts e2e/markdown-table-mobile.spec.ts
             - run: bun run test
 
     # Serial runner-integration suite: starts real detached runner/session
