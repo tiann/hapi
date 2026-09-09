@@ -241,6 +241,7 @@ struct SettingsView: View {
             LabeledContent("App version", value: appVersion)
             LabeledContent("Protocol version", value: String(ProtocolVersion.supported))
             hubRow
+            PrivacyPolicyLink()
         }
     }
 

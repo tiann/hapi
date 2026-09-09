@@ -168,6 +168,10 @@ fun ChatScreen(
 
     // ------------------------------------------------------------ dictation --
     val dictationState = dictation?.state?.collectAsState()?.value ?: DictationState.Idle
+    val dictationAvailable = dictation?.isAvailable?.collectAsState()?.value ?: false
+    LaunchedEffect(dictation) {
+        dictation?.refreshAvailability()
+    }
     LaunchedEffect(dictation, context) {
         dictation?.events?.collect { event ->
             when (event) {
@@ -368,7 +372,7 @@ fun ChatScreen(
                     onAttachmentRemove = viewModel.attachments::remove,
                     slashSuggestions = slashSuggestions,
                     onSlashCommandSelected = viewModel::selectSlashCommand,
-                    dictation = if (dictation != null) dictationState else null,
+                    dictation = if (dictationAvailable) dictationState else null,
                     onDictationToggle = onDictationToggle,
                     onDictationCancel = { dictation?.cancel() },
                 )
