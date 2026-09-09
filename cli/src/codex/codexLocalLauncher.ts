@@ -443,9 +443,16 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     };
     session.addTranscriptPathCallback(handleTranscriptPathCallback);
 
+    const refreshTitle = () => { void session.titles.refresh(); };
+    session.addSessionFoundCallback(refreshTitle);
+    const titleTimer = setInterval(refreshTitle, 5_000);
+    titleTimer.unref();
+    refreshTitle();
     try {
         return await launcher.run();
     } finally {
+        clearInterval(titleTimer);
+        session.removeSessionFoundCallback(refreshTitle);
         shuttingDown = true;
         session.removeTranscriptPathCallback(handleTranscriptPathCallback);
         hookServer.stop();

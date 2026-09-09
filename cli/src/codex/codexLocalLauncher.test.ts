@@ -96,6 +96,9 @@ function createSessionStub(
 
     return {
         session: {
+            titles: { refresh: vi.fn() },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
             get sessionId() {
                 return sessionId;
             },

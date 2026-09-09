@@ -58,6 +58,14 @@ hapi resume <session-id>
 
 `hapi resume` lists resumable sessions for the current machine. `hapi resume <session-id>` hands off an active remote session and opens the same HAPI session in the local terminal.
 
+### Codex session titles
+
+HAPI mirrors Codex's native thread name without adding instructions to the working conversation. Local mode reads native names periodically; remote mode also consumes name-update notifications and hydrates names on resume.
+
+After the first completed remote task without a name, HAPI makes one isolated, ephemeral Codex request to generate a title and stores it with `thread/name/set`. This uses the runner's existing Codex account/provider; no Hub title-provider API key is required. When available on OpenAI, the request uses Luna at low effort; otherwise it uses the task's model. The request disables tools, MCP, plugins and hooks, requires read-only permissions, and has a 30-second deadline. A failure is logged without blocking the working session or retrying on every turn. Manual HAPI names take display precedence, and a name set while generation is pending is preserved.
+
+The rename dialog's **Generate** action is a separate Hub title-provider feature.
+
 ### Authentication
 
 - `hapi auth status` - Show authentication configuration and token source.

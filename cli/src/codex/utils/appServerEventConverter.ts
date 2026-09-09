@@ -715,7 +715,7 @@ export class AppServerEventConverter {
             const thread = asRecord(paramsRecord.thread) ?? paramsRecord;
             const threadId = asString(thread.threadId ?? thread.thread_id ?? thread.id);
             if (threadId) {
-                events.push({ type: 'thread_started', thread_id: threadId });
+                events.push({ type: 'thread_started', thread_id: threadId, ...(typeof thread.name === 'string' ? { name: thread.name } : {}) });
             }
             return events;
         }

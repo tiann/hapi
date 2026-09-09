@@ -125,6 +125,8 @@ export interface ThreadStartParams {
 export interface ThreadStartResponse {
     thread: {
         id: string;
+        name?: string | null;
+        modelProvider?: string;
     };
     model: string;
     [key: string]: unknown;
@@ -150,6 +152,8 @@ export interface ThreadResumeParams {
 export interface ThreadResumeResponse {
     thread: {
         id: string;
+        name?: string | null;
+        modelProvider?: string;
         turns?: Array<{ items?: ResponseItem[] }>;
     };
     model: string;
@@ -164,6 +168,8 @@ export interface ThreadReadParams {
 export interface ThreadReadResponse {
     thread: {
         id: string;
+        name?: string | null;
+        modelProvider?: string;
         turns?: Array<{
             id?: string;
             status?: string;
@@ -183,6 +189,8 @@ export interface ThreadForkParams extends Omit<ThreadResumeParams, 'history' | '
 export interface ThreadForkResponse {
     thread: {
         id: string;
+        name?: string | null;
+        modelProvider?: string;
         turns?: Array<{ items?: ResponseItem[] }>;
     };
     model?: string;
@@ -290,6 +298,8 @@ export interface ThreadRollbackParams {
 export interface ThreadRollbackResponse {
     thread: {
         id: string;
+        name?: string | null;
+        modelProvider?: string;
         [key: string]: unknown;
     };
     [key: string]: unknown;

@@ -73,12 +73,16 @@ export async function loop(opts: LoopOptions): Promise<void> {
         replayTranscriptHistoryOnStart: opts.replayTranscriptHistoryOnStart ?? false
     });
 
-    await runLocalRemoteSession({
-        session,
-        startingMode: opts.startingMode,
-        logTag: 'codex-loop',
-        runLocal: codexLocalLauncher,
-        runRemote: codexRemoteLauncher,
-        onSessionReady: opts.onSessionReady
-    });
+    try {
+        await runLocalRemoteSession({
+            session,
+            startingMode: opts.startingMode,
+            logTag: 'codex-loop',
+            runLocal: codexLocalLauncher,
+            runRemote: codexRemoteLauncher,
+            onSessionReady: opts.onSessionReady
+        });
+    } finally {
+        await session.titles.stop();
+    }
 }
