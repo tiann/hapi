@@ -398,6 +398,28 @@ html:has(.chat-scroll-y) #root {
     padding-left: 8px;
 }
 
+/*
+ * Open-session position mark on the left scrollbar gutter.
+ * Visual-only: tiny hit target for the native title tooltip; does not replace
+ * scrollbar click-to-seek. Sibling of `.session-list-scrollbar-left` inside the
+ * relative scroll shell so `top` maps onto the visible rail.
+ */
+.session-list-open-tick {
+    position: absolute;
+    left: 0;
+    z-index: 10;
+    /* Narrow hit target: enough for hover tooltip, not a jump button.
+       Native scrollbar beside it remains the click-to-seek surface. */
+    width: 4px;
+    height: 6px;
+    margin-top: -3px;
+    pointer-events: auto;
+    border-radius: 1px;
+    background: var(--app-link);
+    opacity: 0.9;
+    box-shadow: 0 0 0 1px var(--app-bg);
+}
+
 /* Desktop sidebar: use custom width from CSS variable.
    Kept in sync with the Tailwind `split` breakpoint (see tailwind.config.ts)
    so the sidebar width/resize applies as soon as the split view appears on
