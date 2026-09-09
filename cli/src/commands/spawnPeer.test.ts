@@ -103,10 +103,10 @@ describe('handleSpawnPeerCommand', () => {
         ])).rejects.toMatchObject({ code: 'bad_args' })
     })
 
-    it('includes the retryable remit id in JSON after ambiguous transport failure', async () => {
+    it.each([true, false])('includes the retryable remit id after ambiguous failure (JSON=%s)', async (json) => {
         const remitId = '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
         spawnPeerMock.mockRejectedValueOnce(new SpawnPeerError('spawn_failed', 'socket reset', remitId))
-        const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+        const log = vi.spyOn(console, json ? 'log' : 'error').mockImplementation(() => {})
         vi.spyOn(process, 'exit').mockImplementation((code) => {
             throw new Error(`process.exit:${code}`)
         })
@@ -115,16 +115,18 @@ describe('handleSpawnPeerCommand', () => {
             args: [],
             subcommand: 'spawn-peer',
             commandArgs: [
-                '--json',
+                ...(json ? ['--json'] : []),
                 '--dir', '/tmp/project',
                 '--name', 'Worker',
                 'do the work'
             ]
         })).rejects.toThrow('process.exit:3')
-        expect(log).toHaveBeenCalledWith(JSON.stringify({
-            ok: false,
-            remitId,
-            error: { code: 'spawn_failed', message: 'socket reset' }
-        }))
+        if (json) {
+            expect(log).toHaveBeenCalledWith(JSON.stringify({
+                ok: false, remitId, error: { code: 'spawn_failed', message: 'socket reset' }
+            }))
+        } else {
+            expect(log).toHaveBeenCalledWith(expect.stringContaining(`--remit-id ${remitId}`))
+        }
     })
 })

@@ -331,13 +331,14 @@ export const spawnPeerCommand: CommandDefinition = {
             await handleSpawnPeerCommand(commandArgs)
         } catch (error) {
             if (error instanceof SpawnPeerError || error instanceof TokenInitializationError) {
+                const remitId = error instanceof SpawnPeerError ? error.remitId : undefined
                 const output = commandArgs.includes('--json')
                     ? JSON.stringify({
                         ok: false,
-                        ...(error instanceof SpawnPeerError && error.remitId ? { remitId: error.remitId } : {}),
+                        ...(remitId ? { remitId } : {}),
                         error: { code: error.code, message: error.message }
                     })
-                    : `${chalk.red('hapi spawn-peer:')} ${error.message}`
+                    : `${chalk.red('hapi spawn-peer:')} ${error.message}${remitId ? `; retry with --remit-id ${remitId}` : ''}`
                 commandArgs.includes('--json') ? console.log(output) : console.error(output)
                 process.exit(error instanceof TokenInitializationError ? 2 : exitCodeForSpawnPeerError(error))
             }

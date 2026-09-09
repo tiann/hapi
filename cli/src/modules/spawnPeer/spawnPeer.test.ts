@@ -225,6 +225,52 @@ describe('spawnPeer', () => {
         expect(bodies[1]?.remitId).toBe(bodies[0]?.remitId)
     })
 
+    it.each(['502', '504', 'malformed success', 'mismatched remit'] as const)(
+        'preserves the generated retry key after %s and recovers the same child', async (scenario) => {
+            const requests: Array<Record<string, unknown>> = []
+            const spawnedRemits = new Set<unknown>()
+            const http = createHttpMock((url, body) => {
+                if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
+                const request = body as Record<string, unknown>
+                requests.push(request)
+                spawnedRemits.add(request.remitId)
+                const success = {
+                    type: 'success', sessionId: SESSION_ID, remitId: request.remitId,
+                    session: { machineId: MACHINE_ID, directory: '/runner/project', agent: 'codex' }
+                }
+                if (requests.length === 1) {
+                    if (scenario === '502') return { status: 502, data: '<html>Bad gateway</html>' }
+                    if (scenario === '504') return { status: 504, data: { error: 'Gateway timeout' } }
+                    if (scenario === 'malformed success') return { status: 200, data: { type: 'success' } }
+                    return { status: 200, data: { ...success, remitId: '6acb2b8a-1334-4955-b0c6-86f5a22656d2' } }
+                }
+                return { status: 200, data: success }
+            })
+            const options = {
+                directory: '/runner/project', message: 'work', agent: 'codex' as const,
+                machineId: MACHINE_ID, apiUrl: 'http://hub.test', accessToken: 'token', http: http as never
+            }
+            const error = await spawnPeer(options).catch((error: unknown) => error)
+            if (!(error instanceof SpawnPeerError)) throw new Error('Expected an ambiguous spawn failure')
+            expect(error.remitId).toBe(requests[0]?.remitId)
+            expect(error.remitId).toMatch(/^[0-9a-f-]{36}$/)
+            await expect(spawnPeer({ ...options, remitId: error.remitId })).resolves.toMatchObject({ sessionId: SESSION_ID })
+            expect(requests).toHaveLength(2)
+            expect(requests[1]).toEqual(requests[0])
+            expect(spawnedRemits.size).toBe(1)
+        }
+    )
+
+    it('does not offer an ambiguous retry for a structured Hub failure', async () => {
+        const http = createHttpMock((url) => url.endsWith('/api/auth')
+            ? { status: 200, data: { token: 'jwt' } }
+            : { status: 502, data: { type: 'error', code: 'outside_workspace_roots', message: 'Rejected', cleanedUp: true } })
+        await expect(spawnPeer({
+            directory: '/outside', message: 'work', machineId: MACHINE_ID,
+            apiUrl: 'http://hub.test', accessToken: 'token', http: http as never
+        })).rejects.toMatchObject({ code: 'spawn_failed', remitId: undefined })
+    })
+
     it('fails closed when the hub reports an uncleaned child', async () => {
         const remitId = '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
         const http = createHttpMock((url) => url.endsWith('/api/auth')
@@ -234,6 +280,7 @@ describe('spawnPeer', () => {
                 data: {
                     type: 'error',
                     message: 'delivery failed',
+                    remitId: '6acb2b8a-1334-4955-b0c6-86f5a22656d2',
                     childSessionId: SESSION_ID,
                     cleanedUp: false
                 }

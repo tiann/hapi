@@ -227,13 +227,14 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
             throw new SpawnPeerError(
                 'cleanup_failed',
                 `${detail}; child ${data.childSessionId} may still be running`,
-                data.remitId ?? remitId
+                remitId
             )
         }
-        throw new SpawnPeerError('spawn_failed', detail)
+        const knownHubFailure = data?.type === 'error' && typeof data.code === 'string'
+        throw new SpawnPeerError('spawn_failed', detail, knownHubFailure ? undefined : remitId)
     }
     if (data.remitId !== remitId) {
-        throw new SpawnPeerError('spawn_failed', 'Hub returned a mismatched remit id')
+        throw new SpawnPeerError('spawn_failed', 'Hub returned a mismatched remit id', remitId)
     }
 
     return {
