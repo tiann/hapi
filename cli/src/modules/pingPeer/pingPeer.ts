@@ -505,6 +505,24 @@ export function extractInspectMessageSnippet(content: unknown): InspectPeerMessa
     }
 }
 
+function appendInspectMessage(
+    messages: InspectPeerMessage[],
+    snapshots: Map<string, InspectPeerMessage>,
+    content: unknown,
+    message: InspectPeerMessage
+): void {
+    const data = isObject(content) && content.type === 'codex' && isObject(content.data) ? content.data : null
+    const streamId = data?.type === 'message' && data.streamSnapshot === true
+        && typeof data.id === 'string' && data.id.trim() ? data.id : null
+    const previous = streamId === null ? undefined : snapshots.get(streamId)
+    if (previous) {
+        Object.assign(previous, message)
+    } else {
+        if (streamId !== null) snapshots.set(streamId, message)
+        messages.push(message)
+    }
+}
+
 async function fetchSessionMessages(
     apiUrl: string,
     jwt: string,
@@ -529,11 +547,12 @@ async function fetchSessionMessages(
     }
     const rows = Array.isArray(response.data?.messages) ? response.data.messages : []
     const out: InspectPeerMessage[] = []
+    const snapshots = new Map<string, InspectPeerMessage>()
     for (const row of rows) {
         if (!isObject(row)) continue
         const snippet = extractInspectMessageSnippet(row.content)
         if (!snippet) continue
-        out.push({
+        appendInspectMessage(out, snapshots, isObject(row.content) ? row.content.content : null, {
             ...snippet,
             id: typeof row.id === 'string' ? row.id : snippet.id,
             createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
@@ -599,6 +618,7 @@ function extractResultMessages(rows: unknown[], remitInvokedAt: number): {
     outcome: 'completed' | 'failed' | 'aborted' | null
 } {
     const result: InspectPeerMessage[] = []
+    const snapshots = new Map<string, InspectPeerMessage>()
     let outcome: 'completed' | 'failed' | 'aborted' | null = null
     for (const row of rows) {
         if (!isObject(row)) continue
@@ -628,7 +648,7 @@ function extractResultMessages(rows: unknown[], remitInvokedAt: number): {
         }
         const text = extractAssistantPlainText(content)
         if (!text?.trim()) continue
-        result.push({
+        appendInspectMessage(result, snapshots, content, {
             id: typeof row.id === 'string' ? row.id : '',
             role,
             text: text.trim(),

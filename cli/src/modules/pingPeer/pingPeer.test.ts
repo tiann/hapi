@@ -170,6 +170,45 @@ describe('peer lifecycle operations', () => {
         expect(http.post).toHaveBeenCalledTimes(1)
     })
 
+    it.each(['wait', 'inspect'] as const)('coalesces cumulative text snapshots for %s, preserving block order', async (operation) => {
+        const snapshot = (id: string, streamId: string, text: string, streamSnapshot = true) => ({
+            id, createdAt: 10,
+            content: { role: 'agent', content: { type: 'codex', data: { type: 'message', id: streamId, message: text, streamSnapshot } } }
+        })
+        const older = [
+            { localId: REMIT_ID, invokedAt: 1, content: { role: 'user' } },
+            snapshot('a1', 'first', 'The'),
+            snapshot('b1', 'second', 'Other')
+        ]
+        const newer = [
+            snapshot('a2', 'first', 'The answer'),
+            snapshot('aside', 'first', 'Aside', false),
+            snapshot('a3', 'first', 'The answer is 42'),
+            snapshot('b2', 'second', 'Other final'),
+            terminal('success')
+        ]
+        const http = createHttpMock({
+            post: (url) => authResponse(url)!,
+            get: (url, config) => {
+                if (!url.endsWith('/messages')) return { status: 200, data: { session: { id: SESSION_ID, active: true, thinking: false } } }
+                if (operation === 'inspect') return { status: 200, data: { messages: [...older, ...newer] } }
+                return config?.params?.beforeSeq === 200
+                    ? { status: 200, data: { messages: older, page: { hasMore: false } } }
+                    : { status: 200, data: { messages: newer, page: { hasMore: true, nextBeforeAt: 200, nextBeforeSeq: 200 } } }
+            }
+        })
+        const options = { sessionId: SESSION_ID, apiUrl: 'http://hub.test', accessToken: 'token', http: http as never }
+        const result = operation === 'wait'
+            ? await waitPeer({ ...options, remitId: REMIT_ID })
+            : await inspectPeer(options)
+        expect(result.messages).toEqual([
+            { id: 'a3', role: 'agent', text: 'The answer is 42', createdAt: 10 },
+            { id: 'b2', role: 'agent', text: 'Other final', createdAt: 10 },
+            { id: 'aside', role: 'agent', text: 'Aside', createdAt: 10 }
+        ])
+        if ('text' in result) expect(result.text).toBe('The answer is 42\n\nOther final\n\nAside')
+    })
+
     it('waits for the assistant result after the exact remit', async () => {
         const http = createHttpMock({
             post: (url) => authResponse(url) ?? Promise.reject(new Error(`unexpected POST ${url}`)),
