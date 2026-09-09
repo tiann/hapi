@@ -1,28 +1,50 @@
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
+import type { HappyChatContextValue } from '@/components/AssistantChat/context'
+import { getConversationMessageAnchorId } from '@/chat/outline'
+
+const happyChatCapture = vi.hoisted(() => ({
+    current: null as HappyChatContextValue | null
+}))
+
+const shareDialogCapture = vi.hoisted(() => ({
+    snapshots: [] as Array<{ html: string; text: string; role?: 'user' | 'assistant' }>
+}))
 
 vi.mock('@/hooks/queries/useMachines', () => ({
     useMachines: () => ({ machines: [] })
 }))
 
+vi.mock('@/components/AssistantChat/ShareTurnDialog', () => ({
+    ShareTurnDialog: (props: { sourceSnapshots: typeof shareDialogCapture.snapshots }) => {
+        shareDialogCapture.snapshots = props.sourceSnapshots
+        return null
+    }
+}))
+
 vi.mock('@assistant-ui/react', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@assistant-ui/react')>()
+    const { useOptionalHappyChatContext } = await import('@/components/AssistantChat/context')
     return {
         ...actual,
         useAuiState: (selector: (state: unknown) => unknown) => selector({
             thread: { extras: undefined }
         }),
-        unstable_useThreadMessageIds: () => [],
+        unstable_useThreadMessageIds: () => ['capture'],
         ThreadPrimitive: {
             ...actual.ThreadPrimitive,
             Root: ({ children, className }: PropsWithChildren<{ className?: string }>) => (
                 <div className={className}>{children}</div>
             ),
             Viewport: ({ children }: PropsWithChildren) => children,
-            Messages: () => null
+            Messages: () => null,
+            Unstable_MessageById: function CaptureHappyChatContext() {
+                happyChatCapture.current = useOptionalHappyChatContext()
+                return null
+            }
         }
     }
 })
@@ -42,7 +64,7 @@ function renderThread(onViewModeChange = vi.fn()) {
             <I18nProvider>
                 <HappyThread
                     api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
-                    session={{ metadata: {} } as Session}
+                    session={{ id: 'mobile-scroll-session', metadata: {} } as Session}
                     sessionId="mobile-scroll-session"
                     metadata={null}
                     disabled={false}
@@ -89,6 +111,8 @@ function renderThread(onViewModeChange = vi.fn()) {
 
 beforeEach(() => {
     vi.useFakeTimers()
+    happyChatCapture.current = null
+    shareDialogCapture.snapshots = []
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
         configurable: true,
         writable: true,
@@ -112,6 +136,93 @@ afterEach(() => {
 })
 
 describe('mobile initial scroll settling', () => {
+    it('does not share messages across a transcript gap', () => {
+        const { container } = renderThread()
+        const context = happyChatCapture.current
+        if (!context?.onShareTurn) throw new Error('Share handler was not captured')
+        const messages = container.querySelector<HTMLElement>('.happy-thread-messages')
+        if (!messages) throw new Error('Message container was not rendered')
+        messages.innerHTML = `
+            <div data-hapi-message-role="user">head prompt</div>
+            <div data-hapi-message-role="assistant">head answer</div>
+            <div data-hapi-transcript-gap="true">history gap</div>
+            <div id="tail-answer" data-hapi-message-role="assistant">tail answer</div>
+        `
+
+        act(() => context.onShareTurn!(document.getElementById('tail-answer')))
+
+        expect(shareDialogCapture.snapshots).toHaveLength(1)
+        expect(shareDialogCapture.snapshots[0]?.text).toBe('tail answer')
+    })
+
+    it('returns to tail mode after a failed prompt jump from the bottom', async () => {
+        const { viewport, onViewModeChange } = renderThread()
+        const context = happyChatCapture.current
+        if (!context) throw new Error('Happy chat context was not captured')
+        onViewModeChange.mockClear()
+
+        const promptJump = context.jumpToPrompt('agent-text:missing')
+        let result = true
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(250)
+            result = await promptJump
+        })
+
+        expect(result).toBe(false)
+        expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight)
+        expect(onViewModeChange).toHaveBeenLastCalledWith('tail')
+    })
+
+    it('replaces a conversation-start result with the next prompt-jump result', async () => {
+        const { container, viewport } = renderThread()
+        const context = happyChatCapture.current
+        if (!context) throw new Error('Happy chat context was not captured')
+
+        const conversationStart = context.scrollToConversationStart()
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(250)
+            await conversationStart
+        })
+        expect(screen.getByRole('status')).toHaveTextContent('Reached conversation start')
+
+        const messages = container.querySelector<HTMLElement>('.happy-thread-messages')
+        if (!messages) throw new Error('Message container was not rendered')
+        const prompt = document.createElement('div')
+        prompt.id = getConversationMessageAnchorId('user-text:prompt')
+        prompt.dataset.hapiMessageRole = 'user'
+        prompt.scrollIntoView = vi.fn()
+        prompt.getBoundingClientRect = () => ({
+            top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0,
+            x: 0, y: 0, toJSON: () => ({})
+        }) as DOMRect
+        const answer = document.createElement('div')
+        answer.id = getConversationMessageAnchorId('agent-text:answer')
+        messages.append(prompt, answer)
+        viewport.getBoundingClientRect = () => ({
+            top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0,
+            x: 0, y: 0, toJSON: () => ({})
+        }) as DOMRect
+
+        const promptJump = context.jumpToPrompt('agent-text:answer')
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(250)
+            await promptJump
+        })
+
+        expect(screen.getByRole('status')).toHaveTextContent('Reached turn input')
+
+        let directPromptJump: Promise<boolean> | null = null
+        act(() => {
+            directPromptJump = context.jumpToPrompt('agent-text:answer', 'user-text:prompt')
+        })
+        expect(screen.getByRole('status')).toHaveTextContent('Loading turn input')
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(250)
+            await directPromptJump
+        })
+        expect(screen.getByRole('status')).toHaveTextContent('Reached turn input')
+    })
+
     it('does not snap back after pointer cancellation ends a touch swipe', () => {
         const { viewport, onViewModeChange } = renderThread()
         expect(viewport.scrollTop).toBe(702)

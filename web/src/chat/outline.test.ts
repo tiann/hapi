@@ -28,6 +28,20 @@ function eventBlock(id: string, event: AgentEvent, createdAt: number): ChatBlock
 }
 
 describe('conversation outline', () => {
+    it('skips synthetic transcript-gap rows from the outline', () => {
+        expect(buildConversationOutline([
+            {
+                kind: 'user-text',
+                id: '__transcript-gap__601-801',
+                localId: null,
+                createdAt: 0,
+                text: '[History not loaded: messages 601–801 were skipped during this jump.]',
+                invokedAt: 0,
+                status: 'sent'
+            }
+        ])).toEqual([])
+    })
+
     it('creates outline items from user messages', () => {
         expect(buildConversationOutline([
             userBlock('m1', 'Implement the outline panel', 1000),
