@@ -58,11 +58,11 @@ class CatalogTest {
         assertEquals(PermissionModes.forFlavor("codex"), PermissionModes.forFlavor("kimi"))
         assertEquals(PermissionModes.forFlavor("codex"), PermissionModes.forFlavor("copilot"))
         assertEquals(
-            listOf("default", "auto", "plan", "bypassPermissions"),
+            listOf("default", "auto", "bypassPermissions"),
             PermissionModes.forFlavor("grok").map { it.wireId }
         )
         assertEquals(
-            listOf("default", "plan", "yolo"),
+            listOf("default", "yolo"),
             PermissionModes.forFlavor("opencode").map { it.wireId }
         )
         assertEquals(

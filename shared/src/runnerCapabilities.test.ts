@@ -9,7 +9,7 @@ import {
 } from './runnerCapabilities'
 
 describe('runnerCapabilities', () => {
-    it('requires machine RPCs that session creation hard-depends on', () => {
+    it('requires runner capabilities that session creation hard-depends on', () => {
         expect(REQUIRED_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.AgentAvailability)
         expect(REQUIRED_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.CursorChatStoreStatus)
         expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
@@ -24,6 +24,7 @@ describe('runnerCapabilities', () => {
         expect(missingRequiredCapabilities([])).toEqual([
             MACHINE_CAPABILITIES.AgentAvailability,
             MACHINE_CAPABILITIES.CursorChatStoreStatus,
+            MACHINE_CAPABILITIES.SessionControlSkill,
         ])
     })
 
@@ -32,6 +33,7 @@ describe('runnerCapabilities', () => {
         expect(missingRequiredCapabilities([
             MACHINE_CAPABILITIES.AgentAvailability,
             MACHINE_CAPABILITIES.CursorChatStoreStatus,
+            MACHINE_CAPABILITIES.SessionControlSkill,
             'other-cap',
         ])).toEqual([])
     })

@@ -1,16 +1,25 @@
 import { describe, expect, it, mock } from 'bun:test'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
 import { SyncEngine, type SyncEvent } from './syncEngine'
 
-function createEngine(onCliEmit?: (payload: unknown) => void) {
+function createEngine(
+    onCliEmit?: (payload: unknown) => void,
+    capabilities: string[] = [MACHINE_CAPABILITIES.SessionControlSkill]
+) {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {
         of: () => ({ to: () => ({ emit: (_event: string, payload: unknown) => onCliEmit?.(payload) }) })
     } as never, new RpcRegistry(), { broadcast() {} } as never)
     engine.getOrCreateMachine(
         'machine-1',
-        { host: 'host', platform: 'linux', happyCliVersion: 'test' },
+        {
+            host: 'host',
+            platform: 'linux',
+            happyCliVersion: 'test',
+            capabilities
+        },
         null,
         'default'
     )
@@ -43,6 +52,23 @@ function setSpawn(engine: SyncEngine, spawnSession: ReturnType<typeof mock>) {
 }
 
 describe('SyncEngine.clearOpenCodeSession', () => {
+    it('rejects clear before reservation when the runner cannot deliver the control skill', () => {
+        const { engine } = createEngine(undefined, [])
+        try {
+            const source = engine.getOrCreateSession('old-runner-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toEqual({
+                type: 'error',
+                message: 'OpenCode clear requires an upgraded runner with session-control skill delivery',
+                code: 'clear_unavailable'
+            })
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
     it.each(['resume', 'reopen'] as const)('allows %s after a failed native cleanup aborts clear', async (action) => {
         const { store, engine } = createEngine()
         try {
