@@ -46,14 +46,14 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 503 | — | `guards.ts` `requireSyncEngine` → `{error: 'Not connected'}` — hub subsystems not up (startup/shutdown window); also Telegram-disabled on `/api/auth` initData path | Retry with backoff |
 | 503 | `no_machine_online` | resume/reopen/spawn-flow result mapping (`sessions.ts`) | The machine that owns the session is offline — tell the user to start the runner |
 | 503 | `machine_offline` | `machines.ts` restart-runner | Same |
-| 503 | `rpc_target_missing` | `machines.ts` pi/codex model catalogs (`RPC_TARGET_MISSING_ERROR_CODE` in `shared/src/rpcMethods.ts` — RPC handler unregistered or socket disconnected) | CLI-side target gone — treat as offline |
+| 503 | `rpc_target_missing` | `machines.ts` pi/codex model catalogs; `git.ts` `/sessions/:id/file` and `/git-diff-file` (`RPC_TARGET_MISSING_ERROR_CODE` in `shared/src/rpcMethods.ts` — RPC handler unregistered or socket disconnected) | CLI-side target gone — treat as offline |
 
 ## RPC-wrapped endpoints
 
 Many endpoints do not answer from hub state — the hub relays the request over Socket.IO to the session's CLI process (or the machine's runner) and forwards the result: git/file/directory/search, generated images, uploads, model catalogs, Agent availability, slash-commands, skills, spawn, list-directory, paths/exists. (The mode/model/effort config endpoints are RPC-backed too, but map apply-failures to 409 with a message.) Their failure modes differ from plain endpoints:
 
 1. **CLI reachable, command failed** → HTTP **200** with `{success: false, error}` (e.g. `runRpc` in `hub/src/web/routes/git.ts` catches RPC errors, including the 30 s RPC timeout, and returns them as a JSON envelope). Clients must check the `success` field on every RPC-shaped response; HTTP 200 alone means nothing.
-2. **CLI offline / handler missing** → depends on the route: the model-catalog routes in `machines.ts` map `RpcTargetMissingError` to **503 `rpc_target_missing`**; `git.ts`-style routes fold it into the 200 `{success: false}` envelope; resume/reopen surface **503 `no_machine_online`**.
+2. **CLI offline / handler missing** → depends on the route: the model-catalog routes in `machines.ts` and the session file read / git-diff-file routes in `git.ts` map `RpcTargetMissingError` to **503 `rpc_target_missing`**; other `git.ts` routes still fold RPC failures into the 200 `{success: false}` envelope; resume/reopen surface **503 `no_machine_online`**.
 3. **Hub subsystems not up** → **503 `Not connected`** from `requireSyncEngine` (brief startup/shutdown window).
 
 Practical rule: treat `success: false`, 503 `rpc_target_missing`, and 503 `no_machine_online` as the same user-facing condition — "the computer running this session is not reachable" — with the raw `error` string available in a details view.

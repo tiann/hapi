@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useSearch } from '@tanstack/react-router'
 import type { GitCommandResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
 import { CopyIcon, CheckIcon } from '@/components/icons'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
-import { formatDiffError, formatReadFileError } from '@/lib/files-i18n'
+import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useSession } from '@/hooks/queries/useSession'
+import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { formatDiffError, formatFileSessionOfflineError, formatReadFileError } from '@/lib/files-i18n'
 import { queryKeys } from '@/lib/query-keys'
 import { langAlias, useShikiHighlighter } from '@/lib/shiki'
 import { useTranslation } from '@/lib/use-translation'
@@ -22,6 +26,10 @@ import {
     type MarkdownPreviewMode,
 } from '@/lib/file-markdown-preview'
 import { downloadBase64File } from '@/lib/file-download'
+import { catchRpcTargetMissing, hasRpcTargetMissingResponse } from '@/lib/rpc-target-missing'
+import { formatReopenError } from '@/lib/reopenError'
+import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
+import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
 const FILE_SCROLL_KEY_PREFIX = 'hapi-file-scroll-'
@@ -205,6 +213,7 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
 
 export default function FilePage() {
     const { api } = useAppContext()
+    const queryClient = useQueryClient()
     const { t, locale } = useTranslation()
     const { copied: pathCopied, copy: copyPath } = useCopyToClipboard()
     const { copied: contentCopied, copy: copyContent } = useCopyToClipboard()
@@ -213,6 +222,13 @@ export default function FilePage() {
     const search = useSearch({ from: '/sessions/$sessionId/file' })
     const encodedPath = typeof search.path === 'string' ? search.path : ''
     const staged = search.staged
+    const { session } = useSession(api, sessionId)
+    const { reopenSession, isPending: reopenPending } = useSessionActions(
+        api,
+        sessionId,
+        session?.metadata?.flavor ?? null
+    )
+    const [reopenError, setReopenError] = useState<string | null>(null)
 
     const filePath = useMemo(() => decodePath(encodedPath), [encodedPath])
     const fileName = filePath.split('/').pop() || filePath || t('file.page.fallbackName')
@@ -225,7 +241,7 @@ export default function FilePage() {
             if (!api || !sessionId || !filePath) {
                 throw new Error('Missing session or path')
             }
-            return await api.getGitDiffFile(sessionId, filePath, staged)
+            return await catchRpcTargetMissing(() => api.getGitDiffFile(sessionId, filePath, staged))
         },
         enabled: Boolean(api && sessionId && filePath)
     })
@@ -236,10 +252,62 @@ export default function FilePage() {
             if (!api || !sessionId || !filePath) {
                 throw new Error('Missing session or path')
             }
-            return await api.readSessionFile(sessionId, filePath)
+            return await catchRpcTargetMissing(() => api.readSessionFile(sessionId, filePath))
         },
         enabled: Boolean(api && sessionId && filePath)
     })
+
+    const {
+        status: cursorChatStoreStatus,
+        error: cursorChatStoreError,
+        isLoading: cursorChatStoreLoading,
+    } = useCursorChatStoreStatus({ api, session })
+    const cursorReopenGate = resolveCursorReopenGate({
+        applicable: session?.metadata?.flavor === 'cursor',
+        onDisk: cursorChatStoreStatus?.onDisk,
+        error: cursorChatStoreError,
+        isLoading: cursorChatStoreLoading,
+    })
+    const canReopen = session && !session.active
+        ? inactiveSessionCanResume(session, 1, cursorChatStoreStatus?.onDisk)
+        : false
+    const reopenDisabledReason = cursorReopenGate.disabledReason === 'missing'
+        ? t('session.action.reopenCursorMissing')
+        : cursorReopenGate.disabledReason === 'checking'
+            ? t('session.action.reopenCursorChecking')
+            : undefined
+    const sessionRpcOffline = hasRpcTargetMissingResponse(fileQuery.data)
+        || hasRpcTargetMissingResponse(diffQuery.data)
+
+    const invalidateFileQueries = useCallback(async () => {
+        if (!sessionId || !filePath) return
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessionFile(sessionId, filePath) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.gitFileDiff(sessionId, filePath, staged) })
+    }, [filePath, queryClient, sessionId, staged])
+
+    const handleReopen = useCallback(async () => {
+        if (!canReopen || reopenDisabledReason) return
+        setReopenError(null)
+        try {
+            const result = await reopenSession()
+            if (result.sessionId && result.sessionId !== sessionId) {
+                retargetSharePendingTransfer(sessionId, result.sessionId)
+            }
+            await invalidateFileQueries()
+        } catch (error) {
+            setReopenError(formatReopenError(error))
+        }
+    }, [canReopen, invalidateFileQueries, reopenDisabledReason, reopenSession, sessionId])
+
+    const prevSessionActiveRef = useRef(session?.active)
+    useEffect(() => {
+        const wasInactive = prevSessionActiveRef.current === false
+        const nowActive = session?.active === true
+        prevSessionActiveRef.current = session?.active
+        if (wasInactive && nowActive && sessionRpcOffline) {
+            void invalidateFileQueries()
+        }
+    }, [invalidateFileQueries, session?.active, sessionRpcOffline])
 
     const diffContent = diffQuery.data?.success ? (diffQuery.data.stdout ?? '') : ''
     const diffError = extractCommandError(diffQuery.data)
@@ -343,12 +411,17 @@ export default function FilePage() {
     }, [diffSuccess, diffFailed, diffContent, imageMimeType])
 
     const loading = diffQuery.isLoading || fileQuery.isLoading
-    const fileError = fileContentResult && !fileContentResult.success
+    const fileError = fileContentResult && !fileContentResult.success && !hasRpcTargetMissingResponse(fileContentResult)
         ? (fileContentResult.error ?? 'Failed to read file')
         : null
     const missingPath = !filePath
-    const diffErrorMessage = diffError ? formatDiffError(diffError, t) : null
-    const fileErrorMessage = fileError ? formatReadFileError(fileError, t) : null
+    const sessionOfflineMessage = sessionRpcOffline ? formatFileSessionOfflineError(t) : null
+    const diffErrorMessage = sessionRpcOffline
+        ? null
+        : diffError
+            ? formatDiffError(diffError, t)
+            : null
+    const fileErrorMessage = sessionOfflineMessage ?? (fileError ? formatReadFileError(fileError, t) : null)
     const fileMetadata = formatFileMetadata(fileContentResult?.size, fileContentResult?.modified, locale)
 
     return (
@@ -449,6 +522,23 @@ export default function FilePage() {
                         <div className="text-sm text-[var(--app-hint)]">{t('file.page.missingPath')}</div>
                     ) : loading ? (
                         <FileContentSkeleton label={t('loading.file')} />
+                    ) : sessionOfflineMessage ? (
+                        <div className="space-y-3">
+                            <div className="text-sm text-[var(--app-hint)]">{sessionOfflineMessage}</div>
+                            {canReopen ? (
+                                <button
+                                    type="button"
+                                    onClick={() => void handleReopen()}
+                                    disabled={Boolean(reopenDisabledReason) || reopenPending}
+                                    className="rounded-md bg-[var(--app-button)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {t('file.action.reopen')}
+                                </button>
+                            ) : null}
+                            {reopenDisabledReason ? (
+                                <div className="text-xs text-[var(--app-hint)]">{reopenDisabledReason}</div>
+                            ) : null}
+                        </div>
                     ) : fileErrorMessage ? (
                         <div className="text-sm text-[var(--app-hint)]">{fileErrorMessage}</div>
                     ) : displayMode === 'diff' && diffContent ? (
@@ -509,6 +599,20 @@ export default function FilePage() {
                     )}
                 </div>
             </div>
+
+            {reopenError ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => setReopenError(null)}
+                    title={t('dialog.reopen.errorTitle')}
+                    description={reopenError}
+                    confirmLabel={t('dialog.reopen.dismiss')}
+                    confirmingLabel={t('dialog.reopen.dismiss')}
+                    onConfirm={async () => setReopenError(null)}
+                    isPending={false}
+                    centerTitle
+                />
+            ) : null}
         </div>
     )
 }
