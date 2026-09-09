@@ -201,6 +201,27 @@ describe('peer lifecycle operations', () => {
         })).resolves.toMatchObject({ status: 'completed', text: 'done' })
     })
 
+    it('fails immediately when a persisted remit was never accepted before the session ended', async () => {
+        let elapsed = 0
+        const http = createHttpMock({
+            post: (url) => authResponse(url) ?? Promise.reject(new Error(`unexpected POST ${url}`)),
+            get: (url) => url.endsWith('/messages')
+                ? { status: 200, data: { messages: [{ localId: REMIT_ID, invokedAt: null }] } }
+                : { status: 200, data: { session: { id: SESSION_ID, active: false, thinking: false } } }
+        })
+        await expect(waitPeer({
+            sessionId: SESSION_ID,
+            remitId: REMIT_ID,
+            apiUrl: 'http://hub.test',
+            accessToken: 'token',
+            http: http as never,
+            timeoutSecs: 1,
+            now: () => elapsed,
+            sleep: async (ms) => { elapsed += ms }
+        })).rejects.toMatchObject({ code: 'session_ended' })
+        expect(elapsed).toBe(0)
+    })
+
     it('finds an older remit and returns results across message pages', async () => {
         const http = createHttpMock({
             post: (url) => authResponse(url) ?? Promise.reject(new Error(`unexpected POST ${url}`)),

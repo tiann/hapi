@@ -700,11 +700,11 @@ export async function waitPeer(options: WaitPeerOptions): Promise<WaitPeerResult
                     messages
                 }
             }
-            if (result.invoked && !live.active) {
-                throw new PingPeerError('session_ended', `session ${sessionId} ended before producing a result`)
-            }
-        } else if (!live.active) {
-            throw new PingPeerError('session_ended', `session ${sessionId} ended before accepting remit ${remitId}`)
+        }
+        if (!live.active) {
+            throw new PingPeerError('session_ended', result.invoked
+                ? `session ${sessionId} ended before producing a result`
+                : `session ${sessionId} ended before accepting remit ${remitId}`)
         }
         if (now() >= deadline) break
         await sleep(1_000)

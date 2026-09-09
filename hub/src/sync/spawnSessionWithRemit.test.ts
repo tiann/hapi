@@ -797,6 +797,34 @@ describe('stopSession', () => {
 })
 
 describe('archiveSession', () => {
+    it.each(['stopped', 'already_gone', 'still_alive'] as const)(
+        'requires runner exit confirmation before archiving an inactive child: %s', async (status) => {
+            const events: string[] = []
+            const harness = {
+                getSession: () => ({
+                    active: false,
+                    metadata: { machineId: 'machine-1', startedFromRunner: true }
+                }),
+                stopSession: SyncEngine.prototype.stopSession,
+                rpcGateway: {
+                    killSession: async () => { throw new RpcTargetMissingError('kill-session', 'socket-disconnected') },
+                    stopRunnerSession: mock(async () => { events.push('runner'); return status })
+                },
+                sessionCache: { markSessionArchivedFromHub: () => { events.push('archived') } },
+                handleSessionEnd: () => { events.push('ended') }
+            }
+            const result = SyncEngine.prototype.archiveSession.call(harness as unknown as SyncEngine, SESSION_ID)
+            if (status === 'still_alive') {
+                await expect(result).rejects.toThrow(/still running/)
+                expect(events).toEqual(['runner'])
+            } else {
+                await result
+                expect(events).toEqual(['runner', 'archived', 'ended'])
+            }
+            expect(harness.rpcGateway.stopRunnerSession).toHaveBeenCalledWith('machine-1', SESSION_ID)
+        }
+    )
+
     it('persists archive metadata at the Hub even when the CLI accepts the request', async () => {
         const markSessionArchivedFromHub = mock(() => {})
         const handleSessionEnd = mock(() => {})
