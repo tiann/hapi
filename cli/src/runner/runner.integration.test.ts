@@ -22,6 +22,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawn } from 'child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import path, { join } from 'path';
@@ -34,7 +35,7 @@ import {
   notifyRunnerSessionStarted, 
   stopRunner
 } from '@/runner/controlClient';
-import { readRunnerState, clearRunnerState } from '@/persistence';
+import { readRunnerState, clearRunnerState, readSettings } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { getLatestRunnerLog } from '@/ui/logger';
@@ -105,7 +106,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     
     // Start fresh runner for this test
     // This will return and start a background process - we don't need to wait for it
-    const runnerLauncher = spawnHappyCLI(['runner', 'start'], {
+    const runnerLauncher = spawnHappyCLI(['runner', 'start', '--workspace-root', configuration.happyHomeDir], {
       stdio: 'ignore',
       // Test-scoped env: neutralizes any outer HAPI/pi session identity and
       // stamps every child with the run's unique test marker.
@@ -234,6 +235,41 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     expect(await stopRunnerSession(sessionId)).toBe('already_gone');
     expect(await stopRunnerSession(sessionId)).toBe('already_gone');
     expect(await listRunnerSessions()).toEqual([]);
+  });
+
+  it('cleans the reserved session after workspace rejection through the machine RPC', async () => {
+    const { machineId } = await readSettings();
+    expect(machineId).toBeTruthy();
+    const auth = await fetch(`${configuration.apiUrl}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken: configuration.cliApiToken })
+    });
+    expect(auth.status).toBe(200);
+    const { token } = await auth.json() as { token: string };
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    await waitFor(async () => {
+      const response = await fetch(`${configuration.apiUrl}/api/machines/${machineId}/agent-availability`, { headers });
+      return response.ok;
+    });
+    const directory = join(path.dirname(configuration.happyHomeDir), `hapi-outside-${randomUUID()}`);
+    expect(existsSync(directory)).toBe(false);
+    const response = await fetch(`${configuration.apiUrl}/api/machines/${machineId}/spawn-with-remit`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ directory, agent: 'claude', message: 'must not run', remitId: randomUUID(), waitActiveSecs: 1 })
+    });
+    const result = await response.json() as { childSessionId?: string };
+    expect(response.status).toBe(502);
+    expect(result).toMatchObject({ type: 'error', code: 'outside_workspace_roots', cleanedUp: true });
+    expect(result.childSessionId).toBeTruthy();
+    expect(await stopRunnerSession(result.childSessionId!)).toBe('already_gone');
+    expect(await listRunnerSessions()).toEqual([]);
+    expect(existsSync(directory)).toBe(false);
+    const archived = await fetch(`${configuration.apiUrl}/api/sessions/${result.childSessionId}`, { headers });
+    expect(archived.status).toBe(200);
+    expect(await archived.json()).toMatchObject({
+      session: { active: false, metadata: { lifecycleState: 'archived' } }
+    });
   });
 
   it.skipIf(process.env.HAPI_RUN_STRESS_TESTS !== 'true')(

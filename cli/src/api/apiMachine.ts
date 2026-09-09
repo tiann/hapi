@@ -388,15 +388,6 @@ export class ApiMachineClient {
                 throw new Error('Directory is required')
             }
 
-            const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
-            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
-                return {
-                    type: 'error',
-                    errorMessage: 'Directory is outside this machine\'s workspace roots',
-                    code: 'outside_workspace_roots',
-                }
-            }
-
             const result = await spawnSession({
                 directory,
                 sessionId,
