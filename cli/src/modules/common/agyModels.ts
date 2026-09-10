@@ -13,6 +13,8 @@ const AUTH_REQUIRED_PATTERNS = [
 
 const PROBE_TIMEOUT_MS = 15_000
 
+type AgyCatalog = NonNullable<AgyModelsResponse['availableModels']>
+
 interface CacheEntry {
     expiresAt: number
     response: ListAgyModelsResponse
@@ -24,6 +26,14 @@ const cache: CacheEntry = {
     response: { success: true, availableModels: [] }
 }
 let inflight: Promise<ListAgyModelsResponse> | null = null
+
+// What one round of asking agy produced. `unavailable` covers every way the
+// listing failed to arrive (spawn failure, timeout, output neither parser
+// could read) — none of them say anything about the catalog itself.
+type AgyCatalogFetch =
+    | { kind: 'live'; models: AgyCatalog }
+    | { kind: 'auth-error'; error: string }
+    | { kind: 'unavailable' }
 
 // Hardcoded list — used as a FALLBACK only (when `agy models` can't be reached)
 // and as the source of truth for name→id mapping of known models.
@@ -207,18 +217,18 @@ function probeAgyModels(args: string[]): Promise<AgyModelsProbe> {
 // picker always matches what agy currently offers — no redeploy when agy changes
 // models. The hardcoded mirror is only a fallback (timeout / spawn error /
 // unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
-async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
+async function fetchAgyCatalog(): Promise<AgyCatalogFetch> {
     // `--output-format` is a global flag: it has to come before the subcommand,
     // and agy only accepts the `=` form here. Releases that predate it ignore
     // the flag and print the table, which the text parser still understands.
     const probe = await probeAgyModels(['--output-format=json', 'models'])
     if ('unreachable' in probe) {
-        return { success: true, availableModels: buildModelList() }
+        return { kind: 'unavailable' }
     }
 
     const authError = checkOutputForAuthError(probe.output)
     if (authError) {
-        return { success: false, error: authError }
+        return { kind: 'auth-error', error: authError }
     }
 
     // Prefer the structured listing, then the printed table for agy releases
@@ -226,7 +236,7 @@ async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
     // (format change, partial fetch, etc.).
     const parsed = parseAgyModelsJson(probe.output) ?? parseAgyModelsOutput(probe.output)
     if (parsed) {
-        return { success: true, availableModels: parsed }
+        return { kind: 'live', models: parsed }
     }
 
     // Nothing readable came back. Every agy release checked ignores an unknown
@@ -236,13 +246,24 @@ async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
     // costs a second invocation on builds that produced nothing usable.
     const retry = await probeAgyModels(['models'])
     if ('unreachable' in retry) {
-        return { success: true, availableModels: buildModelList() }
+        return { kind: 'unavailable' }
     }
     const retryAuthError = checkOutputForAuthError(retry.output)
     if (retryAuthError) {
-        return { success: false, error: retryAuthError }
+        return { kind: 'auth-error', error: retryAuthError }
     }
-    return { success: true, availableModels: parseAgyModelsOutput(retry.output) ?? buildModelList() }
+    const retryParsed = parseAgyModelsOutput(retry.output)
+    return retryParsed ? { kind: 'live', models: retryParsed } : { kind: 'unavailable' }
+}
+
+function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
+    if (fetched.kind === 'live') {
+        return { success: true, availableModels: fetched.models }
+    }
+    if (fetched.kind === 'auth-error') {
+        return { success: false, error: fetched.error }
+    }
+    return { success: true, availableModels: buildModelList() }
 }
 
 export async function listAgyModels(): Promise<ListAgyModelsResponse> {
@@ -256,7 +277,7 @@ export async function listAgyModels(): Promise<ListAgyModelsResponse> {
 
     inflight = (async () => {
         try {
-            const response = await fetchAgyModels()
+            const response = toResponse(await fetchAgyCatalog())
             if (response.success && (response.availableModels?.length ?? 0) > 0) {
                 cache.expiresAt = Date.now() + CACHE_TTL_MS
                 cache.response = response
