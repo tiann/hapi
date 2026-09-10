@@ -172,6 +172,20 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
     })
 
+    it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(
+            new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })
+        ))
+
+        const api = new ApiClient('test-token')
+        await api.getMachineAgyModels('machine-1')
+        await api.getMachineAgyModels('machine-1', { refresh: true })
+
+        expect(fetchMock.mock.calls[0][0]).toContain('/api/machines/machine-1/agy-models')
+        expect(fetchMock.mock.calls[0][0]).not.toContain('refresh')
+        expect(fetchMock.mock.calls[1][0]).toContain('/api/machines/machine-1/agy-models?refresh=true')
+    })
+
     it('lists and imports Pi sessions through the selected machine', async () => {
         fetchMock
             .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, sessions: [], machineId: 'machine-1' }), { status: 200 }))

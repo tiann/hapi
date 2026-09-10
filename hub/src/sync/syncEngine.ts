@@ -3918,8 +3918,11 @@ export class SyncEngine {
         return await this.rpcGateway.listSkills(sessionId, flavor)
     }
 
-    async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
-        return await this.rpcGateway.listAgyModelsForMachine(machineId)
+    async listAgyModelsForMachine(
+        machineId: string,
+        options?: { refresh?: boolean }
+    ): Promise<RpcListAgyModelsResponse> {
+        return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {

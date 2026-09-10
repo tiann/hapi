@@ -790,4 +790,25 @@ describe('machines routes', () => {
             expect((await patch(app, { displayName: 'Workstation' })).status).toBe(500)
         })
     })
+
+    it('forwards an explicit agy model refresh to the machine and defaults to the cached catalog', async () => {
+        const machine = createMachine()
+        const calls: Array<{ refresh?: boolean } | undefined> = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listAgyModelsForMachine: (_machineId: string, options?: { refresh?: boolean }) => {
+                calls.push(options)
+                return Promise.resolve({ success: true, availableModels: [] })
+            },
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        expect((await app.request('/api/machines/machine-1/agy-models')).status).toBe(200)
+        expect((await app.request('/api/machines/machine-1/agy-models?refresh=true')).status).toBe(200)
+
+        expect(calls).toEqual([{ refresh: false }, { refresh: true }])
+    })
 })

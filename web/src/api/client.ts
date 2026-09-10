@@ -858,9 +858,14 @@ export class ApiClient {
         })
     }
 
-    async getMachineAgyModels(machineId: string): Promise<AgyModelsResponse> {
+    async getMachineAgyModels(
+        machineId: string,
+        options?: { refresh?: boolean }
+    ): Promise<AgyModelsResponse> {
+        // Without `refresh` the machine may answer from its cached catalog.
+        const query = options?.refresh ? '?refresh=true' : ''
         return await this.request<AgyModelsResponse>(
-            `/api/machines/${encodeURIComponent(machineId)}/agy-models`
+            `/api/machines/${encodeURIComponent(machineId)}/agy-models${query}`
         )
     }
 

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { AgyModelSelector } from './AgyModelSelector'
 
@@ -35,4 +35,36 @@ describe('AgyModelSelector', () => {
         expect(screen.getByTestId('agy-model-auth-error')).toBeInTheDocument()
     })
 
+    it('keeps the cached catalog usable while saying the machine failed its last sign-in check, with a way to re-probe', () => {
+        const onRetry = vi.fn()
+        renderSelector({
+            warning: 'Authentication required. Please run `agy` in a terminal to sign in with Google.',
+            availableModels: [{ modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }],
+            onRetry
+        })
+
+        expect(screen.getByTestId('agy-model-list')).toBeInTheDocument()
+        expect(screen.getByTestId('agy-model-stale-warning')).toBeInTheDocument()
+        expect(screen.queryByTestId('agy-model-auth-error')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+        expect(onRetry).toHaveBeenCalledTimes(1)
+    })
+
+    it('says a re-probe is running instead of leaving Retry looking idle', () => {
+        // The probe runs agy, so the answer can be tens of seconds away; without
+        // this the button is the only thing on screen and nothing about it moves.
+        const onRetry = vi.fn()
+        renderSelector({
+            warning: 'Authentication required. Please run `agy` in a terminal to sign in with Google.',
+            availableModels: [{ modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }],
+            isFetching: true,
+            onRetry
+        })
+
+        const button = screen.getByRole('button', { name: 'Fetching available models…' })
+        expect(button).toBeDisabled()
+        fireEvent.click(button)
+        expect(onRetry).not.toHaveBeenCalled()
+    })
 })

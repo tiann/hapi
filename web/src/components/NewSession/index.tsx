@@ -1803,6 +1803,8 @@ export function NewSession(props: {
                     machineId={machineId}
                     isLoading={agyModelsState.isLoading}
                     error={agyModelsState.error}
+                    warning={agyModelsState.warning}
+                    isFetching={agyModelsState.isFetching}
                     availableModels={agyModelsState.availableModels}
                     selectedModel={agySelectedModel}
                     onModelChange={setAgySelectedModel}
