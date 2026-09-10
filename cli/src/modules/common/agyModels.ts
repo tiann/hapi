@@ -15,17 +15,33 @@ const PROBE_TIMEOUT_MS = 15_000
 
 type AgyCatalog = NonNullable<AgyModelsResponse['availableModels']>
 
-interface CacheEntry {
-    expiresAt: number
-    response: ListAgyModelsResponse
+// A probe is a whole agy invocation, so the catalog is served from the last one
+// agy answered. STALE_TTL_MS is the outer bound on that trust: past it the
+// listing stops standing in for the machine even if probes keep failing.
+const FRESH_TTL_MS = 10 * 60_000
+const STALE_TTL_MS = 24 * 60 * 60_000
+
+// Floor between probes after one comes back empty. On a machine where agy hangs
+// on sign-in each attempt costs PROBE_TIMEOUT_MS, and both pickers ask.
+const PROBE_BACKOFF_MS = 60_000
+
+interface CachedCatalog {
+    models: AgyCatalog
+    fetchedAt: number
 }
 
-const CACHE_TTL_MS = 60_000
-const cache: CacheEntry = {
-    expiresAt: 0,
-    response: { success: true, availableModels: [] }
-}
-let inflight: Promise<ListAgyModelsResponse> | null = null
+// Only a live listing lands here, never the hardcoded mirror: the mirror is a
+// stand-in, not something the machine observed, and caching it would pin the
+// picker to it for a whole TTL after a single timeout.
+let cachedCatalog: CachedCatalog | null = null
+
+// Kept for two reasons: it rate-limits retries, and an auth failure has to reach
+// the user even while a cached listing is still being served.
+let lastFailedProbe: { at: number; result: AgyCatalogFetch } | null = null
+
+// The machine daemon owns `machineId:listAgyModels`, so this module runs once
+// per machine — hence no keying.
+let inflight: Promise<AgyCatalogFetch> | null = null
 
 // What one round of asking agy produced. `unavailable` covers every way the
 // listing failed to arrive (spawn failure, timeout, output neither parser
@@ -256,35 +272,22 @@ async function fetchAgyCatalog(): Promise<AgyCatalogFetch> {
     return retryParsed ? { kind: 'live', models: retryParsed } : { kind: 'unavailable' }
 }
 
-function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
-    if (fetched.kind === 'live') {
-        return { success: true, availableModels: fetched.models }
-    }
-    if (fetched.kind === 'auth-error') {
-        return { success: false, error: fetched.error }
-    }
-    return { success: true, availableModels: buildModelList() }
-}
-
-export async function listAgyModels(): Promise<ListAgyModelsResponse> {
-    if (cache.expiresAt > Date.now() && (cache.response.availableModels?.length ?? 0) > 0) {
-        return cache.response
-    }
-
-    if (inflight) {
-        return inflight
-    }
-
-    inflight = (async () => {
+function startProbe(): Promise<AgyCatalogFetch> {
+    inflight = (async (): Promise<AgyCatalogFetch> => {
         try {
-            const response = toResponse(await fetchAgyCatalog())
-            if (response.success && (response.availableModels?.length ?? 0) > 0) {
-                cache.expiresAt = Date.now() + CACHE_TTL_MS
-                cache.response = response
+            const fetched = await fetchAgyCatalog()
+            if (fetched.kind === 'live') {
+                cachedCatalog = { models: fetched.models, fetchedAt: Date.now() }
+                // agy answered, so whatever went wrong before is over.
+                lastFailedProbe = null
+            } else {
+                lastFailedProbe = { at: Date.now(), result: fetched }
             }
-            return response
+            return fetched
         } catch {
-            return { success: true, availableModels: buildModelList() }
+            const result: AgyCatalogFetch = { kind: 'unavailable' }
+            lastFailedProbe = { at: Date.now(), result }
+            return result
         } finally {
             inflight = null
         }
@@ -293,8 +296,87 @@ export async function listAgyModels(): Promise<ListAgyModelsResponse> {
     return inflight
 }
 
+async function refreshCatalog(force: boolean): Promise<AgyCatalogFetch> {
+    // A probe already running when Retry was pressed predates whatever the user
+    // just fixed in the terminal, so wait it out rather than answer from it.
+    if (force && inflight) {
+        await inflight.catch(() => { })
+    }
+    if (inflight) {
+        return await inflight
+    }
+    if (!force && lastFailedProbe && Date.now() - lastFailedProbe.at < PROBE_BACKOFF_MS) {
+        return lastFailedProbe.result
+    }
+
+    return await startProbe()
+}
+
+// Servable and fresh are asked separately because the clock can step backwards
+// (NTP, suspend/resume): an age we cannot trust is still the last thing agy told
+// us, so it stays servable, but it must never count as fresh or nothing would
+// revalidate it.
+function cachedCatalogAge(): number {
+    return cachedCatalog ? Date.now() - cachedCatalog.fetchedAt : Number.POSITIVE_INFINITY
+}
+
+function isCachedCatalogFresh(): boolean {
+    const age = cachedCatalogAge()
+    return age >= 0 && age < FRESH_TTL_MS
+}
+
+function servableCatalog(): ListAgyModelsResponse | null {
+    if (!cachedCatalog || cachedCatalogAge() >= STALE_TTL_MS) {
+        return null
+    }
+
+
+    const response: ListAgyModelsResponse = { success: true, availableModels: cachedCatalog.models }
+    // A sign-in failure rides along with the listing: a picker that looked
+    // healthy would let the user start a session agy cannot run.
+    if (lastFailedProbe?.result.kind === 'auth-error') {
+        response.error = lastFailedProbe.result.error
+    }
+    return response
+}
+
+function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
+    if (fetched.kind === 'live') {
+        return { success: true, availableModels: fetched.models }
+    }
+
+    // A failed probe is not evidence that the catalog changed.
+    const cached = servableCatalog()
+    if (cached) {
+        return cached
+    }
+    if (fetched.kind === 'auth-error') {
+        return { success: false, error: fetched.error }
+    }
+    return { success: true, availableModels: buildModelList() }
+}
+
+export async function listAgyModels(options?: { refresh?: boolean }): Promise<ListAgyModelsResponse> {
+    // Retry is the user saying the cached answer is wrong, so it costs a probe.
+    if (options?.refresh === true) {
+        return toResponse(await refreshCatalog(true))
+    }
+
+    const cached = servableCatalog()
+    if (cached) {
+        // A warning is itself a reason to look again — the user may have signed
+        // in since, and nothing else revalidates a catalog that is still fresh.
+        if (!isCachedCatalogFresh() || lastFailedProbe) {
+            void refreshCatalog(false).catch(() => { })
+        }
+        return cached
+    }
+
+    return toResponse(await refreshCatalog(false))
+}
+
 export function _resetAgyModelsCacheForTests(): void {
-    cache.expiresAt = 0
-    cache.response = { success: true, availableModels: [] }
+    cachedCatalog = null
+    lastFailedProbe = null
     inflight = null
 }
