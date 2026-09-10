@@ -281,6 +281,8 @@ export interface ClientToServerEvents {
     'machine-alive': (data: { machineId: string; time: number; health?: unknown }) => void
     'machine-update-metadata': (data: { machineId: string; expectedVersion: number; metadata: unknown }, cb: (answer: MachineUpdateMetadataAck) => void) => void
     'machine-update-state': (data: { machineId: string; expectedVersion: number; runnerState: unknown | null }, cb: (answer: MachineUpdateStateAck) => void) => void
+    /** The machine's `agy models` listing changed on a background re-check. */
+    'machine-agy-models-changed': (data: { machineId: string }) => void
     'rpc-register': (data: { method: string }) => void
     'rpc-unregister': (data: { method: string }) => void
     'terminal:ready': (data: TerminalReadyPayload) => void

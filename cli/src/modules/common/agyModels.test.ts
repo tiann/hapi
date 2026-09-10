@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS } from '@hapi/protocol'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const spawnMock = vi.hoisted(() => vi.fn())
@@ -8,10 +9,17 @@ import {
     _parseAgyModelsJsonForTests,
     _parseAgyModelsOutputForTests,
     _resetAgyModelsCacheForTests,
-    listAgyModels
+    listAgyModels,
+    setAgyCatalogChangeListener
 } from './agyModels'
 
 // Real `agy --output-format=json models` capture, trimmed to four models.
+// The exact listing the hardcoded mirror produces, so a probe can land "no
+// change at all" for a caller that was being served that mirror.
+const MIRROR_LISTING = AGY_MODEL_PRESETS
+    .map((id) => `${id}\t${AGY_MODEL_LABELS[id as keyof typeof AGY_MODEL_LABELS]}`)
+    .join('\n') + '\n'
+
 const JSON_LISTING = JSON.stringify({
     conversation_id: '',
     status: 'SUCCESS',
@@ -473,6 +481,179 @@ describe('listAgyModels catalog cache', () => {
         const afterSignIn = await listAgyModels()
         expect(afterSignIn.availableModels).toEqual(CATALOG_B)
         expect(afterSignIn.error).toBeUndefined()
+    })
+
+    it('announces a background refresh that actually changed the listing', async () => {
+        vi.useFakeTimers()
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await primeCatalog(LIVE_A)
+        expect(changes).toHaveLength(0)
+
+        await vi.advanceTimersByTimeAsync(11 * 60_000)
+        const refresh = queueProbe()
+        expect((await listAgyModels()).availableModels).toEqual(CATALOG_A)
+        finish(refresh, LIVE_B)
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(changes).toHaveLength(1)
+        expect((await listAgyModels()).availableModels).toEqual(CATALOG_B)
+    })
+
+    it('stays quiet when the refresh comes back with the same listing', async () => {
+        vi.useFakeTimers()
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await primeCatalog(LIVE_A)
+        await vi.advanceTimersByTimeAsync(11 * 60_000)
+        const refresh = queueProbe()
+        await listAgyModels()
+        finish(refresh, LIVE_A)
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(changes).toHaveLength(0)
+    })
+
+    it('stays quiet on the very first fetch — whoever asked is already awaiting it', async () => {
+        vi.useFakeTimers()
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await primeCatalog(LIVE_A)
+
+        expect(changes).toHaveLength(0)
+    })
+
+    it('does not announce anything on the read that follows an announced change', async () => {
+        // The announcement makes clients re-read. That read must not start another
+        // probe, or the machine would talk itself round in a circle.
+        vi.useFakeTimers()
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await primeCatalog(LIVE_A)
+        await vi.advanceTimersByTimeAsync(11 * 60_000)
+        const refresh = queueProbe()
+        await listAgyModels()
+        finish(refresh, LIVE_B)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(changes).toHaveLength(1)
+
+        const spawnsBefore = spawnMock.mock.calls.length
+        expect((await listAgyModels()).availableModels).toEqual(CATALOG_B)
+        expect(spawnMock).toHaveBeenCalledTimes(spawnsBefore)
+        expect(changes).toHaveLength(1)
+    })
+
+    it('announces a sign-in that came back even when the listing is identical', async () => {
+        // The response the picker renders is the listing AND the warning beside
+        // it. Recovery clears the warning while leaving the list alone, and an
+        // open picker would otherwise keep accusing a user who already fixed it.
+        vi.useFakeTimers()
+        await primeCatalog(LIVE_A)
+
+        const failing = queueProbe()
+        const retry = listAgyModels({ refresh: true })
+        await Promise.resolve()
+        finish(failing, AUTH_FAILURE)
+        expect(await retry).toMatchObject({ error: expect.stringContaining('Authentication required') })
+
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        const recovering = queueProbe()
+        await listAgyModels()
+        finish(recovering, LIVE_A)
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(changes).toHaveLength(1)
+        expect(await listAgyModels()).toMatchObject({ success: true, availableModels: CATALOG_A })
+        expect((await listAgyModels()).error).toBeUndefined()
+    })
+
+    it('announces a sign-in that lapsed even when the listing is identical', async () => {
+        vi.useFakeTimers()
+        await primeCatalog(LIVE_A)
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await vi.advanceTimersByTimeAsync(11 * 60_000)
+        const failing = queueProbe()
+        await listAgyModels()
+        finish(failing, AUTH_FAILURE)
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(changes).toHaveLength(1)
+        expect((await listAgyModels()).error).toContain('Authentication required')
+    })
+
+    it('does not announce a failure that changes nothing the picker shows', async () => {
+        vi.useFakeTimers()
+        await primeCatalog(LIVE_A)
+
+        await vi.advanceTimersByTimeAsync(11 * 60_000)
+        const first = queueProbe()
+        await listAgyModels()
+        finish(first, AUTH_FAILURE)
+        await vi.advanceTimersByTimeAsync(0)
+
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        const second = queueProbe()
+        await listAgyModels()
+        finish(second, AUTH_FAILURE)
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(changes).toHaveLength(0)
+    })
+
+    it('announces the first live listing to everyone who was already being served the mirror', async () => {
+        // One client asked while agy was signed out and got the hardcoded
+        // mirror; nothing is cached. Another client's probe then lands the real
+        // listing. The first client is holding a list that is now wrong, and
+        // only an announcement can tell it.
+        vi.useFakeTimers()
+        queueProbe()
+        const cold = listAgyModels()
+        await vi.advanceTimersByTimeAsync(15_000)
+        expect((await cold).availableModels?.length).toBeGreaterThan(2)
+
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        const recovered = queueProbe()
+        const second = listAgyModels()
+        await Promise.resolve()
+        finish(recovered, LIVE_A)
+        expect((await second).availableModels).toEqual(CATALOG_A)
+
+        expect(changes).toHaveLength(1)
+    })
+
+    it('does not announce a change to an entry that had already stopped being served', async () => {
+        // Past the stale bound the route already answers from the mirror, so
+        // re-landing that same mirror changes nothing anyone could see.
+        vi.useFakeTimers()
+        await primeCatalog(LIVE_A)
+        await vi.advanceTimersByTimeAsync(24 * 60 * 60_000 + 1_000)
+
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        // Built from the presets the fallback uses, so the answer is unchanged.
+        const mirrorProbe = queueProbe()
+        const expired = listAgyModels()
+        await Promise.resolve()
+        finish(mirrorProbe, MIRROR_LISTING)
+        await expired
+
+        expect(changes).toHaveLength(0)
     })
 
     it('revalidates instead of trusting an entry the clock has thrown into the future', async () => {

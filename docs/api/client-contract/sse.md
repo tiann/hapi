@@ -122,7 +122,7 @@ Hub-side delivery (`SSEManager.shouldSend`):
 | `toast` | every **visible** connection in the namespace, regardless of filter (no `id`, never replayed) |
 | `message-received`, `scheduled-matured` | `all=true` connections + matching `sessionId` connections |
 | `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
-| `machine-updated` | `all=true` connections + matching `machineId` connections |
+| `machine-updated`, `machine-agy-models-updated` | `all=true` connections + matching `machineId` connections |
 
 **The global connection must also handle the message-stream events** (`message-received`, `messages-consumed`, `messages-indeterminate`, `messages-requeued`, `message-cancelled`, `scheduled-matured`): while a session connection is down (reconnect gap) or the session isn't open, the global pipe is the only one alive, and it must still keep queued/optimistic bookkeeping correct — mark local messages consumed, remove cancelled rows, and refresh session-list scheduled counts. The session-scoped connection additionally ingests `message-received` into the message window.
 
@@ -130,7 +130,7 @@ The two connections have **no ordering relationship with each other** — the sa
 
 ---
 
-## SyncEvent union (15 types)
+## SyncEvent union (16 types)
 
 Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). All events except `connection-changed` carry `namespace?: string`. Ignore unknown event types.
 
@@ -144,6 +144,7 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 | `scheduled-matured` | `sessionId` | A scheduled message became due and was handed to the agent. Refetch list/queue indicators. |
 | `session-ended` | `sessionId`, `reason?: 'completed'\|'terminated'\|'error'\|'handoff'\|'cleared'` | Session lifecycle signal (the `session-updated` flow still carries the state change). |
 | `machine-updated` | `machineId`, `data?: Machine \| MachinePatch \| null` | Full `Machine`: upsert (remove when `active:false`). `null`: machine removed. Patch `{active?, activeAt?, updatedAt?}`: `active:false` ⇒ remove, otherwise refetch machines. `data` absent ⇒ refetch. |
+| `machine-agy-models-updated` | `machineId` | The machine's `agy models` listing changed on a background re-check. Refetch `GET /api/machines/:id/agy-models` for that machine (answered from the machine's cache; it starts no `agy` run and produces no further event). Emitted when the re-check changes what that route would answer — a different listing, or a sign-in warning that appeared or cleared — never for the machine's first listing. |
 | `toast` | `data: {title, body, sessionId, url}` | Show as in-app toast/banner. Only delivered to visible connections (see [Visibility](#visibility)). |
 | `messages-consumed` | `sessionId`, `localIds: string[]`, `invokedAt: number` | The agent consumed queued user messages: stamp `invokedAt`, flip status to `sent`, remove from the queued bar. |
 | `messages-indeterminate` | `sessionId`, `localIds: string[]` | A steer was dispatched but its outcome is unknown. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. |

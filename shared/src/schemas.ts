@@ -588,6 +588,14 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('machine-updated'),
         data: MachineUpdatedDataSchema.optional()
     }),
+    /**
+     * The machine re-checked `agy models` in the background and the listing
+     * changed. Carries no catalog: clients refetch the machine's agy-models
+     * route, which answers from the machine's cache.
+     */
+    MachineChangedSchema.extend({
+        type: z.literal('machine-agy-models-updated')
+    }),
     SessionEventBaseSchema.extend({
         type: z.literal('toast'),
         data: z.object({

@@ -39,6 +39,27 @@ let cachedCatalog: CachedCatalog | null = null
 // the user even while a cached listing is still being served.
 let lastFailedProbe: { at: number; result: AgyCatalogFetch } | null = null
 
+// Registered only by the machine daemon; a session process has no route out.
+let catalogChangeListener: (() => void) | null = null
+
+export function setAgyCatalogChangeListener(listener: (() => void) | null): void {
+    catalogChangeListener = listener
+}
+
+function notifyCatalogChanged(): void {
+    try {
+        catalogChangeListener?.()
+    } catch {
+        // Best effort: failing to announce a new catalog must not fail the probe.
+    }
+}
+
+// Not the same as "nothing is cached": a machine whose agy is signed out has
+// been answering from the mirror all along, so its first real listing is a
+// change somebody needs to hear about. Until anything has been handed out
+// though, a probe landing has nothing to correct.
+let hasServedAnswer = false
+
 // The machine daemon owns `machineId:listAgyModels`, so this module runs once
 // per machine — hence no keying.
 let inflight: Promise<AgyCatalogFetch> | null = null
@@ -273,6 +294,7 @@ async function fetchAgyCatalog(): Promise<AgyCatalogFetch> {
 }
 
 function startProbe(): Promise<AgyCatalogFetch> {
+    const servedBefore = servedAnswerSignature()
     inflight = (async (): Promise<AgyCatalogFetch> => {
         try {
             const fetched = await fetchAgyCatalog()
@@ -290,10 +312,19 @@ function startProbe(): Promise<AgyCatalogFetch> {
             return result
         } finally {
             inflight = null
+            // In the `finally` so a throw is compared the same way as a return.
+            if (hasServedAnswer && servedAnswerSignature() !== servedBefore) {
+                notifyCatalogChanged()
+            }
         }
     })()
 
     return inflight
+}
+
+// Until the backoff lapses, asking again would only return what we already have.
+function probeIsDue(): boolean {
+    return lastFailedProbe === null || Date.now() - lastFailedProbe.at >= PROBE_BACKOFF_MS
 }
 
 async function refreshCatalog(force: boolean): Promise<AgyCatalogFetch> {
@@ -305,7 +336,7 @@ async function refreshCatalog(force: boolean): Promise<AgyCatalogFetch> {
     if (inflight) {
         return await inflight
     }
-    if (!force && lastFailedProbe && Date.now() - lastFailedProbe.at < PROBE_BACKOFF_MS) {
+    if (!force && !probeIsDue() && lastFailedProbe) {
         return lastFailedProbe.result
     }
 
@@ -340,6 +371,12 @@ function servableCatalog(): ListAgyModelsResponse | null {
     return response
 }
 
+// Everything a client can see goes through here, so keying the announcement on
+// it makes it about what changed on screen rather than what changed in cache.
+function servedAnswerSignature(): string {
+    return JSON.stringify(servableCatalog() ?? { success: true, availableModels: buildModelList() })
+}
+
 function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
     if (fetched.kind === 'live') {
         return { success: true, availableModels: fetched.models }
@@ -357,6 +394,14 @@ function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
 }
 
 export async function listAgyModels(options?: { refresh?: boolean }): Promise<ListAgyModelsResponse> {
+    const answer = await answerAgyModels(options)
+    // Set on the way out, not on entry: the first caller is awaiting the probe
+    // rather than looking at a stale screen, so it needs no announcement.
+    hasServedAnswer = true
+    return answer
+}
+
+async function answerAgyModels(options?: { refresh?: boolean }): Promise<ListAgyModelsResponse> {
     // Retry is the user saying the cached answer is wrong, so it costs a probe.
     if (options?.refresh === true) {
         return toResponse(await refreshCatalog(true))
@@ -379,4 +424,6 @@ export function _resetAgyModelsCacheForTests(): void {
     cachedCatalog = null
     lastFailedProbe = null
     inflight = null
+    hasServedAnswer = false
+    catalogChangeListener = null
 }
