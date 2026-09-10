@@ -51,6 +51,27 @@ describe('AgyModelSelector', () => {
         expect(onRetry).toHaveBeenCalledTimes(1)
     })
 
+    it('keeps a picked model listed after the catalog stops advertising it', () => {
+        renderSelector({
+            availableModels: [{ modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }],
+            selectedModel: 'gemini-3.5-flash-medium'
+        })
+
+        const select = screen.getByTestId('agy-model-list') as HTMLSelectElement
+        expect(select.value).toBe('gemini-3.5-flash-medium')
+        expect(screen.getByRole('option', { name: 'Gemini 3.5 Flash (Medium) (no longer listed)' })).toBeInTheDocument()
+        expect(screen.getByRole('option', { name: 'Gemini 3.8 Flash (High)' })).toBeInTheDocument()
+    })
+
+    it('falls back to the wire id for a picked model nobody has a label for', () => {
+        renderSelector({
+            availableModels: [{ modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }],
+            selectedModel: 'gemini-9.9-experimental'
+        })
+
+        expect(screen.getByRole('option', { name: 'gemini-9.9-experimental (no longer listed)' })).toBeInTheDocument()
+    })
+
     it('says a re-probe is running instead of leaving Retry looking idle', () => {
         // The probe runs agy, so the answer can be tens of seconds away; without
         // this the button is the only thing on screen and nothing about it moves.

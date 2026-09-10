@@ -376,6 +376,7 @@ export default {
   'newSession.agyModel.authRequired': 'Authentication required',
   'newSession.agyModel.authHint': 'Please run `agy` in a terminal to sign in with Google.',
   'newSession.agyModel.retry': 'Retry',
+  'newSession.agyModel.notListed': 'no longer listed',
   'newSession.agyModel.noModels': 'No Antigravity models available',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',

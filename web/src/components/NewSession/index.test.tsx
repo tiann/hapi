@@ -603,6 +603,22 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
     })
 
+    it('keeps an AGY model the user picked here when the machine catalog changes under the form', async () => {
+        // The machine refreshes its catalog in the background, so the list can
+        // change while the form is open. A model the user chose is theirs to
+        // keep — unlike a restored one, which the two tests above drop.
+        savePreferredAgent('agy')
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('agy-model'))
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
+
+        mocks.agyModels = [{ modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }]
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
+    })
+
     it('falls back to Default when a preferred AGY model is no longer advertised', async () => {
         savePreferredAgent('agy')
         savePreferredLaunchSettings('machine-1', 'agy', { model: 'removed-model', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })

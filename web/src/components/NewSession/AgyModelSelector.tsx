@@ -1,3 +1,4 @@
+import { getAgyModelLabel } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import type { AgyModelSummary } from '@/types/api'
 
@@ -13,6 +14,25 @@ export type AgyModelSelectorProps = {
     selectedModel: string | null
     onModelChange: (modelId: string | null) => void
     onRetry?: () => void
+}
+
+/** The catalog can change under an open form, so a model the user already picked
+ *  stays listed rather than the select falling blank — labelled, because starting
+ *  a session on it is their call but agy is no longer offering it.
+ *
+ *  `withCurrentModelOption` in AssistantChat/modelOptions.ts leaves the
+ *  equivalent entry unlabelled on purpose: there it is the model the session is
+ *  already running, a fact rather than a choice about to be made. */
+function withSelectedModel(
+    models: AgyModelSummary[],
+    selectedModel: string | null,
+    notListedSuffix: string
+): AgyModelSummary[] {
+    if (!selectedModel || models.some((model) => model.modelId === selectedModel)) {
+        return models
+    }
+    const label = getAgyModelLabel(selectedModel) ?? selectedModel
+    return [{ modelId: selectedModel, name: `${label} (${notListedSuffix})` }, ...models]
 }
 
 /** Asks the machine to skip its cached catalog. It says so while it runs, because
@@ -91,7 +111,11 @@ export function AgyModelSelector(props: AgyModelSelectorProps) {
                         className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
                     >
                         <option value="">{t('newSession.model.default')}</option>
-                        {props.availableModels.map((model) => (
+                        {withSelectedModel(
+                            props.availableModels,
+                            props.selectedModel,
+                            t('newSession.agyModel.notListed')
+                        ).map((model) => (
                             <option key={model.modelId} value={model.modelId}>
                                 {model.name ?? model.modelId}
                             </option>
