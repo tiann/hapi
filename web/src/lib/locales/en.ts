@@ -372,7 +372,7 @@ export default {
   'newSession.model.loadFailed': 'Failed to load models',
   'newSession.model.selectVariant': 'Select variant',
   'newSession.model.cursorUnavailable': 'No Cursor models yet. Start a Cursor session once, or use Auto.',
-  'newSession.agyModel.checkingAuth': 'Checking Antigravity authentication…',
+  'newSession.agyModel.fetchingModels': 'Fetching available models…',
   'newSession.agyModel.authRequired': 'Authentication required',
   'newSession.agyModel.authHint': 'Please run `agy` in a terminal to sign in with Google.',
   'newSession.agyModel.retry': 'Retry',

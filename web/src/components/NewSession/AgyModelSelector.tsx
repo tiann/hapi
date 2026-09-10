@@ -28,7 +28,7 @@ export function AgyModelSelector(props: AgyModelSelectorProps) {
             {props.isLoading ? (
                 <div className="flex items-center gap-2 text-xs text-[var(--app-hint)]">
                     <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-[var(--app-divider)] border-t-[var(--app-link)]" />
-                    <span>{t('newSession.agyModel.checkingAuth')}</span>
+                    <span>{t('newSession.agyModel.fetchingModels')}</span>
                 </div>
             ) : props.error ? (
                 <div className="flex flex-col gap-2" data-testid="agy-model-auth-error">
