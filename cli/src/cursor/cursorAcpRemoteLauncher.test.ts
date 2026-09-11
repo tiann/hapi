@@ -223,13 +223,25 @@ import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
+import { hashObject } from '@/utils/deterministicJson';
 import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
 } from '@/modules/common/cursorModelsSharedCache';
 
-function makeSession(sessionId: string | null, closeQueue = true): CursorSession {
-    const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+function productionModeHasher(mode: EnhancedMode): string {
+    return hashObject({
+        permissionMode: mode.permissionMode,
+        model: mode.model
+    });
+}
+
+function makeSession(
+    sessionId: string | null,
+    closeQueue = true,
+    modeHasher: (mode: EnhancedMode) => string = () => 'mode'
+): CursorSession {
+    const queue = new MessageQueue2<EnhancedMode>(modeHasher);
     const client = makeClient();
 
     const session = new CursorSession({
@@ -351,14 +363,23 @@ describe('cursorAcpRemoteLauncher', () => {
     it('auto-steers a steerHint arrival into the active prompt', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
-        const session = makeSession(null, false);
-        const mode = { permissionMode: 'default' } as EnhancedMode;
-        session.queue.push('first', mode, 'first');
+        // Production hasher + inherited (undefined) first-turn model: the
+        // launcher must sync session.getModel() before rehashing so a fresh
+        // arrival built from getModel() still matches activePromptModeHash.
+        const session = makeSession(null, false, productionModeHasher);
+        expect(session.getModel()).toBeUndefined();
+        const inheritedMode: EnhancedMode = { permissionMode: 'default' };
+        session.queue.push('first', inheritedMode, 'first');
 
         const runPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(session.getModel()).toBeTruthy());
 
-        session.queue.push('peer nudge', mode, 'peer-1', true);
+        const arrivalMode: EnhancedMode = {
+            permissionMode: 'default',
+            model: session.getModel()
+        };
+        session.queue.push('peer nudge', arrivalMode, 'peer-1', true);
         await vi.waitFor(() => expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(
             ['peer-1'],
             { steered: true }

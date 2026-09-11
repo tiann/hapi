@@ -623,9 +623,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 );
                 batch.mode.model = appliedModel ?? this.currentBackendModel ?? undefined;
             } else if (batch.mode.model == null && this.currentBackendModel) {
-                // Inherited/default model: normalize the active-turn hash to the
-                // backend's effective model so peer nudges (which sync getModel())
-                // still match for soft-steer.
+                // Inherited/default model: pin session.getModel() to the ACP
+                // effective model before rehashing so inbound peer nudges (and
+                // the manual Steer button) hash the same mode as this prompt.
+                previousSetModel(this.currentBackendModel);
+                session.pushKeepAlive();
                 batch.mode.model = this.currentBackendModel;
             }
             batch.hash = session.queue.modeHasher(batch.mode);
