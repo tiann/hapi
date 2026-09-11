@@ -63,7 +63,7 @@ describe('permission mode persistence', () => {
         expect(reloadedSession?.permissionMode).toBe('yolo')
     })
 
-    it('shows persisted permission mode before keepalive after hub restart', () => {
+    it('shows persisted permission mode and active state after hub restart', () => {
         const store = new Store(':memory:')
         const engine = createEngine(store)
 
@@ -83,7 +83,9 @@ describe('permission mode persistence', () => {
         const reloadedEngine = simulateHubRestart(store)
         const reloadedSession = reloadedEngine.getSession(session.id)
 
-        expect(reloadedSession?.active).toBe(false)
+        // Reactivation is now persisted to the store (not just the
+        // in-memory cache), so it survives the hub restart too.
+        expect(reloadedSession?.active).toBe(true)
         expect(reloadedSession?.permissionMode).toBe('bypassPermissions')
     })
 
