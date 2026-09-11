@@ -138,7 +138,7 @@ describe('runCursor', () => {
         });
 
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
-            | ((msg: { content: { text: string } }, localId?: string) => void)
+            | ((msg: { content: { text: string }; meta?: { deliveryMode?: 'queue' | 'steer' } }, localId?: string) => void)
             | undefined;
         expect(userMessageHandler).toBeDefined();
 
@@ -156,7 +156,7 @@ describe('runCursor', () => {
         );
 
         userMessageHandler!(
-            { content: { text: 'peer nudge' }, meta: { deliveryMode: 'steer' as const } },
+            { content: { text: 'peer nudge' }, meta: { deliveryMode: 'steer' } },
             'peer-1'
         );
         expect(enqueueCursorUserMessage).toHaveBeenCalledWith(
