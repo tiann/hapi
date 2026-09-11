@@ -111,7 +111,7 @@ export async function runCursor(opts: {
             formattedText,
             enhancedMode,
             localId,
-            message.meta?.deliveryMode === 'steer'
+            message.meta?.deliveryMode === 'steer' ? true : undefined
         );
     });
 

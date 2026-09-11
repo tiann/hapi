@@ -151,7 +151,23 @@ describe('runCursor', () => {
                 permissionMode: 'default',
                 model: 'cursor-grok-4.5-medium'
             },
-            'local-1'
+            'local-1',
+            undefined
+        );
+
+        userMessageHandler!(
+            { content: { text: 'peer nudge' }, meta: { deliveryMode: 'steer' as const } },
+            'peer-1'
+        );
+        expect(enqueueCursorUserMessage).toHaveBeenCalledWith(
+            expect.anything(),
+            'peer nudge',
+            {
+                permissionMode: 'default',
+                model: 'cursor-grok-4.5-medium'
+            },
+            'peer-1',
+            true
         );
     });
 });
