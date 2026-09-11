@@ -1555,7 +1555,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('pins CLI auto when setModel selects Auto', async () => {
+    it('does not claim live Auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
@@ -1600,8 +1600,10 @@ describe('cursorAcpRemoteLauncher', () => {
         session.setModel('auto');
 
         await vi.waitFor(() => {
-            expect(session.model).toBe('auto');
+            expect(session.model).toBe('composer-2.5[fast=false]');
         });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(session.model).toBe('composer-2.5[fast=false]');
         expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
 
         queue.close();
@@ -1652,7 +1654,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applyModelConfig Auto persists auto instead of ACP default[]', async () => {
+    it('rejects live applyModelConfig Auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
@@ -1687,9 +1689,11 @@ describe('cursorAcpRemoteLauncher', () => {
         await session.applyModelConfig('composer-2.5[fast=false]');
         harness.setConfigOptionCalls.length = 0;
 
-        await session.applyModelConfig('auto');
+        await expect(session.applyModelConfig('auto')).rejects.toThrow(
+            'Cursor Auto requires restarting with --model auto'
+        );
 
-        expect(session.model).toBe('auto');
+        expect(session.model).toBe('composer-2.5[fast=false]');
         expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
 
         queue.close();
@@ -1783,6 +1787,54 @@ describe('cursorAcpRemoteLauncher', () => {
             'Cursor auto model is not available via ACP'
         );
         expect(session.model).not.toBe('auto');
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('rejects Auto after a concrete switch even if the process spawned with auto', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'auto'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        expect(session.model).toBe('composer-2.5[fast=false]');
+        harness.setConfigOptionCalls.length = 0;
+
+        await expect(session.applyModelConfig('auto')).rejects.toThrow(
+            'Cursor Auto requires restarting with --model auto'
+        );
+        expect(session.model).toBe('composer-2.5[fast=false]');
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
 
         queue.close();
         await runPromise;

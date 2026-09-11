@@ -971,16 +971,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             }
-            // Pin session.model so the next spawn uses `--model auto`. Live ACP
-            // catalogs usually advertise `default[]` (not CLI auto); do not treat
-            // that as a live switch (#1817).
+            // Live ACP catalogs usually advertise `default[]`, which is not CLI
+            // Auto (#1817). Only acknowledge Auto after a confirmed spawn or ACP
+            // `auto` option. In-session Auto without either requires a restart.
+            if (!appliedLive && !this.spawnedWithCliAuto) {
+                if (options.throwOnFailure) {
+                    throw new Error('Cursor Auto requires restarting with --model auto');
+                }
+                return previousModel;
+            }
             previousSetModel(CURSOR_AUTO_MODEL_ID);
+            this.currentBackendModel = CURSOR_AUTO_MODEL_ID;
+            this.pushModelStatusLine(CURSOR_AUTO_MODEL_ID);
             this.session.pushKeepAlive();
             syncCursorModelsFromAcp(backend, acpSessionId);
-            if (appliedLive || this.spawnedWithCliAuto) {
-                this.currentBackendModel = CURSOR_AUTO_MODEL_ID;
-                this.pushModelStatusLine(CURSOR_AUTO_MODEL_ID);
-            }
             return CURSOR_AUTO_MODEL_ID;
         }
 
@@ -1024,6 +1028,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const changed = sessionWire !== this.currentBackendModel || this.session.model !== sessionWire;
         this.currentBackendModel = sessionWire;
+        this.spawnedWithCliAuto = false;
         previousSetModel(sessionWire);
         if (changed) {
             this.pushModelStatusLine(sessionWire);
