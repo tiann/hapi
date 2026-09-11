@@ -229,7 +229,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
     });
 
-    lifecycle.registerProcessHandlers();
+    lifecycle.registerProcessHandlers({ surviveTerminalHangup: true });
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 

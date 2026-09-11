@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { RemoteLauncherBase, type LaunchOutcome } from './RemoteLauncherBase'
+import { markTerminalLost, __resetTerminalLossStateForTests } from '@/agent/terminalLossState'
+
+const inkHarness = vi.hoisted(() => ({ renderCalls: 0 }))
+
+vi.mock('ink', () => ({
+    render: vi.fn(() => {
+        inkHarness.renderCalls++
+        return { unmount: () => {} }
+    })
+}))
+
+vi.mock('@/ui/terminalState', () => ({
+    restoreTerminalState: vi.fn()
+}))
 
 // Concrete subclass that exposes the protected respawn loop so the real
 // template-method logic (backoff, give-up bound, counter reset) can be driven
@@ -22,6 +36,16 @@ class TestLauncher extends RemoteLauncherBase {
     // Stop the `while (!this.exitReason)` loop from outside the scripted outcomes.
     public stop(): void {
         this.exitReason = 'exit'
+    }
+
+    public getHasTTY(): boolean {
+        return this.hasTTY
+    }
+    public runSetupTerminal(handlers: Parameters<RemoteLauncherBase['setupTerminal']>[0]): void {
+        this.setupTerminal(handlers)
+    }
+    public runFinalizeTerminal(): void {
+        this.finalizeTerminal()
     }
 }
 
@@ -144,5 +168,117 @@ describe('RemoteLauncherBase.runRespawnLoop', () => {
         })
 
         expect(consumedBy).toEqual([2])
+    })
+})
+
+// Once the controlling terminal is gone (terminalLost, set by the SIGHUP
+// handler), a RemoteLauncherBase
+// entered afterwards must not act as if it still owns a TTY — even though
+// process.stdout.isTTY / process.stdin.isTTY on the (now slave-side-dead)
+// fd can still read `true` at this point. ClaudeRemoteLauncher constructs a
+// fresh launcher on every local→remote switch, so this is exactly the path
+// hit by the SIGHUP-triggered switch.
+describe('RemoteLauncherBase TTY gating after terminal loss', () => {
+    const originalStdoutIsTTY = process.stdout.isTTY
+    const originalStdinIsTTY = process.stdin.isTTY
+    const originalSetRawMode = (process.stdin as unknown as { setRawMode?: (mode: boolean) => void }).setRawMode
+
+    afterEach(() => {
+        __resetTerminalLossStateForTests()
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalStdoutIsTTY })
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: originalStdinIsTTY })
+        if (originalSetRawMode) {
+            Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: originalSetRawMode })
+        } else {
+            delete (process.stdin as unknown as { setRawMode?: unknown }).setRawMode
+        }
+        vi.restoreAllMocks()
+        inkHarness.renderCalls = 0
+    })
+
+    it('still treats a live terminal as hasTTY when terminalLost is not set (baseline)', () => {
+        __resetTerminalLossStateForTests()
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true })
+
+        const launcher = new TestLauncher()
+
+        expect(launcher.getHasTTY()).toBe(true)
+    })
+
+    it('reports hasTTY=false once terminalLost is set, even though the fd still reads isTTY=true', () => {
+        __resetTerminalLossStateForTests()
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true })
+        markTerminalLost()
+
+        const launcher = new TestLauncher()
+
+        expect(launcher.getHasTTY()).toBe(false)
+    })
+
+    it('setupTerminal() does not clear the screen, render ink, or touch stdin raw mode once terminalLost is set', () => {
+        __resetTerminalLossStateForTests()
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true })
+        const setRawModeStub = vi.fn()
+        Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: setRawModeStub })
+        const resumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin)
+        const clearSpy = vi.spyOn(console, 'clear').mockImplementation(() => {})
+        markTerminalLost()
+
+        const launcher = new TestLauncher()
+        launcher.runSetupTerminal({ onExit: async () => {}, onSwitchToLocal: async () => {} })
+
+        expect(clearSpy).not.toHaveBeenCalled()
+        expect(inkHarness.renderCalls).toBe(0)
+        expect(resumeSpy).not.toHaveBeenCalled()
+        expect(setRawModeStub).not.toHaveBeenCalled()
+    })
+
+    it('finalizeTerminal() does not pause stdin once terminalLost is set (no live terminal to restore)', () => {
+        __resetTerminalLossStateForTests()
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true })
+        const pauseSpy = vi.spyOn(process.stdin, 'pause').mockImplementation(() => process.stdin)
+        markTerminalLost()
+
+        const launcher = new TestLauncher()
+        launcher.runFinalizeTerminal()
+
+        expect(pauseSpy).not.toHaveBeenCalled()
+    })
+
+    // The two tests above only cover terminalLost being set BEFORE the
+    // launcher is constructed. In production a launcher instance is
+    // long-lived across the SIGHUP event: it is constructed while the
+    // terminal is still alive, and only later — mid-lifetime, from the
+    // SIGHUP handler — does the terminal go away. If hasTTY is computed
+    // once in the constructor and never revisited, a launcher built before
+    // SIGHUP keeps acting as if it still has a live terminal for the rest
+    // of its life, even after markTerminalLost() flips.
+    it('short-circuits console.clear/ink render/setRawMode once terminalLost flips AFTER construction (hasTTY must be re-evaluated live, not cached at construction time)', () => {
+        __resetTerminalLossStateForTests()
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true })
+        const setRawModeStub = vi.fn()
+        Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: setRawModeStub })
+        const resumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin)
+        const clearSpy = vi.spyOn(console, 'clear').mockImplementation(() => {})
+
+        // Constructed while the terminal is still alive.
+        const launcher = new TestLauncher()
+        expect(launcher.getHasTTY()).toBe(true)
+
+        // The terminal disappears sometime later, mid-lifetime — this is
+        // what the SIGHUP handler does to an already-running launcher.
+        markTerminalLost()
+
+        launcher.runSetupTerminal({ onExit: async () => {}, onSwitchToLocal: async () => {} })
+
+        expect(clearSpy).not.toHaveBeenCalled()
+        expect(inkHarness.renderCalls).toBe(0)
+        expect(resumeSpy).not.toHaveBeenCalled()
+        expect(setRawModeStub).not.toHaveBeenCalled()
     })
 })
