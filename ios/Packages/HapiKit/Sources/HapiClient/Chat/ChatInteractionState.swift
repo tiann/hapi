@@ -245,7 +245,7 @@ public func buildSessionConfigState(
     case "claude":
         modelOptions = ModelCatalog.claudeModelOptions(currentModel: model)
         effort = detail?.effort
-        effortOptions = ModelCatalog.claudeEffortOptions(currentEffort: effort)
+        effortOptions = ModelCatalog.claudeEffortOptions(currentEffort: effort, model: model)
     case "codex":
         switch codexModels {
         case .loaded(let models):

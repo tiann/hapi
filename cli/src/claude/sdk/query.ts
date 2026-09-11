@@ -20,6 +20,8 @@ import {
     type CanUseToolControlResponse,
     type ControlCancelRequest,
     type PermissionResult,
+    type GetContextUsageRequest,
+    type GetContextUsageResponsePayload,
     AbortError
 } from './types'
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
@@ -31,6 +33,11 @@ import { logger } from '@/ui/logger'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
 
 const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
+// Bounds how long a get_context_usage control request waits for a response.
+// This is a best-effort turn-1 seed with an existing heuristic fallback, so it
+// must never hang indefinitely -- matches the other claude-probe timeouts in
+// this repo (claudeModels.ts, opencodeModels.ts PROBE_TIMEOUT_MS).
+const GET_CONTEXT_USAGE_TIMEOUT_MS = 30_000
 
 /**
  * Query class manages Claude Code process interaction
@@ -152,6 +159,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
                 this.inputStream.done()
             }
             this.cleanupControllers()
+            this.cleanupPendingControlResponses()
             rl.close()
         }
     }
@@ -179,9 +187,62 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
-     * Send control request to Claude process
+     * Ask the running Claude process for its real context window (`get_context_usage`),
+     * so callers can seed an accurate turn-1 estimate instead of guessing from the
+     * `[1m]` suffix. Returns null rather than throwing on any failure (missing stdin,
+     * a control error response, a response that never arrives within
+     * GET_CONTEXT_USAGE_TIMEOUT_MS, or the process going away) -- this is a
+     * best-effort seed, and the caller already has a heuristic fallback for
+     * exactly this case.
      */
-    private request(request: ControlRequest, childStdin: Writable): Promise<SDKControlResponse['response']> {
+    async getContextUsage(): Promise<{ maxTokens: number; model: string | null } | null> {
+        if (!this.childStdin) {
+            return null
+        }
+
+        try {
+            const controlResponse = await this.request(
+                { subtype: 'get_context_usage' } satisfies GetContextUsageRequest,
+                this.childStdin,
+                GET_CONTEXT_USAGE_TIMEOUT_MS
+            )
+
+            // SDKControlResponse['response']['response'] is `unknown` at the
+            // base type (it varies per request subtype -- see that field's
+            // doc comment in types.ts); this is the single narrowing point
+            // for the specific subtype this method sent, matching the
+            // request/response pair with its own named interfaces
+            // (GetContextUsageRequest/GetContextUsageResponsePayload)
+            // instead of the untyped `as unknown as {...}` this replaced
+            //.
+            const payload = controlResponse.response as GetContextUsageResponsePayload | undefined
+            if (!payload || typeof payload.maxTokens !== 'number') {
+                return null
+            }
+
+            return {
+                maxTokens: payload.maxTokens,
+                model: typeof payload.model === 'string' ? payload.model : null
+            }
+        } catch {
+            return null
+        }
+    }
+
+    /**
+     * Send control request to Claude process. `timeoutMs`, if given, rejects
+     * the returned promise if no response arrives in time -- without it (the
+     * default, matching interrupt()'s existing behavior), a response that
+     * never arrives (process hangs, or exits without a matching
+     * cleanupPendingControlResponses() pass -- e.g. a caller bypassing this
+     * class's own lifecycle) leaves the promise pending forever. Either way,
+     * the pendingControlResponses entry is always removed once settled, on
+     * every path (success, error response, or timeout) -- previously it was
+     * only ever added, never deleted, leaking one Map entry (and everything
+     * its resolver closure captured) per control request for the life of the
+     * Query instance.
+     */
+    private request(request: ControlRequest, childStdin: Writable, timeoutMs?: number): Promise<SDKControlResponse['response']> {
         const requestId = Math.random().toString(36).substring(2, 15)
         const sdkRequest: SDKControlRequest = {
             request_id: requestId,
@@ -190,13 +251,32 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
         }
 
         return new Promise((resolve, reject) => {
+            let settled = false
+            let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+
+            const settle = (fn: () => void): void => {
+                if (settled) return
+                settled = true
+                if (timeoutHandle) clearTimeout(timeoutHandle)
+                this.pendingControlResponses.delete(requestId)
+                fn()
+            }
+
             this.pendingControlResponses.set(requestId, (response) => {
-                if (response.subtype === 'success') {
-                    resolve(response)
-                } else {
-                    reject(new Error(response.error))
-                }
+                settle(() => {
+                    if (response.subtype === 'success') {
+                        resolve(response)
+                    } else {
+                        reject(new Error(response.error))
+                    }
+                })
             })
+
+            if (timeoutMs !== undefined) {
+                timeoutHandle = setTimeout(() => {
+                    settle(() => reject(new Error(`Control request '${request.subtype}' timed out after ${timeoutMs}ms`)))
+                }, timeoutMs)
+            }
 
             childStdin.write(JSON.stringify(sdkRequest) + '\n')
         })
@@ -283,6 +363,27 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
         for (const [requestId, controller] of this.cancelControllers.entries()) {
             controller.abort()
             this.cancelControllers.delete(requestId)
+        }
+    }
+
+    /**
+     * Settle any outstanding request()/getContextUsage()/interrupt() promises
+     * that never received a control_response because the message stream ended
+     * (process exited, stdout closed) -- the mirror-image of cleanupControllers()
+     * above, which cancels the other direction (incoming can_use_tool requests
+     * this side hasn't answered yet). Without this, a caller awaiting a
+     * response that will now never arrive stays pending forever; each pending
+     * entry's resolver closure (and anything it captured) leaks for the
+     * lifetime of whatever's still holding that promise.
+     */
+    private cleanupPendingControlResponses(): void {
+        for (const [requestId, handler] of this.pendingControlResponses.entries()) {
+            this.pendingControlResponses.delete(requestId)
+            handler({
+                request_id: requestId,
+                subtype: 'error',
+                error: 'Claude process exited before responding to control request'
+            })
         }
     }
 }
@@ -404,6 +505,27 @@ export function query(config: {
         resolveExit = resolve
         rejectExit = reject
     })
+
+    // Every write to child.stdin from this Query instance -- request()'s
+    // childStdin.write (interrupt(), getContextUsage(), and any future
+    // control request), plus handleControlRequest()'s two responses --
+    // shares this same stream object. Writing to it after the child has
+    // already gone away (killed by cleanup() below via child.stdin.destroy(),
+    // or dead before a write reaches it) emits 'error' directly on the
+    // stream itself, separate from the ChildProcess's own 'error' event
+    // (spawn failures only). An unhandled stream 'error' is a hard throw
+    // that becomes an uncaughtException in the CLI process, which run.ts's
+    // global handler treats as fatal (requestShutdown) -- one dead write
+    // could take the whole runner daemon down. Attaching this once, here,
+    // at the single point every write path already shares, makes "a dead
+    // stdin never crashes the process" an invariant of the stream instead
+    // of a guard every new call site has to remember to add (the
+    // `!childStdin?.writable` checks in handleControlRequest below are not
+    // enough on their own: the child can die between that check and the
+    // write). Mirrors the identical fix already applied to the separate
+    // model-discovery probe process in claudeModels.ts; this is the same contract for the process this class owns
+    //.
+    child.stdin.on('error', () => {})
 
     // Handle stdin
     let childStdin: Writable | null = null

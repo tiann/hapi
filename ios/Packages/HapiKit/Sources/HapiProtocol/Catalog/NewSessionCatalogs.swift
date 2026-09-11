@@ -21,11 +21,11 @@ public struct NewSessionOption: Equatable, Hashable, Sendable {
 /// (`NewSessionCatalogs.kt`); here the catalogs live in one package so the
 /// pure form logic and the app UI share one source.
 public enum NewSessionCatalogs {
-    /// `'auto'` sentinel row uses the web's "Default" label; preset rows come
-    /// from `ClaudeModels` in picker order.
+    /// `'auto'` sentinel row uses the web's "Default" label; the offer rows
+    /// come from `ClaudeModels.fallbackPresets` in catalog order.
     public static let claudeModels: [NewSessionOption] =
         [NewSessionOption(value: "auto", label: "Default")]
-            + ClaudeModels.presets.map {
+            + ClaudeModels.fallbackPresets.map {
                 NewSessionOption(value: $0, label: ClaudeModels.label(for: $0) ?? $0)
             }
 

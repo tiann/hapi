@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
     ModelEffortSettingsSection,
+    resolveComposerEffortOptions,
     resolveVisibleModelEffortSelectedValue
 } from './HappyComposer';
 
@@ -35,6 +36,59 @@ describe('resolveVisibleModelEffortSelectedValue', () => {
             cursorDrillDownDefaultVariant: 'claude-opus-4-8',
             model: 'composer-2.5'
         })).toBe('claude-opus-4-8');
+    });
+});
+
+describe('resolveComposerEffortOptions', () => {
+    // haiku is the one Claude catalog row with no
+    // supportedEffortLevels at all, so the composer's effort options for it
+    // must resolve to "only Auto selectable" rather than the full static
+    // level list -- otherwise the picker keeps offering effort: 'high' etc.
+    // for a model that rejects it.
+    it('renders only Auto for Claude when the live catalog reports zero supported levels (haiku)', () => {
+        expect(resolveComposerEffortOptions({
+            agentFlavor: 'claude',
+            effort: null,
+            availableEffortOptions: []
+        })).toEqual([
+            { value: null, label: 'Auto' }
+        ]);
+    });
+
+    it('renders the live catalog levels for Claude when the selected model supports some', () => {
+        expect(resolveComposerEffortOptions({
+            agentFlavor: 'claude',
+            effort: null,
+            availableEffortOptions: [
+                { value: 'low', name: 'Low' },
+                { value: 'high', name: 'High' }
+            ]
+        })).toEqual([
+            { value: null, label: 'Auto' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' }
+        ]);
+    });
+
+    it('falls back to the static full-level list for Claude while the catalog has not loaded (availableEffortOptions undefined)', () => {
+        const result = resolveComposerEffortOptions({
+            agentFlavor: 'claude',
+            effort: null,
+            availableEffortOptions: undefined
+        });
+        expect(result[0]).toEqual({ value: null, label: 'Auto' });
+        expect(result.length).toBeGreaterThan(1);
+    });
+
+    it('keeps Grok on its existing "Default" label and dynamic-list behavior', () => {
+        expect(resolveComposerEffortOptions({
+            agentFlavor: 'grok',
+            effort: null,
+            availableEffortOptions: [{ value: 'high', name: 'High' }]
+        })).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'high', label: 'High' }
+        ]);
     });
 });
 

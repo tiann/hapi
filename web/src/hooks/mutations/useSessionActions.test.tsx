@@ -196,4 +196,34 @@ describe('useSessionActions - setModel', () => {
         await waitFor(() => expect(result.current.isPending).toBe(false))
         expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'session-A'] })
     })
+
+    it('forwards an explicit effort alongside the model in a single api.setModel call', async () => {
+        const setModel = vi.fn(async () => undefined)
+        const api = { setModel } as unknown as ApiClient
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', 'claude'),
+            { wrapper: createWrapper() },
+        )
+
+        await act(async () => {
+            await result.current.setModel('haiku', null)
+        })
+
+        expect(setModel).toHaveBeenCalledWith('session-A', 'haiku', null)
+    })
+
+    it('omits the effort argument when the caller does not pass one (existing callers unaffected)', async () => {
+        const setModel = vi.fn(async () => undefined)
+        const api = { setModel } as unknown as ApiClient
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', 'claude'),
+            { wrapper: createWrapper() },
+        )
+
+        await act(async () => {
+            await result.current.setModel('sonnet')
+        })
+
+        expect(setModel).toHaveBeenCalledWith('session-A', 'sonnet', undefined)
+    })
 })

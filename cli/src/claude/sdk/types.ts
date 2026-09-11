@@ -104,6 +104,15 @@ export interface SDKControlResponse extends SDKMessage {
         request_id: string
         subtype: 'success' | 'error'
         error?: string
+        /**
+         * Subtype-specific payload. The base type leaves this `unknown`
+         * because it varies by request subtype (see e.g.
+         * CanUseToolControlResponse's own narrower `response?: PermissionResult`
+         * below, or GetContextUsageResponsePayload); callers that know which
+         * request they sent narrow it to the matching payload type instead of
+         * casting the whole control_response.
+         */
+        response?: unknown
     }
 }
 
@@ -124,6 +133,23 @@ export interface ControlRequest {
 
 export interface InterruptRequest extends ControlRequest {
     subtype: 'interrupt'
+}
+
+export interface GetContextUsageRequest extends ControlRequest {
+    subtype: 'get_context_usage'
+}
+
+/**
+ * The `response.response` payload of a successful `get_context_usage`
+ * control_response -- the subset Query.getContextUsage() reads. The
+ * protocol reports more fields (`rawMaxTokens`, `totalTokens`, `percentage`,
+ * `autoCompactThreshold`, `gridRows`, `categories`); this type only lists
+ * the two HAPI actually consumes, matching every other `*Summary`/`*Payload`
+ * type in this file.
+ */
+export interface GetContextUsageResponsePayload {
+    maxTokens: number
+    model?: string
 }
 
 export interface CanUseToolRequest extends ControlRequest {
