@@ -23,7 +23,11 @@ export function useGrokModels(args: {
             return await args.api.getSessionGrokModels(args.sessionId)
         },
         enabled,
+        // The session-side handler probes grok's live catalog: poll so an
+        // already-open picker tracks config changes (staleTime alone never
+        // refetches while mounted).
         staleTime: 30_000,
+        refetchInterval: enabled ? 15_000 : false,
         retry: false,
     })
 

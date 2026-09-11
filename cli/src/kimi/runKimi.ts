@@ -124,6 +124,15 @@ export async function runKimi(opts: {
         if (value === null) {
             return null;
         }
+        // The hub may forward the provider-qualified object form ({ provider,
+        // modelId }); Kimi model ids are unqualified, so keep just the modelId.
+        if (typeof value === 'object' && value !== null) {
+            const modelObj = value as { modelId?: unknown };
+            if (typeof modelObj.modelId === 'string' && modelObj.modelId.trim().length > 0) {
+                return modelObj.modelId.trim();
+            }
+            throw new Error('Invalid model');
+        }
         if (typeof value !== 'string' || value.trim().length === 0) {
             throw new Error('Invalid model');
         }

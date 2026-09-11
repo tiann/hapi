@@ -786,6 +786,13 @@ export async function runPi(opts: {
 
         try {
             return await piSession.runRuntimeMutation(async () => {
+                // A model change requested through SetSessionConfig (web picker) is an
+                // explicit user selection: record it before the Pi round-trip so a
+                // get_available_models response landing in between cannot re-apply the
+                // launch-time startup model over the user's choice.
+                if (requestedModel) {
+                    piSession.explicitModelSelection = true;
+                }
                 // Forward changes to Pi process — wait for Pi to confirm before
                 // committing to PiSession or reporting applied. The runtime mutation
                 // lock is shared with clone/fork/switch_session so a slow set_model
@@ -847,6 +854,23 @@ export async function runPi(opts: {
     apiSession.rpcHandlerManager.registerHandler<Record<string, never>, ListPiModelsResponse>(
         RPC_METHODS.ListPiModels,
         async () => {
+            // Re-query the live Pi process on every request instead of serving
+            // the startup cache: a models-hot-reload extension (or any future
+            // refresh path) can change Pi's model catalog mid-session, and the
+            // picker must track it. The cache remains only as a fallback for
+            // when the RPC fails, and is refreshed so downstream consumers
+            // (e.g. SetSessionConfig's provider lookup for bare model ids)
+            // see the latest catalog too.
+            try {
+                const data = await sendPiRpcAndWait(piSession, transport, { type: 'get_available_models' });
+                // The response was already parsed, cached and (when it changed)
+                // versioned by the transport event handler before this await
+                // resolved — see the get_available_models branch in loop.ts.
+                const models = parsePiModels(data);
+                return { success: true, availableModels: models, currentModelId: piSession.currentModel };
+            } catch (error) {
+                logger.debug('[pi] ListPiModels live query failed, falling back to cache:', error);
+            }
             if (piSession.cachedPiModels.length > 0) {
                 return {
                     success: true,
@@ -854,21 +878,10 @@ export async function runPi(opts: {
                     currentModelId: piSession.currentModel,
                 };
             }
-            try {
-                const data = await sendPiRpcAndWait(piSession, transport, { type: 'get_available_models' });
-                const models = parsePiModels(data);
-                if (models.length > 0) {
-                    piSession.cachedPiModels = models;
-                    piSession.updateMetadata(meta => ({ ...meta, piAvailableModels: models }));
-                }
-                return { success: true, availableModels: models, currentModelId: piSession.currentModel };
-            } catch (error) {
-                logger.debug('[pi] ListPiModels RPC failed:', error);
-                return {
-                    success: false,
-                    error: error instanceof Error ? error.message : 'Failed to list Pi models',
-                };
-            }
+            return {
+                success: false,
+                error: 'Failed to list Pi models',
+            };
         }
     );
 
@@ -977,6 +990,9 @@ export async function runPi(opts: {
                 }
                 try {
                     await piSession.runRuntimeMutation(async () => {
+                        // `/model` is an explicit user selection — same protection as the
+                        // web picker path: a later model-list refresh must not revert it.
+                        piSession.explicitModelSelection = true;
                         await sendPiRpcAndWait(piSession, transport, {
                             type: 'set_model',
                             provider: match.provider,

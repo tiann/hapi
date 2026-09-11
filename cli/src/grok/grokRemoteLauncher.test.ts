@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { GrokMode } from './types'
 
+const listGrokModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue({ success: false, error: 'probe unavailable' }))
+vi.mock('@/modules/common/grokModels', () => ({
+    listGrokModelsForCwd: listGrokModelsMock,
+}))
+
 const harness = vi.hoisted(() => ({
     setModels: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setModes: [] as Array<{ sessionId: string; modeId: string }>,
@@ -181,6 +186,28 @@ describe('grokRemoteLauncher runtime config', () => {
         expect(JSON.stringify(harness.prompts[2])).not.toContain('hapi_change_title')
         expect(JSON.stringify(harness.prompts[2])).not.toContain('skill_lookup')
         expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({ success: true, currentModelId: 'grok-a' })
+        // Probe succeeds with a live catalog
+        listGrokModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [{ modelId: 'grok-live', name: 'Live Grok' }],
+            currentModelId: 'grok-live'
+        })
+        expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({
+            success: true,
+            availableModels: [{ modelId: 'grok-live', name: 'Live Grok' }],
+            currentModelId: 'grok-a'
+        })
+        // Empty live probe is authoritative too
+        listGrokModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        })
+        expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({
+            success: true,
+            availableModels: [],
+            currentModelId: 'grok-a'
+        })
         expect(await rpcHandlers.get('listGrokReasoningEffortOptions')?.()).toMatchObject({ success: true, currentValue: 'low' })
     })
 

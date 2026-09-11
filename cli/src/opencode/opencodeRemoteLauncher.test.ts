@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
 
+const listOpencodeModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue({ success: false, error: 'probe unavailable' }));
+vi.mock('@/modules/common/opencodeModels', () => ({
+    listOpencodeModelsForCwd: listOpencodeModelsMock,
+}));
+
 const harness = vi.hoisted(() => ({
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setConfigOptionArgs: [] as Array<{ sessionId: string; configId: string; value: string }>,
@@ -2042,6 +2047,48 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(result).toEqual({
             success: false,
             error: 'OpenCode model metadata is not available'
+        });
+    });
+
+    it('listOpencodeModels handler returns live probe models when probe succeeds', async () => {
+        listOpencodeModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [{ modelId: 'provider/live-model', name: 'Live Model' }],
+            currentModelId: 'provider/live-model'
+        });
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        const result = await handler!(undefined) as Record<string, unknown>;
+        expect(result).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'provider/live-model', name: 'Live Model' }],
+            currentModelId: 'provider/live-model'
+        });
+    });
+
+    it('listOpencodeModels handler treats successful empty probe as authoritative', async () => {
+        listOpencodeModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        });
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        const result = await handler!(undefined) as Record<string, unknown>;
+        expect(result).toEqual({
+            success: true,
+            availableModels: [],
+            currentModelId: null
         });
     });
 

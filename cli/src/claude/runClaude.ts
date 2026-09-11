@@ -513,6 +513,18 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return null;
         }
 
+        // The hub may forward the provider-qualified object form ({ provider,
+        // modelId }) from external model-change calls. Claude model ids are
+        // unqualified, so keep just the modelId instead of failing the whole
+        // config RPC with a TypeError.
+        if (typeof value === 'object') {
+            const modelObj = value as { modelId?: unknown };
+            if (typeof modelObj.modelId === 'string' && modelObj.modelId.trim().length > 0) {
+                return normalizeClaudeSessionModel(modelObj.modelId);
+            }
+            throw new Error('Invalid model');
+        }
+
         if (typeof value !== 'string') {
             throw new Error('Invalid model');
         }

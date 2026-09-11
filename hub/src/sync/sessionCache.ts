@@ -681,11 +681,21 @@ export class SessionCache {
         }
         if (config.model !== undefined) {
             const modelValue = config.model
-            // Normalize object form { provider, modelId } to plain string for DB storage
-            const piModelObject = modelValue !== null && typeof modelValue === 'object'
+            const modelObject = modelValue !== null && typeof modelValue === 'object'
                 ? modelValue
                 : null
-            const normalizedModel: string | null = piModelObject ? piModelObject.modelId : modelValue as string | null
+            // Normalize the object form for DB storage. OpenCode's session/set_model
+            // and --model expect the provider-qualified "provider/modelId" wire
+            // string — collapsing to the bare modelId made resume apply a model
+            // OpenCode cannot resolve ("model not found"), leaving the backend on
+            // its old model while the hub displayed the new one. Pi keeps the bare
+            // modelId here (provider lives in metadata.piSelectedModel).
+            const flavor = session.metadata?.flavor
+            const normalizedModel: string | null = modelObject
+                ? (flavor === 'opencode'
+                    ? `${modelObject.provider}/${modelObject.modelId}`
+                    : modelObject.modelId)
+                : modelValue as string | null
             if (normalizedModel !== session.model) {
                 const updated = this.store.sessions.setSessionModel(sessionId, normalizedModel, session.namespace, {
                     touchUpdatedAt: false
@@ -699,7 +709,7 @@ export class SessionCache {
             // Persist the provider-qualified form in metadata so web can
             // resolve the exact model even when two providers share a modelId.
             if (session.metadata?.flavor === 'pi') {
-                this.persistPiSelectedModel(session, piModelObject)
+                this.persistPiSelectedModel(session, modelObject)
             }
             this.markRuntimeConfigUpdated(sessionId, 'model', appliedAt)
         }
