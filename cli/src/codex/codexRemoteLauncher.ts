@@ -4223,6 +4223,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     ...message.mode,
                     model: session.getModel() ?? message.mode.model
                 };
+                // Normalize the active-turn hash to the effective mode used for
+                // turn/start. First prompts often hash with model: undefined;
+                // applyResolvedModel then fills the real model, and peer nudges
+                // sync that resolved model — without this rehash the arrival
+                // auto-steer path refuses on mode mismatch.
+                activeMessage = {
+                    ...message,
+                    mode,
+                    hash: session.queue.modeHasher(mode)
+                };
                 usageModel = typeof mode.model === 'string' && mode.model.trim()
                     ? mode.model.trim()
                     : null;

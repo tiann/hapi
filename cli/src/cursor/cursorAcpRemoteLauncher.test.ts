@@ -348,6 +348,28 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     }, 10_000);
 
+    it('auto-steers a steerHint arrival into the active prompt', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        const session = makeSession(null, false);
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('peer nudge', mode, 'peer-1', true);
+        await vi.waitFor(() => expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['peer-1'],
+            { steered: true }
+        ));
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        session.queue.close();
+        await runPromise;
+    });
+
     it('restores a queued steer when ACP dispatch fails', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

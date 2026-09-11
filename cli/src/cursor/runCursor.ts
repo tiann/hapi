@@ -104,7 +104,15 @@ export async function runCursor(opts: {
             model: queuedModel
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        enqueueCursorUserMessage(messageQueue, formattedText, enhancedMode, localId);
+        // Peer nudges arrive tagged deliveryMode 'steer' (ping_peer): the ACP
+        // launcher's arrival hook soft-steers them into the active prompt.
+        enqueueCursorUserMessage(
+            messageQueue,
+            formattedText,
+            enhancedMode,
+            localId,
+            message.meta?.deliveryMode === 'steer'
+        );
     });
 
     session.onCancelQueuedMessage((localId) => {

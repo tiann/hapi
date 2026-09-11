@@ -1286,7 +1286,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
         })
     })
 
-    it('persists steer for arrival-steerable flavors and downgrades it for cursor and claude', async () => {
+    it('persists steer for arrival-steerable flavors and downgrades it for claude', async () => {
         const store = makeStore()
         const codexSession = store.sessions.getOrCreateSession(
             'delivery-mode-codex',
@@ -1320,7 +1320,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
             deliveryMode: 'steer'
         })
         await service.sendMessage(cursorSession.id, {
-            text: 'cursor steers only via the manual button',
+            text: 'cursor acp auto-steers on arrival',
             localId: 'cursor-steer',
             deliveryMode: 'steer'
         })
@@ -1335,7 +1335,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
         })
         expect(store.messages.getUninvokedLocalMessages(cursorSession.id)[0]?.content).toMatchObject({
             role: 'user',
-            meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
+            meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
         })
     })
 

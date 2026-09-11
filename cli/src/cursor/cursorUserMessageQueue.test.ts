@@ -40,4 +40,20 @@ describe('enqueueCursorUserMessage', () => {
         const third = await queue.waitForMessagesAndGetAsString();
         expect(third?.message).toBe('after compress');
     });
+
+    it('passes steerHint through on ordinary prompts and drops it for slash commands', () => {
+        const queue = new MessageQueue2<EnhancedMode>((m) => m.permissionMode);
+        const seen: Array<{ message: string; steerHint?: boolean; isolate?: boolean }> = [];
+        queue.setOnMessage((_message, _mode, item) => {
+            seen.push({ message: item.message, steerHint: item.steerHint, isolate: item.isolate });
+        });
+
+        enqueueCursorUserMessage(queue, 'peer nudge', mode, 'nudge', true);
+        enqueueCursorUserMessage(queue, '/compress', mode, 'slash', true);
+
+        expect(seen).toEqual([
+            { message: 'peer nudge', steerHint: true, isolate: false },
+            { message: '/compress', steerHint: undefined, isolate: true }
+        ]);
+    });
 });
