@@ -656,6 +656,59 @@ describe('listAgyModels catalog cache', () => {
         expect(changes).toHaveLength(0)
     })
 
+    it('announces a sign-in failure that replaces the fallback listing with an error', async () => {
+        // Nothing has ever been cached, so the route has been answering from the
+        // built-in list. A sign-in failure replaces that with an error — the
+        // picker loses its models — and an open one has to be told.
+        vi.useFakeTimers()
+        queueProbe()
+        const cold = listAgyModels()
+        await vi.advanceTimersByTimeAsync(15_000)
+        expect((await cold).availableModels?.length).toBeGreaterThan(2)
+
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        const failing = queueProbe()
+        const second = listAgyModels()
+        await Promise.resolve()
+        finish(failing, AUTH_FAILURE)
+
+        expect(await second).toMatchObject({ success: false })
+        expect(changes).toHaveLength(1)
+    })
+
+    it('announces a sign-in that came back even when the listing matches the fallback', async () => {
+        // From an uncached auth failure the route answers an error. A listing
+        // that happens to equal the built-in one still turns that error back
+        // into a usable picker.
+        vi.useFakeTimers()
+        queueProbe()
+        const cold = listAgyModels()
+        await vi.advanceTimersByTimeAsync(15_000)
+        await cold
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        const failing = queueProbe()
+        const errored = listAgyModels()
+        await Promise.resolve()
+        finish(failing, AUTH_FAILURE)
+        expect(await errored).toMatchObject({ success: false })
+
+        const changes: number[] = []
+        setAgyCatalogChangeListener(() => changes.push(Date.now()))
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        const recovering = queueProbe()
+        const recovered = listAgyModels()
+        await Promise.resolve()
+        finish(recovering, MIRROR_LISTING)
+
+        expect(await recovered).toMatchObject({ success: true })
+        expect(changes).toHaveLength(1)
+    })
+
     it('revalidates instead of trusting an entry the clock has thrown into the future', async () => {
         vi.useFakeTimers()
         await primeCatalog(LIVE_A)

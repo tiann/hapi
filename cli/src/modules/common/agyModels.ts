@@ -371,12 +371,6 @@ function servableCatalog(): ListAgyModelsResponse | null {
     return response
 }
 
-// Everything a client can see goes through here, so keying the announcement on
-// it makes it about what changed on screen rather than what changed in cache.
-function servedAnswerSignature(): string {
-    return JSON.stringify(servableCatalog() ?? { success: true, availableModels: buildModelList() })
-}
-
 function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
     if (fetched.kind === 'live') {
         return { success: true, availableModels: fetched.models }
@@ -391,6 +385,14 @@ function toResponse(fetched: AgyCatalogFetch): ListAgyModelsResponse {
         return { success: false, error: fetched.error }
     }
     return { success: true, availableModels: buildModelList() }
+}
+
+// Built through toResponse so the announcement is keyed on the answer a plain
+// read would get, not on the cache behind it. Without a servable catalog those
+// two disagree: an uncached sign-in failure is an error response, while the
+// cache still looks like the fallback listing.
+function servedAnswerSignature(): string {
+    return JSON.stringify(toResponse(lastFailedProbe?.result ?? { kind: 'unavailable' }))
 }
 
 export async function listAgyModels(options?: { refresh?: boolean }): Promise<ListAgyModelsResponse> {
