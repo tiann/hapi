@@ -122,6 +122,22 @@ Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `
 | `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>, outsideWorkspaceRoots?: string[]}` |
 | `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code: 'machine_not_found' \| 'machine_offline'` |
 
+Agent quota queries are optional machine-scoped RPCs. The Runner resolves the
+selected Claude Code/Codex/Kimi credentials locally; these endpoints never
+return credential values. They return `409 runner_upgrade_required` when the
+connected Runner predates the usage-query capability.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/machines/:id/usage-query/settings?agent=claude\|codex\|kimi` | — | `{agent, enabled, templateId, template, credentials: {baseUrl, apiKey}}`; credential entries contain only `configured` and `source` |
+| `PUT /api/machines/:id/usage-query/settings` | `{agent, enabled, templateId, template}` | Same sanitized settings response |
+| `POST /api/machines/:id/usage-query/test` | `{agent, template}` | Sanitized `UsageQueryResult`; provider/test failures use `{status: 'error', error}` |
+| `POST /api/machines/:id/usage-query/query` | `{agent, force?}` | Sanitized `UsageQueryResult`; Runner cache TTL is five minutes and `force=true` bypasses it |
+
+An error result keeps the last successful windows when one exists and marks the
+result `stale: true`; a failed attempt is still recorded in `queriedAt`. The
+Runner suppresses automatic retries for 30 seconds after a failed refresh.
+
 Note the spawn response is discriminated on `type`, not HTTP status — a failed
 spawn is still HTTP 200. Stable spawn failure codes are
 `agent_unavailable`, `runner_upgrade_required`, and

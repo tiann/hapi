@@ -23,6 +23,7 @@
         "./voicePickerCatalog": "./src/voicePickerCatalog.ts",
         "./voice-personality": "./src/voicePersonality.ts",
         "./usage": "./src/usage.ts",
+        "./usageQuery": "./src/usageQuery.ts",
         "./settingsFileLock": "./src/settingsFileLock.ts",
         "./agentCliSpawnLease": "./src/agentCliSpawnLease.ts"
     },

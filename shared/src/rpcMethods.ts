@@ -49,6 +49,10 @@ export const RPC_METHODS = {
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
+    UsageQueryGetSettings: 'usage-query-get-settings',
+    UsageQuerySaveSettings: 'usage-query-save-settings',
+    UsageQueryTest: 'usage-query-test',
+    UsageQuery: 'usage-query',
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
