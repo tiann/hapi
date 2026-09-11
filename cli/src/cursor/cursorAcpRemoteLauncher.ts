@@ -28,7 +28,7 @@ import {
     resolveCursorModeAfterPlanApproval,
     wireIdForCursorSessionState
 } from './utils/cursorModeConfig';
-import { CURSOR_AUTO_MODEL_ID, isCursorAutoModelId } from '@hapi/protocol';
+import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId } from '@hapi/protocol';
 import { CURSOR_PLAN_CONTINUE } from './utils/cursorPlanContinue';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
@@ -75,6 +75,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private softSteerWaiters: Promise<void>[] = [];
     /** True when ACP process was spawned with `--auto-review`. */
     private spawnedWithAutoReview = false;
+    /** True when this ACP process was spawned with `--model auto`. */
+    private spawnedWithCliAuto = false;
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
     private autoReviewSlashQueued = false;
     private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
@@ -369,6 +371,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             throw new Error('Failed to establish Cursor ACP session');
         }
         this.acpSessionId = acpSessionId;
+        this.spawnedWithCliAuto = cursorSpawnModelId(spawnModel) === CURSOR_AUTO_MODEL_ID;
 
         if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
@@ -955,10 +958,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             const autoWire = modelOption?.options?.find(
                 (option) => option.value.trim().toLowerCase() === CURSOR_AUTO_MODEL_ID
             )?.value;
+            let appliedLive = false;
             if (modelOption && autoWire && backend.setConfigOption) {
                 try {
                     await backend.setConfigOption(acpSessionId, modelOption.id, autoWire);
                     backend.pinSessionModelWireId(acpSessionId, autoWire);
+                    appliedLive = true;
                 } catch (error) {
                     logger.debug('[cursor-acp] Failed to set auto model via ACP', error);
                     if (options.throwOnFailure) {
@@ -966,11 +971,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             }
-            this.currentBackendModel = CURSOR_AUTO_MODEL_ID;
+            // Pin session.model so the next spawn uses `--model auto`. Live ACP
+            // catalogs usually advertise `default[]` (not CLI auto); do not treat
+            // that as a live switch (#1817).
             previousSetModel(CURSOR_AUTO_MODEL_ID);
-            this.pushModelStatusLine(CURSOR_AUTO_MODEL_ID);
             this.session.pushKeepAlive();
             syncCursorModelsFromAcp(backend, acpSessionId);
+            if (appliedLive || this.spawnedWithCliAuto) {
+                this.currentBackendModel = CURSOR_AUTO_MODEL_ID;
+                this.pushModelStatusLine(CURSOR_AUTO_MODEL_ID);
+            }
             return CURSOR_AUTO_MODEL_ID;
         }
 
