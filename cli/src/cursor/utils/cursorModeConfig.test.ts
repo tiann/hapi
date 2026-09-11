@@ -330,6 +330,76 @@ describe('applyCursorAcpModel', () => {
         expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'fast', 'true');
     });
 
+    it('applies the requested effort over config options for variant sku requests (#1818)', async () => {
+        const setConfigOption = vi.fn(async () => {});
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'claude-opus-4-8', name: 'Claude Opus 4.8' }],
+                currentModelId: 'claude-opus-4-8'
+            })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'model') {
+                    return { id: 'model', category: 'model', options: [{ value: 'claude-opus-4-8' }] };
+                }
+                if (category === 'fast') {
+                    return { id: 'fast', category: 'fast', options: [{ value: 'false' }, { value: 'true' }] };
+                }
+                return undefined;
+            }),
+            getSessionConfigOptions: vi.fn(() => [
+                { id: 'model', category: 'model', options: [{ value: 'claude-opus-4-8' }] },
+                {
+                    id: 'effort',
+                    category: 'thought_level',
+                    currentValue: 'high',
+                    options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }]
+                },
+                { id: 'fast', category: 'model_config', options: [{ value: 'false' }, { value: 'true' }] }
+            ])
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'claude-opus-4-8-low')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'claude-opus-4-8[fast=false,effort=low]',
+            requestedWireId: 'claude-opus-4-8-low'
+        });
+        expect(setConfigOption).toHaveBeenNthCalledWith(1, 's1', 'model', 'claude-opus-4-8');
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'fast', 'false');
+        expect(setConfigOption).toHaveBeenNthCalledWith(3, 's1', 'effort', 'low');
+    });
+
+    it('skips parameter axes the selected model does not expose (#1818)', async () => {
+        let selected = 'grok-4.6';
+        const fastOption = { id: 'fast', category: 'fast', options: [{ value: 'false' }, { value: 'true' }] };
+        const modelOption = { id: 'model', category: 'model', options: [{ value: 'gemini-3-flash' }] };
+        const setConfigOption = vi.fn(async (_sessionId: string, id: string, value: string) => {
+            if (id === 'model') {
+                selected = value;
+            }
+        });
+        // Cursor drops fast/thought_level for a model that supports neither.
+        const activeOptions = () => (selected === 'gemini-3-flash' ? [modelOption] : [modelOption, fastOption]);
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'gemini-3-flash' }],
+                currentModelId: 'gemini-3-flash'
+            })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+                activeOptions().find((option) => option.category === category)
+            ),
+            getSessionConfigOptions: vi.fn(() => activeOptions())
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'gemini-3-flash')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'gemini-3-flash'
+        });
+        expect(setConfigOption).toHaveBeenCalledTimes(1);
+        expect(setConfigOption).toHaveBeenCalledWith('s1', 'model', 'gemini-3-flash');
+    });
+
     it('does not fall back to base-only model apply when parameterized fast update fails', async () => {
         const setConfigOption = vi.fn()
             .mockResolvedValueOnce(undefined)
