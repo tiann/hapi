@@ -1,14 +1,9 @@
 import type { CursorPermissionMode } from '@hapi/protocol/types';
-import { cursorCliSkuBaseId, cursorModelBaseId, matchCliSkuToAcpWireId, resolveCursorLegacyModelBase } from '@hapi/protocol';
+import { cursorCliSkuBaseId, cursorModelBaseId, isCursorAutoModelId, matchCliSkuToAcpWireId, resolveCursorLegacyModelBase } from '@hapi/protocol';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { logger } from '@/ui/logger';
 
 export type CursorAcpMode = 'agent' | 'plan' | 'ask' | 'debug';
-
-function isDefaultCursorModelId(modelId: string): boolean {
-    const normalized = modelId.trim().toLowerCase();
-    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]';
-}
 
 export function toCursorAcpMode(mode: CursorPermissionMode | undefined): CursorAcpMode {
     if (mode === 'plan') return 'plan';
@@ -210,7 +205,7 @@ export async function applyCursorAcpModel(
     modelId: string | null | undefined
 ): Promise<ApplyCursorAcpModelResult> {
     const trimmed = modelId?.trim();
-    if (!trimmed || isDefaultCursorModelId(trimmed)) {
+    if (!trimmed || isCursorAutoModelId(trimmed)) {
         return { applied: false };
     }
 

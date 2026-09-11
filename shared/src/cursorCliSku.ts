@@ -8,10 +8,28 @@ export function resolveCursorLegacyModelBase(baseId: string): string {
     return CURSOR_LEGACY_MODEL_BASE_ALIASES[trimmed] ?? trimmed;
 }
 
+/** CLI `agent --list-models` id for Cursor Auto (`auto - Auto`). */
+export const CURSOR_AUTO_MODEL_ID = 'auto';
+
 /** ACP parameterized wire ids use bracket params; CLI `agent --list-models` slugs do not. */
 export function isCursorAcpWireModelId(modelId: string): boolean {
     const trimmed = modelId.trim();
     return trimmed === 'default[]' || trimmed.includes('[');
+}
+
+/** True for CLI Auto and the legacy default aliases that must not stay as a Default option. */
+export function isCursorAutoModelId(modelId: string | null | undefined): boolean {
+    const normalized = modelId?.trim().toLowerCase();
+    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]';
+}
+
+/** Spawn `--model` value: pin Auto as `auto`. Empty/unset omits `--model`. */
+export function cursorSpawnModelId(model: string | null | undefined): string | null {
+    const trimmed = model?.trim();
+    if (!trimmed) {
+        return null;
+    }
+    return isCursorAutoModelId(trimmed) ? CURSOR_AUTO_MODEL_ID : trimmed;
 }
 
 export function cursorModelBaseId(modelId: string): string {

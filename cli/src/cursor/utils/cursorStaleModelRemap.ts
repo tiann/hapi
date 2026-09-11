@@ -1,14 +1,12 @@
 import type { CursorModelsResponse } from '@hapi/protocol/apiTypes';
 import {
+    CURSOR_AUTO_MODEL_ID,
+    cursorSpawnModelId,
+    isCursorAutoModelId,
     parseCursorAvailableModelsFromRejection,
     remapStaleCursorModelId
 } from '@hapi/protocol';
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
-
-function isDefaultSpawnModel(modelId: string): boolean {
-    const normalized = modelId.trim().toLowerCase();
-    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]';
-}
 
 export function catalogEntriesFromCursorModelsResponse(
     response: CursorModelsResponse | null | undefined
@@ -36,10 +34,14 @@ export function catalogEntriesFromCursorModelsResponse(
 export function resolveCursorSpawnModel(
     model: string | null | undefined
 ): string | null | undefined {
-    const trimmed = model?.trim();
-    if (!trimmed || isDefaultSpawnModel(trimmed)) {
+    const pinned = cursorSpawnModelId(model);
+    if (!pinned) {
         return model;
     }
+    if (pinned === CURSOR_AUTO_MODEL_ID) {
+        return CURSOR_AUTO_MODEL_ID;
+    }
+    const trimmed = pinned;
 
     const cached = catalogEntriesFromCursorModelsResponse(readSharedCursorModelsCache());
     if (cached.length === 0) {
@@ -54,7 +56,7 @@ export function tryRemapCursorSpawnModelFromError(
     ...sources: Array<string | null | undefined>
 ): string | null {
     const trimmed = model?.trim();
-    if (!trimmed || isDefaultSpawnModel(trimmed)) {
+    if (!trimmed || isCursorAutoModelId(trimmed)) {
         return null;
     }
 

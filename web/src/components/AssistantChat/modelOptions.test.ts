@@ -137,7 +137,7 @@ describe('getModelOptionsForFlavor', () => {
     it('returns only default/current for cursor before models are discovered (no claude fallback)', () => {
         const options = getModelOptionsForFlavor('cursor', 'composer-2.5')
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'composer-2.5', label: 'composer-2.5' }
         ])
     })
@@ -156,12 +156,12 @@ describe('getModelOptionsForFlavor', () => {
     it('does not inject raw wire id when dual picker base is already listed', () => {
         const wire = 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]'
         const options = getModelOptionsForFlavor('cursor', wire, [
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
@@ -170,11 +170,11 @@ describe('getModelOptionsForFlavor', () => {
     it('injects unknown wire id only when catalog lacks base and wire', () => {
         const wire = 'claude-opus-4-9[effort=high,fast=false]'
         const options = getModelOptionsForFlavor('cursor', wire, [
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: wire, label: wire },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])

@@ -1,8 +1,10 @@
 import {
+    CURSOR_AUTO_MODEL_ID,
     cursorCliSkuBaseId,
     findBestCliSkuForAcpWire,
     isCursorAcpCatalogModelId,
-    isCursorAcpWireModelId as isSharedCursorAcpWireModelId
+    isCursorAcpWireModelId as isSharedCursorAcpWireModelId,
+    isCursorAutoModelId
 } from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 
@@ -46,14 +48,9 @@ export function cursorModelDedupeKey(modelId: string): string {
     return cursorModelBaseId(modelId)
 }
 
-function isDefaultCursorModelId(modelId: string): boolean {
-    const normalized = modelId.trim().toLowerCase()
-    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]'
-}
-
 function normalizeCurrentModel(model?: string | null): string | null {
     const trimmed = model?.trim()
-    if (!trimmed || isDefaultCursorModelId(trimmed)) {
+    if (!trimmed || isCursorAutoModelId(trimmed)) {
         return null
     }
     return trimmed
@@ -199,18 +196,18 @@ export function buildCursorModelCatalog(
     availableModels: readonly CursorModelSummary[],
     options?: {
         currentModel?: string | null
-        /** New-session spawn uses `auto`; active session uses `null` for default. */
+        /** Auto row is always CLI `auto`; kept for caller compatibility. */
         defaultValue?: null | 'auto'
     }
 ): CursorModelCatalog {
-    const defaultValue = options?.defaultValue === 'auto' ? 'auto' : null
+    const defaultValue = CURSOR_AUTO_MODEL_ID
     const variantsByBase = new Map<string, CursorModelVariantOption[]>()
     const wireToBase = new Map<string, string>()
     const baseLabels = new Map<string, string>()
 
     const addWire = (rawModelId: string): void => {
         const modelId = rawModelId.trim()
-        if (!modelId || isDefaultCursorModelId(modelId)) {
+        if (!modelId || isCursorAutoModelId(modelId)) {
             return
         }
 
@@ -262,7 +259,7 @@ export function appendCliSkusToCatalog(
 
     for (const sku of cliSkus) {
         const modelId = sku.modelId.trim()
-        if (!modelId || isDefaultCursorModelId(modelId) || isCursorAcpWireModelId(modelId)) {
+        if (!modelId || isCursorAutoModelId(modelId) || isCursorAcpWireModelId(modelId)) {
             continue
         }
 
@@ -354,7 +351,7 @@ export function buildFlatCursorModelPickerOptions(
     catalog: CursorModelCatalog,
     options?: { defaultValue?: null | 'auto' }
 ): Array<{ value: string; label: string }> {
-    const defaultValue = options?.defaultValue === 'auto' ? 'auto' : null
+    const defaultValue = CURSOR_AUTO_MODEL_ID
     const rows: Array<{ value: string; label: string }> = []
 
     for (const [baseId, variants] of catalog.variantsByBase) {

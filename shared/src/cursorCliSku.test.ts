@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+    CURSOR_AUTO_MODEL_ID,
     cursorCliSkuBaseId,
+    cursorSpawnModelId,
     findBestCliSkuForAcpWire,
     isCursorAcpCatalogModelId,
     isCursorAcpWireModelId,
+    isCursorAutoModelId,
     isCursorCliSkuVariantId,
     matchCliSkuToAcpWireId,
     parseCursorAvailableModelsFromRejection,
@@ -18,6 +21,19 @@ const cursorGrokCatalog = [
     { modelId: 'cursor-grok-4.5-medium-fast' },
     { modelId: 'cursor-grok-4.5-high-fast' },
 ];
+
+describe('cursorSpawnModelId', () => {
+    it('pins Auto as the CLI auto id and omits unset models', () => {
+        expect(isCursorAutoModelId('auto')).toBe(true);
+        expect(isCursorAutoModelId('default[]')).toBe(true);
+        expect(isCursorAutoModelId('composer-2.5')).toBe(false);
+        expect(cursorSpawnModelId('auto')).toBe(CURSOR_AUTO_MODEL_ID);
+        expect(cursorSpawnModelId('default')).toBe(CURSOR_AUTO_MODEL_ID);
+        expect(cursorSpawnModelId('default[]')).toBe(CURSOR_AUTO_MODEL_ID);
+        expect(cursorSpawnModelId(null)).toBeNull();
+        expect(cursorSpawnModelId('composer-2.5[fast=true]')).toBe('composer-2.5[fast=true]');
+    });
+});
 
 describe('cursorCliSkuBaseId', () => {
     it('strips effort/speed suffixes from CLI skus', () => {

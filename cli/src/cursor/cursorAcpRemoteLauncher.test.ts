@@ -48,8 +48,11 @@ vi.mock('./utils/cursorAcpBackend', () => ({
     createCursorAcpBackend: vi.fn((opts?: { model?: string | null }) => {
         const args = ['acp'];
         const model = opts?.model?.trim();
-        if (model && model !== 'auto' && model !== 'default' && model !== 'default[]') {
-            args.unshift('--model', model);
+        const spawn = !model
+            ? null
+            : (model === 'auto' || model === 'default' || model === 'default[]' ? 'auto' : model);
+        if (spawn) {
+            args.unshift('--model', spawn);
         }
         harness.backendArgs = { command: 'agent', args };
         return {
@@ -594,6 +597,15 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(createCursorAcpBackend).toHaveBeenCalled();
         expect(harness.backendArgs).toEqual({ command: 'agent', args: ['acp'] });
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('pins CLI auto with --model auto on spawn', async () => {
+        const session = makeSession(null);
+        session.model = 'auto';
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(session.model).toBe('auto');
     });
 
     it('applies harness thinking transitions once per edge (#1470)', async () => {
@@ -1533,7 +1545,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applies ACP default model when setModel is cleared', async () => {
+    it('pins CLI auto when setModel selects Auto', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
@@ -1575,15 +1587,15 @@ describe('cursorAcpRemoteLauncher', () => {
         });
 
         harness.setConfigOptionCalls.length = 0;
-        session.setModel(null);
+        session.setModel('auto');
 
         await vi.waitFor(() => {
+            expect(session.model).toBe('auto');
             expect(
                 harness.setConfigOptionCalls.some(
                     (call) => call.configId === 'model-opt' && call.value === 'default[]'
                 )
-            ).toBe(true);
-            expect(session.model).toBeUndefined();
+            ).toBe(false);
         });
 
         queue.close();
@@ -1634,7 +1646,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applyModelConfig(null) resets ACP to the default model option', async () => {
+    it('applyModelConfig Auto persists auto instead of ACP default[]', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
@@ -1669,13 +1681,14 @@ describe('cursorAcpRemoteLauncher', () => {
         await session.applyModelConfig('composer-2.5[fast=false]');
         harness.setConfigOptionCalls.length = 0;
 
-        await session.applyModelConfig(null);
+        await session.applyModelConfig('auto');
 
+        expect(session.model).toBe('auto');
         expect(
             harness.setConfigOptionCalls.some(
                 (call) => call.configId === 'model-opt' && call.value === 'default[]'
             )
-        ).toBe(true);
+        ).toBe(false);
 
         queue.close();
         await runPromise;
