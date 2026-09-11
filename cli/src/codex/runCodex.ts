@@ -283,7 +283,10 @@ export async function runCodex(opts: {
                     messageQueue.pushIsolateAndClear(isolatedCommandText, enhancedMode, localId);
                     return;
                 }
-                messageQueue.push(text, enhancedMode, localId);
+                // Peer nudges arrive tagged deliveryMode 'steer' (ping_peer):
+                // the remote launcher's arrival hook injects them into the
+                // active turn when one is in flight.
+                messageQueue.push(text, enhancedMode, localId, message.meta?.deliveryMode === 'steer');
             } catch (error) {
                 logger.debug('[Codex] Failed to handle user message', error);
                 const enhancedMode: EnhancedMode = {
@@ -295,7 +298,12 @@ export async function runCodex(opts: {
                     serviceTier: currentServiceTier,
                     personality: currentPersonality
                 };
-                messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId);
+                messageQueue.push(
+                    formatMessageWithAttachments(message.content.text, message.content.attachments),
+                    enhancedMode,
+                    localId,
+                    message.meta?.deliveryMode === 'steer'
+                );
             }
         }).catch((error) => {
             logger.debug('[Codex] User message handler chain failed', error);
