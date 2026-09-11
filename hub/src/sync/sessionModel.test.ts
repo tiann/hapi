@@ -3809,6 +3809,33 @@ describe('session model', () => {
             expect(cache.getSession(s2.id)).toBeDefined()
         })
 
+        it('matches the deduplicated field when metadata retains another agent id', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'claude-tag-1',
+                {
+                    path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                    codexSessionId: 'stale-codex-id', claudeSessionId: 'claude-thread-X'
+                },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'claude-tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'claude', claudeSessionId: 'claude-thread-X' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeUndefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+        })
+
         it('preserves sessions with different agent session IDs', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []

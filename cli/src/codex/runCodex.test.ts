@@ -167,6 +167,25 @@ describe('runCodex', () => {
         expect(mockCodexSession.setCollaborationMode).toHaveBeenLastCalledWith('plan')
     })
 
+    it('passes a pending Codex fork request to the loop', async () => {
+        harness.sessionInfo = {
+            serviceTier: null,
+            metadata: {
+                codexForkRequest: { sourceThreadId: 'codex-source', lastTurnId: 'turn-a' }
+            }
+        }
+
+        await runCodexImpl({
+            existingSessionId: 'hapi-child',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'codex-source'
+        } as Parameters<typeof runCodex>[0])
+
+        expect(harness.loopArgs[0]).toEqual(expect.objectContaining({
+            codexForkRequest: { sourceThreadId: 'codex-source', lastTurnId: 'turn-a' }
+        }))
+    })
+
     it('preserves a persisted Fast service tier on startup', async () => {
         harness.sessionInfo = { serviceTier: 'fast' }
 

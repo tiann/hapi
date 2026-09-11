@@ -1502,6 +1502,10 @@ export class SessionCache {
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
     ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
+        // A pending Codex child temporarily carries its source thread ID as a
+        // materialization anchor, not as its own native identity.
+        if (metadata.codexForkRequest || metadata.codexForkCleanup) return null
+
         const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => ({
             field,
             value,
@@ -1544,7 +1548,12 @@ export class SessionCache {
 
                 const currentSession = this.sessions.get(sessionId)
                 const candidates: { id: string; session: Session }[] = []
-                if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
+                if (
+                    currentSession?.metadata
+                    && !currentSession.metadata.codexForkRequest
+                    && !currentSession.metadata.codexForkCleanup
+                    && currentSession.metadata[agentId.field] === agentId.value
+                ) {
                     if (agentId.field !== 'piSessionId' || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: sessionId, session: currentSession })
                     }
@@ -1553,12 +1562,17 @@ export class SessionCache {
                     if (existingId === sessionId) continue
                     if (existing.namespace !== session.namespace) continue
                     if (!existing.metadata) continue
+                    if (existing.metadata.codexForkRequest || existing.metadata.codexForkCleanup) continue
                     if (existing.metadata[agentId.field] !== agentId.value) continue
                     if (agentId.field === 'piSessionId' && existing.metadata.machineId !== agentId.machineId) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
                 if (candidates.length <= 1) continue
+                // Keep source references/native identity available until every fork
+                // child is bound or cleaned up. Aliases are delivery-gated as well.
+                if (agentId.field === 'codexSessionId'
+                    && candidates.some(({ id }) => this.store.isCodexForkDeliveryGated(id))) continue
 
                 const activeCandidates = candidates.filter(({ session }) => session.active)
                 if (activeCandidates.length > 1) {

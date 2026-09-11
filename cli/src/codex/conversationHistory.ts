@@ -140,42 +140,18 @@ export class CodexConversationHistory {
             const boundary = selectedIndex === 0
                 ? { beforeTurnId: selectedTurnId }
                 : { lastTurnId: previousTurnId! }
-            try {
-                const response = await client.forkThread({
-                    threadId,
-                    ...boundary
-                })
-                const nativeSessionId = asString(asRecord(response.thread)?.id)
-                if (!nativeSessionId) throw new Error('thread/fork did not return thread.id')
-                this.states = markSupported(this.states, 'forkAtMessage')
-                this.states = markSupported(this.states, 'forkCurrent')
-                await this.publishCapabilities?.()
-                return { nativeSessionId }
-            } catch (error) {
-                if (isMethodNotFound(error)) {
-                    this.states = markUnsupported(this.states, 'forkAtMessage')
-                    await this.publishCapabilities?.()
-                }
-                throw error
+            return {
+                nativeSessionId: threadId,
+                codexForkRequest: { sourceThreadId: threadId, ...boundary }
             }
         }
 
         if (this.states.forkCurrent === 'unsupported') {
             throw new Error('Fork current is not supported')
         }
-        try {
-            const response = await client.forkThread({ threadId })
-            const nativeSessionId = asString(asRecord(response.thread)?.id)
-            if (!nativeSessionId) throw new Error('thread/fork did not return thread.id')
-            this.states = markSupported(this.states, 'forkCurrent')
-            await this.publishCapabilities?.()
-            return { nativeSessionId }
-        } catch (error) {
-            if (isMethodNotFound(error)) {
-                this.states = markUnsupported(this.states, 'forkCurrent')
-                await this.publishCapabilities?.()
-            }
-            throw error
+        return {
+            nativeSessionId: threadId,
+            codexForkRequest: { sourceThreadId: threadId }
         }
     }
 

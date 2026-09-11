@@ -32,6 +32,30 @@ describe('getOrCreateSession: active_at', () => {
     })
 })
 
+describe('Codex fork cleanup ownership', () => {
+    it('survives sparse, null and explicit-clear metadata writes without changing its routing', () => {
+        const store = makeStore()
+        const source = store.sessions.getOrCreateSession('cleanup-source', { path: '/tmp', host: 'localhost' }, null, 'default')
+        const cleanup = { sourceSessionId: source.id, machineId: 'runner-1' }
+        const child = store.sessions.getOrCreateSession('cleanup-child', {
+            path: '/tmp', host: 'localhost', flavor: 'codex', codexForkCleanup: cleanup
+        }, null, 'default')
+        try {
+            for (const metadata of [null, {}, { codexForkCleanup: null }, {
+                codexForkCleanup: { sourceSessionId: 'different-source', machineId: 'different-runner' }
+            }]) {
+                const current = store.sessions.getSession(child.id)!
+                expect(store.sessions.updateSessionMetadata(child.id, metadata, current.metadataVersion, 'default').result).toBe('success')
+                expect(getMetadata(store, child.id)).toMatchObject({ path: '/tmp', host: 'localhost', codexForkCleanup: cleanup })
+                expect(store.isCodexForkDeliveryGated(child.id)).toBe(true)
+                expect(store.isCodexForkDeliveryGated(source.id)).toBe(true)
+            }
+        } finally {
+            store.close()
+        }
+    })
+})
+
 describe('session pinning', () => {
     it('persists project and global pin modes without changing session recency', () => {
         const store = makeStore()

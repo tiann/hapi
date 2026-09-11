@@ -674,6 +674,57 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('preserves process provenance and proves preflight rejections without spawning', async () => {
+        const machine = makeMachine('spawn-provenance')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const spawnSession = vi.fn()
+        client.setRPCHandlers({ spawnSession, stopSession: async () => 'stopped', requestShutdown() {} })
+        try {
+            for (const directory of [undefined, join(workspaceRoot, '..', 'outside-root')]) {
+                expect(await callSpawnHappySession(client, machine.id, { directory })).toMatchObject({ type: 'error', processStarted: false })
+            }
+            expect(spawnSession).not.toHaveBeenCalled()
+            for (const processStarted of [false, true, undefined]) {
+                spawnSession.mockResolvedValueOnce({ type: 'error', errorMessage: 'failure', processStarted })
+                const result = await callSpawnHappySession(client, machine.id, { directory: workspaceRoot }) as { processStarted?: boolean }
+                expect(result.processStarted).toBe(processStarted)
+            }
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('deduplicates an existing child before repeating path validation', async () => {
+        const { createSpawnDeduplicator } = await import('../runner/run')
+        const machine = makeMachine('spawn-retry')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const once = vi.fn(async (options: import('../modules/common/rpcTypes').SpawnSessionOptions) => {
+            if (!await options.validateDirectory!(options.directory)) {
+                return { type: 'error' as const, errorMessage: 'outside roots', processStarted: false }
+            }
+            return { type: 'success' as const, sessionId: options.existingSessionId! }
+        })
+        const spawnSession = createSpawnDeduplicator(once)
+        client.setRPCHandlers({ spawnSession, stopSession: async () => 'stopped', requestShutdown() {} })
+        try {
+            const params = { directory: workspaceRoot, existingSessionId: 'child', resumeSessionId: 'source' }
+            expect(await Promise.all([
+                callSpawnHappySession(client, machine.id, params),
+                callSpawnHappySession(client, machine.id, params)
+            ])).toEqual([
+                { type: 'success', sessionId: 'child' },
+                { type: 'success', sessionId: 'child' }
+            ])
+            const retry = { ...params, directory: join(workspaceRoot, '..', 'outside-root') }
+            expect(await callSpawnHappySession(client, machine.id, retry)).toEqual({ type: 'success', sessionId: 'child' })
+            expect(once).toHaveBeenCalledTimes(1)
+            expect(await callSpawnHappySession(client, machine.id, { ...retry, existingSessionId: 'new-child' }))
+                .toMatchObject({ type: 'error', processStarted: false })
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {

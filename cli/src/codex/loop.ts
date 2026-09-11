@@ -8,6 +8,7 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { ReasoningEffort } from './appServerTypes';
 import type { CodexCollaborationMode, CodexPermissionMode } from '@hapi/protocol/types';
+import type { Metadata } from '@/api/types';
 
 export type PermissionMode = CodexPermissionMode;
 
@@ -45,6 +46,7 @@ interface LoopOptions {
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
     sourceSessionId?: string;
+    codexForkRequest?: Metadata['codexForkRequest'];
     replayTranscriptHistoryOnStart?: boolean;
     onSessionReady?: (session: CodexSession) => void;
 }
@@ -71,6 +73,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         modelReasoningEffort: opts.modelReasoningEffort,
         collaborationMode: opts.collaborationMode ?? 'default',
         sourceSessionId: opts.sourceSessionId,
+        codexForkRequest: opts.codexForkRequest,
         replayTranscriptHistoryOnStart: opts.replayTranscriptHistoryOnStart ?? false
     });
 

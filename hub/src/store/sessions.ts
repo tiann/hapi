@@ -121,6 +121,11 @@ function preserveCursorProtocolPair(
 }
 
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
+    // Cleanup owns the child until deletion, even if a stale bootstrap/binding
+    // replaces metadata or explicitly clears the marker. Keep its routing too.
+    if (isPlainObject(prior) && prior.codexForkCleanup !== undefined) {
+        next = { ...(isPlainObject(next) ? next : {}), codexForkCleanup: prior.codexForkCleanup }
+    }
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
     }

@@ -39,39 +39,39 @@ describe('CodexConversationHistory', () => {
     })
 
     it('forks current without a turn boundary', async () => {
-        const fork = vi.fn(async (params: Record<string, unknown>) => {
-            expect(params.beforeTurnId).toBeUndefined()
-            return { thread: { id: 'forked-current' } }
-        })
+        const fork = vi.fn(async () => ({ thread: { id: 'unexpected' } }))
         const history = new CodexConversationHistory(() => createClient({ fork }) as never)
         history.setThreadId('thread-1')
         const result = await history.fork()
-        expect(result).toEqual({ nativeSessionId: 'forked-current' })
-        expect(fork).toHaveBeenCalledTimes(1)
+        expect(result).toEqual({
+            nativeSessionId: 'thread-1',
+            codexForkRequest: { sourceThreadId: 'thread-1' }
+        })
+        expect(fork).not.toHaveBeenCalled()
     })
 
     it('historical fork passes lastTurnId of the previous turn', async () => {
-        const fork = vi.fn(async (params: Record<string, unknown>) => {
-            expect(params.lastTurnId).toBe('turn-a')
-            expect(params.beforeTurnId).toBeUndefined()
-            return { thread: { id: 'forked-hist' } }
-        })
+        const fork = vi.fn(async () => ({ thread: { id: 'unexpected' } }))
         const history = new CodexConversationHistory(() => createClient({ fork }) as never)
         history.setThreadId('thread-1')
         const result = await history.fork('local-b')
-        expect(result.nativeSessionId).toBe('forked-hist')
+        expect(result).toEqual({
+            nativeSessionId: 'thread-1',
+            codexForkRequest: { sourceThreadId: 'thread-1', lastTurnId: 'turn-a' }
+        })
+        expect(fork).not.toHaveBeenCalled()
     })
 
     it('historical fork of the first turn uses beforeTurnId', async () => {
-        const fork = vi.fn(async (params: Record<string, unknown>) => {
-            expect(params.beforeTurnId).toBe('turn-a')
-            expect(params.lastTurnId).toBeUndefined()
-            return { thread: { id: 'forked-first' } }
-        })
+        const fork = vi.fn(async () => ({ thread: { id: 'unexpected' } }))
         const history = new CodexConversationHistory(() => createClient({ fork }) as never)
         history.setThreadId('thread-1')
         const result = await history.fork('local-a')
-        expect(result.nativeSessionId).toBe('forked-first')
+        expect(result).toEqual({
+            nativeSessionId: 'thread-1',
+            codexForkRequest: { sourceThreadId: 'thread-1', beforeTurnId: 'turn-a' }
+        })
+        expect(fork).not.toHaveBeenCalled()
     })
 
     it('computes rewind numTurns from selected turn', async () => {
@@ -434,14 +434,15 @@ describe('CodexConversationHistory', () => {
         const rollback = vi.fn(async () => {
             throw new Error('thread/rollback is unsupported')
         })
-        const fork = vi.fn(async () => ({ thread: { id: 'forked-ok' } }))
+        const fork = vi.fn(async () => ({ thread: { id: 'unexpected' } }))
         const history = new CodexConversationHistory(() => createClient({ rollback, fork }) as never)
         history.setThreadId('thread-1')
         await expect(history.rewind('local-a')).rejects.toThrow(/unsupported/)
         const caps = history.getCapabilitiesForMetadata()?.conversationHistory
         expect(caps?.rewindToMessage).toBeUndefined()
         const forked = await history.fork()
-        expect(forked.nativeSessionId).toBe('forked-ok')
+        expect(forked.nativeSessionId).toBe('thread-1')
+        expect(fork).not.toHaveBeenCalled()
     })
 
     it('does not call native fork when selected turn is missing', async () => {
@@ -456,11 +457,7 @@ describe('CodexConversationHistory', () => {
     })
 
     it('restores durable localId→turnId locators across relaunches', async () => {
-        const fork = vi.fn(async (params: Record<string, unknown>) => {
-            expect(params.lastTurnId).toBe('turn-a')
-            expect(params.beforeTurnId).toBeUndefined()
-            return { thread: { id: 'forked-restored' } }
-        })
+        const fork = vi.fn(async () => ({ thread: { id: 'unexpected' } }))
         const history = new CodexConversationHistory(() => createClient({
             fork,
             // Simulate a relaunch where thread/read no longer exposes clientIds.
@@ -477,7 +474,8 @@ describe('CodexConversationHistory', () => {
         history.setThreadId('thread-1')
         history.restoreTurns({ 'local-b': 'turn-b' })
         const result = await history.fork('local-b')
-        expect(result.nativeSessionId).toBe('forked-restored')
+        expect(result.codexForkRequest).toEqual({ sourceThreadId: 'thread-1', lastTurnId: 'turn-a' })
+        expect(fork).not.toHaveBeenCalled()
         expect(history.getTurns()['local-b']).toBe('turn-b')
     })
 })

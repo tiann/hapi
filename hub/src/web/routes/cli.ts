@@ -13,6 +13,7 @@ import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
 import { SessionIdentityConflictError } from '../../store/sessions'
+import { preserveHubOwnedMetadata } from '../../utils/sessionMetadata'
 
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
 
@@ -121,7 +122,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         try {
             const session = engine.getOrCreateSession(
                 parsed.data.tag,
-                parsed.data.metadata,
+                preserveHubOwnedMetadata(parsed.data.metadata),
                 parsed.data.agentState ?? null,
                 namespace,
                 parsed.data.model,

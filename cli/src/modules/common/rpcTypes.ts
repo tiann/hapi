@@ -37,6 +37,8 @@ export type SpawnSessionResult =
     | {
         type: 'error'
         errorMessage: string
+        /** False only when this attempt created no OS process. */
+        processStarted: boolean
         code?: 'agent_unavailable' | 'outside_workspace_roots'
         agent?: AgentFlavor
     }

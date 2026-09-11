@@ -102,7 +102,7 @@ export function supportsReasoningSummary(model: string | undefined): boolean {
     return !MODELS_WITHOUT_REASONING_SUMMARY.has(modelName);
 }
 
-function buildMcpServerConfig(mcpServers: CodexMcpServersConfig): Record<string, unknown> {
+export function buildMcpServerConfig(mcpServers: CodexMcpServersConfig): Record<string, unknown> {
     const config: Record<string, unknown> = {};
 
     for (const [name, server] of Object.entries(mcpServers)) {

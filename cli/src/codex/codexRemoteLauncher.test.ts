@@ -40,6 +40,10 @@ const harness = vi.hoisted(() => ({
     } as unknown,
     startThreadIds: [] as string[],
     startThreadParams: [] as Array<Record<string, unknown>>,
+    forkThreadParams: [] as Array<Record<string, unknown>>,
+    forkThreadResponse: { thread: { id: 'thread-forked' }, model: 'gpt-5.4' } as unknown,
+    forkThreadError: null as Error | null,
+    forkThreadFailuresRemaining: 0,
     resumeThreadIds: [] as string[],
     resumeThreadParams: [] as Array<Record<string, unknown>>,
     startTurnThreadIds: [] as string[],
@@ -103,7 +107,8 @@ const harness = vi.hoisted(() => ({
     emitRunningChildTurnBeforeSuppressedParent: false,
     emitCompletedChildTurnBeforeSuppressedParent: false,
     emitTurnAbortedOnInterrupt: false,
-    bridgeOptions: [] as unknown[]
+    bridgeOptions: [] as unknown[],
+    mcpServers: {} as Record<string, { command: string; args: string[] }>
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -206,6 +211,16 @@ vi.mock('./codexAppServerClient', () => {
                 throw new Error('resume failed');
             }
             return { thread: { id }, model: harness.resumeModel };
+        }
+
+        async forkThread(params?: Record<string, unknown>): Promise<unknown> {
+            harness.forkThreadParams.push(params ?? {});
+            if (harness.forkThreadFailuresRemaining > 0) {
+                harness.forkThreadFailuresRemaining -= 1;
+                throw harness.forkThreadError ?? new Error('fork failed');
+            }
+            if (harness.forkThreadError) throw harness.forkThreadError;
+            return harness.forkThreadResponse;
         }
 
         async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
@@ -1126,7 +1141,7 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
         server: {
             stop: () => {}
         },
-        mcpServers: {}
+        mcpServers: harness.mcpServers
         };
     }
 }));
@@ -1179,6 +1194,7 @@ function createSessionStub(
     let currentPermissionMode: EnhancedMode['permissionMode'] = mode.permissionMode;
     let currentModel: string | null | undefined = mode.model;
     let currentModelReasoningEffort = mode.modelReasoningEffort;
+    let currentServiceTier = mode.serviceTier;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
     let agentState: FakeAgentState = {
         requests: {},
@@ -1210,6 +1226,7 @@ function createSessionStub(
         emitSteerIndeterminate: vi.fn(),
         setSteerDeliveryState: vi.fn(async () => true)
     };
+    queue.onBatchConsumed = (localIds) => client.emitMessagesConsumed(localIds);
 
     const session = {
         path: '/tmp/hapi-update',
@@ -1219,6 +1236,8 @@ function createSessionStub(
         codexArgs: undefined,
         codexCliOverrides: undefined,
         sessionId: null as string | null,
+        sourceSessionId: undefined as string | undefined,
+        codexForkRequest: undefined as { sourceThreadId: string; lastTurnId?: string; beforeTurnId?: string } | undefined,
         thinking: false,
         getPermissionMode() {
             return currentPermissionMode;
@@ -1234,8 +1253,10 @@ function createSessionStub(
         },
         getModelReasoningEffort() { return currentModelReasoningEffort; },
         pushKeepAlive() {},
-        getServiceTier() { return undefined; },
-        setServiceTier() {},
+        getServiceTier() { return currentServiceTier; },
+        setServiceTier(nextServiceTier: string | null | undefined) {
+            currentServiceTier = nextServiceTier;
+        },
         getCollaborationMode() {
             return currentCollaborationMode;
         },
@@ -1282,6 +1303,7 @@ function createSessionStub(
         },
         getModel: () => currentModel,
         getModelReasoningEffort: () => currentModelReasoningEffort,
+        getServiceTier: () => currentServiceTier,
         getCollaborationMode: () => currentCollaborationMode,
         collaborationModes,
         getAgentState: () => agentState
@@ -1465,6 +1487,10 @@ describe('codexRemoteLauncher', () => {
         };
         harness.startThreadIds = [];
         harness.startThreadParams = [];
+        harness.forkThreadParams = [];
+        harness.forkThreadResponse = { thread: { id: 'thread-forked' }, model: 'gpt-5.4' };
+        harness.forkThreadError = null;
+        harness.forkThreadFailuresRemaining = 0;
         harness.resumeThreadIds = [];
         harness.resumeThreadParams = [];
         harness.startTurnThreadIds = [];
@@ -1529,6 +1555,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitCompletedChildTurnBeforeSuppressedParent = false;
         harness.emitTurnAbortedOnInterrupt = false;
         harness.bridgeOptions = [];
+        harness.mcpServers = {};
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -1579,7 +1606,6 @@ describe('codexRemoteLauncher', () => {
                 model_auto_compact_token_limit: 300_000
             }
         };
-
         const fresh = createSessionStub();
         await codexRemoteLauncher(fresh.session as never);
         expect(harness.startThreadParams[0]?.config).toMatchObject({
@@ -2826,6 +2852,162 @@ describe('codexRemoteLauncher', () => {
             message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created. Reason: resume failed'
         });
         expect(session.thinking).toBe(false);
+    });
+
+    it('materializes a current HAPI fork in the child app server', async () => {
+        harness.forkThreadResponse = { thread: { id: 'thread-forked' }, model: 'gpt-5.6-default' };
+        harness.configReadResponse = {
+            config: {
+                model_context_window: 400_000,
+                model_auto_compact_token_limit: 360_000
+            }
+        };
+        harness.mcpServers = {
+            hapi: { command: 'node', args: ['child-mcp'] }
+        };
+        const { session, foundSessionIds } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.forkThreadParams).toEqual([{
+            threadId: 'thread-source',
+            config: {
+                'mcp_servers.hapi': {
+                    command: 'node',
+                    args: ['child-mcp']
+                },
+                model_context_window: 400_000,
+                model_auto_compact_token_limit: 360_000
+            }
+        }]);
+        expect(foundSessionIds).toEqual(['thread-forked']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+        expect(session.getModel()).toBe('gpt-5.4');
+        expect(session.codexForkRequest).toBeUndefined();
+    });
+
+    it('passes a historical HAPI fork boundary to the child app server', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source', lastTurnId: 'turn-a' };
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.forkThreadParams).toEqual([{
+            threadId: 'thread-source',
+            lastTurnId: 'turn-a'
+        }]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+    });
+
+    it('attaches a materialized HAPI fork to Luna Reserve without replacing the selected model', async () => {
+        harness.forkThreadResponse = {
+            thread: { id: 'thread-forked' },
+            model: 'gpt-reserve',
+            reasoningEffort: 'medium',
+            serviceTier: null
+        };
+        harness.reserveUsage = {
+            accountId: 'account-a', ordinaryUsageAllowed: false,
+            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } }
+        };
+        const { session, getModel } = createSessionStub(['first message'], {
+            ...createMode(), model: 'gpt-5.6-luna', modelReasoningEffort: 'high', serviceTier: 'fast'
+        });
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.startTurnParams[0]).toMatchObject({
+            threadId: 'thread-forked',
+            collaborationMode: { settings: { model: 'gpt-reserve', reasoning_effort: 'medium' } },
+            serviceTier: null
+        });
+        expect(getModel()).toBe('gpt-5.6-luna');
+    });
+
+    it('fails closed when child-side fork materialization fails', async () => {
+        harness.forkThreadError = new Error('fork failed');
+        const { session, emitMessagesConsumed } = createSessionStub([], createMode(), false, false);
+        session.queue.push('first message', createMode(), 'local-fork');
+        session.queue.close();
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow('fork failed');
+
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+        expect(emitMessagesConsumed).not.toHaveBeenCalled();
+        expect(session.codexForkRequest).toEqual({ sourceThreadId: 'thread-source' });
+    });
+
+    it('fails closed when child-side fork omits the returned thread id', async () => {
+        harness.forkThreadResponse = { thread: {}, model: 'gpt-5.4' };
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow('thread/fork did not return thread.id');
+
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+    });
+
+    it('fails closed when child-side fork returns the source thread id', async () => {
+        harness.forkThreadResponse = { thread: { id: 'thread-source' }, model: 'gpt-5.4' };
+        const { session, emitMessagesConsumed } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(/distinct/);
+
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+        expect(emitMessagesConsumed).not.toHaveBeenCalled();
+    });
+
+    it('fails startup when the fork request source does not match the session thread', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-other' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(/does not match/);
+
+        expect(harness.forkThreadParams).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+    });
+
+    it('fails startup when the fork request contains both boundaries', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = {
+            sourceThreadId: 'thread-source',
+            lastTurnId: 'turn-a',
+            beforeTurnId: 'turn-b'
+        };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(/both turn boundaries/);
+
+        expect(harness.forkThreadParams).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+    });
+
+    it('preserves the imported-history fork path without a HAPI fork request', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-imported';
+        session.sourceSessionId = 'thread-imported';
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.forkThreadParams).toEqual([expect.objectContaining({ threadId: 'thread-imported' })]);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
     });
 
     it('does not start a fresh thread for the next queued message after thread-level systemError', async () => {

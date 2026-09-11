@@ -501,28 +501,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
-      const availability = getAgentAvailability(agent);
-      if (!availability.available) {
-        const errorMessage = agentUnavailableMessage(availability);
-        logger.debug(`[RUNNER RUN] Agent preflight failed: ${errorMessage}`);
-        reportSpawnOutcomeToHub?.({
-          type: 'error',
-          details: { message: errorMessage }
-        });
-        return {
-          type: 'error',
-          errorMessage,
-          code: 'agent_unavailable',
-          agent
-        };
-      }
-      if (options.validateDirectory && !(await options.validateDirectory(directory))) {
-        return {
-          type: 'error',
-          errorMessage: 'Directory is outside this machine\'s workspace roots',
-          code: 'outside_workspace_roots'
-        };
-      }
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
       const worktreeName = options.worktreeName;
@@ -546,90 +524,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       };
 
-      if (sessionType === 'simple') {
-        const validation = await validateWorkspaceDirectory(directory, {
-          approvedNewDirectoryCreation
-        });
-        if (validation.type === 'requestApproval') {
-          logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
-          return {
-            type: 'requestToApproveDirectoryCreation',
-            directory
-          };
-        }
-        if (validation.type === 'error') {
-          logger.debug(`[RUNNER RUN] Workspace directory validation failed: ${validation.errorMessage}`);
-          return {
-            type: 'error',
-            errorMessage: validation.errorMessage
-          };
-        }
-        directoryCreated = validation.created;
-        if (validation.created) {
-          logger.debug(`[RUNNER RUN] Successfully created directory: ${directory}`);
-        } else {
-          logger.debug(`[RUNNER RUN] Directory exists: ${directory}`);
-        }
-      } else {
-        try {
-          await fs.access(directory);
-          logger.debug(`[RUNNER RUN] Worktree base directory exists: ${directory}`);
-        } catch (error) {
-          logger.debug(`[RUNNER RUN] Worktree base directory missing: ${directory}`);
-          return {
-            type: 'error',
-            errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`
-          };
-        }
-      }
-
-      // Re-check after mkdir/access so a newly materialized path or concurrent
-      // symlink swap cannot escape the roots checked by the machine RPC layer.
-      if (options.validateDirectory && !(await options.validateDirectory(directory))) {
-        logger.debug(`[RUNNER RUN] Workspace directory escaped roots during validation: ${directory}`);
-        return {
-          type: 'error',
-          errorMessage: 'Directory is outside this machine\'s workspace roots',
-          code: 'outside_workspace_roots'
-        };
-      }
-
-      if (sessionType === 'worktree') {
-        // Cursor Agent has native `--worktree` under ~/.cursor/worktrees/. Prefer that
-        // over HAPI's sibling-directory worktree so Cursor sandbox/skills see the same layout.
-        // Exception: if `directory` is already a linked git worktree (e.g. HAPI feature
-        // worktree or driver/), nesting `--cursor-worktree` hangs ACP initialize (#1085).
-        if (agent === 'cursor') {
-          spawnDirectory = directory;
-          if (isLinkedGitWorktree(directory)) {
-            logger.debug(
-              `[RUNNER RUN] Directory is already a linked git worktree; skipping Cursor --worktree (cwd=${directory})`
-            );
-          } else {
-            logger.debug(`[RUNNER RUN] Cursor-native worktree requested (nameHint=${worktreeName ?? '(auto)'})`);
-          }
-        } else {
-          const worktreeResult = await createWorktree({
-            basePath: directory,
-            nameHint: worktreeName
-          });
-          if (!worktreeResult.ok) {
-            logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
-            return {
-              type: 'error',
-              errorMessage: worktreeResult.error
-            };
-          }
-          worktreeInfo = worktreeResult.info;
-          spawnDirectory = worktreeInfo.worktreePath;
-          logger.debug(`[RUNNER RUN] Created worktree ${worktreeInfo.worktreePath} (branch ${worktreeInfo.branch})`);
-        }
-      }
-
       const cleanupWorktree = async () => {
-        if (!worktreeInfo) {
-          return;
-        }
+        if (!worktreeInfo) return;
         const result = await removeWorktree({
           repoRoot: worktreeInfo.basePath,
           worktreePath: worktreeInfo.worktreePath
@@ -639,9 +535,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       };
       const maybeCleanupWorktree = async (reason: string) => {
-        if (!worktreeInfo) {
-          return;
-        }
+        if (!worktreeInfo) return;
         const pid = happyProcess?.pid;
         if (pid && isProcessAlive(pid)) {
           logger.debug(`[RUNNER RUN] Skipping worktree cleanup after ${reason}; child still running`, {
@@ -654,6 +548,105 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       };
 
       try {
+        const availability = getAgentAvailability(agent);
+        if (!availability.available) {
+          const errorMessage = agentUnavailableMessage(availability);
+          logger.debug(`[RUNNER RUN] Agent preflight failed: ${errorMessage}`);
+          reportSpawnOutcomeToHub?.({ type: 'error', details: { message: errorMessage } });
+          return { type: 'error', errorMessage, code: 'agent_unavailable', processStarted: false, agent };
+        }
+        if (options.validateDirectory && !(await options.validateDirectory(directory))) {
+          return {
+            type: 'error',
+            errorMessage: 'Directory is outside this machine\'s workspace roots',
+            code: 'outside_workspace_roots',
+            processStarted: false
+          };
+        }
+
+        if (sessionType === 'simple') {
+          const validation = await validateWorkspaceDirectory(directory, {
+            approvedNewDirectoryCreation
+          });
+          if (validation.type === 'requestApproval') {
+            logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
+            return {
+              type: 'requestToApproveDirectoryCreation',
+              directory
+            };
+          }
+          if (validation.type === 'error') {
+            logger.debug(`[RUNNER RUN] Workspace directory validation failed: ${validation.errorMessage}`);
+            return {
+              type: 'error',
+              errorMessage: validation.errorMessage,
+              processStarted: false
+            };
+          }
+          directoryCreated = validation.created;
+          if (validation.created) {
+            logger.debug(`[RUNNER RUN] Successfully created directory: ${directory}`);
+          } else {
+            logger.debug(`[RUNNER RUN] Directory exists: ${directory}`);
+          }
+        } else {
+          try {
+            await fs.access(directory);
+            logger.debug(`[RUNNER RUN] Worktree base directory exists: ${directory}`);
+          } catch (error) {
+            logger.debug(`[RUNNER RUN] Worktree base directory missing: ${directory}`);
+            return {
+              type: 'error',
+              errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`,
+              processStarted: false
+            };
+          }
+        }
+
+        // Re-check after mkdir/access so a newly materialized path or concurrent
+        // symlink swap cannot escape the roots checked by the machine RPC layer.
+        if (options.validateDirectory && !(await options.validateDirectory(directory))) {
+          logger.debug(`[RUNNER RUN] Workspace directory escaped roots during validation: ${directory}`);
+          return {
+            type: 'error',
+            errorMessage: 'Directory is outside this machine\'s workspace roots',
+            code: 'outside_workspace_roots',
+            processStarted: false
+          };
+        }
+
+        if (sessionType === 'worktree') {
+          // Cursor Agent has native `--worktree` under ~/.cursor/worktrees/. Prefer that
+          // over HAPI's sibling-directory worktree so Cursor sandbox/skills see the same layout.
+          // Exception: if `directory` is already a linked git worktree (e.g. HAPI feature
+          // worktree or driver/), nesting `--cursor-worktree` hangs ACP initialize (#1085).
+          if (agent === 'cursor') {
+            spawnDirectory = directory;
+            if (isLinkedGitWorktree(directory)) {
+              logger.debug(
+                `[RUNNER RUN] Directory is already a linked git worktree; skipping Cursor --worktree (cwd=${directory})`
+              );
+            } else {
+              logger.debug(`[RUNNER RUN] Cursor-native worktree requested (nameHint=${worktreeName ?? '(auto)'})`);
+            }
+          } else {
+            const worktreeResult = await createWorktree({
+              basePath: directory,
+              nameHint: worktreeName
+            });
+            if (!worktreeResult.ok) {
+              logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
+              return {
+                type: 'error',
+                errorMessage: worktreeResult.error,
+                processStarted: false
+              };
+            }
+            worktreeInfo = worktreeResult.info;
+            spawnDirectory = worktreeInfo.worktreePath;
+            logger.debug(`[RUNNER RUN] Created worktree ${worktreeInfo.worktreePath} (branch ${worktreeInfo.branch})`);
+          }
+        }
 
         // Resolve authentication token if provided
         let extraEnv: Record<string, string> = {};
@@ -754,7 +747,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           await maybeCleanupWorktree('no-pid');
           return {
             type: 'error',
-            errorMessage
+            errorMessage,
+            processStarted: false
           };
         }
         happyProcess.removeListener('error', captureSpawnErrorBeforePidCheck);
@@ -897,7 +891,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logStderrTail();
             resolve({
               type: 'error',
-              errorMessage: buildWebhookFailureMessage('timeout')
+              errorMessage: buildWebhookFailureMessage('timeout'),
+              processStarted: true
             });
           }, webhookTimeoutMs);
 
@@ -915,7 +910,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             clearTimeout(timeout);
             resolve({
               type: 'error',
-              errorMessage
+              errorMessage,
+              processStarted: true
             });
           });
         });
@@ -938,7 +934,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.debug('[RUNNER RUN] Failed to spawn session:', error);
         await cleanupCopiedCodexConfig('exception');
-        await maybeCleanupWorktree('exception');
+        await maybeCleanupWorktree('exception').catch((cleanupError) => {
+          logger.debug('[RUNNER RUN] Worktree cleanup failed after spawn exception:', cleanupError);
+        });
         reportSpawnOutcomeToHub?.({
           type: 'error',
           details: {
@@ -947,7 +945,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         });
         return {
           type: 'error',
-          errorMessage: `Failed to spawn session: ${errorMessage}`
+          errorMessage: `Failed to spawn session: ${errorMessage}`,
+          processStarted: Boolean(happyProcess?.pid)
         };
       }
     };
@@ -960,7 +959,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         record.requestedSessionId,
         verified && record.confirmedSessionId
           ? { type: 'success', sessionId: record.confirmedSessionId }
-          : { type: 'error', errorMessage: `Session ${record.requestedSessionId} process verification is pending` }
+          : { type: 'error', errorMessage: `Session ${record.requestedSessionId} process verification is pending`, processStarted: true }
       );
     }
 
@@ -1318,7 +1317,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               persisted.requestedSessionId,
               persisted.confirmedSessionId
                 ? { type: 'success', sessionId: persisted.confirmedSessionId }
-                : { type: 'error', errorMessage: `Session ${persisted.requestedSessionId} is still starting` }
+                : { type: 'error', errorMessage: `Session ${persisted.requestedSessionId} is still starting`, processStarted: true }
             );
           }
         }

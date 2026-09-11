@@ -65,6 +65,26 @@ export const MetadataSchema = z.object({
     // session as a branch of `<id>` instead of an unrelated duplicate.
     forkedFrom: z.string().optional(),
     codexSessionId: z.string().optional(),
+    codexForkRequest: z.object({
+        sourceThreadId: z.string().min(1),
+        lastTurnId: z.string().min(1).optional(),
+        beforeTurnId: z.string().min(1).optional(),
+        spawnOptions: z.object({
+            permissionMode: PermissionModeSchema.optional(),
+            serviceTier: z.string().optional(),
+            collaborationMode: CodexCollaborationModeSchema.optional()
+        }).optional()
+    }).refine(
+        (request) => !(request.lastTurnId && request.beforeTurnId),
+        { message: 'Codex fork request cannot include both lastTurnId and beforeTurnId' }
+    ).optional(),
+    // Hub-owned cleanup intent. Only confirmed child deletion releases it.
+    codexForkCleanup: z.object({
+        sourceSessionId: z.string().min(1),
+        machineId: z.string().min(1),
+        // Retain explicit no-process evidence if row deletion needs a retry.
+        processStarted: z.literal(false).optional()
+    }).optional(),
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
     codexSourceSessionId: z.string().optional(),

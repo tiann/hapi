@@ -3,7 +3,7 @@ import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import { RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
-function createGateway() {
+function createGateway(spawnReply?: unknown, transportFailure = false) {
     const timeouts: number[] = []
     const calls: Array<{ method: string; params: string }> = []
     const socket = {
@@ -12,6 +12,10 @@ function createGateway() {
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
                     calls.push(payload)
+                    if (payload.method.endsWith(':spawn-happy-session')) {
+                        if (transportFailure) throw new Error('ACK lost')
+                        return JSON.stringify(spawnReply)
+                    }
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
                     }
@@ -49,6 +53,25 @@ function createGateway() {
         calls
     }
 }
+
+describe('spawn process provenance', () => {
+    for (const processStarted of [false, true, undefined, 'false']) {
+        it(`only trusts a boolean runner signal (${String(processStarted)})`, async () => {
+            const { gateway } = createGateway({ type: 'error', errorMessage: 'spawn failed', processStarted })
+            const result = await gateway.spawnSession('machine-1', '/workspace')
+            expect(result).toMatchObject({ type: 'error', message: 'spawn failed' })
+            expect((result as { processStarted?: boolean }).processStarted).toBe(
+                typeof processStarted === 'boolean' ? processStarted : undefined
+            )
+        })
+    }
+    it('treats approval as no-process but transport failure as indeterminate', async () => {
+        const approval = createGateway({ type: 'requestToApproveDirectoryCreation', directory: '/workspace' })
+        expect(await approval.gateway.spawnSession('machine-1', '/workspace')).toHaveProperty('processStarted', false)
+        const lost = createGateway({ type: 'error', errorMessage: 'unused', processStarted: false }, true)
+        expect(await lost.gateway.spawnSession('machine-1', '/workspace')).not.toHaveProperty('processStarted', false)
+    })
+})
 
 describe('RpcGateway RPC timeouts', () => {
     it('uses the default RPC timeout for regular machine RPCs', async () => {

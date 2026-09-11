@@ -164,8 +164,14 @@ export class MessageService {
         private readonly store: Store,
         private readonly io: Server,
         private readonly publisher: EventPublisher,
-        private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void
+        private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void,
+        private readonly isHistoryActionInFlight?: (sessionId: string) => boolean
     ) {
+    }
+
+    private isHistoryDeliveryGated(sessionId: string): boolean {
+        return this.isHistoryActionInFlight?.(sessionId) === true
+            || this.store.isCodexForkDeliveryGated(sessionId)
     }
 
     private forgetScheduledMatureNotified(localIds: Iterable<string>): void {
@@ -455,6 +461,7 @@ export class MessageService {
     /** CLI reconnect backfill — excludes future-scheduled rows so the runner does
      *  not consume them ahead of their scheduled_at.  See messages.ts:getDeliverableMessagesAfter. */
     getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
+        if (this.isHistoryDeliveryGated(sessionId)) return []
         const stored = this.store.messages.getDeliverableMessagesAfter(
             sessionId,
             options.afterSeq,
@@ -675,6 +682,9 @@ export class MessageService {
             return { status: 'already-queued', localId: lookup.localId }
         }
         if (!lookup.localId) return { status: 'not-found' }
+        if (this.isHistoryDeliveryGated(sessionId)) {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
         const retryKey = `${sessionId}:${lookup.localId}`
         if (this.activeIndeterminateRetries.has(retryKey)) {
             return { status: 'retry-unavailable', localId: lookup.localId }
@@ -708,6 +718,9 @@ export class MessageService {
             if (changed === 0) return { status: 'retry-unavailable', localId: lookup.localId }
         }
 
+        if (this.isHistoryDeliveryGated(sessionId)) {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
         const message = this.store.messages.claimIndeterminateMessage(sessionId, messageId)
         if (!message || !message.localId) return { status: 'not-found' }
 
@@ -833,6 +846,14 @@ export class MessageService {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
+        const sessionMetadata = this.store.sessions.getSession(sessionId)?.metadata
+        if (isObject(sessionMetadata) && sessionMetadata.codexForkRequest) {
+            throw new Error('Codex fork is still materializing')
+        }
+        if (this.isHistoryDeliveryGated(sessionId)) {
+            throw new Error('Conversation history action already in progress')
+        }
+
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a
@@ -890,7 +911,8 @@ export class MessageService {
         // the pre-insert `now` capture could misclassify a borderline scheduledAt
         // as future when it has already become past by the time we check.
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
-        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
+        if (shouldEmitToCli && !isFutureScheduled && !this.isHistoryDeliveryGated(actualSessionId)
+            && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -962,7 +984,8 @@ export class MessageService {
     /** Replay durable immediate prompts whenever their CLI session attaches. */
     replayImmediateQueuedMessages(sessionId: string): number {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
-        if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
+        if (queued.length === 0 || this.isHistoryDeliveryGated(sessionId)
+            || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         for (const msg of queued) {
             const update = {
                 id: msg.id,
@@ -987,7 +1010,7 @@ export class MessageService {
 
     /** Release a completed clear handoff in finalized seq order. */
     releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): number {
-        if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
+        if (this.isHistoryDeliveryGated(sessionId) || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         const queued = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
             .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
         for (const msg of queued) {
@@ -1032,7 +1055,8 @@ export class MessageService {
         for (const msg of mature) {
             let deliveryGated = deliveryGateBySession.get(msg.sessionId)
             if (deliveryGated === undefined) {
-                deliveryGated = this.store.isOpenCodeClearDeliveryGated(msg.sessionId)
+                deliveryGated = this.isHistoryDeliveryGated(msg.sessionId)
+                    || this.store.isOpenCodeClearDeliveryGated(msg.sessionId)
                 deliveryGateBySession.set(msg.sessionId, deliveryGated)
             }
             if (skipSessionIds?.has(msg.sessionId) || deliveryGated) {

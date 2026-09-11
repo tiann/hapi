@@ -63,6 +63,7 @@ export async function runCodex(opts: {
     const codexSourceSessionId = typeof sessionInfo.metadata?.codexSourceSessionId === 'string'
         ? sessionInfo.metadata.codexSourceSessionId
         : undefined;
+    const codexForkRequest = sessionInfo.metadata?.codexForkRequest;
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';
 
@@ -436,6 +437,7 @@ export async function runCodex(opts: {
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
             sourceSessionId: codexSourceSessionId,
+            codexForkRequest,
             replayTranscriptHistoryOnStart,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {

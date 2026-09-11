@@ -1,6 +1,9 @@
-import { beforeAll, describe, expect, it, mock } from 'bun:test'
+import { beforeAll, describe, expect, it, mock, spyOn } from 'bun:test'
 import { Hono } from 'hono'
-import type { SyncEngine } from '../../sync/syncEngine'
+import { SyncEngine } from '../../sync/syncEngine'
+import type { RpcGateway } from '../../sync/rpcGateway'
+import { Store } from '../../store'
+import { RpcRegistry } from '../../socket/rpcRegistry'
 import { createConfiguration } from '../../configuration'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
@@ -23,6 +26,56 @@ beforeAll(async () => {
 })
 
 describe('cli resume routes', () => {
+    it('strips cleanup ownership on HTTP creation and preserves the stored owner on bootstrap and GET', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const app = createApp(engine)
+        const cleanup = { sourceSessionId: 'source-session', machineId: 'machine-1' }
+        const metadata = {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'bound-thread',
+            codexForkCleanup: { ...cleanup, processStarted: false },
+            supersededBySessionId: 'forged-target',
+            opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 }
+        }
+        const state = engine as unknown as {
+            rpcGateway: RpcGateway
+            expireInactive(): void
+            codexForkRecoveryByChildId: Map<string, Promise<void>>
+        }
+        const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('still_alive')
+        const post = (body: unknown) => app.request('/cli/sessions', {
+            method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        })
+        try {
+            const created = await post({ tag: 'untrusted-create', metadata })
+            expect(created.status).toBe(200)
+            const { session } = await created.json() as { session: { id: string; metadataVersion: number; metadata: Record<string, unknown> } }
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            store.messages.addMessage(session.id, { role: 'user', content: 'accepted' }, 'accepted')
+            state.expireInactive()
+            await Promise.all(state.codexForkRecoveryByChildId.values())
+            expect(store.sessions.getSession(session.id)).not.toBeNull()
+            expect(stop).not.toHaveBeenCalled()
+            for (const key of ['codexForkCleanup', 'supersededBySessionId', 'opencodeClearOperation']) {
+                expect(session.metadata).not.toHaveProperty(key)
+            }
+            expect(store.sessions.updateSessionMetadata(session.id, {
+                ...session.metadata, codexForkCleanup: cleanup
+            }, session.metadataVersion, 'default').result).toBe('success')
+            for (const incoming of [metadata, { ...metadata, codexForkCleanup: null }, {}]) {
+                const bootstrap = await post({ tag: 'untrusted-create', id: session.id, metadata: incoming })
+                expect(bootstrap.status).toBe(200)
+                expect(await bootstrap.json()).toHaveProperty('session.metadata.codexForkCleanup', cleanup)
+            }
+            const get = await app.request(`/cli/sessions/${session.id}`, { headers: authHeaders() })
+            expect(await get.json()).toHaveProperty('session.metadata.codexForkCleanup', cleanup)
+            expect(store.messages.getAllMessages(session.id).map((message) => message.localId)).toEqual(['accepted'])
+        } finally {
+            engine.stop()
+            await Promise.all(state.codexForkRecoveryByChildId.values())
+        }
+    })
+
     it('returns local resumable sessions', async () => {
         const app = createApp({
             listLocalResumableSessions: () => [{

@@ -18,6 +18,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     readonly sourceSessionId?: string;
+    codexForkRequest?: Metadata['codexForkRequest'];
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     private transcriptPathCallbacks: Array<(path: string) => void> = [];
@@ -42,6 +43,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         collaborationMode?: EnhancedMode['collaborationMode'];
         replayTranscriptHistoryOnStart?: boolean;
         sourceSessionId?: string;
+        codexForkRequest?: Metadata['codexForkRequest'];
     }) {
         super({
             api: opts.api,
@@ -54,10 +56,11 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             mode: opts.mode,
             sessionLabel: 'CodexSession',
             sessionIdLabel: 'Codex',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                codexSessionId: sessionId
-            }),
+            applySessionIdToMetadata: (metadata, sessionId) => {
+                const updated = { ...metadata, codexSessionId: sessionId };
+                delete updated.codexForkRequest;
+                return updated;
+            },
             permissionMode: opts.permissionMode,
             model: opts.model,
             modelReasoningEffort: opts.modelReasoningEffort,
@@ -70,6 +73,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.startingMode = opts.startingMode;
         this.transcriptHistoryReplayPending = opts.replayTranscriptHistoryOnStart ?? false;
         this.sourceSessionId = opts.sourceSessionId;
+        this.codexForkRequest = opts.codexForkRequest;
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;

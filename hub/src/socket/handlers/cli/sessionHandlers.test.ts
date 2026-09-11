@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
-import type { SyncEvent } from '../../../sync/syncEngine'
+import { SyncEngine, type SyncEvent } from '../../../sync/syncEngine'
+import type { RpcGateway } from '../../../sync/rpcGateway'
+import { RpcRegistry } from '../../rpcRegistry'
 import type { CliSocketWithData } from '../../socketTypes'
 import { registerSessionHandlers } from './sessionHandlers'
 
@@ -53,6 +55,76 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    for (const owned of [false, true]) {
+        it(`rejects CLI cleanup injection or downgrade before recovery (owned=${owned})`, async () => {
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            const source = engine.getOrCreateSession('cleanup-source', {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', machineId: 'machine-1', codexSessionId: 'source-thread'
+            }, null, 'default')
+            const cleanup = { sourceSessionId: source.id, machineId: 'machine-1' }
+            const child = engine.getOrCreateSession('cleanup-child', {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', machineId: 'machine-1',
+                codexSessionId: 'bound-child-thread', forkedFrom: source.id,
+                ...(owned ? { codexForkCleanup: cleanup } : {})
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: child.id, time: Date.now(), mode: 'remote' })
+            store.messages.addMessage(child.id, { role: 'user', content: 'accepted' }, 'accepted')
+            const state = engine as unknown as {
+                rpcGateway: RpcGateway
+                expireInactive(): void
+                codexForkRecoveryByChildId: Map<string, Promise<void>>
+            }
+            const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('still_alive')
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: (id) => {
+                    const session = store.sessions.getSessionByNamespace(id, 'default')
+                    return session ? { ok: true, value: session } : { ok: false, reason: 'not-found' }
+                },
+                emitAccessError: () => { throw new Error('unexpected access error') },
+                onWebappEvent: (event) => engine.handleRealtimeEvent(event)
+            })
+            try {
+                let ack: unknown
+                socket.trigger('update-metadata', {
+                    sid: child.id, expectedVersion: child.metadataVersion,
+                    metadata: { ...child.metadata, codexForkCleanup: {
+                        sourceSessionId: owned ? 'forged-source' : source.id,
+                        machineId: owned ? 'forged-machine' : 'machine-1',
+                        processStarted: false
+                    } }
+                }, (response) => { ack = response })
+                state.expireInactive()
+                await Promise.all(state.codexForkRecoveryByChildId.values())
+                expect(engine.getSession(child.id)?.active).toBe(true)
+                expect(store.messages.getAllMessages(child.id).map((message) => message.localId)).toEqual(['accepted'])
+                expect(ack).toMatchObject({ result: 'success' })
+                if (owned) {
+                    expect(stop).toHaveBeenCalledWith('machine-1', child.id)
+                    expect(ack).toMatchObject({ metadata: { codexForkCleanup: cleanup } })
+                    expect(socket.roomEvents.at(-1)?.data).toHaveProperty('body.metadata.value.codexForkCleanup', cleanup)
+                    // Sparse, null and replayed payloads cannot clear or alter the stored owner either.
+                    for (const metadata of [{}, null, { codexForkCleanup: null }]) {
+                        const current = store.sessions.getSession(child.id)!
+                        socket.trigger('update-metadata', { sid: child.id, expectedVersion: current.metadataVersion, metadata }, () => {})
+                        expect(store.sessions.getSession(child.id)?.metadata).toHaveProperty('codexForkCleanup', cleanup)
+                    }
+                    expect(store.isCodexForkDeliveryGated(source.id)).toBe(true)
+                } else {
+                    expect(stop).not.toHaveBeenCalled()
+                    expect(ack).not.toHaveProperty('metadata.codexForkCleanup')
+                    expect(socket.roomEvents.at(-1)?.data).not.toHaveProperty('body.metadata.value.codexForkCleanup')
+                    expect(store.isCodexForkDeliveryGated(source.id)).toBe(false)
+                }
+            } finally {
+                engine.stop()
+                await Promise.all(state.codexForkRecoveryByChildId.values())
+            }
+        })
+    }
+
     it('preserves immediate queued rows for cleared handoff transfer', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('clear-end', {}, null, 'default')

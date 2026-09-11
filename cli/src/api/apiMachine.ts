@@ -391,16 +391,26 @@ export class ApiMachineClient {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
             const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
 
-            if (!directory) {
-                throw new Error('Directory is required')
+            if (typeof directory !== 'string' || !directory.trim()) {
+                return { type: 'error', errorMessage: 'Directory is required', ...(!existingSessionId ? { processStarted: false } : {}) }
             }
 
-            const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
-            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
-                return {
-                    type: 'error',
-                    errorMessage: 'Directory is outside this machine\'s workspace roots',
-                    code: 'outside_workspace_roots',
+            // Retries must consult runner dedupe before claiming no process exists.
+            // New processes still run validateDirectory inside that dedupe boundary.
+            if (!existingSessionId) {
+                let resolvedDirectory: string
+                try {
+                    resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
+                } catch (error) {
+                    return { type: 'error', errorMessage: String(error), processStarted: false }
+                }
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
+                    return {
+                        type: 'error',
+                        errorMessage: 'Directory is outside this machine\'s workspace roots',
+                        code: 'outside_workspace_roots',
+                        processStarted: false,
+                    }
                 }
             }
 
@@ -437,6 +447,7 @@ export class ApiMachineClient {
                     return {
                         type: 'error',
                         errorMessage: result.errorMessage,
+                        processStarted: result.processStarted,
                         code: result.code,
                         agent: result.agent,
                     }

@@ -573,6 +573,11 @@ export type ForkConversationRpcResult = {
     nativeSessionId: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
+    codexForkRequest?: {
+        sourceThreadId: string
+        lastTurnId?: string
+        beforeTurnId?: string
+    }
 }
 
 export type RewindConversationErrorCode =

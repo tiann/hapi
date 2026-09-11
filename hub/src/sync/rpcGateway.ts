@@ -195,6 +195,8 @@ export class RpcGateway {
         | {
             type: 'error'
             message: string
+            /** Absent means the runner's process outcome is unknown (including lost ACKs). */
+            processStarted?: boolean
             code?: 'agent_unavailable' | 'outside_workspace_roots'
             agent?: AgentFlavor
         }
@@ -237,12 +239,13 @@ export class RpcGateway {
                     return {
                         type: 'error',
                         message: obj.errorMessage,
+                        ...(typeof obj.processStarted === 'boolean' ? { processStarted: obj.processStarted } : {}),
                         ...(code ? { code } : {}),
                         ...(unavailableAgent ? { agent: unavailableAgent } : {}),
                     }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
-                    return { type: 'error', message: `Directory creation requires approval: ${obj.directory}` }
+                    return { type: 'error', message: `Directory creation requires approval: ${obj.directory}`, processStarted: false }
                 }
                 if (typeof obj.error === 'string') {
                     return { type: 'error', message: obj.error }

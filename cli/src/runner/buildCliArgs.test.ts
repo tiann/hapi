@@ -392,11 +392,11 @@ describe('createSpawnDeduplicator', () => {
 
         dedupe.recoverChild('fresh-hapi-session', {
             type: 'error',
-            errorMessage: 'Session fresh-hapi-session is still starting'
+            errorMessage: 'Session fresh-hapi-session is still starting', processStarted: true
         })
 
         await expect(dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })).resolves.toEqual({
-            type: 'error', errorMessage: 'Session fresh-hapi-session is still starting'
+            type: 'error', errorMessage: 'Session fresh-hapi-session is still starting', processStarted: true
         })
         expect(calls).toBe(0)
     })
@@ -428,12 +428,12 @@ describe('createSpawnDeduplicator', () => {
         let calls = 0
         const dedupe = createSpawnDeduplicator(async () => {
             calls += 1
-            return { type: 'error' as const, errorMessage: 'Failed to spawn HAPI process - no PID returned' }
+            return { type: 'error' as const, errorMessage: 'Failed to spawn HAPI process - no PID returned', processStarted: false }
         })
 
         const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
-        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Failed to spawn HAPI process - no PID returned' })
-        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Failed to spawn HAPI process - no PID returned' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Failed to spawn HAPI process - no PID returned', processStarted: false })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Failed to spawn HAPI process - no PID returned', processStarted: false })
 
         expect(calls).toBe(2)
     })
@@ -444,16 +444,16 @@ describe('createSpawnDeduplicator', () => {
         dedupe = createSpawnDeduplicator(async (options) => {
             calls += 1
             dedupe.markChildAlive(options.existingSessionId!)
-            return { type: 'error' as const, errorMessage: 'Session webhook timeout' }
+            return { type: 'error' as const, errorMessage: 'Session webhook timeout', processStarted: true }
         })
 
         const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
-        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
-        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout', processStarted: true })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout', processStarted: true })
         expect(calls).toBe(1)
 
         dedupe.onChildExited('fresh-hapi-session')
-        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout', processStarted: true })
         expect(calls).toBe(2)
     })
 

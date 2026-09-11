@@ -235,6 +235,32 @@ export class Store {
         })()
     }
 
+    /** A pending child freezes both itself and its source, across hub restarts. */
+    isCodexForkDeliveryGated(sessionId: string): boolean {
+        return Boolean(this.db.prepare(`
+            SELECT 1 FROM sessions AS child
+            JOIN sessions AS target ON target.namespace = child.namespace
+            LEFT JOIN sessions AS source
+              ON source.namespace = child.namespace
+             AND source.id = COALESCE(json_extract(child.metadata, '$.codexForkCleanup.sourceSessionId'),
+                                      json_extract(child.metadata, '$.forkedFrom'))
+            WHERE target.id = ?
+              AND (json_extract(child.metadata, '$.codexForkRequest') IS NOT NULL
+                   OR json_extract(child.metadata, '$.codexForkCleanup') IS NOT NULL)
+              AND (child.id = target.id
+                   OR json_extract(child.metadata, '$.forkedFrom') = target.id
+                   OR json_extract(child.metadata, '$.codexForkCleanup.sourceSessionId') = target.id
+                   OR (json_extract(target.metadata, '$.flavor') = 'codex'
+                       AND json_extract(target.metadata, '$.machineId') =
+                           COALESCE(json_extract(child.metadata, '$.codexForkCleanup.machineId'),
+                                    json_extract(child.metadata, '$.machineId'))
+                       AND json_extract(target.metadata, '$.codexSessionId') =
+                           COALESCE(json_extract(child.metadata, '$.codexForkRequest.sourceThreadId'),
+                                    json_extract(source.metadata, '$.codexSessionId'))))
+            LIMIT 1
+        `).get(sessionId))
+    }
+
     /** Durable delivery gate for a preallocated replacement owned by an unfinished clear. */
     isOpenCodeClearDeliveryGated(sessionId: string): boolean {
         const target = this.db.prepare('SELECT namespace FROM sessions WHERE id = ?')
