@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -63,6 +63,7 @@ describe('cursorModelsSharedCache', () => {
     test('ignores pre-versioned cache files that carry synthesized wire ids', () => {
         // v1 files carried `[fast=…]` wires Cursor rejects; a runner must re-probe
         // instead of serving them forever (listCursorModels trusts the cache).
+        mkdirSync(join(testHapiHome, 'cache'), { recursive: true });
         writeFileSync(
             join(testHapiHome, 'cache', 'cursor-models.json'),
             JSON.stringify({
