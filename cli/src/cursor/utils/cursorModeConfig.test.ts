@@ -485,6 +485,66 @@ describe('applyCursorAcpModel', () => {
         expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'reasoning_effort', 'high');
     });
 
+    it('resolves the advertised base for a legacy cursor- prefixed sku (#1818)', async () => {
+        const setConfigOption = vi.fn(async () => {});
+        const options = [
+            { id: 'model', category: 'model', options: [{ value: 'grok-4.6' }] },
+            { id: 'effort', category: 'thought_level', currentValue: 'high', options: [{ value: 'low' }, { value: 'high' }] }
+        ];
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({ availableModels: [{ modelId: 'grok-4.6' }], currentModelId: 'grok-4.6' })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+                category === 'model' ? options[0] : undefined
+            ),
+            getSessionConfigOptions: vi.fn(() => options)
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'cursor-grok-4.6-high')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'grok-4.6[effort=high]',
+            requestedWireId: 'cursor-grok-4.6-high'
+        });
+        // The `cursor-` family prefix must map onto the advertised `grok-4.6` base.
+        expect(setConfigOption).toHaveBeenNthCalledWith(1, 's1', 'model', 'grok-4.6');
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'effort', 'high');
+    });
+
+    it('reads the new model effort option after the base switch (#1818)', async () => {
+        // Cursor renames the effort axis across families: gpt-5.5 uses `reasoning`,
+        // claude-opus-4-8 uses `effort`. The apply path must resolve against the
+        // options advertised for the model it just selected, not the previous ones.
+        let selected = 'gpt-5.5';
+        const modelOption = { id: 'model', category: 'model', options: [{ value: 'gpt-5.5' }, { value: 'claude-opus-4-8' }] };
+        const gptOptions = [modelOption, { id: 'reasoning', category: 'thought_level', currentValue: 'medium', options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }] }];
+        const claudeOptions = [modelOption, { id: 'effort', category: 'thought_level', currentValue: 'high', options: [{ value: 'low' }, { value: 'high' }, { value: 'xhigh' }] }];
+        const activeOptions = () => (selected === 'gpt-5.5' ? gptOptions : claudeOptions);
+        const setConfigOption = vi.fn(async (_sessionId: string, id: string, value: string) => {
+            if (id === 'model') {
+                selected = value;
+            }
+        });
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'claude-opus-4-8' }],
+                currentModelId: 'claude-opus-4-8'
+            })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+                activeOptions().find((option) => option.category === category)
+            ),
+            getSessionConfigOptions: vi.fn(() => activeOptions())
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'claude-opus-4-8-xhigh')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'claude-opus-4-8[effort=xhigh]'
+        });
+        expect(setConfigOption).toHaveBeenNthCalledWith(1, 's1', 'model', 'claude-opus-4-8');
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'effort', 'xhigh');
+        expect(setConfigOption).not.toHaveBeenCalledWith('s1', 'reasoning', expect.anything());
+    });
+
     it('does not fall back to base-only model apply when parameterized fast update fails', async () => {
         const setConfigOption = vi.fn()
             .mockResolvedValueOnce(undefined)
