@@ -400,6 +400,91 @@ describe('applyCursorAcpModel', () => {
         expect(setConfigOption).toHaveBeenCalledWith('s1', 'model', 'gemini-3-flash');
     });
 
+    it('maps aliased effort values onto the per-model option id (#1818)', async () => {
+        const modelOption = { id: 'model', category: 'model', options: [{ value: 'gpt-5.5' }] };
+        const backend = mockModelBackend({
+            setConfigOption: vi.fn(async () => {}),
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'gpt-5.5' }],
+                currentModelId: 'gpt-5.5'
+            })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'model') {
+                    return modelOption;
+                }
+                // gpt-5.5 spells the top effort `extra-high` on the `reasoning` id.
+                if (category === 'reasoning') {
+                    return {
+                        id: 'reasoning',
+                        category: 'thought_level',
+                        currentValue: 'medium',
+                        options: [{ value: 'none' }, { value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'extra-high' }]
+                    };
+                }
+                return undefined;
+            }),
+            getSessionConfigOptions: vi.fn(() => [modelOption, { id: 'reasoning', category: 'thought_level', options: [{ value: 'extra-high' }] }])
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'gpt-5.5-xhigh')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'gpt-5.5[reasoning=extra-high]'
+        });
+        expect(backend.setConfigOption).toHaveBeenNthCalledWith(1, 's1', 'model', 'gpt-5.5');
+        expect(backend.setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'reasoning', 'extra-high');
+    });
+
+    it('leaves Claude thinking untouched while switching effort (#1818)', async () => {
+        const setConfigOption = vi.fn(async () => {});
+        const options = [
+            { id: 'model', category: 'model', options: [{ value: 'claude-opus-4-8' }] },
+            { id: 'thinking', category: 'thought_level', currentValue: 'true', options: [{ value: 'false' }, { value: 'true' }] },
+            { id: 'effort', category: 'thought_level', currentValue: 'high', options: [{ value: 'low' }, { value: 'high' }, { value: 'xhigh' }] }
+        ];
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({ availableModels: [{ modelId: 'claude-opus-4-8' }], currentModelId: 'claude-opus-4-8' })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'model') {
+                    return options[0];
+                }
+                // Both `thinking` and `effort` are thought_level: category lookup must not
+                // pick the toggle when the requested axis is effort.
+                return category === 'effort' ? options[2] : undefined;
+            }),
+            getSessionConfigOptions: vi.fn(() => options)
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'claude-opus-4-8-xhigh')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'claude-opus-4-8[effort=xhigh]'
+        });
+        expect(setConfigOption).toHaveBeenCalledTimes(2);
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'effort', 'xhigh');
+    });
+
+    it('applies effort on gemini models through the reasoning_effort option id (#1818)', async () => {
+        const options = [
+            { id: 'model', category: 'model', options: [{ value: 'gemini-3.8-flash' }] },
+            { id: 'reasoning_effort', category: 'thought_level', currentValue: 'high', options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }] }
+        ];
+        const setConfigOption = vi.fn(async () => {});
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({ availableModels: [{ modelId: 'gemini-3.8-flash' }], currentModelId: 'gemini-3.8-flash' })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+                category === 'model' ? options[0] : undefined
+            ),
+            getSessionConfigOptions: vi.fn(() => options)
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'gemini-3.8-flash-high')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'gemini-3.8-flash[reasoning_effort=high]'
+        });
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'reasoning_effort', 'high');
+    });
+
     it('does not fall back to base-only model apply when parameterized fast update fails', async () => {
         const setConfigOption = vi.fn()
             .mockResolvedValueOnce(undefined)
