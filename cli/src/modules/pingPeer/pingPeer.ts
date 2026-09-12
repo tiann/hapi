@@ -714,12 +714,18 @@ export async function waitPeer(options: WaitPeerOptions): Promise<WaitPeerResult
 
     const apiUrl = resolveApiUrl(options.apiUrl)
     const http = options.http ?? axios
-    const jwt = await exchangeJwt(apiUrl, resolveAccessToken(options.accessToken), http)
+    const accessToken = resolveAccessToken(options.accessToken)
+    let jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sleep = options.sleep ?? defaultSleep
     const now = options.now ?? Date.now
     const deadline = now() + timeoutSecs * 1000
+    let refreshAt = now() + 3 * 60 * 60 * 1000
 
     while (now() <= deadline) {
+        if (now() >= refreshAt) {
+            jwt = await exchangeJwt(apiUrl, accessToken, http)
+            refreshAt = now() + 3 * 60 * 60 * 1000
+        }
         const live = await getSession(apiUrl, jwt, sessionId, http)
         const result = await getMessagesFromRemit(apiUrl, jwt, sessionId, remitId, http)
         if (result.found && result.invokedAt !== null) {

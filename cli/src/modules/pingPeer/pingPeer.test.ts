@@ -244,6 +244,40 @@ describe('peer lifecycle operations', () => {
         })).resolves.toMatchObject({ status: 'completed', text: 'done' })
     })
 
+    it.each([false, true])('refreshes long-wait authentication without extending the deadline, complete=%s', async (complete) => {
+        const hour = 60 * 60 * 1000
+        let elapsed = 0
+        let issuedAt = 0
+        let token = ''
+        const http = {
+            post: vi.fn(async () => {
+                issuedAt = elapsed
+                token = `jwt-${elapsed}`
+                return { status: 200, data: { token } }
+            }),
+            get: vi.fn(async (url: string, config: { headers: Record<string, string> }) => {
+                if (elapsed - issuedAt >= 4 * hour || config.headers.Authorization !== `Bearer ${token}`) {
+                    return { status: 401, data: {} }
+                }
+                return url.endsWith('/messages')
+                    ? { status: 200, data: { messages: [
+                        { localId: REMIT_ID, invokedAt: 1 },
+                        ...(complete && elapsed >= 5 * hour ? [terminal('success')] : [])
+                    ] } }
+                    : { status: 200, data: { session: { id: SESSION_ID, active: true } } }
+            })
+        }
+        const result = waitPeer({
+            sessionId: SESSION_ID, remitId: REMIT_ID, apiUrl: 'http://hub.test', accessToken: 'token',
+            http: http as never, timeoutSecs: 5 * 3600, now: () => elapsed,
+            sleep: async () => { elapsed += hour }
+        })
+        if (complete) await expect(result).resolves.toMatchObject({ status: 'completed' })
+        else await expect(result).rejects.toMatchObject({ code: 'timeout' })
+        expect(elapsed).toBe(5 * hour)
+        expect(http.post).toHaveBeenCalledTimes(2)
+    })
+
     it('fails immediately when a persisted remit was never accepted before the session ended', async () => {
         let elapsed = 0
         const http = createHttpMock({
