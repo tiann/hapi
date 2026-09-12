@@ -27,6 +27,9 @@ const harness = vi.hoisted(() => ({
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     deferSetConfigOption: null as Promise<void> | null,
     releaseSetConfigOption: null as (() => void) | null,
+    /** When true, mode-opt also waits on deferSetConfigOption (Bridge abort race). */
+    deferModeConfigOption: false,
+    setConfigOptionWaiting: 0,
     deferLoadSession: null as Promise<void> | null,
     releaseLoadSession: null as (() => void) | null,
     stderrErrorHandler: null as ((error: {
@@ -126,8 +129,17 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             setMode: vi.fn(async () => {}),
             setModel: vi.fn(async () => {}),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
-                if (configId === 'model-opt' && harness.deferSetConfigOption) {
-                    await harness.deferSetConfigOption;
+                const deferModel = configId === 'model-opt' && harness.deferSetConfigOption;
+                const deferMode = configId === 'mode-opt'
+                    && harness.deferModeConfigOption
+                    && harness.deferSetConfigOption;
+                if (deferModel || deferMode) {
+                    harness.setConfigOptionWaiting += 1;
+                    try {
+                        await harness.deferSetConfigOption;
+                    } finally {
+                        harness.setConfigOptionWaiting -= 1;
+                    }
                 }
                 if (harness.failSetConfigOption && configId === 'model-opt') {
                     throw new Error('set_config_option rejected');
@@ -369,6 +381,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.setConfigOptionCalls = [];
         harness.deferSetConfigOption = null;
         harness.releaseSetConfigOption = null;
+        harness.deferModeConfigOption = false;
+        harness.setConfigOptionWaiting = 0;
         harness.deferLoadSession = null;
         harness.releaseLoadSession = null;
         harness.stderrErrorHandler = null;
@@ -3087,6 +3101,72 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.promptSends).toBe(1);
         const dispatched = JSON.stringify(harness.prompts);
         expect(dispatched).not.toContain('[HAPI bridge');
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+    });
+
+    it('does not dispatch a Bridge after Abort during mode apply', async () => {
+        // Cold-review Major 2026-09-12: Abort during applyCursorAcpMode must
+        // survive — resetting userAbortRequested only after setup erased it.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '88888888-8888-4888-8888-888888888888',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        harness.deferSetConfigOption = new Promise<void>((resolve) => {
+            harness.releaseSetConfigOption = resolve;
+        });
+        harness.deferModeConfigOption = true;
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBeGreaterThan(0));
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        await abortHandler!();
+        harness.releaseSetConfigOption?.();
+        harness.deferSetConfigOption = null;
+        harness.releaseSetConfigOption = null;
+        harness.deferModeConfigOption = false;
+
+        session.queue.close();
+        await launchPromise;
+
+        expect(harness.promptSends).toBe(1);
+        expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelErrorBridged'
         )).toBe(false);

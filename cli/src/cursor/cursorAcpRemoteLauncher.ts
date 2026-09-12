@@ -661,6 +661,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            // Start this turn's abort window before any await. A later reset
+            // after applyLiveModel / applyCursorAcpMode would erase Abort that
+            // landed during mode/model setup and still dispatch a Bridge.
+            this.userAbortRequested = false;
+
             // Activate bridge attribution only from queue-owned provenance —
             // never from caller-controlled localId (which can forge `bridge:`).
             const bridgeItem = batch.items.find(
@@ -711,6 +716,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             await applyCursorAcpMode(backend, acpSessionId, batch.mode.permissionMode as PermissionMode);
             this.applyDisplayMode(batch.mode.permissionMode as PermissionMode);
 
+            // Mode/model RPCs can finish after Abort. Discard the canceled batch.
+            if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
+                continue;
+            }
+
             this.lastUserMessage = batch.message;
             this.lastTurnMode = batch.mode;
 
@@ -737,7 +749,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             session.onThinkingChange(true);
             this.turnHasModelError = false;
-            this.userAbortRequested = false;
             this.lastAssistantText = null;
             this.pendingTextFailure = null;
             this.pendingStderrFailure = null;
