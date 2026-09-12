@@ -1,6 +1,6 @@
 # Notifications
 
-Get notified when sessions need input, request permissions, fail, or complete — via Telegram, Server酱 (ServerChan), Web Push, or voice.
+Get notified when sessions need input, request permissions, fail, or complete — via Telegram, Server酱 (ServerChan), a generic Webhook, Web Push, or voice.
 
 Web Push works out of the box once you [install the PWA](./pwa.md); no configuration needed. The channels below are optional.
 
@@ -54,6 +54,44 @@ Related environment variables:
 When `SERVERCHAN_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses ServerChan for the entire namespace. Hidden, disconnected, or closed HAPI pages do not count as visible, so ServerChan can act as a background fallback. This is namespace-wide and does not select a particular device.
 
 These values can also be set in `settings.json` (`serverChanSendKey`, `serverChanNotification`, `serverChanBackgroundOnly`).
+
+## Webhook setup
+
+Send notifications to a relay you control — a self-hosted HTTP endpoint, a serverless function, or a Worker that forwards the payload onward (Telegram, Server酱, Bark, PushPlus, …). The hub posts **HAPI's own JSON**; Bark / PushPlus / WxPusher will not accept this body as a drop-in. Use a relay if the hub cannot reach `api.telegram.org` / `sctapi.ftqq.com` directly.
+
+1. Stand up an HTTP(S) endpoint that accepts `POST` with the JSON below and returns a `2xx` status
+2. Set the webhook URL and start the hub:
+
+```bash
+export HAPI_WEBHOOK_URL="https://your-endpoint.example.com/hook"
+export HAPI_PUBLIC_URL="https://your-public-url"
+
+hapi hub
+```
+
+The hub POSTs a JSON body to `HAPI_WEBHOOK_URL` for the same events as the other channels:
+
+```json
+{
+  "event": "ready",
+  "title": "HAPI Ready for input · my-session",
+  "content": "Claude 正在等待输入",
+  "url": "https://your-public-url/sessions/abc123",
+  "sessionId": "abc123"
+}
+```
+
+`event` is one of `ready`, `permission`, `task_failed`, or `completed`. Map `title`, `content`, and `url` in your relay to whatever the downstream gateway expects.
+
+Requests time out after 10 seconds and do not follow redirects (so a `key` query param / `X-HAPI-Webhook-Key` header cannot leak to a different host).
+
+Related environment variables:
+
+- `HAPI_WEBHOOK_KEY` - Optional shared key. When set, it is sent both as a `key` query parameter on the URL and as an `X-HAPI-Webhook-Key` header, so it works whether your endpoint reads credentials from the query string (matching the Server酱/PushPlus convention) or from headers
+- `HAPI_WEBHOOK_NOTIFICATION` - Enable/disable webhook notifications (default: `true`)
+- `HAPI_WEBHOOK_BACKGROUND_ONLY` - Only send webhook notifications when the namespace has no visible HAPI connection (default: `false`), same semantics as `SERVERCHAN_BACKGROUND_ONLY`
+
+These values can also be set in `settings.json` (`webhookUrl`, `webhookKey`, `webhookNotification`, `webhookBackgroundOnly`).
 
 ## Voice assistant setup
 

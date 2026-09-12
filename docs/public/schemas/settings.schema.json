@@ -69,6 +69,26 @@
       "default": false,
       "description": "Only send ServerChan notifications when no visible HAPI connection exists in the namespace. ENV: SERVERCHAN_BACKGROUND_ONLY"
     },
+    "webhookUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://",
+      "description": "HTTP(S) URL of a relay that accepts HAPI notification JSON. ENV: HAPI_WEBHOOK_URL"
+    },
+    "webhookKey": {
+      "type": "string",
+      "description": "Optional shared key sent as a 'key' query param and X-HAPI-Webhook-Key header on webhook requests. ENV: HAPI_WEBHOOK_KEY"
+    },
+    "webhookNotification": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable webhook notifications. ENV: HAPI_WEBHOOK_NOTIFICATION"
+    },
+    "webhookBackgroundOnly": {
+      "type": "boolean",
+      "default": false,
+      "description": "Only send webhook notifications when no visible HAPI connection exists in the namespace. ENV: HAPI_WEBHOOK_BACKGROUND_ONLY"
+    },
     "relayAuthKey": {
       "type": "string",
       "description": "Per-hub relay auth key issued by the relay server. Auto-obtained if not set. ENV: HAPI_RELAY_AUTH"

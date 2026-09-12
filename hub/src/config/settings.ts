@@ -19,6 +19,10 @@ export interface Settings {
     serverChanSendKey?: string
     serverChanNotification?: boolean
     serverChanBackgroundOnly?: boolean
+    webhookUrl?: string
+    webhookKey?: string
+    webhookNotification?: boolean
+    webhookBackgroundOnly?: boolean
     listenHost?: string
     listenPort?: number
     publicUrl?: string
