@@ -3027,4 +3027,106 @@ describe('cursorAcpRemoteLauncher', () => {
         session.queue.close();
         await launchPromise;
     });
+
+    it('does not dispatch a Bridge after Abort during pre-send drain', async () => {
+        // Cold-review Major 2026-09-12: handleAbort clears bridgingForEventId
+        // before prompt exists; shouldSend must still refuse on userAbortRequested.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '77777777-7777-4777-8777-777777777777',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        harness.deferBeforeSend = new Promise<void>((resolve) => {
+            harness.releaseBeforeSend = resolve;
+        });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        await abortHandler!();
+        harness.releaseBeforeSend?.();
+
+        session.queue.close();
+        await launchPromise;
+
+        expect(harness.promptSends).toBe(1);
+        const dispatched = JSON.stringify(harness.prompts);
+        expect(dispatched).not.toContain('[HAPI bridge');
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+    });
+
+    it('does not record deferred stderr from a prior retry attempt after success', async () => {
+        // Cold-review Major 2026-09-12: pendingStderrFailure survived continue
+        // and poisoned a later successful attempt.
+        harness.promptStderrErrors = [{
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        }];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        harness.promptMessageBatches = [
+            [],
+            [{ type: 'turn_complete', stopReason: 'end_turn' }]
+        ];
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        session.queue.push('finish the task', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
+    });
 });

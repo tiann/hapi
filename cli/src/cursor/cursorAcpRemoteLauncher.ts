@@ -761,14 +761,21 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pendingRetryableFromStderr = false;
                     this.pendingInlineRetryableError = false;
                     this.attemptProducedToolActivity = false;
+                    // Deferred stream failures are per-attempt. A prior try's
+                    // strong stderr must not poison a later successful retry
+                    // (record modelError / suppress ready / auto-Bridge).
+                    this.pendingStderrFailure = null;
+                    this.pendingTextFailure = null;
                     let turnCompleted = false;
                     try {
                         const sent = await backend.prompt(acpSessionId, promptContent, (message) => {
                             if (message.type === 'turn_complete') turnCompleted = true;
                             this.handleAgentMessage(message);
                         }, {
-                            shouldSend: () => !(this.bridgingForEventId !== null
-                                && this.session.queue.hasPendingNonBridgeTurn())
+                            shouldSend: () => !this.userAbortRequested
+                                && !this.shouldExit
+                                && !(this.bridgingForEventId !== null
+                                    && this.session.queue.hasPendingNonBridgeTurn())
                         });
                         if (sent === false) {
                             this.bridgingForEventId = null;
