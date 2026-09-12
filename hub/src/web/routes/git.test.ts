@@ -83,6 +83,119 @@ describe('generated images route', () => {
     })
 })
 
+describe('recycle bin routes', () => {
+    const entryId = '00000000-0000-4000-8000-000000000001'
+
+    it('forwards list, move, preview, restore, purge, and empty operations through the session RPC', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/workspace/project' },
+        } as unknown as Session
+        const calls: Array<{ method: string; value: unknown }> = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            listRecycleBin: async (sessionId: string) => {
+                calls.push({ method: 'list', value: sessionId })
+                return { success: true, entries: [], retentionDays: 30 }
+            },
+            moveFileToRecycleBin: async (sessionId: string, path: string) => {
+                calls.push({ method: 'move', value: { sessionId, path } })
+                return { success: true, retentionDays: 30 }
+            },
+            readRecycleBinEntry: async (sessionId: string, id: string) => {
+                calls.push({ method: 'read', value: { sessionId, id } })
+                return { success: true, name: 'notes.md', content: 'bm90ZXM=', size: 5, modified: 1 }
+            },
+            restoreRecycleBinEntry: async (sessionId: string, id: string, conflict: string) => {
+                calls.push({ method: 'restore', value: { sessionId, id, conflict } })
+                return { success: true, restoredPath: '/workspace/project/notes.md' }
+            },
+            purgeRecycleBinEntry: async (sessionId: string, id: string) => {
+                calls.push({ method: 'purge', value: { sessionId, id } })
+                return { success: true }
+            },
+            emptyRecycleBin: async (sessionId: string, entryIds: string[]) => {
+                calls.push({ method: 'empty', value: { sessionId, entryIds } })
+                return { success: true, deletedCount: 1 }
+            },
+        } as unknown as Partial<SyncEngine>
+        const app = buildApp(engine)
+
+        const list = await app.request('/api/sessions/session-1/recycle-bin')
+        const move = await app.request('/api/sessions/session-1/recycle-bin/move', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: 'notes.md' }),
+        })
+        const read = await app.request(`/api/sessions/session-1/recycle-bin/${entryId}`)
+        const restore = await app.request('/api/sessions/session-1/recycle-bin/restore', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ entryId, conflict: 'new-name' }),
+        })
+        const purge = await app.request('/api/sessions/session-1/recycle-bin/purge', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ entryId }),
+        })
+        const empty = await app.request('/api/sessions/session-1/recycle-bin/empty', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ entryIds: [entryId] }),
+        })
+
+        expect(list.status).toBe(200)
+        expect(move.status).toBe(200)
+        expect(read.status).toBe(200)
+        expect(restore.status).toBe(200)
+        expect(purge.status).toBe(200)
+        expect(empty.status).toBe(200)
+        expect(calls).toEqual([
+            { method: 'list', value: 'session-1' },
+            { method: 'move', value: { sessionId: 'session-1', path: 'notes.md' } },
+            { method: 'read', value: { sessionId: 'session-1', id: entryId } },
+            { method: 'restore', value: { sessionId: 'session-1', id: entryId, conflict: 'new-name' } },
+            { method: 'purge', value: { sessionId: 'session-1', id: entryId } },
+            { method: 'empty', value: { sessionId: 'session-1', entryIds: [entryId] } },
+        ])
+    })
+
+    it('validates recycle-bin request bodies and requires an active session', async () => {
+        const inactiveSession = {
+            id: 'session-1',
+            namespace: 'default',
+            active: false,
+            metadata: { path: '/workspace/project' },
+        } as unknown as Session
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session: inactiveSession }),
+            moveFileToRecycleBin: async () => ({ success: true }),
+        } as unknown as Partial<SyncEngine>
+        const app = buildApp(engine)
+
+        const invalidBody = await app.request('/api/sessions/session-1/recycle-bin/move', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: '' }),
+        })
+        expect(invalidBody.status).toBe(409)
+        await expect(invalidBody.json()).resolves.toMatchObject({ code: 'session_inactive' })
+
+        const activeEngine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session: { ...inactiveSession, active: true } }),
+            moveFileToRecycleBin: async () => ({ success: true }),
+        } as unknown as Partial<SyncEngine>
+        const invalidActiveBody = await buildApp(activeEngine).request('/api/sessions/session-1/recycle-bin/move', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: '' }),
+        })
+        expect(invalidActiveBody.status).toBe(400)
+    })
+})
+
 describe('file search route', () => {
     it('normalizes Windows path separators in search queries before invoking ripgrep', async () => {
         const session = {
