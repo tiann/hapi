@@ -73,10 +73,24 @@ interface ConnState {
     openTimer: ReturnType<typeof setTimeout> | null
 }
 
+export interface PreviewTunnelOptions {
+    /** Overridable for tests. */
+    openTimeoutMs?: number
+    pauseThresholdBytes?: number
+    resumeThresholdBytes?: number
+}
+
 export class PreviewTunnel {
     private readonly conns = new Map<string, ConnState>()
+    private readonly openTimeoutMs: number
+    private readonly pauseThresholdBytes: number
+    private readonly resumeThresholdBytes: number
 
-    constructor(private readonly cliNamespace: CliPreviewNamespace) {}
+    constructor(private readonly cliNamespace: CliPreviewNamespace, options: PreviewTunnelOptions = {}) {
+        this.openTimeoutMs = options.openTimeoutMs ?? PREVIEW_OPEN_TIMEOUT_MS
+        this.pauseThresholdBytes = options.pauseThresholdBytes ?? PREVIEW_MAX_RESPONSE_BUFFER_BYTES
+        this.resumeThresholdBytes = options.resumeThresholdBytes ?? PREVIEW_RESUME_BUFFER_BYTES
+    }
 
     /** CLI told us something: route it (socketId scoping prevents cross-talk). */
     handleFrame(socketId: string, raw: unknown): void {
@@ -87,6 +101,12 @@ export class PreviewTunnel {
 
         switch (frame.type) {
             case 'response':
+                // Head received — the conn is established; a long download/SSE
+                // must not be killed by the open deadline.
+                if (conn.openTimer) {
+                    clearTimeout(conn.openTimer)
+                    conn.openTimer = null
+                }
                 if (conn.headResolve) {
                     conn.headResolve({ status: frame.status ?? 502, headers: frame.headers ?? {} })
                     conn.headResolve = null
@@ -129,15 +149,26 @@ export class PreviewTunnel {
         const conn = this.createConn(entry, 'http')
         if (!conn) return null
 
+        // Byte-accurate queue accounting: `desiredSize` is highWaterMark minus
+        // the number of queued-and-not-yet-consumed bytes, so buffered refreshes
+        // as the browser drains the stream and `pull` is where resume happens.
         const body = new ReadableStream<Uint8Array>({
             start: (controller) => {
                 conn.controller = controller
+            },
+            pull: () => {
+                this.recomputeBuffered(conn)
+                if (conn.pausedSent && conn.buffered <= this.resumeThresholdBytes) {
+                    conn.pausedSent = false
+                    conn.resumedSent = true
+                    this.emit(conn.socketId, { type: 'resume', connId: conn.connId })
+                }
             },
             cancel: () => {
                 // Browser aborted the response.
                 this.closeConn(conn)
             }
-        })
+        }, { highWaterMark: this.pauseThresholdBytes, size: (chunk: Uint8Array) => chunk.byteLength })
 
         const head = new Promise<{ status: number; headers: PreviewResponseHeaders } | null>((resolve) => {
             conn.headResolve = resolve
@@ -157,7 +188,8 @@ export class PreviewTunnel {
         const conn = this.createConn(entry, 'ws')
         if (!conn) return null
 
-        this.armOpenTimer(conn)
+        // No head deadline here: the CLI's ws client handshakeTimeout bounds
+        // the upstream handshake, and established sockets may live for hours.
         this.emitOpen(conn, meta)
 
         return {
@@ -224,12 +256,13 @@ export class PreviewTunnel {
 
     private armOpenTimer(conn: ConnState): void {
         // Head deadline: if the CLI never answers, the browser gets a 504
-        // instead of hanging on a dead socket.
+        // instead of hanging on a dead socket. Cleared the moment a response
+        // head arrives (long transfers outlive the deadline by design).
         conn.openTimer = setTimeout(() => {
             if (conn.closed) return
             this.failHead(conn, null)
             this.finishConn(conn)
-        }, PREVIEW_OPEN_TIMEOUT_MS)
+        }, this.openTimeoutMs)
         conn.openTimer.unref?.()
     }
 
@@ -257,19 +290,23 @@ export class PreviewTunnel {
         return true
     }
 
+    /** `desiredSize` = highWaterMark − queued bytes, so this is the live queue depth. */
+    private recomputeBuffered(conn: ConnState): void {
+        const desired = conn.controller?.desiredSize
+        conn.buffered = desired === null || desired === undefined
+            ? 0
+            : Math.max(0, this.pauseThresholdBytes - desired)
+    }
+
     private enqueue(conn: ConnState, payload: Uint8Array): void {
         if (conn.closed || !conn.controller) return
         try {
             conn.controller.enqueue(payload)
-            conn.buffered += payload.byteLength
-            if (conn.buffered >= PREVIEW_MAX_RESPONSE_BUFFER_BYTES && !conn.pausedSent) {
+            this.recomputeBuffered(conn)
+            if (conn.buffered >= this.pauseThresholdBytes && !conn.pausedSent) {
                 conn.pausedSent = true
                 conn.resumedSent = false
                 this.emit(conn.socketId, { type: 'pause', connId: conn.connId })
-            } else if (conn.buffered <= PREVIEW_RESUME_BUFFER_BYTES && conn.pausedSent && !conn.resumedSent) {
-                conn.resumedSent = true
-                conn.pausedSent = false
-                this.emit(conn.socketId, { type: 'resume', connId: conn.connId })
             }
         } catch {
             // Stream already closed by the consumer.

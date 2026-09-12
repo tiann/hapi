@@ -4,6 +4,7 @@ import { WebSocket } from 'ws'
 
 import {
     PREVIEW_IDLE_TIMEOUT_MS,
+    PREVIEW_OPEN_TIMEOUT_MS,
     stripHopByHopHeaders,
     type PreviewOpenFrame,
     type PreviewResponseHeaders
@@ -41,8 +42,48 @@ function upstreamRequest(target: URL, options: RequestOptions) {
     return target.protocol === 'https:' ? httpsRequest(target, options) : httpRequest(target, options)
 }
 
+/**
+ * Builds the upstream request path. Browser input is NEVER resolved as a URL
+ * against the target: a leading `//` would be protocol-relative and replace
+ * the approved loopback authority. Leading slashes are stripped and the result
+ * is assigned as a plain path string.
+ */
+export function buildUpstreamRequestPath(path: string, query?: string): string {
+    const clean = path.replace(/^\/+/, '')
+    return `/${clean}${query ? `?${query}` : ''}`
+}
+
+/** Same rule for WebSocket URLs — assign pathname on a copy of the target. */
+export function buildUpstreamWsUrl(target: URL, path: string, query?: string): URL {
+    const wsUrl = new URL(target)
+    wsUrl.pathname = `/${path.replace(/^\/+/, '')}`
+    wsUrl.search = query ?? ''
+    wsUrl.hash = ''
+    wsUrl.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
+    return wsUrl
+}
+
+/** Parses a raw `sec-websocket-protocol` header into the ws client's protocols arg. */
+export function parseWsProtocols(header: string | undefined): string[] {
+    return (header ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+}
+
+/**
+ * True when the response body is safe to buffer-and-rewrite as UTF-8 text.
+ * Compressed bodies (gzip/br/...) are opaque bytes — decoding them as UTF-8
+ * would corrupt them — so they always take the pass-through branch.
+ */
+export function canRewriteBody(contentType: string | undefined, contentEncoding: string | undefined): boolean {
+    if (!isHtmlContentType(contentType)) return false
+    const encoding = (contentEncoding ?? 'identity').toLowerCase()
+    return encoding === 'identity' || encoding === ''
+}
+
 /** Request headers: hop-by-hop + identity headers dropped, host set to target. */
-function sanitizeRequestHeaders(frame: PreviewOpenFrame, target: URL): Record<string, string> {
+export function sanitizeRequestHeaders(frame: PreviewOpenFrame, target: URL): Record<string, string> {
     const headers = stripHopByHopHeaders(frame.headers)
     for (const name of ['host', 'content-length', 'origin', 'referer']) {
         delete headers[name]
@@ -51,6 +92,8 @@ function sanitizeRequestHeaders(frame: PreviewOpenFrame, target: URL): Record<st
         if (name.startsWith('sec-websocket-')) delete headers[name]
     }
     headers.host = target.host
+    // node:http does not decompress; HTML rewriting needs plain bytes.
+    headers['accept-encoding'] = 'identity'
     if (frame.body !== undefined && frame.body.byteLength > 0) {
         headers['content-length'] = String(frame.body.byteLength)
     }
@@ -109,8 +152,7 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
 
     try {
         const headers = sanitizeRequestHeaders(frame, target)
-        const pathWithQuery = `/${frame.path}${frame.query ? `?${frame.query}` : ''}`
-        upstream = upstreamRequest(target, { method, headers, path: pathWithQuery })
+        upstream = upstreamRequest(target, { method, headers, path: buildUpstreamRequestPath(frame.path, frame.query) })
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         sink.error(502, `Bad gateway: ${message}`)
@@ -129,9 +171,8 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
         armIdle()
         const status = res.statusCode ?? 502
         const headers = sanitizeResponseHeaders(res.headers, prefix)
-        const contentType = res.headers['content-type']
-
-        if (!isHtmlContentType(contentType)) {
+        // Encoded bodies are opaque bytes — never decode-and-rewrite them.
+        if (!canRewriteBody(res.headers['content-type'], res.headers['content-encoding'])) {
             responded = true
             sink.respond({ status, headers })
             res.on('data', (chunk: Buffer) => {
@@ -207,8 +248,8 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
 }
 
 function serveProxyWs(mount: PreviewMount, frame: PreviewOpenFrame, sink: PreviewConnSink, target: URL): PreviewConnHandlers {
-    const wsUrl = new URL(`/${frame.path}${frame.query ? `?${frame.query}` : ''}`, target)
-    wsUrl.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = buildUpstreamWsUrl(target, frame.path, frame.query)
+    const protocols = parseWsProtocols(frame.protocols)
     let ws: WebSocket
     let closed = false
     let upstreamOpen = false
@@ -216,10 +257,10 @@ function serveProxyWs(mount: PreviewMount, frame: PreviewOpenFrame, sink: Previe
     // upgrade; the upstream client may still be CONNECTING — buffer until open.
     const pendingOutbound: Array<{ payload: string | Uint8Array; isText: boolean }> = []
     try {
-        ws = new WebSocket(wsUrl, {
+        ws = new WebSocket(wsUrl, protocols, {
             perMessageDeflate: false,
             maxPayload: WS_MAX_PAYLOAD,
-            protocol: frame.protocols || undefined
+            handshakeTimeout: PREVIEW_OPEN_TIMEOUT_MS
         })
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

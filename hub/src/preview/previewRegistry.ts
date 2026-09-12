@@ -80,6 +80,12 @@ export class PreviewRegistry {
         }
 
         const existing = this.mounts.get(descriptor.mountId)
+        // Knowing the public read capability must not grant mount
+        // administration: only the owning session may rebind (e.g. after a
+        // reconnect with a new socketId) or alter a mount.
+        if (existing && (existing.namespace !== ctx.namespace || (existing.sessionId ?? null) !== (ctx.sessionId ?? null))) {
+            return { ok: false, error: 'mount belongs to another session', code: 'invalid' }
+        }
         const isRebind = existing !== undefined && existing.socketId !== ctx.socketId
         if (existing === undefined) {
             const sessionKey = `${ctx.namespace ?? ''}:${ctx.sessionId ?? ''}`

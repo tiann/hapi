@@ -68,6 +68,29 @@ describe('PreviewRegistry', () => {
         expect(registry.get(MOUNT_ID)).not.toBeNull()
     })
 
+    it('refuses to rebind a mount from another session (public URL grants no admin)', () => {
+        const registry = new PreviewRegistry("http://hub:3006")
+        registry.register(descriptor({ token: 'tok-123456' }), ctx('sock-1', 'session-1'))
+
+        const ack = registry.register(
+            descriptor({ token: undefined, rootPath: '/tmp/evil' }),
+            ctx('sock-9', 'session-2')
+        )
+        expect(ack).toEqual({ ok: false, error: 'mount belongs to another session', code: 'invalid' })
+        // Original mount untouched.
+        const entry = registry.get(MOUNT_ID)!
+        expect(entry.token).toBe('tok-123456')
+        expect(entry.rootPath).toBe('/tmp/site')
+    })
+
+    it('allows rebinding from the same session on a new socket', () => {
+        const registry = new PreviewRegistry("http://hub:3006")
+        registry.register(descriptor(), ctx('sock-1', 'session-1'))
+        const ack = registry.register(descriptor({ rootPath: '/tmp/site2' }), ctx('sock-2', 'session-1'))
+        expect(ack.ok).toBe(true)
+        expect(registry.get(MOUNT_ID)?.rootPath).toBe('/tmp/site2')
+    })
+
     it('unregister only removes mounts owned by the calling socket', () => {
         const registry = new PreviewRegistry("http://hub:3006")
         registry.register(descriptor(), ctx('sock-1'))

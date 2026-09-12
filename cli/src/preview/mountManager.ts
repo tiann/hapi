@@ -196,7 +196,14 @@ export class PreviewMountManager {
 
     /** Re-registers every live mount (same mountIds) after a (re)connect. */
     async reregisterAll(): Promise<void> {
-        for (const mount of this.mounts.values()) {
+        for (const mount of [...this.mounts.values()]) {
+            // Expired mounts must NOT be republished: that would silently
+            // revive a URL whose TTL the user already saw lapse, without a
+            // new tool call or approval.
+            if (mount.expiresAt <= Date.now()) {
+                this.mounts.delete(mount.name)
+                continue
+            }
             try {
                 const ack = await this.registerDescriptor(this.descriptorOf(mount))
                 if (ack?.ok) {

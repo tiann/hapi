@@ -175,3 +175,63 @@ describe('PreviewTunnel.detachSocket', () => {
         expect(tunnel.stats.conns).toBe(0)
     })
 })
+
+describe('PreviewTunnel lifecycle (regressions)', () => {
+    it('sends pause when the queue exceeds the threshold and resume once the browser drains', async () => {
+        const { ns, fake } = makeNamespace()
+        const tunnel = new PreviewTunnel(ns, { pauseThresholdBytes: 1000, resumeThresholdBytes: 200 })
+        const conn = tunnel.openHttp(makeEntry(), httpMeta())
+        const connId = (fake.framesToCli[0] as { connId: string }).connId
+
+        tunnel.handleFrame('sock-1', { type: 'response', connId, status: 200, headers: {} })
+        tunnel.handleFrame('sock-1', { type: 'data', connId, seq: 0, payload: new Uint8Array(1500) })
+        expect(fake.framesToCli.some((frame) => frame.type === 'pause' && frame.connId === connId)).toBe(true)
+
+        // The browser drains the stream → pull must issue a resume frame.
+        const reader = conn!.body.getReader()
+        let total = (await reader.read()).value?.byteLength ?? 0
+        await Bun.sleep(10)
+        expect(fake.framesToCli.some((frame) => frame.type === 'resume' && frame.connId === connId)).toBe(true)
+
+        // Keep reading to the end without stalling (buffered accounting drains).
+        tunnel.handleFrame('sock-1', { type: 'end', connId })
+        for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            total += value.byteLength
+        }
+        expect(total).toBe(1500)
+    })
+
+    it('does not kill a healthy transfer after the open deadline once a head arrived', async () => {
+        const { ns, fake } = makeNamespace()
+        const tunnel = new PreviewTunnel(ns, { openTimeoutMs: 50 })
+        const conn = tunnel.openHttp(makeEntry(), httpMeta())
+        const connId = (fake.framesToCli[0] as { connId: string }).connId
+
+        tunnel.handleFrame('sock-1', { type: 'response', connId, status: 200, headers: {} })
+        await conn!.head
+        // Outlive the 50 ms deadline…
+        await Bun.sleep(120)
+        // …the stream must still accept data and the conn must stay open.
+        tunnel.handleFrame('sock-1', { type: 'data', connId, seq: 0, payload: new Uint8Array([9, 9]) })
+        const reader = conn!.body.getReader()
+        const chunk = await reader.read()
+        expect(Array.from(chunk.value ?? [])).toEqual([9, 9])
+        expect(tunnel.stats.conns).toBe(1)
+    })
+
+    it('leaves established websocket conns alone (no head deadline)', async () => {
+        const { ns, fake } = makeNamespace()
+        const tunnel = new PreviewTunnel(ns, { openTimeoutMs: 50 })
+        const conn = tunnel.openWs(makeEntry(), httpMeta())
+        const connId = (fake.framesToCli[0] as { connId: string }).connId
+
+        await Bun.sleep(120)
+        const seen: string[] = []
+        conn!.onMessage((payload) => seen.push(String(payload)))
+        tunnel.handleFrame('sock-1', { type: 'ws-message', connId, isText: true, payload: 'late-but-alive' })
+        expect(seen).toEqual(['late-but-alive'])
+        expect(tunnel.stats.conns).toBe(1)
+    })
+})

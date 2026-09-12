@@ -33,7 +33,8 @@ export function resolvePreviewUpgrade(
     if (!entry) return null
     if (!entry.ws) return null
     if (!registry.checkToken(entry, url.searchParams.get('t'))) return null
-    const rawPath = pathname.split('/').slice(3).join('/')
+    // Leading slashes stripped so `//host/x` can never become an authority.
+    const rawPath = pathname.split('/').slice(3).join('/').replace(/^\/+/, '')
     const meta: PreviewRequestMeta = {
         method: 'GET',
         path: rawPath,

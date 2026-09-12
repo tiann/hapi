@@ -52,6 +52,18 @@ describe('preview routes', () => {
         expect(await response.text()).toContain('ok')
     })
 
+    it('sandboxes preview documents into an opaque origin', async () => {
+        const { deps } = makeDeps()
+        const response = await buildApp(deps).request(`${PREFIX}/index.html`)
+
+        const csp = response.headers.get('content-security-policy') ?? ''
+        expect(csp).toContain('sandbox')
+        // allow-same-origin would keep hub-origin privileges (localStorage
+        // holds the web UI's hub credentials).
+        expect(csp).not.toContain('allow-same-origin')
+        expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    })
+
     it('returns 404 for unknown mounts and 410 for tombstoned ones', async () => {
         const missing = makeDeps({ entry: null })
         const notFound = await buildApp(missing.deps).request(`${PREFIX}/`)

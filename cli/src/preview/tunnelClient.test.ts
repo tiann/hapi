@@ -177,6 +177,20 @@ describe('PreviewMountManager', () => {
         expect(manager.get('a')?.mountId).toBe(mount.mountId)
     })
 
+    it('reregisterAll drops expired mounts instead of republishing them', async () => {
+        // Ack with an already-past expiry — the hub would reject it, but the
+        // CLI must not even ask: reviving an expired URL needs a new approval.
+        socket.register({ ok: true, url: 'http://hub/preview/x/', mountId: MOUNT_ID, expiresAt: Date.now() - 60_000 })
+        const manager = new PreviewMountManager(socket.adapter)
+        await manager.mountStatic({ path: tempSite, name: 'a' })
+        expect(manager.size).toBe(1)
+
+        await manager.reregisterAll()
+
+        expect(manager.size).toBe(0)
+        expect(manager.get('a')).toBeUndefined()
+    })
+
     it('reports a friendly error when the ack times out', async () => {
         socket.register(null)
         const manager = new PreviewMountManager(socket.adapter)

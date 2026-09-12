@@ -20,6 +20,17 @@ import type { PreviewRequestMeta, PreviewTunnel } from '../preview/previewTunnel
 
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH'])
 
+/**
+ * Preview pages may contain untrusted HTML/JS (any mounted directory or dev
+ * server), and they share the hub's origin — without isolation such a page
+ * could read the web UI's saved hub credentials from localStorage. The opaque
+ * origin sandbox (deliberately WITHOUT allow-same-origin) keeps scripts,
+ * forms and downloads working while partitioning storage and hub-origin
+ * privileges. Same-origin <img>/<script>/<link> subresources still load;
+ * same-origin fetch()/XHR from the page becomes CORS (opaque origin).
+ */
+const PREVIEW_CSP = 'sandbox allow-scripts allow-forms allow-downloads'
+
 function noStoreText(status: number, message: string): Response {
     return new Response(`${message}\n`, {
         status,
@@ -68,9 +79,11 @@ export function createPreviewRoutes(deps: {
     const handle = async (c: { req: { method: string; url: string; header: (name: string) => string | undefined; arrayBuffer: () => Promise<ArrayBuffer> } }): Promise<Response> => {
         const url = new URL(c.req.url)
         const parts = url.pathname.split('/')
-        // pathname is `/preview/<mountId>[/<sub...>]`
+        // pathname is `/preview/<mountId>[/<sub...>]`. Leading slashes are
+        // stripped so `//host/x` can never be interpreted as an authority by
+        // any downstream URL resolution.
         const mountId = parts[2] ?? ''
-        const rawPath = parts.slice(3).join('/')
+        const rawPath = parts.slice(3).join('/').replace(/^\/+/, '')
 
         const entry = deps.previewRegistry.get(mountId)
         if (!entry) {
@@ -113,6 +126,8 @@ export function createPreviewRoutes(deps: {
         }
 
         const responseHeaders = toResponseHeaders(head.headers)
+        responseHeaders.set('content-security-policy', PREVIEW_CSP)
+        responseHeaders.set('x-content-type-options', 'nosniff')
         if (head.status === 204 || head.status === 304) {
             return new Response(null, { status: head.status, headers: responseHeaders })
         }
