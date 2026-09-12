@@ -38,6 +38,25 @@ describe('shared history projection', () => {
         const events = send.mock.calls.map(([body]) => body).filter(body => body.type === 'token_count');
         expect(events.map(body => body.model)).toEqual(['model-a', 'model-c']);
     });
+    it.each(['', 'Reserve available'])('does not block later events or repeat quota hint reads (%s)', async hint => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        let release!: (hint: string) => void;
+        const read = vi.fn(() => new Promise<string>(resolve => { release = resolve; }));
+        const projection = new SharedCodexProjection(session, 'thread', async () => {}, undefined, read);
+        const error = { message: 'Quota exhausted', codexErrorInfo: 'usageLimitExceeded' };
+        await projection.notification('error', { threadId: 'thread', turnId: 'turn', error });
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'failed', error } });
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'next', item: { id: 'answer', type: 'agentMessage', text: 'Next answer' } });
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({ message: 'Next answer' }), expect.any(String));
+        expect(read).toHaveBeenCalledTimes(1);
+        release(hint);
+        await Promise.resolve();
+        await projection.notification('error', { threadId: 'thread', turnId: 'turn', error });
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(send.mock.calls.filter(([body]) => body.message === 'Reserve available')).toHaveLength(hint ? 1 : 0);
+    });
+
     it('keeps image-only native inputs visible without embedding data URLs', () => {
         expect(inputText([{ type: 'image', url: 'data:image/png;base64,large' }])).toBe('[Image]');
         expect(inputText([{ type: 'localImage', path: '/tmp/image.png' }])).toBe('[Image: /tmp/image.png]');

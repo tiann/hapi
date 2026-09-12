@@ -105,9 +105,11 @@ export class SharedCodexProjection {
             } else if (event.type === 'task_failed') {
                 this.send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
                 const hintKey = `reserve-hint:${turnId ?? key}`;
-                if (event.codex_error_info === 'usageLimitExceeded' && this.quotaHint && !this.emitted.has(hintKey)) {
-                    const hint = await this.quotaHint();
-                    if (hint) this.send({ type: 'message', message: hint }, hintKey);
+                if (event.codex_error_info === 'usageLimitExceeded' && this.quotaHint && !this.emitted.has(`${hintKey}:requested`)) {
+                    this.emitted.add(`${hintKey}:requested`);
+                    void this.quotaHint().then(hint => {
+                        if (hint) this.send({ type: 'message', message: hint }, hintKey);
+                    }).catch(() => {});
                 }
             }
         }
