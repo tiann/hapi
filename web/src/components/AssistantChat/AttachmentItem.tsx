@@ -94,7 +94,10 @@ function DragHandle(props: AttachmentDragHandleProps & { isFile?: boolean }) {
     )
 }
 
-export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandleProps } = {}) {
+export function AttachmentItem(props: {
+    onRemove?: () => void
+    dragHandleProps?: AttachmentDragHandleProps
+} = {}) {
     const { name, status, previewUrl } = useThreadComposerAttachment() as ComposerAttachmentWithPreview
     const isParking = useComposerParking()
     const isUploading = status.type === 'running'
@@ -142,6 +145,7 @@ export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandlePr
                 ) : null}
                 {!isParking ? (
                     <AttachmentPrimitive.Remove
+                        onClick={props.onRemove}
                         className="hapi-composer-attachment-control absolute right-1 top-1 z-20 flex h-8 w-8 items-start justify-end rounded-md bg-transparent text-white transition-colors hover:bg-black/15 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
                         aria-label="Remove attachment"
                         title="Remove attachment"
@@ -172,6 +176,7 @@ export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandlePr
             {isError ? <span className="text-xs text-red-500 whitespace-nowrap">Upload failed</span> : null}
             {!isParking ? (
                 <AttachmentPrimitive.Remove
+                    onClick={props.onRemove}
                     className="hapi-composer-attachment-control hapi-composer-attachment-file-control -mx-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-transparent text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)]"
                     aria-label="Remove attachment"
                     title="Remove attachment"

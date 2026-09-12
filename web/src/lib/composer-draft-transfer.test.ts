@@ -29,6 +29,7 @@ vi.mock('@/lib/composer-attachment-drafts', () => ({
 import {
     attachmentDraftRevision,
     clearComposerDraftSnapshot,
+    clearComposerDraftSnapshotIfText,
     composerDraftWasHandedOff,
     forgetComposerDraftHandoff,
     handoffComposerDraft,
@@ -131,6 +132,26 @@ describe('transferComposerDraft', () => {
 
         expect(mocks.saveDraft).toHaveBeenCalledWith('new-empty', '')
         expectMovedAttachments('old-empty', 'new-empty', [])
+    })
+
+    it('clears a live snapshot when successful-send text still matches', async () => {
+        mocks.getDraft.mockReturnValue('')
+        setComposerDraftSnapshot('old-live', 'submitted text', [])
+        clearComposerDraftSnapshotIfText('old-live', 'submitted text')
+
+        await transferComposerDraft('old-live', 'new-live')
+
+        expect(mocks.saveDraft).toHaveBeenCalledWith('new-live', '')
+    })
+
+    it('keeps a newer live snapshot when successful-send text no longer matches', async () => {
+        mocks.getDraft.mockReturnValue('')
+        setComposerDraftSnapshot('old-live', 'new draft', [])
+        clearComposerDraftSnapshotIfText('old-live', 'submitted text')
+
+        await transferComposerDraft('old-live', 'new-live')
+
+        expect(mocks.saveDraft).toHaveBeenCalledWith('new-live', 'new draft')
     })
 
     it('falls back to persisted attachments after an inactive empty live snapshot is cleared', async () => {

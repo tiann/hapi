@@ -6,13 +6,18 @@ vi.mock('@/lib/composer-drafts', () => ({
 vi.mock('@/lib/composer-attachment-drafts', () => ({
     clearDraftAttachments: vi.fn(),
 }))
+vi.mock('@/lib/composer-draft-transfer', () => ({
+    clearComposerDraftSnapshotIfText: vi.fn(),
+}))
 
 import { clearDraft } from '@/lib/composer-drafts'
 import { clearDraftAttachments } from '@/lib/composer-attachment-drafts'
+import { clearComposerDraftSnapshotIfText } from '@/lib/composer-draft-transfer'
 import { clearDraftsAfterSend } from './clearDraftsAfterSend'
 
 const mockClearDraft = vi.mocked(clearDraft)
 const mockClearDraftAttachments = vi.mocked(clearDraftAttachments)
+const mockClearComposerDraftSnapshotIfText = vi.mocked(clearComposerDraftSnapshotIfText)
 
 describe('clearDraftsAfterSend', () => {
     beforeEach(() => {
@@ -41,5 +46,10 @@ describe('clearDraftsAfterSend', () => {
         expect(mockClearDraft).toHaveBeenCalledWith('session-A')
         expect(mockClearDraft).toHaveBeenCalledTimes(1)
         expect(mockClearDraftAttachments).toHaveBeenCalledWith('session-A')
+    })
+
+    it('clears the sent text snapshot for the sent session', () => {
+        clearDraftsAfterSend('session-A', 'session-A', 'sent text')
+        expect(mockClearComposerDraftSnapshotIfText).toHaveBeenCalledWith('session-A', 'sent text')
     })
 })

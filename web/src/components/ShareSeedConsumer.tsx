@@ -30,7 +30,11 @@ import { getDraft } from '@/lib/composer-drafts'
  *  - The IDB row is deleted after the seed completes so a back-button
  *    refresh of /sessions/:id doesn't re-attach the same payload.
  */
-export function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean }) {
+export function ShareSeedConsumer(props: {
+    sessionId: string
+    sessionActive: boolean
+    onProgrammaticEdit?: () => void
+}) {
     const assistantApi = useAui()
     const composerText = useAuiState((s) => s.composer.text)
     const composerTextRef = useRef(composerText)
@@ -55,6 +59,9 @@ export function ShareSeedConsumer(props: { sessionId: string; sessionActive: boo
                     .filter((part) => typeof part === 'string' && part.length > 0)
                     .join('\n')
                     .trim()
+                if (seedText.length > 0 || payload.files.length > 0) {
+                    props.onProgrammaticEdit?.()
+                }
                 if (seedText.length > 0) {
                     const existingText = composerTextRef.current.trim().length > 0
                         ? composerTextRef.current
@@ -79,7 +86,7 @@ export function ShareSeedConsumer(props: { sessionId: string; sessionActive: boo
                 console.error('share-seed pull failed', err)
             }
         })()
-    }, [props.sessionActive, props.sessionId, assistantApi])
+    }, [props.onProgrammaticEdit, props.sessionActive, props.sessionId, assistantApi])
 
     return null
 }
