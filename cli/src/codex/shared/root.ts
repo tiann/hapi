@@ -335,14 +335,20 @@ export class SharedCodexRoot {
         } finally { this.reconnecting = false; this.publishSteering(); }
     }
     applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
-        const pending = this.configWork.catch(() => {}).then(() => this.applySettingsNow(raw)).catch(error => {
+        // Leave 20 seconds for the native request inside the hub's 30-second RPC budget.
+        const dispatchDeadline = Date.now() + 8_000;
+        const pending = this.configWork.catch(() => {}).then(() => this.applySettingsNow(raw, dispatchDeadline));
+        this.configWork = pending;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Settings selection expired; reopen the model menu')), 28_000);
+        });
+        return Promise.race([pending, timeout]).catch(error => {
             if (record(raw).model === LUNA_RESERVE_MODEL) this.notice(`Reserve selection was not confirmed: ${error instanceof Error ? error.message : String(error)}`);
             throw error;
-        });
-        this.configWork = pending;
-        return pending;
+        }).finally(() => clearTimeout(timer));
     }
-    private async applySettingsNow(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+    private async applySettingsNow(raw: unknown, dispatchDeadline: number): Promise<{ applied: RuntimeSettings }> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         const config = SettingsSchema.parse(raw);
         if (config.model === LUNA_RESERVE_MODEL && this.settings.model !== LUNA_RESERVE_MODEL) {
@@ -383,9 +389,12 @@ export class SharedCodexRoot {
             ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy } : {}),
             ...(config.collaborationMode ? { collaborationMode: { mode: config.collaborationMode, settings: {
                 model: config.model ?? this.settings.model, reasoning_effort: config.modelReasoningEffort ?? this.settings.modelReasoningEffort,
-                developer_instructions: null
+                developer_instructions: record(raw).collaborationMode === undefined
+                    ? string(record(record(this.settingsNative.collaborationMode).settings).developer_instructions) ?? null
+                    : null
             } } } : {})
         };
+        if (Date.now() >= dispatchDeadline) throw new Error('Settings selection expired; reopen the model menu');
         let changed!: () => void;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const accepted = new Promise<void>((resolve, reject) => {

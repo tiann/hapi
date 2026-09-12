@@ -186,6 +186,44 @@ describe('manual Luna Reserve', () => {
         expect((await f.root.applySettings({})).applied.model).toBe('other');
     });
 
+    it('expires delayed and queued selections without dispatching a late mutation', async () => {
+        const f = await fixture();
+        f.native.usage = eligible;
+        let release!: () => void;
+        const delay = new Promise<void>(resolve => { release = resolve; });
+        const original = f.root.client.request.bind(f.root.client);
+        const requests = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'account/rateLimits/read') await delay;
+            return original(method, params);
+        });
+        vi.useFakeTimers();
+        const first = expect(f.root.applySettings({ model: 'gpt-reserve' })).rejects.toThrow('expired');
+        const queued = expect(f.root.applySettings({ model: 'other' })).rejects.toThrow('expired');
+        await vi.advanceTimersByTimeAsync(28_000);
+        await first; await queued;
+        await vi.advanceTimersByTimeAsync(5_000);
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+        expect((await f.root.applySettings({})).applied.model).toBe('mock');
+    });
+
+    it('preserves custom plan instructions when selecting Reserve', async () => {
+        const f = await fixture();
+        f.native.usage = eligible;
+        f.root.acceptSettings({ model: 'mock', effort: 'high', collaborationMode: {
+            mode: 'plan', settings: { model: 'mock', reasoning_effort: 'high', developer_instructions: 'Custom planning rules' }
+        } });
+        const requests = vi.spyOn(f.root.client, 'request');
+        const switching = f.root.applySettings({ model: 'gpt-reserve' });
+        const settings = { model: 'gpt-reserve', effort: 'high', serviceTier: null, collaborationMode: {
+            mode: 'plan', settings: { model: 'gpt-reserve', reasoning_effort: 'high', developer_instructions: 'Custom planning rules' }
+        } };
+        await vi.waitFor(() => expect(requests).toHaveBeenCalledWith('thread/settings/update', { threadId: 'thread', ...settings }));
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: settings });
+        expect((await switching).applied.collaborationMode).toBe('plan');
+    });
+
     it('never offers ChatGPT Reserve to a custom-provider thread', async () => {
         const f = await fixture();
         f.native.usage = eligible;
