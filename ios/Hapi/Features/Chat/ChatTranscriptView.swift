@@ -72,7 +72,7 @@ struct ChatTranscriptView: View {
             historyVersion: model.historyVersion,
             jumpToken: model.jumpToLatestToken,
             historyControlID: TranscriptRow.historyID,
-            isInspectionPresented: model.isInspectingTools,
+            isInspectionPresented: model.isInspectingContent,
             onViewport: { viewport in
                 model.readingViewportChanged(followsTail: viewport.followsTail, needsOlder: viewport.needsOlder)
             },

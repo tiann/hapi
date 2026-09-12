@@ -20,7 +20,7 @@ private struct ToolPresentationHost: ViewModifier {
         let inspectorPresented = model.toolInspection.selection?.owner == owner
         content
             .environment(\.openChatTool, { block in
-                model.beginToolInspection()
+                model.beginContentInspection()
                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 if opensToolProcess(block) {
                     // Acquire before navigation hides the parent. The child's
@@ -72,6 +72,7 @@ extension View {
     func toolPresentations(model: ChatModel, session: HubSession, owner: String,
                            openFile: @escaping (String) -> Void) -> some View {
         modifier(ToolPresentationHost(model: model, session: session, owner: owner, openFile: openFile))
+            .modifier(MessagePresentationHost(model: model, owner: owner))
     }
 }
 

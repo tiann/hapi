@@ -49,6 +49,34 @@ hapi resume <session-id>
 
 `hapi resume` lists resumable sessions for the current machine. `hapi resume <session-id>` hands off an active remote session and opens the same HAPI session in the local terminal.
 
+**Codex exception:** Codex 0.154.0+ uses shared sessions, not handoff. `hapi
+resume <id>` attaches another official TUI to its live execution; Web and other
+terminals remain usable. The original terminal owns a terminal-created execution:
+its exit stops that execution, leaving resumable history. Web-created/resumed
+executions use the existing Runner; additional terminals only detach on exit.
+**End session** archives the selected root. Native profile-v2 launch selection and in-place rewind are currently
+unavailable. See [Codex shared sessions](../docs/guide/codex-shared-sessions.md)
+for queue semantics, environment isolation, recovery, supported flags and tests.
+
+### Answer local Claude prompts from HAPI
+
+In a local Claude session started by `hapi`, main-session `AskUserQuestion`
+questions and tool permission prompts can also be answered from the web app.
+The terminal dialog stays usable; answering does not restart Claude or switch
+the session to remote mode. Claude arbitrates terminal/web races, and HAPI
+records the native result rather than assuming the web response won.
+
+The bridge uses Claude's `PermissionRequest` hook, not a blocking
+`PreToolUse` approval gate. An unanswered remote request expires after one
+hour; expiration, disconnection, or bridge failure leaves the native prompt
+available. Local answers/cancellation, session changes, and mode switches
+withdraw stale web controls. Cancellation detection may wait for the next
+transcript scan.
+
+Verified with Claude Code **2.1.221**. Background subagents, `ExitPlanMode`,
+and requests that cannot be unambiguously matched to a native tool call remain
+terminal-only. Earlier Claude versions have not been verified.
+
 ### Authentication
 
 - `hapi auth status` - Show authentication configuration and token source.

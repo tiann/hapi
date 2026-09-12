@@ -202,6 +202,19 @@ public final class ChatInteractor {
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
+            if attachmentMetadata == nil && (text == "/clear" || text == "/new")
+                && self.sessionStore.detail(for: self.sessionId)?.metadata?.capabilities?.concurrentClients == true {
+                defer { self.isSending = false }
+                do {
+                    let result = try await self.api.clearConversation(id: self.sessionId)
+                    self.sessionStore.scheduleRefresh()
+                    self.emit(.sessionSuperseded(sessionId: result.sessionId))
+                } catch {
+                    self.setComposerText(text)
+                    self.emit(.notice(Self.errorMessage(error, fallback: "Failed to create conversation")))
+                }
+                return
+            }
             await self.performSend(
                 text: text,
                 localId: localId,

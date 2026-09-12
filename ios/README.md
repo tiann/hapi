@@ -80,6 +80,16 @@ with 16pt minimum side margins. Font, Bold Text, locale, and effective width
 changes invalidate height measurements while preserving the reading anchor.
 Ordinary streaming updates retain unchanged hosting roots and measurements.
 
+User messages stay fully expanded through 8,000 characters and 120 source lines,
+even when they span multiple screens. Only larger payloads fold to a preview
+bounded to 2,000 characters / 24 lines. The folding threshold is separate from
+the preview budget; both bound the actual text passed to layout. **View full
+message** opens a screen-owned reader with one 4,000-character / 80-source-line
+part mounted at a time, previous/next navigation, and exact full-content copy.
+Paging preserves Unicode and whitespace without scanning the entire payload on
+open. The reader survives cell recycling and pauses hidden history/tail following;
+closing it preserves the reading position. Stored/sent messages are never truncated.
+
 The UIKit transcript suite covers typography changes, recycling, shrinking
 text, tablet/phone widths, and tail following. Optional deterministic visual
 specimens cover light/dark/OLED, mixed Chinese/English, code, tables, diffs,
@@ -102,8 +112,14 @@ individual recycled rows, joined by continuous surfaces and inset separators.
 File/image summaries show the action and basename; commands use a bounded preview.
 Success is quiet, while running/errors remain visible; every row keeps a 44pt target.
 Edits show their recorded input, with a separate **View current file** action.
-Task/Agent sidechains open a process page; approvals and questions remain in
+Task/Agent sidechains open a process page; approvals and question answering remain in
 the conversation/process, not in the read-only inspector.
+
+Question inspectors show recorded selections, custom answers and notes with
+Markdown questions/options. `request_user_input` also restores answers from
+historical results; live permission answers take precedence. Answered cards
+avoid duplicate results, but retain errors and the full input/result/answers
+under **Source**. Answer submission remains in the conversation.
 
 Inspection pauses transcript tail-following and hidden history paging, without
 opening another SSE subscription. Closing returns to the reading anchor;
@@ -128,6 +144,25 @@ records, not live sessions or App Store screenshots. Capture into a fresh direct
 TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
   ios/scripts/test-transcript.sh -only-testing:HapiTests/ToolInspectionPresentationTests \
     -only-testing:HapiTests/ToolTranscriptPresentationTests
+```
+
+### Home filtering
+
+Home keeps a fixed Sessions title: hub switching on the leading edge,
+Filters and New Session on the trailing edge. The native menu currently
+offers machine single-selection; only applied filters add a summary line.
+Filters are transient per home/hub and never select a new session's machine.
+Options/counts come from all session summaries, including historical machines;
+the online roster supplies names only. Missing names use a labeled short ID.
+Session-count updates do not reorder options or reset the list's scroll position.
+
+App-hosted filter tests use observable in-memory stores (no network or pairing).
+Optional layout captures are test specimens, not live or App Store screenshots:
+
+```sh
+TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/SessionListFilterTests \
+    -only-testing:HapiTests/HomeFilterPresentationTests
 ```
 
 ### Linux verification (no Mac needed)
@@ -186,12 +221,14 @@ ios/
                            Features/  Pairing/ (welcome, VisionKit QR scan,
                                       manual entry, shared confirm + error
                                       states), Home/ (session list host with
-                                      hub switcher + connection dot in the
-                                      toolbar), Sessions/ (SessionListView:
+                                      leading hub switcher, native filter
+                                      menu + new-session action; one degraded
+                                      connection notice below navigation),
+                                      Sessions/ (SessionListView:
                                       status dot with thinking pulse, title
                                       cascade, flavor·machine·worktree meta,
                                       pending/todo badges, unread dots,
-                                      pinned section, machine filter chips,
+                                      pinned section, applied-filter summary,
                                       pull-to-refresh, long-press
                                       pin/archive; row taps push the chat),
                                       Chat/ (M2f read-only chat: ChatModel —

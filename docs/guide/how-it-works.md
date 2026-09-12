@@ -1,5 +1,9 @@
 # How it Works
 
+**Codex 0.154.0+** uses a [shared app-server](./codex-shared-sessions.md):
+terminal and Web/phone can act simultaneously, without switching ownership.
+The local/remote handoff descriptions below apply to other agent integrations.
+
 HAPI consists of three interconnected components that work together to provide remote AI agent control.
 
 ## Architecture Overview

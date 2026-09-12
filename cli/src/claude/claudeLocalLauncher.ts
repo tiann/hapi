@@ -12,6 +12,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         sessionId: session.sessionId,
         workingDirectory: session.path,
         onMessage: (message) => {
+            session.localPermissionBridge.onTranscript(message);
             // Preserve the AI-generated title emitted by Claude Code's native
             // interactive CLI. It is metadata, not a visible chat message.
             if (message.type === 'ai-title') {
@@ -52,17 +53,24 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         startedBy: session.startedBy,
         startingMode: session.startingMode,
         launch: async (abortSignal) => {
-            await claudeLocal({
-                path: session.path,
-                sessionId: session.sessionId,
-                abort: abortSignal,
-                claudeEnvVars: session.claudeEnvVars,
-                claudeArgs: session.claudeArgs,
-                model: session.getModel(),
-                mcpServers: session.mcpServers,
-                allowedTools: session.allowedTools,
-                hookSettingsPath: session.localHookSettingsPath,
-            });
+            session.localPermissionBridge.start(session.sessionId);
+            abortSignal.addEventListener('abort', session.localPermissionBridge.stop, { once: true });
+            try {
+                await claudeLocal({
+                    path: session.path,
+                    sessionId: session.sessionId,
+                    abort: abortSignal,
+                    claudeEnvVars: session.claudeEnvVars,
+                    claudeArgs: session.claudeArgs,
+                    model: session.getModel(),
+                    mcpServers: session.mcpServers,
+                    allowedTools: session.allowedTools,
+                    hookSettingsPath: session.localHookSettingsPath,
+                });
+            } finally {
+                abortSignal.removeEventListener('abort', session.localPermissionBridge.stop);
+                session.localPermissionBridge.stop();
+            }
         },
         onLaunchSuccess: () => {
             session.consumeOneTimeFlags();
@@ -80,6 +88,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         return await launcher.run();
     } finally {
         // Cleanup
+        session.localPermissionBridge.stop();
         session.removeSessionFoundCallback(handleSessionFound);
         await scanner.cleanup();
     }

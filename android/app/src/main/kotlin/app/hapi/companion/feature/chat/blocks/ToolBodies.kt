@@ -24,8 +24,6 @@ import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputString
 import app.hapi.protocol.chat.getInputStringAny
-import app.hapi.protocol.chat.isAskUserQuestionToolName
-import app.hapi.protocol.chat.isRequestUserInputToolName
 import app.hapi.protocol.git.DiffFile
 import app.hapi.protocol.git.UnifiedDiffParser
 import app.hapi.protocol.wire.HapiJson
@@ -48,17 +46,23 @@ import kotlinx.serialization.json.JsonPrimitive
  * - `Write` → the written content as a code block;
  * - `CodexDiff` (and any input/result that parses as a unified diff) → [DiffView];
  * - `TodoWrite`/`update_plan` → checklist rows;
- * - Ask/RequestUserInput → questions + options, read-only;
+ * - Ask/RequestUserInput → questions + selected answers, read-only;
  * - anything else → pretty-printed JSON input, then the generic result.
  */
 @Composable
 internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modifier = Modifier) {
+    val questionTool = isQuestionDetailsTool(tool.name)
+    val answers = if (questionTool) tool.permission?.answers else null
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionLabel(stringResource(R.string.settings_usage_input))
-        ToolInputSection(tool)
-        ToolResultSection(tool)
+        if (questionTool) {
+            QuestionToolBody(tool)
+        } else {
+            SectionLabel(stringResource(R.string.settings_usage_input))
+            ToolInputSection(tool)
+            ToolResultSection(tool)
+        }
         var sourceExpanded by remember(tool.id) { mutableStateOf(false) }
-        if (tool.input != null || tool.result != null) {
+        if (tool.input != null || tool.result != null || answers != null) {
             TextButton(onClick = { sourceExpanded = !sourceExpanded }) {
                 Text(stringResource(R.string.files_viewer_source))
             }
@@ -71,8 +75,28 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
                     SectionLabel(stringResource(R.string.chat_result))
                     GenericJsonInput(it)
                 }
+                answers?.let {
+                    SectionLabel(stringResource(R.string.tool_question_answers))
+                    GenericJsonInput(it)
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun QuestionToolBody(tool: ChatToolCall) {
+    val details by produceState<QuestionToolDetails?>(null, tool) {
+        value = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+    }
+    val prepared = details
+    if (prepared == null) {
+        androidx.compose.material3.CircularProgressIndicator()
+    } else {
+        SectionLabel(stringResource(if (prepared.hasAnswers) R.string.tool_questions_answers else R.string.settings_usage_input))
+        if (prepared.questions.isEmpty()) GenericJsonInput(tool.input)
+        else QuestionDetailsView(prepared.questions)
+        if (prepared.showResult) ToolResultSection(tool)
     }
 }
 
@@ -169,7 +193,7 @@ private fun ToolInputSection(tool: ChatToolCall) {
             }
         }
 
-        isAskUserQuestionToolName(name) || isRequestUserInputToolName(name) || name == "request_user_input_async" -> {
+        name == "request_user_input_async" -> {
             QuestionsReadOnly(input)
         }
 

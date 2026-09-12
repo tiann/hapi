@@ -68,6 +68,12 @@ reads use source-language highlighting; web/agent prose uses Markdown. **Source*
 reveals the original input/result, including fields omitted from the preview.
 Mixed text/media results stay JSON instead of dropping non-text blocks.
 
+Question details show recorded selections, custom answers and notes with
+Markdown questions/options. `request_user_input` also restores answers from
+historical results; live permission answers take precedence. Answered cards
+avoid duplicate results, but retain errors and the full input/result/answers
+under **Source**. The pending answer form remains unchanged.
+
 Long inputs and outputs load in 20,000-character parts with **Copy full content**
 and **Load more content**, never silent truncation. Large diffs/Markdown use
 paged source rather than eagerly rendering the entire document. JSON formatting

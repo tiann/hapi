@@ -62,7 +62,7 @@ final class ChatHistoryPumpTests: XCTestCase {
         let controller = await hub.windows.open(sessionId: "inspection")
         await controller.syncTail(ensureAfterCurrent: true)
         let initialRevision = await controller.state.tailRevision
-        model.beginToolInspection()
+        model.beginContentInspection()
         model.retainSurface("inspector:chat")
         model.retainSurface("inspector:chat") // Idempotent appearance.
         model.releaseSurface("chat")
@@ -78,6 +78,19 @@ final class ChatHistoryPumpTests: XCTestCase {
         model.retainSurface("chat")
         model.releaseSurface("process:task")
         XCTAssertEqual(model.visibleSurfaces, ["chat"])
+        // Reading a full user log follows the same navigation lease and
+        // must suppress hidden paging/tail-follow reports until dismissal.
+        model.beginContentInspection()
+        model.retainSurface("message:chat")
+        XCTAssertTrue(model.isInspectingContent)
+        model.readingViewportChanged(followsTail: true, needsOlder: true)
+        XCTAssertFalse(model.followsTail)
+        try await Task.sleep(for: .milliseconds(30))
+        let olderRequests = await performer.beforeRequests
+        XCTAssertEqual(olderRequests, 0)
+        model.releaseSurface("message:chat")
+        XCTAssertFalse(model.isInspectingContent)
+        XCTAssertFalse(model.followsTail, "Closing the reader must not silently return to latest")
         model.releaseSurface("chat")
     }
 

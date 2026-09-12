@@ -98,7 +98,9 @@ describe('codexMcpProxy', () => {
         await prepared.cleanup();
     });
 
-    windowsIt('launches a bare command through a temporary Windows shim', async () => {
+    // Real Windows spawn (cmd shim → node → MCP initialize). Vitest's 5s default
+    // flakes under GHA Defender/cold-start; assertions are about quoting, not latency.
+    windowsIt('launches a bare command through a temporary Windows shim', { timeout: 20_000 }, async () => {
         const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-mcp-shim-test-'));
         const serverPath = join(directory, 'server.js');
         const shimPath = join(directory, 'example-mcp.cmd');
@@ -142,7 +144,7 @@ describe('codexMcpProxy', () => {
                 const timeout = setTimeout(() => {
                     child.kill();
                     reject(new Error('Timed out waiting for the Windows MCP shim response'));
-                }, 5_000);
+                }, 15_000);
                 const finish = (error: Error | null, value?: Record<string, unknown>) => {
                     clearTimeout(timeout);
                     if (error) {

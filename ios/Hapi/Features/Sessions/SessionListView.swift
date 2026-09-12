@@ -7,8 +7,8 @@ import SwiftUI
 /// stay outside; taps surface through `onOpenSession`.
 ///
 /// Inventory (mirrors the web sidebar semantics via the Android port):
-/// - offline state over snapshot data, machine filter chips (≥ 2 machines),
-///   pull-to-refresh, empty/loading states;
+/// - an active-filter summary, pull-to-refresh, empty/loading states;
+///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
 /// - per row: flavor brand icon + title, spinner while a turn is in flight,
@@ -20,13 +20,8 @@ import SwiftUI
 ///   optimistic store updates; failures land in an alert.
 struct SessionListView: View {
     @Environment(\.hapiTheme) private var theme
-    @State private var model: SessionListModel
-    private let onOpenSession: (String) -> Void
-
-    init(session: HubSession, onOpenSession: @escaping (String) -> Void) {
-        _model = State(initialValue: SessionListModel(session: session))
-        self.onOpenSession = onOpenSession
-    }
+    let model: SessionListModel
+    let onOpenSession: (String) -> Void
 
     var body: some View {
         // Minute-tick timeline keeps the relative-age labels honest without
@@ -35,18 +30,12 @@ struct SessionListView: View {
             sessionList(now: context.date)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                if model.isOffline && model.hasLoaded {
-                    offlineBanner
-                }
-                if model.showMachineFilterBar {
-                    MachineFilterBar(
-                        filters: model.machineFilters,
-                        activeFilter: model.activeMachineFilter,
-                        onSelect: { model.machineFilter = $0 }
-                    )
-                }
+            if let summary = model.filterSummary {
+                SessionFilterSummary(summary: summary, onClear: model.clearFilters)
             }
+        }
+        .onChange(of: model.machineFilterIds, initial: true) { _, _ in
+            model.reconcileFilters()
         }
         .task {
             // Explicit fetch on entry: the snapshot may be stale and a
@@ -113,6 +102,10 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        // An explicit filter change starts at the top. SSE/count/name changes
+        // keep this identity (and the reading position), as does chat return.
+        .id(model.filters)
+        .accessibilityIdentifier("home.sessions")
         .overlay {
             if rows.isEmpty {
                 emptyState
@@ -172,15 +165,6 @@ struct SessionListView: View {
     }
 
     // MARK: - Chrome
-
-    private var offlineBanner: some View {
-        Text("Offline — showing cached sessions")
-            .font(.footnote)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(.orange.opacity(0.15))
-            .foregroundStyle(.orange)
-    }
 
     @ViewBuilder
     private var emptyState: some View {
@@ -341,36 +325,7 @@ struct TodoChip: View {
     }
 }
 
-// MARK: - Machine filter
-
-struct MachineFilterBar: View {
-    let filters: [MachineFilterUI]
-    let activeFilter: String?
-    let onSelect: (String?) -> Void
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                FilterChip(label: String(localized: "All"), selected: activeFilter == nil) {
-                    onSelect(nil)
-                }
-                ForEach(filters) { filter in
-                    let label = filter.label.isEmpty ? String(localized: "Unknown machine") : filter.label
-                    FilterChip(
-                        label: "\(label) · \(filter.sessionCount)",
-                        selected: activeFilter == filter.id
-                    ) {
-                        // Tapping the active chip toggles back to All.
-                        onSelect(activeFilter == filter.id ? nil : filter.id)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-        }
-        .background(.bar)
-    }
-}
+// MARK: - Recent-directory chip (used by NewSessionView)
 
 struct FilterChip: View {
     let label: String

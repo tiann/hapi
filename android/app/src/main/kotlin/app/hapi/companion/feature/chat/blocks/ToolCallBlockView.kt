@@ -253,6 +253,7 @@ private fun PermissionStateRow(permission: ToolPermission) {
             stringResource(R.string.chat_tool_denied) + (permission.reason?.let { " · $it" } ?: ""),
             error = true,
         )
+        "resolved" -> PermissionLine(stringResource(R.string.chat_tool_resolved))
         "canceled" -> PermissionLine(stringResource(R.string.chat_tool_canceled))
     }
 }

@@ -14,9 +14,16 @@ import SwiftUI
 /// engine is present (A-M3a).
 struct UserTextBlockView: View {
     let block: UserTextBlock
+    private let preview: MessageTextPage
 
     @Environment(\.chatInteractions) private var interactions
     @Environment(\.hapiTypography) private var typography
+    @Environment(\.openChatMessage) private var openMessage
+
+    init(block: UserTextBlock) {
+        self.block = block
+        preview = .preview(block.text)
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -24,11 +31,21 @@ struct UserTextBlockView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 VStack(alignment: .leading, spacing: 8) {
                     if !block.text.isEmpty {
-                        Text(block.text)
+                        Text(verbatim: preview.text)
                             .font(typography.bodyFont)
                             .lineSpacing(typography.bodyLineSpacing)
+                            .lineLimit(preview.end < block.text.endIndex ? MessageTextPage.previewLines : nil)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
+                        if preview.end < block.text.endIndex {
+                            Button { openMessage?(block) } label: {
+                                Label("View full message", systemImage: "doc.text")
+                                    .font(.footnote)
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityIdentifier("message-full-\(block.id)")
+                        }
                     }
                     if let attachments = block.attachments, !attachments.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {

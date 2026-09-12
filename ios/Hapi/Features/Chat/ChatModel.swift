@@ -63,8 +63,10 @@ final class ChatModel {
     var expandedToolGroups: [String: Bool] = [:]
     let toolInspection = ToolInspectionState()
     private(set) var visibleSurfaces = Set<String>()
-    var isInspectingTools: Bool {
-        toolInspection.selection != nil || visibleSurfaces.contains { $0.hasPrefix("process:") }
+    var isInspectingContent: Bool {
+        toolInspection.selection != nil || visibleSurfaces.contains {
+            $0.hasPrefix("process:") || $0.hasPrefix("message:")
+        }
     }
 
     /// Transient toast text (interaction failures/notices); auto-dismissed.
@@ -160,7 +162,7 @@ final class ChatModel {
         }
     }
 
-    func beginToolInspection() {
+    func beginContentInspection() {
         dictation.cancel()
         jumpTask?.cancel()
         jumpTask = nil
@@ -266,8 +268,8 @@ final class ChatModel {
     // MARK: - Actions
 
     func readingViewportChanged(followsTail: Bool, needsOlder: Bool) {
-        let followsTail = isInspectingTools ? false : followsTail
-        let needsOlder = isInspectingTools ? false : needsOlder
+        let followsTail = isInspectingContent ? false : followsTail
+        let needsOlder = isInspectingContent ? false : needsOlder
         let changedMode = self.followsTail != followsTail
         self.followsTail = followsTail
         viewportNeedsOlder = needsOlder
@@ -322,7 +324,7 @@ final class ChatModel {
     }
 
     private func pumpHistory() {
-        guard isActive, !isInspectingTools, !isJumpingToLatest, viewportNeedsOlder, hasMore,
+        guard isActive, !isInspectingContent, !isJumpingToLatest, viewportNeedsOlder, hasMore,
               !isSyncingTail, !isLoadingOlder, olderTask == nil,
               let controller = chat.windowController,
               let request = historyPaging.begin() else { return }
@@ -543,7 +545,7 @@ final class ChatModel {
         // is fresher (summary via the global pipe, detail via this one).
         // markSeen is monotonic, so stale inputs cannot rewind it.
         let updatedAt = max(detail?.updatedAt ?? 0, summary?.updatedAt ?? 0)
-        if updatedAt > 0 && !isInspectingTools {
+        if updatedAt > 0 && !isInspectingContent {
             hub.lastSeenStore.markSeen(sessionId: sessionId, seenAt: updatedAt)
         }
     }

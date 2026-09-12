@@ -89,6 +89,35 @@
         }
       }
     },
+    "%@, %lld sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%@, %lld session"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%@, %lld sessions"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，%lld 个会话"
+          }
+        }
+      }
+    },
     "%lld Questions" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -250,6 +279,35 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld 次搜索"
+          }
+        }
+      }
+    },
+    "%lld sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld session"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld sessions"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个会话"
           }
         }
       }
@@ -683,6 +741,17 @@
         }
       }
     },
+    "All Machines" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有机器"
+          }
+        }
+      }
+    },
     "All time" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -800,6 +869,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请先回答所有必答问题"
+          }
+        }
+      }
+    },
+    "Answers" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "答案"
           }
         }
       }
@@ -1174,6 +1254,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "选择目录"
+          }
+        }
+      }
+    },
+    "Clear Filters" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除筛选"
           }
         }
       }
@@ -1614,6 +1705,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "当前目录"
+          }
+        }
+      }
+    },
+    "Custom answer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义答案"
           }
         }
       }
@@ -2201,6 +2303,17 @@
         }
       }
     },
+    "Filters" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "筛选"
+          }
+        }
+      }
+    },
     "Follow system" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2208,6 +2321,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "跟随系统"
+          }
+        }
+      }
+    },
+    "Full message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完整消息"
           }
         }
       }
@@ -2597,6 +2721,28 @@
         }
       }
     },
+    "Machine · %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "机器 · %@"
+          }
+        }
+      }
+    },
+    "Machine: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "机器：%@"
+          }
+        }
+      }
+    },
     "Managed by agent" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2751,6 +2897,17 @@
         }
       }
     },
+    "Next part" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一部分"
+          }
+        }
+      }
+    },
     "Next tool" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2824,6 +2981,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "没有匹配的文件"
+          }
+        }
+      }
+    },
+    "No filters" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未启用筛选"
           }
         }
       }
@@ -2978,6 +3146,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "未请求"
+          }
+        }
+      }
+    },
+    "Not selected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未选择"
+          }
+        }
+      }
+    },
+    "Note" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备注"
           }
         }
       }
@@ -3191,6 +3381,17 @@
         }
       }
     },
+    "Part %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %lld 部分"
+          }
+        }
+      }
+    },
     "Path" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3367,6 +3568,17 @@
         }
       }
     },
+    "Previous part" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上一部分"
+          }
+        }
+      }
+    },
     "Previous tool" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3473,6 +3685,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "问题"
+          }
+        }
+      }
+    },
+    "Questions & Answers" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问答"
           }
         }
       }
@@ -3935,6 +4158,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "选择"
+          }
+        }
+      }
+    },
+    "Selected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选择"
           }
         }
       }
@@ -5013,6 +5247,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "查看完整输入"
+          }
+        }
+      }
+    },
+    "View full message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看完整消息"
           }
         }
       }

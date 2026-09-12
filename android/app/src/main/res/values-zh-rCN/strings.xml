@@ -537,4 +537,8 @@
     <string name="chat_copy_full_content">复制完整内容</string>
     <string name="chat_showing_parts">已显示 %1$d / %2$d 部分</string>
     <string name="chat_load_more_content">加载更多内容</string>
+    <string name="tool_questions_answers">问答</string>
+    <string name="tool_question_answers">答案</string>
+    <string name="tool_custom_answer">自定义答案</string>
+    <string name="tool_answer_note">备注</string>
 </resources>

@@ -886,16 +886,33 @@ class ChatViewModel(
         if (text.isEmpty() && attachmentMetadata == null) return
         composerText.value = ""
         draftJob?.cancel()
+        sendInFlight.value = true
         scope.launch {
-            drafts?.let { runCatching { it.clear(sessionId) } }
-            performSend(
-                text = text,
-                localId = localIdGenerator(),
-                createdAt = now(),
-                deliveryMode = if (steer) "steer" else "queue",
-                attachments = attachmentMetadata,
-                isRetry = false,
-            )
+            try {
+                drafts?.let { runCatching { it.clear(sessionId) } }
+                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                    sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
+                    sendInFlight.value = true
+                    try {
+                        val result = api.clearConversation(sessionId)
+                        _events.tryEmit(ChatEvent.SessionSuperseded(result.sessionId))
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (error: Exception) {
+                        composerText.value = text
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(error.message)))
+                    } finally { sendInFlight.value = false }
+                    return@launch
+                }
+                performSend(
+                    text = text,
+                    localId = localIdGenerator(),
+                    createdAt = now(),
+                    deliveryMode = if (steer) "steer" else "queue",
+                    attachments = attachmentMetadata,
+                    isRetry = false,
+                )
+            } finally { sendInFlight.value = false }
         }
     }
 
@@ -1524,9 +1541,11 @@ class ChatViewModel(
         return SessionConfigUi(
             flavor = flavor,
             active = detail?.active ?: summary?.active ?: false,
-            controlledByUser = detail?.agentState?.controlledByUser == true,
+            controlledByUser = detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true,
             permissionMode = detail?.permissionMode,
-            permissionModes = PermissionModes.forFlavor(flavor),
+            permissionModes = PermissionModes.forFlavor(flavor).filter {
+                detail?.metadata?.capabilities?.concurrentClients != true || it != PermissionMode.SafeYolo
+            },
             model = model,
             modelOptions = modelOptions,
             modelOptionsLoading = modelOptionsLoading,

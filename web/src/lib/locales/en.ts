@@ -596,6 +596,7 @@ export default {
   'tool.question': 'Question',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
+  'tool.resolved': 'Resolved in Codex',
   'tool.canceled': 'Canceled',
   'tool.approvedForSession': 'Approved For Session',
   'tool.aborted': 'Aborted',

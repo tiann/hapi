@@ -26,8 +26,8 @@ vi.mock('@/ui/auth', () => ({
     authAndSetupMachineIfNeeded: authAndSetupMachineIfNeededMock
 }))
 
-vi.mock('@/codex/utils/codexVersion', () => ({
-    assertCodexLocalSupported: assertCodexLocalSupportedMock
+vi.mock('@/codex/shared/launch', () => ({
+    resolveSharedCodex: assertCodexLocalSupportedMock
 }))
 
 vi.mock('@/codex/runCodex', () => ({
@@ -85,19 +85,20 @@ describe('codexCommand', () => {
         })
     })
 
-    it('passes native resume selectors through for Codex to resolve', async () => {
+    it('resolves --last in the runtime instead of appending a second resume command to the TUI', async () => {
         await codexCommand.run(createCommandContext(['resume', '--last', 'continue here']))
 
         expect(assertCodexLocalSupportedMock).toHaveBeenCalledOnce()
         expect(runCodexMock).toHaveBeenCalledWith({
-            codexArgs: ['resume', '--last', 'continue here']
+            resumeLast: true,
+            codexArgs: ['continue here']
         })
     })
 
-    it('skips the local version check for runner-started sessions', async () => {
+    it('checks shared protocol baseline for runner-started sessions', async () => {
         await codexCommand.run(createCommandContext(['--started-by', 'runner']))
 
-        expect(assertCodexLocalSupportedMock).not.toHaveBeenCalled()
+        expect(assertCodexLocalSupportedMock).toHaveBeenCalledOnce()
         expect(runCodexMock).toHaveBeenCalledWith({
             startedBy: 'runner'
         })
@@ -160,14 +161,14 @@ describe('codexCommand', () => {
         }) as never)
 
         assertCodexLocalSupportedMock.mockImplementationOnce(() => {
-            throw new Error('Codex CLI 0.124.0+ is required')
+            throw new Error('Codex CLI 0.154.0+ is required')
         })
 
         try {
             await expect(codexCommand.run(createCommandContext([]))).rejects.toThrow('process.exit:1')
 
             expect(runCodexMock).not.toHaveBeenCalled()
-            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), 'Codex CLI 0.124.0+ is required')
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), 'Codex CLI 0.154.0+ is required')
         } finally {
             consoleErrorSpy.mockRestore()
             exitSpy.mockRestore()

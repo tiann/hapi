@@ -35,6 +35,7 @@ export const OpencodeClearOperationSchema = z.object({
 export type OpencodeClearOperation = z.infer<typeof OpencodeClearOperationSchema>
 
 const SessionCapabilitiesSchema = z.object({
+    concurrentClients: z.boolean().optional(),
     terminal: z.boolean().optional(),
     conversationHistory: ConversationHistoryCapabilitiesSchema.optional()
 })
@@ -166,6 +167,8 @@ export type Metadata = z.infer<typeof MetadataSchema>
 
 export const AgentStateRequestSchema = z.object({
     tool: z.string(),
+    // Correlation only; replies use the request map key, never this tool id.
+    toolCallId: z.string().optional(),
     arguments: z.unknown(),
     createdAt: z.number().nullish()
 })
@@ -174,10 +177,11 @@ export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>
 
 export const AgentStateCompletedRequestSchema = z.object({
     tool: z.string(),
+    toolCallId: z.string().optional(),
     arguments: z.unknown(),
     createdAt: z.number().nullish(),
     completedAt: z.number().nullish(),
-    status: z.enum(['canceled', 'denied', 'approved']),
+    status: z.enum(['canceled', 'denied', 'approved', 'resolved']),
     reason: z.string().optional(),
     mode: z.string().optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
@@ -486,6 +490,7 @@ export const RunnerStateSchema = z.object({
     httpPort: z.number().optional(),
     startedAt: z.number().optional(),
     capabilities: z.object({
+        codexSharedRuntime: z.literal(true).optional(),
         piExistingSessionResume: z.literal(true).optional(),
         agentConfigs: z.array(AgentConfigDescriptorSchema).optional()
     }).optional(),

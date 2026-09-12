@@ -318,6 +318,7 @@
     <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
     <string name="chat_tool_approved">✓ Approved</string>
     <string name="chat_tool_denied">✕ Denied</string>
+    <string name="chat_tool_resolved">Resolved in Codex</string>
     <string name="chat_tool_canceled">— Canceled</string>
     <string name="chat_tool_status_pending">pending</string>
     <string name="chat_tool_status_error">error</string>
@@ -530,4 +531,8 @@
     <string name="chat_copy_full_content">Copy full content</string>
     <string name="chat_showing_parts">Showing %1$d of %2$d parts</string>
     <string name="chat_load_more_content">Load more content</string>
+    <string name="tool_questions_answers">Questions &amp; Answers</string>
+    <string name="tool_question_answers">Answers</string>
+    <string name="tool_custom_answer">Custom answer</string>
+    <string name="tool_answer_note">Note</string>
 </resources>

@@ -194,6 +194,8 @@ struct PermissionStateRow: View {
                 text: String(localized: "✕ Denied") + (permission.reason.map { " · \($0)" } ?? ""),
                 isError: true
             )
+        case .resolved:
+            PermissionLine(text: String(localized: "Resolved in Codex"))
         case .canceled:
             PermissionLine(text: String(localized: "— Canceled"))
         }

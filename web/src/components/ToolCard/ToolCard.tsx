@@ -443,7 +443,7 @@ function ToolCardInner(props: ToolCardProps) {
     const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
     const showsPermissionFooter = Boolean(permission && (
-        permission.status === 'pending'
+        permission.status === 'resolved' || permission.status === 'pending'
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
     ))
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter

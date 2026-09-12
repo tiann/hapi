@@ -7,6 +7,7 @@ Run official Claude Code / Codex / Cursor Agent / Grok Build / OpenCode / Kimi /
 ## Features
 
 - **Seamless Handoff** - Work locally, switch to remote when needed, switch back anytime. No context loss, no session restart.
+- **Shared Codex Sessions** - Terminal and Web/phone use the same Codex engine simultaneously; normal terminal/Runner lifecycle, with resume after exit. Requires Codex 0.154.0+. [Lifecycle and limits](docs/guide/codex-shared-sessions.md).
 - **Native First** - HAPI wraps your AI agent instead of replacing it. Same terminal, same experience, same muscle memory.
 - **AFK Without Stopping** - Step away from your desk? Approve AI requests from your phone with one tap.
 - **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, Kimi, Copilot, Antigravity, Pi, DeepSeek Harness—different agents, one unified workflow.

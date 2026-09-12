@@ -130,6 +130,7 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
     public let options: [AskOption]
     public let placeholder: String?
     public let prefill: String?
+    public let inputType: String?
 
     public init(
         id: String,
@@ -138,7 +139,8 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
         multiple: Bool,
         options: [AskOption],
         placeholder: String?,
-        prefill: String?
+        prefill: String?,
+        inputType: String? = nil
     ) {
         self.id = id
         self.question = question
@@ -147,6 +149,7 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
         self.options = options
         self.placeholder = placeholder
         self.prefill = prefill
+        self.inputType = inputType
     }
 }
 
@@ -182,7 +185,8 @@ public func parseRequestUserInputQuestions(_ input: JSONValue?) -> [RequestUserI
             multiple: object["multiple"]?.boolValue == true,
             options: options,
             placeholder: object["placeholder"]?.stringValue,
-            prefill: object["prefill"]?.stringValue
+            prefill: object["prefill"]?.stringValue,
+            inputType: object["inputType"]?.stringValue == "editor" ? "editor" : nil
         ))
     }
     return questions

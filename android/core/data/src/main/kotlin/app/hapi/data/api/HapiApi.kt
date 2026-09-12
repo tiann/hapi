@@ -280,6 +280,10 @@ class HapiApi internal constructor(
             QueuedStateRequest(localIds).toJsonBody(),
         )
 
+    /** `POST /api/sessions/:id/clear` — shared sessions; returns an independent root. */
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse =
+        request("POST", url("api", "sessions", sessionId, "clear").build(), EMPTY_JSON)
+
     /** `POST /api/sessions/:id/abort` — active sessions only. */
     override suspend fun abortSession(sessionId: String) {
         request<Unit>("POST", url("api", "sessions", sessionId, "abort").build(), EMPTY_JSON)
