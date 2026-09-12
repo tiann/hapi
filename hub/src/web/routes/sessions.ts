@@ -370,6 +370,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) return sessionResult
 
+        const metadata = sessionResult.session.metadata
+        if (metadata?.flavor === 'codex' && metadata.capabilities?.concurrentClients) {
+            return c.json({ error: 'Non-archiving stop is unavailable for shared Codex; use abort or archive explicitly' }, 409)
+        }
         const result = await engine.stopSession(sessionResult.sessionId)
         return c.json({ ok: true, ...result })
     })

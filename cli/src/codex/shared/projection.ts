@@ -58,6 +58,9 @@ export class SharedCodexProjection {
                 await this.committed(id);
                 const text = inputText(item.content);
                 if (text) this.session.sendUserMessage(text, undefined, id);
+                if (firstInTurn && firstInTurn !== id) {
+                    this.session.emitMessagesConsumed([id], { steered: true });
+                }
                 this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));

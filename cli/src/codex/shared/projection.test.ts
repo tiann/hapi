@@ -3,6 +3,25 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import { SharedCodexProjection, inputText } from './projection';
 
 describe('shared history projection', () => {
+    it('marks native follow-up inputs in the same turn as steers, including replay', async () => {
+        const consumed = vi.fn();
+        const session = { getMetadata: () => ({}), updateMetadata() {}, sendUserMessage: vi.fn(),
+            sendAgentMessage() {}, emitMessagesConsumed: consumed } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        const input = (id: string) => ({ id, clientId: id, type: 'userMessage', content: [{ type: 'inputText', text: id }] });
+        const history = { turns: [
+            { id: 'turn', status: 'completed', items: [input('remit'), input('native-steer')] },
+            { id: 'next', status: 'completed', items: [input('next-remit')] }
+        ] };
+        await projection.history(history);
+        expect(consumed).toHaveBeenCalledWith(['native-steer'], { steered: true });
+        expect(consumed.mock.calls.every(([ids]) => ids[0] === 'native-steer')).toBe(true);
+        consumed.mockClear();
+        projection.reset();
+        await projection.history(history);
+        expect(consumed).toHaveBeenCalledWith(['native-steer'], { steered: true });
+        expect(consumed.mock.calls.every(([ids]) => ids[0] === 'native-steer')).toBe(true);
+    });
     it.each([['completed', 'success'], ['interrupted', 'cancelled'], ['failed', 'error']])('reports %s root outcomes once after replayed output', async (status, stopReason) => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

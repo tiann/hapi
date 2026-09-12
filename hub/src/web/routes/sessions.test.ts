@@ -1457,6 +1457,18 @@ describe('sessions routes', () => {
     })
 
     describe('POST /sessions/:id/stop', () => {
+        it.each([true, false])('rejects non-archiving stop for shared Codex before RPC (active: %s)', async (active) => {
+            let called = false
+            const session = createSession({ active, metadata: { path: '/tmp', host: 'test', flavor: 'codex',
+                startedBy: 'runner', capabilities: { concurrentClients: true } } })
+            const { app } = createApp(session, {
+                stopSession: async () => { called = true; return { alreadyStopped: false } }
+            })
+            const response = await app.request('/api/sessions/session-1/stop', { method: 'POST' })
+            expect(response.status).toBe(409)
+            expect(called).toBe(false)
+            expect(await response.json()).toEqual({ error: 'Non-archiving stop is unavailable for shared Codex; use abort or archive explicitly' })
+        })
         it('stops an active process without archiving', async () => {
             const calls: string[] = []
             const { app } = createApp(createSession({ active: true }), {

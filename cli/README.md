@@ -48,7 +48,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi inspect-peer <exact-session-id> --json` - Read metadata and recent message text without resuming.
 - `hapi ping-peer <exact-session-id> --message-file - --json` - Resume if needed and message one explicitly selected session. After an ambiguous response failure, retry the identical message with the returned `remitId` via `--remit-id UUID`.
 - `hapi abort-peer <exact-session-id> --json` - Abort the current turn.
-- `hapi stop-peer <exact-session-id> --json` - Idempotently stop the session process without archiving.
+- `hapi stop-peer <exact-session-id> --json` - Idempotently stop the session process without archiving. Shared Codex rejects this operation: use `abort-peer` to interrupt its turn or explicitly `archive-peer` to archive it.
 - `hapi archive-peer <exact-session-id> --json` - Idempotently stop and archive the session.
 - `hapi delete-peer <exact-session-id> --json` - Delete an inactive session record after confirming runner process exit; failed confirmation preserves the record.
 
