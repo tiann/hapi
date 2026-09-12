@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
 import { useRealtimeDictation } from './useRealtimeDictation'
+import { useDictation } from './useDictation'
 
 const scribe = vi.hoisted(() => ({
     options: null as unknown,
@@ -46,7 +47,8 @@ describe('useRealtimeDictation', () => {
             api,
             provider: 'elevenlabs',
             mode: 'realtime',
-            onFinalTranscript
+            onFinalTranscript,
+            onTextChange: onFinalTranscript
         }))
 
         await act(() => result.current.toggle())
@@ -62,7 +64,7 @@ describe('useRealtimeDictation', () => {
         expect(onFinalTranscript).toHaveBeenCalledWith('spoken words')
     })
 
-    it('resumes an inactive session, preserves its follow-up draft, and notifies the resolved session', async () => {
+    it.each(['', 'follow-up typed while sending'])('preserves destination and source drafts after background success: %s', async (sourceDraft) => {
         Object.defineProperty(navigator, 'mediaDevices', {
             configurable: true,
             value: { getUserMedia: vi.fn() }
@@ -77,11 +79,12 @@ describe('useRealtimeDictation', () => {
         const onSessionResolved = vi.fn()
         clearDraft('session-A')
         clearDraft('session-A-resumed')
-        const { result } = renderHook(() => useRealtimeDictation({
+        const { result, unmount } = renderHook(() => useRealtimeDictation({
             api,
             provider: 'elevenlabs',
             mode: 'realtime',
             onFinalTranscript,
+            onTextChange: onFinalTranscript,
             sendMessage
         }))
 
@@ -98,12 +101,16 @@ describe('useRealtimeDictation', () => {
         await waitFor(() => {
             expect(sendMessage).toHaveBeenCalledWith('session-A-resumed', 'explicit initial text spoken words', undefined)
         })
-        act(() => { saveDraft('session-A', 'follow-up typed while sending') })
+        unmount()
+        act(() => {
+            saveDraft('session-A', sourceDraft)
+            saveDraft('session-A-resumed', 'destination draft')
+        })
         await act(async () => { resolveSend?.() })
         await waitFor(() => expect(onSessionResolved).toHaveBeenCalled())
         expect(resolveSessionId).toHaveBeenCalledWith('session-A')
         expect(onSessionResolved).toHaveBeenCalledWith('session-A-resumed')
-        expect(getDraft('session-A-resumed')).toBe('follow-up typed while sending')
+        expect(getDraft('session-A-resumed')).toBe(['destination draft', sourceDraft].filter(Boolean).join(' '))
     })
 
     it('recovers a post-resume send failure under the resumed session id', async () => {
@@ -125,6 +132,7 @@ describe('useRealtimeDictation', () => {
             provider: 'elevenlabs',
             mode: 'realtime',
             onFinalTranscript,
+            onTextChange: onFinalTranscript,
             sendMessage
         }))
 
@@ -167,6 +175,7 @@ describe('useRealtimeDictation', () => {
             provider: 'elevenlabs',
             mode: 'realtime',
             onFinalTranscript,
+            onTextChange: onFinalTranscript,
             sendMessage
         }))
 
@@ -213,11 +222,11 @@ describe('useRealtimeDictation', () => {
         const onSessionResolved = vi.fn()
         clearDraft('session-A')
         clearDraft('session-A-resumed')
-        const { result } = renderHook(() => useRealtimeDictation({
+        const { result } = renderHook(() => useDictation({
             api,
             provider: 'elevenlabs',
             mode: 'realtime',
-            onFinalTranscript: (text) => { composerText = text },
+            onTextChange: (text) => { composerText = text },
             getCurrentText: () => composerText,
             sendMessage
         }))
@@ -259,11 +268,11 @@ describe('useRealtimeDictation', () => {
         // Do not inherit the success-path commit implementation from the
         // previous test: the provider must stay active until onError fires.
         scribe.commit.mockImplementation(() => {})
-        const { result } = renderHook(() => useRealtimeDictation({
+        const { result } = renderHook(() => useDictation({
             api,
             provider: 'elevenlabs',
             mode: 'realtime',
-            onFinalTranscript: (text) => { composerText = text },
+            onTextChange: (text) => { composerText = text },
             getCurrentText: () => composerText,
             sendMessage: vi.fn(async () => {})
         }))

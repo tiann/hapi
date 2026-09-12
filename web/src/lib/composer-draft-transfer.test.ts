@@ -438,6 +438,28 @@ describe('handoffComposerDraft', () => {
         expect(composerDraftWasHandedOff('source-a')).toBe(true)
     })
 
+    it('samples text overrides after the attachment transfer completes', async () => {
+        setComposerDraftSnapshot('source-a', 'source follow-up', [])
+        let targetDraft = 'old destination'
+        let releaseDrain!: () => void
+        const drainGate = new Promise<void>(resolve => { releaseDrain = resolve })
+        mocks.moveDraftAttachments.mockImplementation(async (
+            _source: string,
+            _target: string,
+            resolveAttachments: () => Array<{ id: string; file: File }>,
+        ) => {
+            await drainGate
+            return resolveAttachments()
+        })
+        const transfer = transferComposerDraft('source-a', 'target-a', [], {
+            textOverride: sampled => `${targetDraft} ${sampled}`,
+        })
+        targetDraft = 'latest destination'
+        releaseDrain()
+        await transfer
+        expect(mocks.saveDraft).toHaveBeenCalledWith('target-a', 'latest destination source follow-up')
+    })
+
     it('applies textOverride on same-id resume when attachments stay put', async () => {
         mocks.getDraft.mockReturnValue('')
         await transferComposerDraft(

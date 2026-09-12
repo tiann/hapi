@@ -120,6 +120,7 @@ export function useDictation(config: {
         provider: config.provider,
         mode: config.mode,
         onFinalTranscript,
+        onTextChange: config.onTextChange,
         sendMessage: config.sendMessage,
         getCurrentText: config.getCurrentText
     })
@@ -278,13 +279,17 @@ export function useDictation(config: {
                                     }
                                     await sendMsg(targetSessionId, finalMessage, pendingSend.deliveryMode)
                                     if (resumed) {
-                                        const followUpDraft = getDraft(pendingSend.sessionId)
                                         await transferComposerDraftThenNavigate(
                                             pendingSend.sessionId,
                                             targetSessionId,
                                             () => pendingSend.options.onSessionResolved?.(targetSessionId),
                                             [],
-                                            { textOverride: followUpDraft === pendingSend.draftAtStart ? '' : followUpDraft },
+                                            { textOverride: (sourceDraft) => {
+                                                const followUp = sourceDraft === pendingSend.draftAtStart ? '' : sourceDraft
+                                                return targetSessionId === pendingSend.sessionId
+                                                    ? followUp
+                                                    : appendTranscript(getDraft(targetSessionId), followUp)
+                                            } },
                                         )
                                     }
                                     if (draftUnchanged(pendingSend.sessionId, pendingSend.draftAtStart)) {

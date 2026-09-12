@@ -631,7 +631,7 @@ describe('useDictation', () => {
         expect(result.current.supported).toBe(false)
     })
 
-    it('resumes an inactive session, preserves its follow-up draft, and notifies the resolved session', async () => {
+    it.each(['', 'follow-up typed while sending'])('preserves destination and source drafts after background success: %s', async (sourceDraft) => {
         const stopTrack = vi.fn()
         Object.defineProperty(navigator, 'mediaDevices', {
             configurable: true,
@@ -662,7 +662,7 @@ describe('useDictation', () => {
         const api = { transcribeVoice: vi.fn(async () => ({ text: 'voice payload' })) }
         clearDraft('session-A')
         clearDraft('session-A-resumed')
-        const { result } = renderHook(() => useDictation({
+        const { result, unmount } = renderHook(() => useDictation({
             api: api as unknown as ApiClient,
             provider: 'openai',
             mode: 'standard',
@@ -679,7 +679,11 @@ describe('useDictation', () => {
             })
         })
         await waitFor(() => expect(sendMessage).toHaveBeenCalled())
-        act(() => { saveDraft('session-A', 'follow-up typed while sending') })
+        unmount()
+        act(() => {
+            saveDraft('session-A', sourceDraft)
+            saveDraft('session-A-resumed', 'destination draft')
+        })
         await act(async () => { resolveSend?.() })
         await waitFor(() => expect(onSessionResolved).toHaveBeenCalled())
 
@@ -687,7 +691,7 @@ describe('useDictation', () => {
         // Message goes to the resumed session id, not the inactive original.
         expect(sendMessage).toHaveBeenCalledWith('session-A-resumed', 'explicit initial text voice payload', undefined)
         expect(onSessionResolved).toHaveBeenCalledWith('session-A-resumed')
-        expect(getDraft('session-A-resumed')).toBe('follow-up typed while sending')
+        expect(getDraft('session-A-resumed')).toBe(['destination draft', sourceDraft].filter(Boolean).join(' '))
     })
 
     it('does not notify when the resolver did not resume the session', async () => {

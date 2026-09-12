@@ -287,17 +287,19 @@ async function awaitInactivePersist(sessionId: string): Promise<void> {
 
 export type TransferComposerDraftOptions = {
     /**
-     * Immutable text captured at send/resume time. Prefer this over drafts that
-     * may already have been cleared by assistant-ui while resume was in flight.
+     * Text captured at send/resume time, or a resolver sampled before saving.
+     * The resolver can preserve destination edits made during attachment transfer.
      */
-    textOverride?: string
+    textOverride?: string | ((sampled: string) => string)
 }
 
 function resolveTransferredText(
     sampled: string,
     options?: TransferComposerDraftOptions,
 ): string {
-    return options?.textOverride !== undefined ? options.textOverride : sampled
+    return typeof options?.textOverride === 'function'
+        ? options.textOverride(sampled)
+        : options?.textOverride ?? sampled
 }
 
 /** Copy a draft to the new id returned by resume/reopen before navigating. */
@@ -311,12 +313,13 @@ export async function transferComposerDraft(
         // Same-id resume often no-ops attachments, but Send still needs the
         // submitted text restored after assistant-ui cleared the composer.
         if (options?.textOverride !== undefined) {
-            saveDraft(targetSessionId, options.textOverride)
+            const text = resolveTransferredText(getDraft(sourceSessionId), options)
+            saveDraft(targetSessionId, text)
             const existing = liveSnapshots.get(targetSessionId)
             if (existing) {
                 liveSnapshots.set(targetSessionId, {
                     ...existing,
-                    text: options.textOverride,
+                    text,
                 })
             }
         }
