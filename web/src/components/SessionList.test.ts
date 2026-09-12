@@ -404,6 +404,16 @@ describe('session list search helpers', () => {
         expect(sessionMatchesQuery(session, normalizeSearch('hapi-worktrees'), 'desktop')).toBe(true)
     })
 
+    it('keeps metadata search independent from message content', () => {
+        const session = makeSession({
+            id: 'metadata-session',
+            metadata: { path: '/work/hapi', name: 'Session title' }
+        })
+
+        expect(sessionMatchesQuery(session, normalizeSearch('session title'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('message-only phrase'), 'desktop')).toBe(false)
+    })
+
     it('supports complete wildcard patterns without changing plain text matching', () => {
         const session = makeSession({
             id: 'session-123',

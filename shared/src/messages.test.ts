@@ -2,12 +2,19 @@ import { describe, expect, test } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import {
     extractAssistantPlainText,
+    extractInjectedTurnUuid,
+    extractMessageRenderKey,
+    extractSearchableMessageText,
+    extractUserPlainText,
+    isLiveStreamSnapshot,
     hasConversationMessageContent,
     extractNotifySummary,
+    getAgyTaskLogId,
     getLiveReasoningStreamId,
     getReasoningStreamId,
     isRedundantGoalStatusEventContent,
     splitNotifySummary,
+    stripAgyEchoedTaskResult,
     stripNotifySummaryFooter,
     type NotifySummary
 } from './messages'
@@ -111,6 +118,245 @@ describe('extractAssistantPlainText', () => {
     test('returns null for unknown content shapes', () => {
         expect(extractAssistantPlainText({ type: 'event', data: {} })).toBeNull()
         expect(extractAssistantPlainText({ type: 'text' })).toBeNull()
+    })
+})
+
+describe('extractSearchableMessageText', () => {
+    test('identifies live stream snapshots without treating terminal snapshots as live', () => {
+        expect(isLiveStreamSnapshot({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', streamSnapshot: true, live: true, message: 'partial' }
+            }
+        })).toBe(true)
+        expect(isLiveStreamSnapshot({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', streamSnapshot: true, message: 'complete' }
+            }
+        })).toBe(false)
+        expect(isLiveStreamSnapshot({
+            role: 'agent',
+            content: { type: 'text', streamSnapshot: true, live: true, text: 'partial' }
+        })).toBe(true)
+    })
+
+    test('extracts user text and normalizes whitespace', () => {
+        expect(extractUserPlainText([{ type: 'text', text: ' hello\nworld ' }, { type: 'image' }]))
+            .toBe('hello world')
+        expect(extractUserPlainText('Use **KV Cache** for this path.'))
+            .toBe('Use KV Cache for this path.')
+        expect(extractSearchableMessageText({
+            role: 'user',
+            content: { type: 'text', text: 'Find this prompt' }
+        })).toEqual({ role: 'user', text: 'Find this prompt' })
+    })
+
+    test('bounds oversized structured user text before Markdown normalization', () => {
+        const text = extractUserPlainText([
+            { type: 'text', text: 'Head '.repeat(50) },
+            { type: 'text', text: 'Middle '.repeat(50) },
+            { type: 'text', text: 'Tail phrase' }
+        ], 32)
+
+        expect(text).toMatch(/^Head/)
+        expect(text).toContain('Tail phrase')
+        expect(text).not.toContain('Middle')
+        expect(text?.length).toBeLessThanOrEqual(32)
+    })
+
+    test('extracts assistant prose but excludes tool and reasoning records', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', id: 'stream-1', message: 'Visible answer' } }
+        })).toEqual({ role: 'assistant', text: 'Visible answer', renderKey: 'stream-1' })
+        expect(extractSearchableMessageText({ role: 'agent', content: 'Legacy visible answer' }))
+            .toEqual({ role: 'assistant', text: 'Legacy visible answer' })
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'tool-call', input: { secret: 'do not index' } } }
+        })).toBeNull()
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: { type: 'output', data: { type: 'user', message: { content: 'not assistant prose' } } }
+        })).toBeNull()
+    })
+
+    test('excludes Claude Task/Agent prompts rendered only in the tool card', () => {
+        const content = {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: {
+                    content: [
+                        { type: 'text', text: 'Inspect the repository' },
+                        { type: 'tool_use', name: 'Task', input: { prompt: 'Inspect the repository' } },
+                        { type: 'text', text: 'The repository is ready.' },
+                        { type: 'tool_use', name: 'Agent', input: { prompt: 'Run the second agent' } },
+                        { type: 'text', text: 'Run the second agent' },
+                    ]
+                }
+            }
+        }
+
+        expect(extractSearchableMessageText({ role: 'agent', content }))
+            .toEqual({ role: 'assistant', text: 'The repository is ready. Run the second agent' })
+    })
+
+    test('excludes No response requested only when its parent is system-injected', () => {
+        const sidechain = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    uuid: 'injected-turn',
+                    message: { content: '<system-reminder>...</system-reminder>' }
+                }
+            }
+        }
+        const sentinel = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    parentUuid: 'injected-turn',
+                    message: { content: [{ type: 'text', text: 'No response requested.' }] }
+                }
+            }
+        }
+        const normalSentinel = {
+            ...sentinel,
+            content: {
+                ...sentinel.content,
+                data: {
+                    ...sentinel.content.data,
+                    parentUuid: 'normal-turn'
+                }
+            }
+        }
+
+        expect(extractInjectedTurnUuid(sidechain)).toBe('injected-turn')
+        expect(extractSearchableMessageText(sentinel, {
+            injectedTurnUuids: new Set(['injected-turn'])
+        })).toBeNull()
+        expect(extractSearchableMessageText(normalSentinel, {
+            injectedTurnUuids: new Set(['injected-turn'])
+        })).toEqual({ role: 'assistant', text: 'No response requested.' })
+    })
+
+    test('extracts visible non-sidechain Claude user records', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    isSidechain: false,
+                    message: {
+                        content: [
+                            { type: 'text', text: 'Find this Claude prompt.' },
+                            { type: 'text', text: 'Keep searching.' }
+                        ]
+                    }
+                }
+            }
+        })).toEqual({ role: 'user', text: 'Find this Claude prompt. Keep searching.' })
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    isSidechain: true,
+                    message: { content: [{ type: 'text', text: 'Hidden prompt.' }] }
+                }
+            }
+        })).toBeNull()
+    })
+
+    test('normalizes assistant Markdown to the rendered text', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', message: 'Use **KV Cache** and [the docs](https://example.com).' }
+            }
+        })).toEqual({ role: 'assistant', text: 'Use KV Cache and the docs.' })
+    })
+
+    test('keeps the stream identity even when a snapshot has no searchable text', () => {
+        const emptySnapshot = {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', id: 'stream-1', message: '' } }
+        }
+        expect(extractSearchableMessageText(emptySnapshot)).toBeNull()
+        expect(extractMessageRenderKey(emptySnapshot)).toBe('stream-1')
+    })
+
+    test('excludes hidden assistant metadata, compact-summary, and sidechain output', () => {
+        for (const flag of ['isMeta', 'isCompactSummary', 'isSidechain'] as const) {
+            expect(extractSearchableMessageText({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        [flag]: true,
+                        message: { content: [{ type: 'text', text: 'Hidden renderer output' }] }
+                    }
+                }
+            })).toBeNull()
+        }
+    })
+
+    test('excludes a trailing notify summary footer from assistant search text', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'message',
+                    message: 'Visible answer.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"Hidden footer"}'
+                }
+            }
+        })).toEqual({ role: 'assistant', text: 'Visible answer.' })
+
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Only footer"}'
+        })).toBeNull()
+    })
+
+    test('matches the rendered AGY text by removing echoed task results', () => {
+        expect(stripAgyEchoedTaskResult(
+            'Inside the task-246 log...\n[Message] timestamp=2026-07-08T06:04:31Z sender=u/task-246 content=Task finished with result:\nHidden task output'
+        )).toBe('Inside the task-246 log...')
+
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'agy_message',
+                    content: 'Visible planner prose\n[Message] timestamp=2026-07-08T06:04:31Z content=Hidden task output'
+                }
+            }
+        })).toEqual({ role: 'assistant', text: 'Visible planner prose' })
+    })
+
+    test('excludes AGY task-log narration rendered as a tool chip', () => {
+        expect(getAgyTaskLogId('Inside the task-246 log...')).toBe('246')
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'agy_message', content: 'Inside the task-246 log...\n[Message] timestamp=2026-07-08T06:04:31Z content=Hidden task output' }
+            }
+        })).toBeNull()
     })
 })
 
