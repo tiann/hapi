@@ -1259,7 +1259,7 @@ export function SessionList(props: {
         () => {
             if (!isFiltering) return allSessions
             const matched = hasTextQuery && searchScoreIndex
-                ? timeScopedSessions.filter(session => (searchScoreIndex.scores.get(session.id) ?? 0) > 0)
+                ? timeScopedSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
                 : timeScopedSessions.filter(session => (
                     sessionMatchesQuery(
                         session,

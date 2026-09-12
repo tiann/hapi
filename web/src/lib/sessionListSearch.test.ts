@@ -5,7 +5,8 @@ import {
     buildSessionSearchScoreIndex,
     compareSessionsBySearchRelevance,
     idfForDocumentFrequency,
-    searchFieldMatchesQuery,
+    searchFieldHasBoundaryMatch,
+    searchFieldIncludesQuery,
     sessionMatchesQuery,
     sortSessionsBySearchRelevance,
 } from './sessionListSearch'
@@ -33,34 +34,54 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
     }
 }
 
-describe('searchFieldMatchesQuery', () => {
-    it('matches on alphanumeric boundaries so home does not hit homelab', () => {
-        expect(searchFieldMatchesQuery('homelab', 'home')).toBe(false)
-        expect(searchFieldMatchesQuery('home-lab', 'home')).toBe(true)
-        expect(searchFieldMatchesQuery('Home Assistant', 'home')).toBe(true)
-        expect(searchFieldMatchesQuery('/home/heavygee/coding/hapi', 'home')).toBe(true)
+describe('search field match helpers', () => {
+    it('includes mid-token substrings so as-you-type still works', () => {
+        expect(searchFieldIncludesQuery('homelab', 'home')).toBe(true)
+        expect(searchFieldIncludesQuery('session-search-rank', 'sess')).toBe(true)
+    })
+
+    it('detects boundary affinity separately from inclusion', () => {
+        expect(searchFieldHasBoundaryMatch('homelab', 'home')).toBe(false)
+        expect(searchFieldHasBoundaryMatch('home-lab', 'home')).toBe(true)
+        expect(searchFieldHasBoundaryMatch('Home Assistant', 'home')).toBe(true)
+        expect(searchFieldHasBoundaryMatch('/home/heavygee/coding/hapi', 'home')).toBe(true)
     })
 })
 
 describe('sessionMatchesQuery', () => {
-    it('keeps path and title searchable including OS home prefixes', () => {
+    it('keeps path searchable including OS home prefixes', () => {
         const underHome = makeSession({
             id: 'meta',
             metadata: { path: '/home/heavygee/coding/hapi', name: 'meta HAPI triage' },
         })
         expect(sessionMatchesQuery(underHome, 'home', 'oos')).toBe(true)
         expect(sessionMatchesQuery(underHome, 'hapi', 'oos')).toBe(true)
-        expect(sessionMatchesQuery(underHome, 'homelab', 'oos')).toBe(false)
-        expect(sessionMatchesQuery(underHome, 'home', 'homelab')).toBe(true)
+        expect(sessionMatchesQuery(underHome, 'hap', 'oos')).toBe(true)
     })
 
-    it('does not match machine label homelab for query home', () => {
+    it('still matches machine label substrings for shared callers', () => {
         const session = makeSession({
             id: 'docs',
             metadata: { path: '/work/docs', name: 'Peer docs' },
         })
-        expect(sessionMatchesQuery(session, 'home', 'homelab')).toBe(false)
-        expect(sessionMatchesQuery(session, 'homelab', 'homelab')).toBe(true)
+        expect(sessionMatchesQuery(session, 'home', 'homelab')).toBe(true)
+        expect(sessionMatchesQuery(session, 'lab', 'homelab')).toBe(true)
+    })
+
+    it('matches wildcards against individual path parts, not a joined blob', () => {
+        const session = makeSession({
+            id: 'wt',
+            metadata: {
+                path: '/home/heavygee/coding/hapi',
+                worktree: {
+                    basePath: '/home/heavygee/coding/hapi',
+                    branch: 'feat/x',
+                    name: 'x',
+                    worktreePath: '/home/heavygee/coding/hapi-worktrees/x',
+                },
+            },
+        })
+        expect(sessionMatchesQuery(session, '*coding/hapi', 'oos')).toBe(true)
     })
 })
 
@@ -70,20 +91,20 @@ describe('session search relevance ranking', () => {
     })
 
     it('down-weights terms that match most of the corpus (IDF)', () => {
-        // Term matching all docs ≈ log(1+N/(1+N)) small; rare term larger.
         const common = idfForDocumentFrequency(100, 100)
         const rare = idfForDocumentFrequency(100, 1)
         expect(rare).toBeGreaterThan(common)
         expect(common).toBeGreaterThan(0)
     })
 
-    it('ranks Home Assistant above recent path-only /home/ matches for query Home', () => {
+    it('ranks Home Assistant above recent path-only /home/ and mid-token homelab matches', () => {
         const homeAssistant = makeSession({
             id: 'd755080b',
             updatedAt: 100,
             metadata: {
                 path: '/home/heavygee/coding/home-assistant',
                 name: 'Home Assistant',
+                machineId: 'oos',
             },
         })
         const recentMeta = makeSession({
@@ -92,30 +113,33 @@ describe('session search relevance ranking', () => {
             metadata: {
                 path: '/home/heavygee/coding/hapi',
                 name: 'meta HAPI triage/problems',
+                machineId: 'oos',
             },
         })
-        const olderPeer = makeSession({
-            id: 'peer-jobs',
-            updatedAt: 8_000,
+        const homeLabHost = makeSession({
+            id: 'on-homelab',
+            updatedAt: 9_500,
             metadata: {
-                path: '/home/heavygee/coding/hapi/worktrees/jobs',
-                name: 'Peer: session-attached jobs',
+                path: '/work/docs',
+                name: 'Peer docs',
+                machineId: 'homelab-machine',
             },
         })
 
-        const corpus = [recentMeta, olderPeer, homeAssistant]
-        const index = buildSessionSearchScoreIndex(corpus, 'Home', () => 'oos')
+        const corpus = [recentMeta, homeLabHost, homeAssistant]
+        const index = buildSessionSearchScoreIndex(corpus, 'Home', (machineId) =>
+            machineId === 'homelab-machine' ? 'homelab' : 'oos'
+        )
 
-        expect(index.scores.get(homeAssistant.id) ?? 0).toBeGreaterThan(index.scores.get(recentMeta.id) ?? 0)
-        expect(index.scores.get(recentMeta.id) ?? 0).toBeGreaterThan(0)
+        expect(index.matchedIds.has('d755080b')).toBe(true)
+        expect(index.matchedIds.has('meta-triage')).toBe(true)
+        expect(index.matchedIds.has('on-homelab')).toBe(true)
+        expect(index.scores.get('d755080b') ?? 0).toBeGreaterThan(index.scores.get('meta-triage') ?? 0)
+        expect(index.scores.get('d755080b') ?? 0).toBeGreaterThan(index.scores.get('on-homelab') ?? 0)
 
         const ranked = sortSessionsBySearchRelevance(corpus, index)
-        expect(ranked.map((session) => session.id)).toEqual([
-            'd755080b',
-            'meta-triage',
-            'peer-jobs',
-        ])
-        expect(compareSessionsBySearchRelevance(homeAssistant, recentMeta, index)).toBeLessThan(0)
+        expect(ranked[0]?.id).toBe('d755080b')
+        expect(compareSessionsBySearchRelevance(ranked[0]!, ranked[1]!, index)).toBeLessThan(0)
     })
 
     it('lets a distinctive second term dominate when the first term is ubiquitous', () => {
@@ -137,6 +161,7 @@ describe('session search relevance ranking', () => {
         )
         const ranked = sortSessionsBySearchRelevance([onlyHomePath, homeAssistant], index)
         expect(ranked[0]?.id).toBe('ha')
-        expect(index.scores.has('path-only')).toBe(false)
+        expect(index.matchedIds.has('path-only')).toBe(false)
+        expect(index.matchedIds.has('ha')).toBe(true)
     })
 })
