@@ -893,11 +893,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                     this.softSteerWaiters = [];
                 }
-                // Soft-steer can emit Error: T / strong stderr after the primary
-                // prompt already settled successfully. Flush those late signals
-                // before clearing attempt state (bridgeable:false — steered input
-                // was already accepted into the session).
-                const lateSoftSteerFailure = this.pendingStderrFailure ?? this.pendingTextFailure;
+                // Soft-steer can emit Error: T / RetriableError / strong stderr
+                // after the primary prompt already settled successfully. Flush
+                // those late signals before clearing attempt state
+                // (bridgeable:false — steered input was already accepted).
+                // RetriableError text is stripped into pendingRetryableError and
+                // never reaches pendingTextFailure — include that path too.
+                const lateSoftSteerFailure = this.pendingStderrFailure
+                    ?? this.pendingTextFailure
+                    ?? (this.pendingInlineRetryableError && this.pendingRetryableError
+                        ? classifyCursorAgentMessage(this.pendingRetryableError)
+                        : null);
                 if (lateSoftSteerFailure && !this.turnHasModelError) {
                     this.recordModelError(lateSoftSteerFailure, { bridgeable: false });
                 }

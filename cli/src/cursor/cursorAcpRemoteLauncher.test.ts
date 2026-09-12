@@ -572,6 +572,62 @@ describe('cursorAcpRemoteLauncher', () => {
         await launchPromise;
     });
 
+    it('records a late soft-steer RetriableError that was stripped into pendingInlineRetryableError', async () => {
+        // Cold-review Major 2026-09-12: RetriableError text is stripped into
+        // pendingRetryableError and never reaches pendingTextFailure; late
+        // soft-steer finalization must still record modelError.
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('prompt A', mode, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('soft steer B', mode, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await vi.waitFor(() => expect(harness.activeOnMessage).toBeTruthy());
+        await new Promise((r) => setTimeout(r, 20));
+
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+
+        const wroteCanceled = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { kind?: string; bridgeable?: boolean } | undefined;
+            return err?.kind === 'canceled' && err?.bridgeable === false;
+        });
+        expect(wroteCanceled).toBe(true);
+
+        session.queue.close();
+        await launchPromise;
+    });
+
     it('bridges with the live session mode/model, not the failed batch mode', async () => {
         // Cold-review Major 2026-09-12: after transient failure, operator switches to
         // plan (or a new model); Bridge must not reapply lastTurnMode from the failure.
