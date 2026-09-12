@@ -207,7 +207,7 @@ async function fetchSessionMessages(opts: OpencodeCompactCallOpts & { fetchImpl?
         const response = await fetchFn(url, { method: 'GET', signal: opts.signal });
         if (!response.ok) return null;
         const data: unknown = await response.json().catch(() => null);
-        return Array.isArray(data) ? data as OpencodeMessageEntry[] : null;
+        return Array.isArray(data) && data.every(isObjectRecord) ? data as OpencodeMessageEntry[] : null;
     } catch {
         return null;
     }
