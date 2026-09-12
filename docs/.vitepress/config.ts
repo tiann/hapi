@@ -32,7 +32,8 @@ export default defineConfig({
           { text: 'How it Works', link: '/guide/how-it-works' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
-          { text: 'FAQ', link: '/guide/faq' }
+          { text: 'FAQ', link: '/guide/faq' },
+          { text: 'Build Remote Agent', link: '/guide/gbr' }
         ]
       },
       {
