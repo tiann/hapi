@@ -140,6 +140,19 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 2. **Logic:** skim `git diff origin/main...HEAD`; apply `.github/prompts/codex-pr-review.md` as a local Major checklist (no Codex required)
 3. **Style:** optional
 
+## PR follow-through: review wait + auto-fix loop (agents)
+
+Opening or updating a PR does **not** end the task. Enter a bounded review-wait phase and watch, for the current HEAD: GitHub Checks, PR reviews, plain comments, and inline review comments.
+
+- **One window per HEAD.** Each wait round targets the current HEAD: max 30 minutes, poll every 60s. Prefer a quiet Shell/`gh` polling loop that prints only on state change, new feedback, failure, or timeout — do not re-run full model reasoning every minute, and do not repeat identical output. After an auto-fix is pushed to the same PR branch, restart a fresh wait round from the new HEAD; never cram every round of a task into one 30-minute window.
+- **Coverage.** `gh pr checks --watch` covers checks only; it does not replace reviews/comments polling. Also watch new reviews, issue comments, and review comments. Baseline against the current PR, the current HEAD commit, and the feedback already present when the round started, so stale comments are not reprocessed.
+- **Auto-fix.** For clear, local feedback that does not change the agreed requirements: verify the point, implement the minimal fix, run scope-matched tests, inspect the diff, commit, and push to the same PR branch, then wait for the next round on the new HEAD. No need to ask the user for each such fix.
+- **Loop bound.** At most 100 consecutive auto-fix rounds (one round = one fix-and-push for a tip review point). Stop and report when the cap is hit, when the same blocker survives 100 materially different attempts, or when a wait window ends with no checks/review results — report the current HEAD, feedback handled, items still pending or failing, and the suggested next step. A single-round timeout ends only that wait; never keep editing code with no new feedback just to reach 100 rounds.
+- **Stop and ask first.** Do not auto-edit or push when feedback would change product behavior or the original requirements; when several mutually exclusive options would materially change the outcome; when the PR scope must grow; when dependencies, migrations, or architecture changes are involved; when security, credentials, or production are involved; when force-push, history rewrite, or closing/replacing the PR is needed; or when feedback conflicts with user instructions or the PR's stated goal.
+- **Bots can be wrong.** Verify against the code, tests, and original requirements before fixing. Do not change code just to silence the bot on a point that does not hold — provide evidence and, when useful, a concise reply.
+- **No context burn.** Waiting must not consume context with high-frequency output. Sleep/blocking waits need no model reasoning; hand the model only the minimum necessary information, and only after a state change. If the machine sleeps, the network drops, the GitHub API rate-limits, auth expires, or a tool times out, say so honestly — never claim the wait finished or the checks passed.
+- **Contributor-side done.** At minimum: required checks for the current HEAD pass; the latest actionable review feedback is handled or explicitly rejected with reasons; and no verification that should have been re-run after the last fix was skipped. Do not merge into upstream `main` by default (contributors usually lack permission) — report readiness and let the maintainer merge. Merge only when the user explicitly asks and the current account really has write access to the target repo.
+
 ## Testing
 
 - Test framework: Vitest (via `bun run test`)
