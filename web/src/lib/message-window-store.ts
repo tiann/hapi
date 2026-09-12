@@ -970,7 +970,7 @@ function enterTailMode(previous: InternalState): InternalState {
     // Shedding rows while an older-page request is in flight can evict its
     // `before` cursor row (the window's oldest at request start); invalidate
     // that request so its apply cannot re-arm a stale cursor past the gap.
-    const invalidateInFlight = previous.isLoadingMore && dropped.length > 0
+    const invalidateInFlight = previous.isLoadingMore && (dropped.length > 0 || previous.historyBoundaryAt !== null)
     return buildState(previous, {
         messages: kept,
         hasMore: previous.hasMore || dropped.length > 0,
@@ -1190,7 +1190,9 @@ export async function fetchOlderMessages(
                 // In history mode keep the oldest side (the loaded pages the
                 // user is browsing); in tail mode keep the whole window while
                 // the history boundary is held so the live tail keeps streaming.
-                mode: previous.viewMode === 'history' ? 'prepend' : 'append',
+                mode: previous.viewMode === 'tail' && (previous.historyBoundaryAt !== null || installBoundaryNow)
+                    ? 'append'
+                    : 'prepend',
                 regularLimit: OLDER_LOAD_WINDOW_SIZE,
                 historyBoundaryAt: previous.historyBoundaryAt ?? (installBoundaryNow ? before.at : undefined),
                 historyBoundarySeq: previous.historyBoundarySeq ?? (installBoundaryNow ? before.seq : undefined)

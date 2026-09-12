@@ -1227,6 +1227,10 @@ export function HappyThread(props: {
     useEffect(() => {
         return () => {
             historyLoaderRef.current.runId += 1
+            if (outlineOpenRef.current && atBottomRef.current) {
+                onViewModeChangeRef.current('tail')
+            }
+            outlineOpenRef.current = false
             clearInitialScrollTimers()
             clearCoverageCheckTimer()
             clearFailureRetryTimer()

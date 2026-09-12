@@ -1557,6 +1557,56 @@ describe('history view and older pagination', () => {
     // no outline-close or view-mode transition to release it, so the window
     // would stay unbounded for the rest of the session. Without the boundary
     // the base tail trim keeps the window bounded.
+    it('invalidates an outline load when its boundary is released at the tail cap', async () => {
+        const id = sessionId('outline-release-at-cap')
+        const all = Array.from({ length: 600 }, (_, index) =>
+            makeAgentMessage({ id: `m-${index + 1}`, seq: index + 1, at: index + 1 })
+        )
+        const pending = deferred<MessagesResponse>()
+        const api = createApi(vi.fn()
+            .mockResolvedValueOnce(latestResponse(all.slice(200), {
+                epoch: 0, hasMore: true, nextBeforeAt: 201, nextBeforeSeq: 201
+            }))
+            .mockReturnValueOnce(pending.promise))
+        await syncTailMessages(api, id)
+        expect(getMessageWindowState(id).messages).toHaveLength(VISIBLE_WINDOW_SIZE)
+        let outlineOpen = true
+        const loading = fetchOlderMessages(api, id, { shouldInstallBoundary: () => outlineOpen })
+        outlineOpen = false
+        setMessageViewMode(id, 'tail')
+        ingestIncomingMessages(id, [makeAgentMessage({ id: 'm-601', seq: 601, at: 601 })])
+        outlineOpen = true
+        pending.resolve(beforeResponse(all.slice(0, 200), {
+            epoch: 0, hasMore: false, nextBeforeAt: 1, nextBeforeSeq: 1
+        }))
+        expect(await loading).toEqual({ kind: 'stopped', reason: 'invalidated' })
+        expect(getMessageWindowState(id).messages[0]?.seq).toBe(202)
+        expect(getMessageWindowState(id).oldestSeq).toBe(202)
+    })
+
+    it('retains fetched pages beyond the older-load cap without an outline boundary', async () => {
+        const id = sessionId('automatic-tail-load-prepend')
+        const all = Array.from({ length: 1000 }, (_, index) =>
+            makeAgentMessage({ id: `m-${index + 1}`, seq: index + 1, at: index + 1 })
+        )
+        const api = createApi(vi.fn(async (_sid: string, query: { beforeSeq?: number | null }) => {
+            const older = all.filter(message => message.seq! < (query.beforeSeq ?? 1001))
+            const page = older.slice(-200)
+            const pagination = { epoch: 0, hasMore: older.length > page.length,
+                nextBeforeAt: page[0]?.seq ?? null, nextBeforeSeq: page[0]?.seq ?? null }
+            return query.beforeSeq == null ? latestResponse(page, pagination) : beforeResponse(page, pagination)
+        }))
+        await syncTailMessages(api, id)
+        for (let page = 0; page < 4; page += 1) {
+            expect((await fetchOlderMessages(api, id)).kind).toBe('applied')
+        }
+        const state = getMessageWindowState(id)
+        expect(state.messages).toHaveLength(800)
+        expect(state.messages[0]?.seq).toBe(1)
+        expect(state.messages.at(-1)?.seq).toBe(800)
+        expect(state.oldestSeq).toBe(1)
+    })
+
     it('keeps automatic tail-mode loads bounded (no boundary installed)', async () => {
         const id = sessionId('automatic-tail-load-bounded')
         const all = Array.from({ length: 600 }, (_, index) =>

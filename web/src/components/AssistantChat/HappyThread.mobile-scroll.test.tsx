@@ -46,7 +46,7 @@ class TestResizeObserver {
     disconnect() {}
 }
 
-function renderThread(onViewModeChange = vi.fn(), unseenCount = 0) {
+function renderThread(onViewModeChange = vi.fn(), unseenCount = 0, outlineOpen = false) {
     const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false } }
     })
@@ -73,7 +73,7 @@ function renderThread(onViewModeChange = vi.fn(), unseenCount = 0) {
                     messagesVersion={1}
                     historyVersion={0}
                     forceScrollToken={forceScrollToken}
-                    outlineOpen={false}
+                    outlineOpen={outlineOpen}
                     outlineItems={[]}
                     onOutlineOpenChange={vi.fn()}
                 />
@@ -140,6 +140,13 @@ afterEach(() => {
 })
 
 describe('mobile initial scroll settling', () => {
+    it('releases outline history protection when the thread unmounts at the tail', () => {
+        const onViewModeChange = vi.fn()
+        const { unmount } = renderThread(onViewModeChange, 0, true)
+        onViewModeChange.mockClear()
+        unmount()
+        expect(onViewModeChange).toHaveBeenCalledWith('tail')
+    })
     it('does not snap back after pointer cancellation ends a touch swipe', () => {
         const { viewport, onViewModeChange } = renderThread()
         expect(viewport.scrollTop).toBe(702)
