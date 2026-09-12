@@ -867,7 +867,7 @@ describe('useDictation', () => {
         expect(result.current.error).toBe('network down')
     })
 
-    it.each([false, true])('preserves follow-up drafts after an unmounted resume/send failure, sameId=%s', async (sameId) => {
+    it.each([[false, false], [true, false], [false, true]])('preserves follow-ups after resume/send failure, sameId=%s, targetBefore=%s', async (sameId, targetBefore) => {
         const stopTrack = vi.fn()
         Object.defineProperty(navigator, 'mediaDevices', {
             configurable: true,
@@ -892,6 +892,11 @@ describe('useDictation', () => {
 
         const onTextChange = vi.fn()
         const resolveSessionId = vi.fn(async () => {
+            if (targetBefore) {
+                saveDraft('session-A-resumed', 'existing destination')
+                unmount()
+                await Promise.resolve()
+            }
             if (sameId) {
                 saveDraft('session-A', 'source follow-up')
                 unmount()
@@ -930,6 +935,11 @@ describe('useDictation', () => {
             await act(async () => { rejectSend?.(new Error('network down')) })
             await waitFor(() => expect(getDraft('session-A')).toBe('source follow-up initial text voice payload'))
             expect(onSessionResolved).toHaveBeenCalledWith('session-A')
+            return
+        }
+        if (targetBefore) {
+            await act(async () => { rejectSend?.(new Error('network down')) })
+            await waitFor(() => expect(getDraft('session-A-resumed')).toBe('existing destination initial text voice payload'))
             return
         }
         act(() => {

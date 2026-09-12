@@ -77,17 +77,20 @@ export function recoverFailedVoiceSend(args: {
     const target = getLiveComposerDraft(args.recoverySessionId)
     const liveReplacement = target?.getText() ?? (args.mounted ? args.getCurrentText() : '')
     const replaceLiveText = target?.setText ?? (args.mounted ? args.onTextChange : undefined)
-    const sourceSessionId = !args.mounted
-        && args.sourceSessionId !== args.recoverySessionId
+    const sourceSessionId = args.sourceSessionId !== args.recoverySessionId
         ? args.sourceSessionId
         : undefined
-    const sourceDraft = sourceSessionId ? getDraft(sourceSessionId) : ''
     const persistedDraft = getDraft(args.recoverySessionId)
     let replacement = liveReplacement.trim() && liveReplacement !== args.initialText
         ? liveReplacement
         : persistedDraft !== args.draftAtStart ? persistedDraft : ''
-    if (sourceDraft && sourceDraft !== args.sourceDraftAtStart) {
-        replacement = appendTranscript(replacement, sourceDraft)
+    if (sourceSessionId) {
+        replacement = target?.getText() ?? persistedDraft
+        const sourceDraft = getLiveComposerDraft(sourceSessionId)?.getText()
+            ?? (args.mounted ? args.getCurrentText() : getDraft(sourceSessionId))
+        if (sourceDraft && sourceDraft !== args.sourceDraftAtStart && sourceDraft !== args.initialText) {
+            replacement = appendTranscript(replacement, sourceDraft)
+        }
     }
     const merged = appendTranscript(replacement, args.failedText)
     saveDraft(args.recoverySessionId, merged)
@@ -283,17 +286,11 @@ export function useDictation(config: {
                                 const sendMsg = config.sendMessage ?? ((sid: string, msg: string, dm?: MessageDeliveryMode) => config.api!.sendMessage(sid, msg, null, undefined, undefined, dm))
                                 let targetSessionId = pendingSend.sessionId
                                 let resumed = false
-                                let recoveryDraftAtStart = pendingSend.draftAtStart
                                 try {
                                     if (pendingSend.options.resolveSessionId) {
                                         const resolved = await pendingSend.options.resolveSessionId(pendingSend.sessionId)
                                         targetSessionId = resolved.sessionId
                                         resumed = resolved.resumed
-                                        // Snapshot the resumed session's draft BEFORE the send: the
-                                        // catch compares against this to avoid clobbering text the
-                                        // operator typed into the resumed composer while the request
-                                        // was in flight.
-                                        if (resumed && targetSessionId !== pendingSend.sessionId) recoveryDraftAtStart = getDraft(targetSessionId)
                                     }
                                     await sendMsg(targetSessionId, finalMessage, pendingSend.deliveryMode)
                                     if (resumed) {
@@ -321,7 +318,7 @@ export function useDictation(config: {
                                         recoverySessionId,
                                         initialText: pendingSend.initialText,
                                         failedText: finalMessage,
-                                        draftAtStart: recoveryDraftAtStart,
+                                        draftAtStart: pendingSend.draftAtStart,
                                         sourceSessionId: pendingSend.sessionId,
                                         sourceDraftAtStart: pendingSend.draftAtStart,
                                     })

@@ -73,17 +73,11 @@ export function useRealtimeDictation(config: {
                 const sendMsg = config.sendMessage ?? ((sid: string, msg: string, dm?: MessageDeliveryMode) => config.api!.sendMessage(sid, msg, null, undefined, undefined, dm))
                 let targetSessionId = pendingSend.sessionId
                 let resumed = false
-                let recoveryDraftAtStart = pendingSend.draftAtStart
                 try {
                     if (pendingSend.options.resolveSessionId) {
                         const resolved = await pendingSend.options.resolveSessionId(pendingSend.sessionId)
                         targetSessionId = resolved.sessionId
                         resumed = resolved.resumed
-                        // Snapshot the resumed session's draft BEFORE the send: the
-                        // catch compares against this to avoid clobbering text the
-                        // operator typed into the resumed composer while the request
-                        // was in flight.
-                        if (resumed && targetSessionId !== pendingSend.sessionId) recoveryDraftAtStart = getDraft(targetSessionId)
                     }
                     await sendMsg(targetSessionId, finalMessage, pendingSend.deliveryMode)
                     if (resumed) {
@@ -112,7 +106,7 @@ export function useRealtimeDictation(config: {
                         recoverySessionId,
                         initialText: pendingSend.initialText,
                         failedText: finalMessage,
-                        draftAtStart: recoveryDraftAtStart,
+                        draftAtStart: pendingSend.draftAtStart,
                         sourceSessionId: pendingSend.sessionId,
                         sourceDraftAtStart: pendingSend.draftAtStart,
                     })
