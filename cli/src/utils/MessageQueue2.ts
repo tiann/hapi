@@ -310,9 +310,20 @@ export class MessageQueue2<T> {
         logger.debug(`[MessageQueue2] unshiftIsolated() completed. Queue size: ${this.queue.length}`);
     }
 
-    /** True when a non-bridge user/API turn is already waiting. */
+    /** True when a non-bridge user/API turn is already waiting (queued or reserved). */
     hasPendingNonBridgeTurn(): boolean {
-        return this.queue.some((item) => item.internal?.kind !== 'model-error-bridge');
+        if (this.queue.some((item) => item.internal?.kind !== 'model-error-bridge')) {
+            return true;
+        }
+        // Soft-steer takeByLocalId removes the row from queue before
+        // turnHasSteeredInput / softSteerWaiters are set — Bridge guards must
+        // still see that newer instruction while the reservation is live.
+        for (const { item, state } of this.reservations.values()) {
+            if (state === 'cancelled') continue;
+            if (item.internal?.kind === 'model-error-bridge') continue;
+            return true;
+        }
+        return false;
     }
 
     /** Drop a pending model-error bridge by its eventId (queue-owned provenance). */

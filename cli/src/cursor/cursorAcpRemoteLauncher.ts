@@ -1442,17 +1442,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Aborting an in-flight Bridge after tool side effects must close the
-     * replay gate. handleAbort clears bridgingForEventId and turn cleanup
-     * resets attemptProducedToolActivity, so without this stamp a second
-     * Bridge would re-send lastUserMessage and re-run completed tools.
+     * Aborting an in-flight Bridge after tool side effects or an accepted
+     * soft-steer must close the replay gate. handleAbort clears
+     * bridgingForEventId and turn cleanup resets attemptProducedToolActivity /
+     * turnHasSteeredInput, so without this stamp a second Bridge would re-send
+     * lastUserMessage despite completed tools or a newer steered correction.
      */
     private closeBridgeReplayGateIfToolActivityDuringBridge(): void {
         const err = this.lastRecordedModelError;
         if (
             !err
             || this.bridgingForEventId !== err.eventId
-            || !this.attemptProducedToolActivity
+            || (!this.attemptProducedToolActivity && !this.turnHasSteeredInput)
             || err.bridgeable === false
         ) {
             return;
