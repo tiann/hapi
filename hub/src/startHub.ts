@@ -287,7 +287,9 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         socketEngine: socketServer.engine,
         corsOrigins,
         relayMode: relayFlag.enabled,
-        officialWebUrl
+        officialWebUrl,
+        previewRegistry: socketServer.previewRegistry,
+        previewTunnel: socketServer.previewTunnel
     })
 
     // Start the bot if configured

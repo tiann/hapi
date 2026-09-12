@@ -44,12 +44,20 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
 // modes must still gate them. Treat both as write-like in read-only so ACP
 // titles such as "Ping Peer Session" / "Inspect Peer Session" also require
 // approval. list_peers is discovery-only and is auto-approved above.
+// preview_* is likewise sensitive: it publishes publicly-readable capability
+// URLs exposing local directories / loopback services.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',
     'ping peer',
     'inspect_peer',
     'inspect peer',
+    'preview_static',
+    'preview_proxy',
+    'preview_stop',
+    'mount static preview',
+    'proxy local dev server',
+    'unmount preview',
 ];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     'write',

@@ -100,6 +100,17 @@ export async function buildHapiMcpBridge(
         },
         display_media: {
             approval_mode: 'prompt'
+        },
+        // Preview mounts publish publicly-readable capability URLs (and expose
+        // local dirs / loopback services) — same trust level as display_media.
+        preview_static: {
+            approval_mode: 'prompt'
+        },
+        preview_proxy: {
+            approval_mode: 'prompt'
+        },
+        preview_stop: {
+            approval_mode: 'prompt'
         }
     };
     if (options.enableChangeTitle !== false) {

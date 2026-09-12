@@ -43,6 +43,10 @@ import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
+import type { PreviewRegistry } from '../preview/previewRegistry'
+import type { PreviewTunnel } from '../preview/previewTunnel'
+import { createPreviewRoutes } from './previewRoutes'
+import { createPreviewWsTunnelHandler, isPreviewWsUpgrade, resolvePreviewUpgrade, type PreviewWsData } from './previewWsTunnel'
 
 // Normalise upstream close codes before forwarding to the browser client.
 // Codes 1005/1006/1015 are reserved and cannot be sent in a close frame;
@@ -228,6 +232,8 @@ function createWebApp(options: {
     embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
     relayMode?: boolean
     officialWebUrl?: string
+    previewRegistry?: PreviewRegistry | null
+    previewTunnel?: PreviewTunnel | null
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -246,6 +252,11 @@ function createWebApp(options: {
     app.use('/health', corsMiddleware)
     app.use('/api/*', corsMiddleware)
     app.use('/cli/*', corsMiddleware)
+    // Preview pages fetch their own subresources from the same origin, but a
+    // mounted page may also be embedded elsewhere — answer preflights.
+    if (options.previewRegistry && options.previewTunnel) {
+        app.use('/preview/*', corsMiddleware)
+    }
 
     // Health check endpoint (no auth required).
     // Capabilities are additive so older clients can ignore unknown fields.
@@ -280,6 +291,16 @@ function createWebApp(options: {
     })
 
     app.route('/cli', createCliRoutes(options.getSyncEngine))
+
+    // Preview capability URLs. Mounted BEFORE the /api/* auth middleware and
+    // before both SPA fallbacks: the unguessable mountId is the credential and
+    // `/preview` must never be swallowed by the web app.
+    if (options.previewRegistry && options.previewTunnel) {
+        app.route('/preview', createPreviewRoutes({
+            previewRegistry: options.previewRegistry,
+            previewTunnel: options.previewTunnel
+        }))
+    }
 
     app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
@@ -423,6 +444,8 @@ export async function startWebServer(options: {
     corsOrigins?: string[]
     relayMode?: boolean
     officialWebUrl?: string
+    previewRegistry?: PreviewRegistry | null
+    previewTunnel?: PreviewTunnel | null
 }): Promise<BunServer<WebSocketData>> {
     const isCompiled = isBunCompiled()
     const embeddedAssetMap = isCompiled ? await loadEmbeddedAssetMap() : null
@@ -436,7 +459,9 @@ export async function startWebServer(options: {
         corsOrigins: options.corsOrigins,
         embeddedAssetMap,
         relayMode: options.relayMode,
-        officialWebUrl: options.officialWebUrl
+        officialWebUrl: options.officialWebUrl,
+        previewRegistry: options.previewRegistry,
+        previewTunnel: options.previewTunnel
     })
 
     const configuration = getConfiguration()
@@ -446,6 +471,7 @@ export async function startWebServer(options: {
     const originalWsHandler = socketHandler.websocket
     const geminiProxyHandler = createGeminiProxyWebSocketHandler()
     const qwenProxyHandler = createQwenProxyWebSocketHandler()
+    const previewWsHandler = createPreviewWsTunnelHandler()
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const server = (Bun.serve as any)({
@@ -462,31 +488,37 @@ export async function startWebServer(options: {
             perMessageDeflate: true,
             open(ws: unknown) {
                 applyDefaultWsCompression(ws as ServerWebSocket<unknown>)
-                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean } & PreviewWsData>
                 if (wsAny.data?._geminiProxy) {
                     geminiProxyHandler.open(wsAny)
                 } else if (wsAny.data?._qwenProxy) {
                     qwenProxyHandler.open(wsAny)
+                } else if (wsAny.data?._previewTunnelConn) {
+                    previewWsHandler.open(wsAny)
                 } else {
                     originalWsHandler.open?.(ws as never)
                 }
             },
             message(ws: unknown, message: unknown) {
-                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean } & PreviewWsData>
                 if (wsAny.data?._geminiProxy) {
                     geminiProxyHandler.message(wsAny, message as string)
                 } else if (wsAny.data?._qwenProxy) {
                     qwenProxyHandler.message(wsAny, message as string)
+                } else if (wsAny.data?._previewTunnelConn) {
+                    previewWsHandler.message(wsAny, message)
                 } else {
                     originalWsHandler.message?.(ws as never, message as never)
                 }
             },
             close(ws: unknown, code: number, reason: string) {
-                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean } & PreviewWsData>
                 if (wsAny.data?._geminiProxy) {
                     geminiProxyHandler.close(wsAny, code, reason)
                 } else if (wsAny.data?._qwenProxy) {
                     qwenProxyHandler.close(wsAny, code, reason)
+                } else if (wsAny.data?._previewTunnelConn) {
+                    previewWsHandler.close(wsAny, code, reason)
                 } else {
                     originalWsHandler.close?.(ws as never, code as never, reason as never)
                 }
@@ -496,6 +528,27 @@ export async function startWebServer(options: {
             const url = new URL(req.url)
             if (url.pathname.startsWith('/socket.io/')) {
                 return socketHandler.fetch(req, server as never)
+            }
+
+            // Preview WebSocket pass-through (dev-server HMR). The mount/token
+            // check happens here; the frames then ride the CLI tunnel conn.
+            if (options.previewRegistry && options.previewTunnel && isPreviewWsUpgrade(url.pathname, req)) {
+                const resolved = resolvePreviewUpgrade(url.pathname, url, req, options.previewRegistry)
+                if (!resolved) {
+                    return new Response('Preview not found', { status: 404 })
+                }
+                const conn = options.previewTunnel.openWs(resolved.entry, resolved.meta)
+                if (!conn) {
+                    return new Response('Preview tunnel unavailable', { status: 503 })
+                }
+                const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
+                    data: { _previewTunnelConn: conn }
+                })
+                if (!upgraded) {
+                    conn.close(1011, 'upgrade failed')
+                    return new Response('WebSocket upgrade failed', { status: 500 })
+                }
+                return undefined as unknown as Response
             }
 
             // Voice WebSocket proxies — require JWT auth via query param

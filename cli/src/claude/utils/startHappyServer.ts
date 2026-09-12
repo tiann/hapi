@@ -27,6 +27,15 @@ import {
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation'
 import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
+import {
+    PREVIEW_PROXY_TOOL_DESCRIPTION,
+    PREVIEW_STATIC_TOOL_DESCRIPTION,
+    PREVIEW_STOP_TOOL_DESCRIPTION,
+    PreviewProxyToolArgsSchema,
+    PreviewStaticToolArgsSchema,
+    PreviewStopToolArgsSchema,
+} from '@hapi/protocol/preview';
+import { previewProxyTool, previewStaticTool, previewStopTool } from '@/preview/toolImpl';
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -42,7 +51,12 @@ const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
     'display_media',
     'display_video',
     'ping_peer',
-    'inspect_peer'
+    'inspect_peer',
+    // preview_* publishes publicly-readable capability URLs (and exposes local
+    // dirs / loopback services), so it always needs explicit user approval.
+    'preview_static',
+    'preview_proxy',
+    'preview_stop'
 ]);
 
 /**
@@ -413,6 +427,36 @@ function createHapiMcpServer(
         }
     });
 
+    // --- preview: nginx-style mounts on the hub port -----------------------
+    // Args/descriptions live in @hapi/protocol/preview so the stdio bridge
+    // (codex/opencode/cursor/...) serves the exact same tool contracts.
+    mcp.registerTool<any, any>('preview_static', {
+        description: PREVIEW_STATIC_TOOL_DESCRIPTION,
+        title: 'Mount Static Preview',
+        inputSchema: PreviewStaticToolArgsSchema as z.ZodTypeAny,
+    }, (async (args: { path: string; name?: string; ttlHours?: number }) => {
+        logger.debug('[hapiMCP] preview_static:', args.path);
+        return previewStaticTool(client, args);
+    }) as any);
+
+    mcp.registerTool<any, any>('preview_proxy', {
+        description: PREVIEW_PROXY_TOOL_DESCRIPTION,
+        title: 'Proxy Local Dev Server',
+        inputSchema: PreviewProxyToolArgsSchema as z.ZodTypeAny,
+    }, (async (args: { port?: number; url?: string; name?: string; ttlHours?: number; ws?: boolean }) => {
+        logger.debug('[hapiMCP] preview_proxy:', args.port ?? args.url);
+        return previewProxyTool(client, args);
+    }) as any);
+
+    mcp.registerTool<any, any>('preview_stop', {
+        description: PREVIEW_STOP_TOOL_DESCRIPTION,
+        title: 'Unmount Preview',
+        inputSchema: PreviewStopToolArgsSchema as z.ZodTypeAny,
+    }, (async (args: { name?: string; mountId?: string; all?: boolean }) => {
+        logger.debug('[hapiMCP] preview_stop:', args.name ?? args.mountId ?? (args.all ? 'all' : ''));
+        return previewStopTool(client, args);
+    }) as any);
+
 
     if (skillLookup) {
         mcp.registerTool<any, any>('skill_lookup', {
@@ -534,8 +578,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'preview_static', 'preview_proxy', 'preview_stop']
+        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'preview_static', 'preview_proxy', 'preview_stop'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }
