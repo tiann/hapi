@@ -56,28 +56,37 @@ object NewSessionLogic {
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS
 
-    /** Flavors whose permission control is the native-mode select. */
+    /**
+     * Flavors whose permission control is the native-mode select. claude and
+     * grok do not share the codex-family mode set, but they render through
+     * the same native select (web `usesNativePermissionSelect`,
+     * `web/src/lib/codexFamilyPermissionAgents.ts`).
+     */
     fun usesNativePermissionSelect(flavor: String?): Boolean =
-        flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
+        flavor == "claude" || flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
 
     /**
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
      * - `model`/`effort` only for flavors whose picker exists in this v1
      *   (claude static list, codex machine catalog; others send no model);
-     * - `yolo` for non-grok/non-codex-family flavors — **including `false`**;
-     * - `permissionMode` for grok + codex-family — including `'default'`;
+     * - `yolo` only for flavors still on the YOLO toggle (not
+     *   `usesNativePermissionSelect`) — **including `false`**;
+     * - `permissionMode` for every `usesNativePermissionSelect` flavor —
+     *   including `'default'`;
      * - `sessionType` always; `worktreeName` only for worktree and non-blank;
      * - `serviceTier` only while the codex fast tier is visible (then also
      *   `'standard'`); `collaborationMode` only when not `'default'`;
      * - `copilotAgentMode` always for copilot;
      * - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
      *   remote; pty is deferred, matching the web create form).
+     *
+     * Unlike web, Android has no persistent YOLO preference to migrate: the
+     * toggle only lives in the in-memory form / a draft that is deleted on
+     * success, so there is nothing to bridge into `permissionMode` here.
      */
     fun buildSpawnRequest(form: NewSessionForm, codexFastTierVisible: Boolean): SpawnSessionRequest {
         val agent = form.agent
-        val codexFamily = usesCodexFamilyPermissionModes(agent)
-        val isGrok = agent == "grok"
         val resolvedModel = when {
             // v1 model pickers: claude (static presets) and codex (machine
             // catalog). Other flavors' discovery endpoints are TODO(M3d+),
@@ -95,8 +104,8 @@ object NewSessionLogic {
             } else {
                 null
             },
-            yolo = if (isGrok || codexFamily) null else form.yolo,
-            permissionMode = if (isGrok || codexFamily) form.permissionMode else null,
+            yolo = if (agent == "dsh" || usesNativePermissionSelect(agent)) null else form.yolo,
+            permissionMode = if (usesNativePermissionSelect(agent)) form.permissionMode else null,
             sessionType = form.sessionType,
             worktreeName = if (form.sessionType == SESSION_TYPE_WORKTREE) {
                 form.worktreeName.trim().ifEmpty { null }
@@ -122,6 +131,8 @@ object NewSessionLogic {
         val parent: String,
         /** Typed tail the entries are prefix-filtered by (case-insensitive). */
         val prefix: String,
+        /** Separator used by the typed path; suggestions preserve it. */
+        val separator: String = "/",
     )
 
     /**
@@ -134,10 +145,28 @@ object NewSessionLogic {
      */
     fun parentQuery(input: String): ParentQuery? {
         val text = input.trim()
-        if (!text.startsWith("/")) return null
-        val lastSlash = text.lastIndexOf('/')
-        val parent = if (lastSlash == 0) "/" else text.substring(0, lastSlash)
-        return ParentQuery(parent = parent, prefix = text.substring(lastSlash + 1))
+        val isPosix = text.startsWith("/")
+        val isDrive = Regex("^[A-Za-z]:[\\\\/].*").matches(text)
+        val isUnc = text.startsWith("\\\\") || text.startsWith("//")
+        if (!isPosix && !isDrive && !isUnc) return null
+
+        val lastForward = text.lastIndexOf('/')
+        val lastBackward = text.lastIndexOf('\\')
+        val separatorIndex = maxOf(lastForward, lastBackward)
+        if (separatorIndex < 0) return null
+        val separator = text[separatorIndex].toString()
+        val rawParent = text.substring(0, separatorIndex)
+        val parent = when {
+            separatorIndex == 0 -> separator
+            Regex("^[A-Za-z]:$").matches(rawParent) -> rawParent + separator
+            rawParent.isEmpty() && isUnc -> separator + separator
+            else -> rawParent
+        }
+        return ParentQuery(
+            parent = parent,
+            prefix = text.substring(separatorIndex + 1),
+            separator = separator,
+        )
     }
 
     /**
@@ -149,7 +178,11 @@ object NewSessionLogic {
         entries: List<app.hapi.protocol.wire.MachineDirectoryEntry>,
         limit: Int = 8,
     ): List<String> {
-        val base = if (query.parent == "/") "/" else "${query.parent}/"
+        val base = if (query.parent.endsWith('/') || query.parent.endsWith('\\')) {
+            query.parent
+        } else {
+            query.parent + query.separator
+        }
         return entries.asSequence()
             .filter { it.type == "directory" }
             .filter { it.name.startsWith(query.prefix, ignoreCase = true) }
@@ -245,7 +278,7 @@ object NewSessionLogic {
             sessionType = draft.sessionType,
             worktreeName = draft.worktreeName,
         )
-        val allowedModes = PermissionModes.forFlavor(base.agent).map { it.wireId }
+        val allowedModes = PermissionModes.forLaunch(base.agent).map { it.wireId }
         val sessionType = if (base.sessionType == SESSION_TYPE_WORKTREE) SESSION_TYPE_WORKTREE else SESSION_TYPE_SIMPLE
         return base.copy(
             permissionMode = if (base.permissionMode in allowedModes) base.permissionMode else "default",

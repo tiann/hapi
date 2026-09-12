@@ -1,3 +1,4 @@
+import { getAgyModelLabel } from '@hapi/protocol'
 import { MODEL_OPTIONS } from '@/components/NewSession/types'
 import { CURSOR_AUTO_MODEL_LABEL } from '@/lib/cursorModelOptions'
 import { getClaudeComposerModelOptions, getNextClaudeComposerModel } from './claudeModelOptions'
@@ -28,7 +29,11 @@ function cursorCatalogCoversCurrentModel(options: ModelOption[], currentModel: s
     return options.some((option) => option.value === baseId)
 }
 
-function withCurrentModelOption(options: ModelOption[], currentModel?: string | null): ModelOption[] {
+function withCurrentModelOption(
+    options: ModelOption[],
+    currentModel?: string | null,
+    resolveLabel?: (modelId: string) => string | null
+): ModelOption[] {
     const normalizedCurrentModel = normalizeCurrentModel(currentModel)
     if (!normalizedCurrentModel || options.some((option) => option.value === normalizedCurrentModel)) {
         return options
@@ -38,7 +43,7 @@ function withCurrentModelOption(options: ModelOption[], currentModel?: string | 
     const autoIndex = nextOptions.findIndex((option) => option.value === null)
     nextOptions.splice(autoIndex >= 0 ? autoIndex + 1 : 0, 0, {
         value: normalizedCurrentModel,
-        label: normalizedCurrentModel
+        label: resolveLabel?.(normalizedCurrentModel) ?? normalizedCurrentModel
     })
     return nextOptions
 }
@@ -76,12 +81,19 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
     return nextOptions
 }
 
-function getAgyModelOptions(currentModel?: string | null): ModelOption[] {
-    const options = MODEL_OPTIONS.agy.filter((m) => m.value !== 'auto').map((m) => ({
-        value: m.value,
-        label: m.label
-    }))
-    return withCurrentModelOption(options, currentModel)
+function getAgyModelOptions(currentModel?: string | null, customOptions?: ModelOption[]): ModelOption[] {
+    // The built-in list stands in until the machine answers. Neither list carries
+    // a null entry: agy has no mid-session "back to default".
+    const machineOptions = (customOptions ?? []).filter((option) => Boolean(option.value))
+    const options = machineOptions.length > 0
+        ? machineOptions
+        : MODEL_OPTIONS.agy.filter((m) => m.value !== 'auto').map((m) => ({
+            value: m.value,
+            label: m.label
+        }))
+    // A session can be running a model the machine no longer lists. It stays
+    // selectable; the lookup only keeps a known preset readable.
+    return withCurrentModelOption(options, currentModel, getAgyModelLabel)
 }
 
 function getGeminiModelOptions(currentModel?: string | null): ModelOption[] {
@@ -107,7 +119,7 @@ export function getModelOptionsForFlavor(
     customOptions?: ModelOption[]
 ): ModelOption[] {
     if (flavor === 'agy') {
-        return getAgyModelOptions(currentModel)
+        return getAgyModelOptions(currentModel, customOptions)
     }
     if (flavor === 'claude') {
         return getClaudeModelOptions(currentModel, customOptions)
@@ -164,7 +176,7 @@ export function getNextModelForFlavor(
     customOptions?: ModelOption[]
 ): string | null {
     if (flavor === 'agy') {
-        const options = getAgyModelOptions(currentModel)
+        const options = getAgyModelOptions(currentModel, customOptions)
         const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
         if (currentIndex === -1) {
             return options.find((option) => option.value !== null)?.value ?? null

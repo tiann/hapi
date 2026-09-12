@@ -1,0 +1,265 @@
+{
+    "description": "A reasoning stream arrives as repeated growing snapshots under one stream id. Only the newest snapshot of each stream survives the window (the timeline folds them into a single block anyway), streams collapse independently, the settled row that closes a stream supersedes its live snapshots, and rows without a stream id are untouched.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "a-1",
+                "invokedAt": 1000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 1
+            },
+            {
+                "createdAt": 4000,
+                "id": "s-3",
+                "invokedAt": 4000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 4
+            },
+            {
+                "createdAt": 5000,
+                "id": "a-2",
+                "invokedAt": 5000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 5
+            },
+            {
+                "createdAt": 7000,
+                "id": "s-5",
+                "invokedAt": 7000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 7
+            },
+            {
+                "createdAt": 9000,
+                "id": "s-7",
+                "invokedAt": 9000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 9
+            }
+        ],
+        "newestCursor": {
+            "at": 9000,
+            "seq": 9
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "reasoning-snapshots-collapse-to-newest",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 200
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-1",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 1000,
+                            "id": "a-1",
+                            "invokedAt": 1000,
+                            "localId": null,
+                            "seq": 1
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "id": "stream-a",
+                                        "live": true,
+                                        "message": "th",
+                                        "type": "reasoning"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 2000,
+                            "id": "s-1",
+                            "invokedAt": 2000,
+                            "localId": null,
+                            "seq": 2
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "id": "stream-a",
+                                        "live": true,
+                                        "message": "thin",
+                                        "type": "reasoning"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 3000,
+                            "id": "s-2",
+                            "invokedAt": 3000,
+                            "localId": null,
+                            "seq": 3
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "id": "stream-a",
+                                        "live": true,
+                                        "message": "thinking",
+                                        "type": "reasoning"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 4000,
+                            "id": "s-3",
+                            "invokedAt": 4000,
+                            "localId": null,
+                            "seq": 4
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-2",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 5000,
+                            "id": "a-2",
+                            "invokedAt": 5000,
+                            "localId": null,
+                            "seq": 5
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "id": "stream-b",
+                                        "live": true,
+                                        "message": "more",
+                                        "type": "reasoning"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 6000,
+                            "id": "s-4",
+                            "invokedAt": 6000,
+                            "localId": null,
+                            "seq": 6
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "id": "stream-b",
+                                        "message": "more still",
+                                        "type": "reasoning"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 7000,
+                            "id": "s-5",
+                            "invokedAt": 7000,
+                            "localId": null,
+                            "seq": 7
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 7000,
+                        "snapshotHeadSeq": 7
+                    }
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "id": "stream-c",
+                                "live": true,
+                                "message": "later",
+                                "type": "reasoning"
+                            },
+                            "type": "codex"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 8000,
+                    "id": "s-6",
+                    "invokedAt": 8000,
+                    "localId": null,
+                    "seq": 8
+                },
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "id": "stream-c",
+                                "live": true,
+                                "message": "later still",
+                                "type": "reasoning"
+                            },
+                            "type": "codex"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 9000,
+                    "id": "s-7",
+                    "invokedAt": 9000,
+                    "localId": null,
+                    "seq": 9
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}

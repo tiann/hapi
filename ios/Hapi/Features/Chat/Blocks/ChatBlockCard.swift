@@ -8,7 +8,7 @@ import UIKit
 extension VisibleChatBlock {
     /// Stable list key: block ids are reducer-stable and tool-group ids are
     /// pinned across recomputes via `previousGroups`, so scroll anchoring
-    /// and expansion state survive pipeline re-runs.
+    /// and inspection state survive pipeline re-runs.
     var stableId: String {
         switch self {
         case .block(let block): return block.id
@@ -57,7 +57,10 @@ final class GeneratedImageLoader {
             guard let payload = try? await api.generatedImage(sessionId: sessionId, imageId: imageId) else {
                 return nil
             }
-            return UIImage(data: payload.data)
+            let data = payload.data
+            return await Task.detached(priority: .utility) {
+                UIImage(data: data)?.preparingForDisplay()
+            }.value
         }
         inFlight[imageId] = task
         let image = await task.value
@@ -66,6 +69,10 @@ final class GeneratedImageLoader {
             cache.setObject(image, forKey: imageId as NSString)
         }
         return image
+    }
+
+    func cachedImage(for imageId: String) -> UIImage? {
+        cache.object(forKey: imageId as NSString)
     }
 }
 
@@ -111,7 +118,7 @@ struct ChatBlockCard: View {
     var body: some View {
         switch block {
         case .toolGroup(let group):
-            ToolGroupBlockView(block: group, basePath: basePath)
+            ToolGroupBlockView(presentation: ToolGroupPresentation(group))
         case .block(let chatBlock):
             ChatSubBlockView(block: chatBlock, basePath: basePath)
         }

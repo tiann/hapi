@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 export async function kimiLocal(opts: {
     path: string;
@@ -31,7 +32,7 @@ export async function kimiLocal(opts: {
     logger.debug(`[KimiLocal] Spawning kimi with args: ${JSON.stringify(args)}`);
 
     await spawnWithTerminalGuard({
-        command: 'kimi',
+        command: getAgentLaunchCommand('kimi'),
         args,
         cwd: opts.path,
         env,

@@ -21,6 +21,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import app.hapi.companion.feature.sessions.SessionFilterSheet
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -54,29 +56,21 @@ fun HomeScreen(
     /** Overflow menu → settings scaffold (B-M4e). */
     onOpenSettings: (() -> Unit)? = null,
 ) {
-    var menuOpen by rememberSaveable { mutableStateOf(false) }
-    var showSwitcher by rememberSaveable { mutableStateOf(false) }
-    var showSignOutConfirm by rememberSaveable { mutableStateOf(false) }
+    val state by viewModel.uiState.collectAsState()
+    var showFilters by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
+    var menuOpen by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
+    var showSwitcher by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
+    var showSignOutConfirm by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = stringResource(R.string.app_name),
-                            style = MaterialTheme.typography.titleLarge,
-                        )
-                        Text(
-                            text = activeHubUrl,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                },
+                title = { Text(stringResource(R.string.sessions_section_sessions), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = { TextButton(onClick = { showSwitcher = true }) { Text(stringResource(R.string.home_hub)) } },
                 actions = {
+                    if (state.hasMachineFilters) {
+                        TextButton(onClick = { showFilters = true }) { Text(stringResource(R.string.sessions_filters)) }
+                    }
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.home_menu))
                     }
@@ -131,6 +125,9 @@ fun HomeScreen(
         )
     }
 
+    if (showFilters) {
+        SessionFilterSheet(state, select = { viewModel.setMachineFilter(it); showFilters = false }, dismiss = { showFilters = false })
+    }
     if (showSwitcher) {
         HubSwitcherDialog(
             activeHubUrl = activeHubUrl,

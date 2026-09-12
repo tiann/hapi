@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { homedir } from 'node:os'
 import { parse } from 'node:path'
 import type { PiModelSummary, PiModelsResponse } from '@hapi/protocol/apiTypes'
@@ -120,7 +121,7 @@ export function resolveProbeCwd(): string {
 
 function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
     return new Promise((resolve, reject) => {
-        const child = spawn('pi', [...PI_PROBE_ARGS], {
+        const child = spawn(getAgentLaunchCommand('pi'), [...PI_PROBE_ARGS], {
             env: process.env,
             // Probe from the runner's cwd, falling back to home at a
             // filesystem root (see resolveProbeCwd).

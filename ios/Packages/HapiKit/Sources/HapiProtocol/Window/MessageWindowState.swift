@@ -58,6 +58,7 @@ public enum OlderLoadOutcome: Sendable {
         case invalidated
         case epochReset = "epoch-reset"
         case exhausted
+        case cursorDidNotAdvance = "cursor-did-not-advance"
     }
 }
 
@@ -84,6 +85,8 @@ public struct MessageWindowState: Equatable, Sendable {
     public var isLoadingMore: Bool = false
     public var warning: String?
     public var viewMode: MessageViewMode = .tail
+    /// Local presentation policy; not persisted and not part of the wire.
+    public var historyRetentionLimit = MessageWindowConstants.historyWindowSize
     /// Bumped whenever the ``messages`` list instance changes.
     public var messagesVersion: Int = 0
     /// Bumped per applied older page (scroll-anchoring handle).

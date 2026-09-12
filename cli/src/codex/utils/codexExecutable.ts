@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { resolveExecutable } from '@/agent/agentLaunchCommand';
 
 const windowsPath = path.win32;
 
@@ -67,8 +68,22 @@ function resolveWindowsCodexCommand(): CodexCommand {
     return { command: 'codex', args: [] };
 }
 
-export function resolveCodexCommand(): CodexCommand {
-    if (process.platform !== 'win32') {
+export const MACOS_CODEX_APP_COMMAND = '/Applications/Codex.app/Contents/Resources/codex';
+
+export function resolveCodexCommand(
+    env: Record<string, string | undefined> = process.env,
+    platform: NodeJS.Platform = process.platform,
+): CodexCommand {
+    if (platform !== 'win32') {
+        const command = resolveExecutable('codex', {
+            platform,
+            pathValue: env.PATH,
+            pathExt: env.PATHEXT,
+        });
+        if (command) return { command, args: [] };
+        if (platform === 'darwin' && existsSync(MACOS_CODEX_APP_COMMAND)) {
+            return { command: MACOS_CODEX_APP_COMMAND, args: [] };
+        }
         return { command: 'codex', args: [] };
     }
 

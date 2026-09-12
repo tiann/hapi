@@ -125,8 +125,6 @@ describe('buildCliArgs', () => {
             'codex',
             'resume',
             'codex-thread-1',
-            '--hapi-starting-mode',
-            'remote',
             '--started-by',
             'runner',
             '--existing-session-id',
@@ -353,6 +351,21 @@ describe('buildCliArgs', () => {
         expect(args).toContain('--existing-session-id')
         expect(args[args.indexOf('--existing-session-id') + 1]).toBe('existing-hub-id')
         expect(args).not.toContain('--hapi-session-id')
+    })
+
+    it('builds a remote DSH ACP runner command without unsupported policy flags', () => {
+        const args = buildCliArgs('dsh', {
+            directory: '/tmp',
+            existingSessionId: 'existing-hub-id',
+            startingMode: 'remote',
+            permissionMode: 'read-only'
+        }, true)
+        expect(args).toEqual([
+            'dsh',
+            '--hapi-starting-mode', 'remote',
+            '--started-by', 'runner',
+            '--existing-session-id', 'existing-hub-id'
+        ])
     })
 
     it('does not emit --hapi-session-id for a non-pty flavor', () => {

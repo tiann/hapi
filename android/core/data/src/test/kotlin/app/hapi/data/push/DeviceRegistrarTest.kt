@@ -79,8 +79,8 @@ class DeviceRegistrarTest {
         }
     }
 
-    private val hubA = "http://hub-a.example:3006"
-    private val hubB = "http://hub-b.example:3006"
+    private val hubA = "https://hub-a.example"
+    private val hubB = "https://hub-b.example"
 
     @Test
     fun `start fans the token out to every persisted hub`() = test { h ->

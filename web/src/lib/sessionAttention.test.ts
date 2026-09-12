@@ -37,6 +37,38 @@ describe('classifySessionAttention', () => {
         expect(attention).toBeNull()
     })
 
+    it('shows an explicitly marked unread dot for the selected session', () => {
+        const attention = classifySessionAttention(
+            makeSummary({ id: 'a', updatedAt: 5000 }),
+            { selected: true, lastSeenAt: 5000, manualUnreadAt: 5000 }
+        )
+        expect(attention).toEqual({ kind: 'unread' })
+    })
+
+    it('keeps an explicitly marked unread dot while the selected session is thinking', () => {
+        const attention = classifySessionAttention(
+            makeSummary({ id: 'a', thinking: true, updatedAt: 5000 }),
+            { selected: true, lastSeenAt: 5000, manualUnreadAt: 5000 }
+        )
+        expect(attention).toEqual({ kind: 'unread' })
+    })
+
+    it('does not show selected-session attention for ordinary new activity', () => {
+        const attention = classifySessionAttention(
+            makeSummary({ id: 'a', updatedAt: 5000 }),
+            { selected: true, lastSeenAt: 1000 }
+        )
+        expect(attention).toBeNull()
+    })
+
+    it('does not carry an explicit unread dot across newer activity', () => {
+        const attention = classifySessionAttention(
+            makeSummary({ id: 'a', updatedAt: 6000 }),
+            { selected: true, lastSeenAt: 5000, manualUnreadAt: 5000 }
+        )
+        expect(attention).toBeNull()
+    })
+
     it('prioritizes permission over unread activity', () => {
         const attention = classifySessionAttention(
             makeSummary({

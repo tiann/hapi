@@ -40,6 +40,10 @@ describe('getPermissionModesForFlavor', () => {
         ])
     })
 
+    test("returns no HAPI mode selector for DSH's server-owned permission policy", () => {
+        expect(getPermissionModesForFlavor('dsh')).toEqual([])
+    })
+
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
         expect(getPermissionModesForFlavor('pi')).toEqual([])
     })
@@ -72,6 +76,8 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('acceptEdits', 'grok')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('auto', 'grok')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('yolo', 'grok')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('read-only', 'dsh')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('plan', 'dsh')).toBe(false)
     })
 
     test("no mode is allowed for pi", () => {
@@ -133,10 +139,10 @@ describe('claude auto permission mode', () => {
 })
 
 describe('isSteeringSupportedForFlavor', () => {
-    it('supports codex and pi only', () => {
+    it('supports codex, cursor and pi', () => {
         expect(isSteeringSupportedForFlavor('codex')).toBe(true)
+        expect(isSteeringSupportedForFlavor('cursor')).toBe(true)
         expect(isSteeringSupportedForFlavor('pi')).toBe(true)
-        expect(isSteeringSupportedForFlavor('cursor')).toBe(false)
         expect(isSteeringSupportedForFlavor('claude')).toBe(false)
         expect(isSteeringSupportedForFlavor('opencode')).toBe(false)
         expect(isSteeringSupportedForFlavor(undefined)).toBe(false)
@@ -150,13 +156,25 @@ describe('isSteeringSupportedForSession', () => {
         expect(isSteeringSupportedForSession({ flavor: 'pi' })).toBe(true)
     })
 
-    it('rejects cursor until its steer handler lands', () => {
+    it('supports Cursor ACP sessions', () => {
         expect(isSteeringSupportedForSession({
             flavor: 'cursor',
             cursorSessionProtocol: 'acp',
             cursorSessionId: 'sess-1',
+        })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'cursor' })).toBe(true)
+    })
+
+    it('rejects legacy Cursor stream-json sessions', () => {
+        expect(isSteeringSupportedForSession({
+            flavor: 'cursor',
+            cursorSessionProtocol: 'stream-json',
+            cursorSessionId: 'legacy-1',
         })).toBe(false)
-        expect(isSteeringSupportedForSession({ flavor: 'cursor' })).toBe(false)
+        expect(isSteeringSupportedForSession({
+            flavor: 'cursor',
+            cursorSessionId: 'legacy-without-protocol',
+        })).toBe(false)
     })
 
     it('rejects non-steerable flavors', () => {

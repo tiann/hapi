@@ -12,6 +12,8 @@ import type {
 
 export type {
     AgyModelsResponse,
+    AgentAvailabilityResponse,
+    AgentAvailabilityEntry,
     AgyModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
@@ -38,6 +40,7 @@ export type {
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    OpencodeModelVariantsResponse,
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,
@@ -77,7 +80,11 @@ export type {
     WorktreeMetadata
 } from '@hapi/protocol/types'
 
-export type { HapiSessionExport } from '@hapi/protocol/sessionExport'
+export type {
+    HapiSessionExport,
+    HapiSessionExportResponse,
+    HapiSessionExportWarning
+} from '@hapi/protocol/sessionExport'
 
 export type SessionMetadataSummary = {
     path: string

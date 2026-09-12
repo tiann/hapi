@@ -42,6 +42,9 @@ interface AttachmentUploadApi {
  * and [AttachmentUploadApi] for the composer attachment flow (B-M3f).
  */
 interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
+    /** Shared root creation; only the initiating client navigates. */
+    suspend fun clearConversation(sessionId: String): ResumeSessionResponse
+
     /** `POST /api/sessions/:id/messages` — `{ok:true}`; the row arrives via SSE. */
     suspend fun sendMessage(sessionId: String, message: SendMessageRequest)
 

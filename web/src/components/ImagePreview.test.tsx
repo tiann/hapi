@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ImagePreview } from './ImagePreview'
 
 function renderGallery() {
@@ -57,5 +57,32 @@ describe('ImagePreview gallery navigation', () => {
         fireEvent.click(within(dialog).getByRole('button', { name: 'Next image' }))
         expect(screen.getByRole('dialog', { name: 'Second draft' })).toBeInTheDocument()
         expect(within(screen.getByRole('dialog')).queryByRole('img', { name: 'Sent image' })).not.toBeInTheDocument()
+    })
+
+    it('exposes trigger pointer and context-menu hooks for sortable image attachments', () => {
+        const onTriggerPointerDown = vi.fn()
+        const onTriggerContextMenu = vi.fn()
+        const onTriggerClick = vi.fn()
+
+        render(
+            <ImagePreview
+                src="/drag.png"
+                fileName="drag.png"
+                label="Drag image"
+                onTriggerPointerDown={onTriggerPointerDown}
+                onTriggerContextMenu={onTriggerContextMenu}
+                onTriggerClick={onTriggerClick}
+            />
+        )
+
+        const trigger = screen.getByRole('button', { name: /drag image/i })
+        fireEvent.pointerDown(trigger)
+        fireEvent.contextMenu(trigger)
+        fireEvent.click(trigger)
+
+        expect(onTriggerPointerDown).toHaveBeenCalledTimes(1)
+        expect(onTriggerContextMenu).toHaveBeenCalledTimes(1)
+        expect(onTriggerClick).toHaveBeenCalledTimes(1)
+        expect(screen.getByRole('dialog', { name: 'Drag image' })).toBeInTheDocument()
     })
 })

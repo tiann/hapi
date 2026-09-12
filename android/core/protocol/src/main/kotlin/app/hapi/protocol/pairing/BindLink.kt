@@ -31,7 +31,7 @@ data class BindLink(
          *
          * Returns null on any malformed input: unparseable URI, wrong scheme or
          * host, missing/blank `hub` or `code` parameter, invalid percent escapes,
-         * or a `hub` value that is not an http(s) URL.
+         * or a `hub` value that is not an HTTPS URL.
          */
         fun parse(raw: String): BindLink? {
             val uri = try {
@@ -46,7 +46,7 @@ data class BindLink(
             val params = parseFormQuery(uri.rawQuery ?: return null) ?: return null
             val hub = params["hub"]?.takeIf { it.isNotBlank() } ?: return null
             val code = params["code"]?.takeIf { it.isNotBlank() } ?: return null
-            if (!isHttpUrl(hub)) return null
+            if (!isHttpsUrl(hub)) return null
             return BindLink(hubUrl = hub, accessToken = code)
         }
 
@@ -80,14 +80,14 @@ data class BindLink(
             null // unreachable: UTF-8 is always supported
         }
 
-        internal fun isHttpUrl(value: String): Boolean {
+        internal fun isHttpsUrl(value: String): Boolean {
             val uri = try {
                 URI(value)
             } catch (_: URISyntaxException) {
                 return false
             }
             val scheme = uri.scheme?.lowercase() ?: return false
-            if (scheme != "http" && scheme != "https") return false
+            if (scheme != "https") return false
             return !(uri.host ?: uri.authority).isNullOrBlank()
         }
     }

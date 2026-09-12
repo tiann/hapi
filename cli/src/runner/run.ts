@@ -28,8 +28,11 @@ import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
+import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
+import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
+import { copyCodexConfigFile, resolveCodexHome } from '@/codex/utils/codexHome';
 
 /**
  * Deduplicates a preallocated HAPI-row spawn only while its child is alive.
@@ -412,7 +415,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
 
     // Helper functions
-    const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
+    const getCurrentChildren = () => Array.from(pidToTrackedSession.values()).flatMap(session => session.sharedSessions
+      ? Object.entries(session.sharedSessions).map(([happySessionId, metadata]) => ({ ...session, happySessionId, happySessionMetadataFromLocalWebhook: metadata }))
+      : [session]);
 
     // Handle webhook from HAPI session reporting itself
     const onHappySessionWebhook = (sessionId: string, sessionMetadata: Metadata) => {
@@ -429,6 +434,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // Check if we already have this PID (runner-spawned)
       const existingSession = pidToTrackedSession.get(pid);
+
+      if (existingSession && sessionMetadata.capabilities?.concurrentClients) {
+        existingSession.sharedSessions ??= {};
+        if (sessionMetadata.lifecycleState === 'archived') {
+          delete existingSession.sharedSessions[sessionId];
+          return;
+        }
+        existingSession.sharedSessions[sessionId] = sessionMetadata;
+        invalidateVerifiedExit(sessionId);
+        // Native /new or /fork cannot replace the primary spawn confirmation.
+        if (existingSession.happySessionId && existingSession.happySessionId !== sessionId) return;
+      }
 
       if (existingSession && existingSession.startedBy === 'runner') {
         // Update runner-spawned session with reported data
@@ -464,6 +481,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // anything claiming `'runner'` here must be the second case and
         // should be ignored + terminated instead of silently promoted.
         if (sessionMetadata.startedBy === 'runner') {
+          // A shared root can report /new after a Runner restart. Unknown is
+          // not proof of an orphan: never kill its sibling roots. Known spawn
+          // timeouts already terminate their ChildProcess tree at the source.
+          // No registry scan/adoption lifecycle is needed for live attachment.
+          if (sessionMetadata.capabilities?.concurrentClients) return;
           logger.debug(
             `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
           );
@@ -480,6 +502,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
         // New session started externally (terminal)
         const trackedSession: TrackedSession = {
+          ...(sessionMetadata.capabilities?.concurrentClients ? { sharedSessions: { [sessionId]: sessionMetadata } } : {}),
           startedBy: 'hapi directly - likely by user from terminal',
           happySessionId: sessionId,
           happySessionMetadataFromLocalWebhook: sessionMetadata,
@@ -499,8 +522,27 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
-      if (agent === 'gemini') {
-        throw new Error('Gemini CLI is no longer supported and cannot be launched (Google sunset the consumer Gemini CLI on 2026-06-18). Existing Gemini sessions remain viewable in the web UI.');
+      const availability = getAgentAvailability(agent);
+      if (!availability.available) {
+        const errorMessage = agentUnavailableMessage(availability);
+        logger.debug(`[RUNNER RUN] Agent preflight failed: ${errorMessage}`);
+        reportSpawnOutcomeToHub?.({
+          type: 'error',
+          details: { message: errorMessage }
+        });
+        return {
+          type: 'error',
+          errorMessage,
+          code: 'agent_unavailable',
+          agent
+        };
+      }
+      if (options.validateDirectory && !(await options.validateDirectory(directory))) {
+        return {
+          type: 'error',
+          errorMessage: 'Directory is outside this machine\'s workspace roots',
+          code: 'outside_workspace_roots'
+        };
       }
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
@@ -509,6 +551,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       let spawnDirectory = directory;
       let worktreeInfo: WorktreeInfo | null = null;
       let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
+      let copiedCodexConfigPath: string | null = null;
+
+      const cleanupCopiedCodexConfig = async (reason: string): Promise<void> => {
+        const configPath = copiedCodexConfigPath;
+        copiedCodexConfigPath = null;
+        if (!configPath) {
+          return;
+        }
+        try {
+          await fs.rm(configPath, { force: true });
+          logger.debug(`[RUNNER RUN] Removed temporary Codex config after ${reason}`);
+        } catch (error) {
+          logger.debug(`[RUNNER RUN] Failed to remove temporary Codex config after ${reason}`, error);
+        }
+      };
 
       if (sessionType === 'simple') {
         const validation = await validateWorkspaceDirectory(directory, {
@@ -545,6 +602,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`
           };
         }
+      }
+
+      // Re-check after mkdir/access so a newly materialized path or concurrent
+      // symlink swap cannot escape the roots checked by the machine RPC layer.
+      if (options.validateDirectory && !(await options.validateDirectory(directory))) {
+        logger.debug(`[RUNNER RUN] Workspace directory escaped roots during validation: ${directory}`);
+        return {
+          type: 'error',
+          errorMessage: 'Directory is outside this machine\'s workspace roots',
+          code: 'outside_workspace_roots'
+        };
       }
 
       if (sessionType === 'worktree') {
@@ -616,6 +684,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             // Create a temporary directory for Codex
             const codexHomeDir = await fs.mkdtemp(join(os.tmpdir(), 'hapi-codex-'));
 
+            // Preserve user MCP/config settings while keeping token auth isolated.
+            copiedCodexConfigPath = await copyCodexConfigFile(resolveCodexHome(), codexHomeDir);
+
             // Write the token to the temporary directory
             await fs.writeFile(join(codexHomeDir, 'auth.json'), options.token);
 
@@ -671,6 +742,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             ...extraEnv
           }
         });
+        happyProcess.once('exit', () => {
+          void cleanupCopiedCodexConfig('child-exit');
+        });
 
         happyProcess.stderr?.on('data', (data) => {
           stderrTail = appendTail(stderrTail, data);
@@ -697,6 +771,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               message: errorMessage
             }
           });
+          await cleanupCopiedCodexConfig('no-pid');
           await maybeCleanupWorktree('no-pid');
           return {
             type: 'error',
@@ -822,7 +897,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             // (the actual claude/codex agent) are also reaped, and that
             // SIGTERM → SIGKILL escalation kicks in if needed.
             if (happyProcess) {
-              void killProcessByChildProcess(happyProcess);
+              void killProcessByChildProcess(happyProcess).finally(() => {
+                void cleanupCopiedCodexConfig('webhook-timeout');
+              });
+            } else {
+              void cleanupCopiedCodexConfig('webhook-timeout');
             }
 
             // If this was a worktree session, the worktree can only be
@@ -879,6 +958,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.debug('[RUNNER RUN] Failed to spawn session:', error);
+        await cleanupCopiedCodexConfig('exception');
         await maybeCleanupWorktree('exception');
         reportSpawnOutcomeToHub?.({
           type: 'error',
@@ -908,6 +988,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Stop a session by sessionId or PID fallback
     const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
+
+      const { findRuntime } = await import('@/codex/shared/registry');
+      const sharedRuntime = await findRuntime(sessionId);
+      if (sharedRuntime) {
+        try {
+          const { runtimeControl } = await import('@/codex/shared/frontend');
+          await runtimeControl(sharedRuntime, 'hapi/stopSession', sessionId);
+          const tracked = pidToTrackedSession.get(sharedRuntime.pid);
+          if (tracked?.sharedSessions) delete tracked.sharedSessions[sessionId];
+          return 'stopped';
+        } catch { return 'still_alive'; }
+      }
+      if ((await readRuntimes()).some(runtime => runtime.hub === configuration.apiUrl && runtime.authHash === runtimeAuthHash()
+        && runtime.sessions[sessionId]?.active && runtimeMayBeAlive(runtime))) return 'still_alive';
+      // Missing registry is not permission to kill siblings in a live execution.
+      if ([...pidToTrackedSession.values()].some(session => session.sharedSessions?.[sessionId])) return 'still_alive';
 
       // Try to find by sessionId first
       for (const [pid, session] of pidToTrackedSession.entries()) {
@@ -1022,6 +1118,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Handle child process exit
     const onChildExited = (pid: number) => {
       const session = pidToTrackedSession.get(pid);
+      for (const id of Object.keys(session?.sharedSessions ?? {})) rememberVerifiedExit(id);
       const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);
       if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
       const confirmedSessionId = session?.happySessionId ?? pidToConfirmedSessionId.get(pid);
@@ -1066,8 +1163,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // but in compiled binary mode (`bun build --compile`) the raw argv shape is
     // `[hapi, runner, start-sync, ...]` so slice(2) produced `['start-sync', ...]`.
     // The replacement then spawned `hapi start-sync ...`, which `resolveCommand`
-    // treats as an unknown top-level command - falling back to Claude instead
-    // of starting the runner. `getCliArgs()` strips runtime + entrypoint
+    // now rejects as an unknown top-level command (previously it fell back to
+    // Claude). `getCliArgs()` strips runtime + entrypoint
     // correctly in all execution modes.
     //
     // Defensive guard: only replay the captured argv when it actually starts
@@ -1086,6 +1183,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Write initial runner state (no lock needed for state file)
     const fileState: RunnerLocallyPersistedState = {
+      sharedCodexRuntime: true,
       pid: process.pid,
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
@@ -1159,7 +1257,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // regardless of the verbose/quiet logger setting.
     console.log('');
     console.log('Hapi runner started.');
-    console.log(`  Workspace roots: ${workspaceRoots?.join(', ') ?? '(not set — browse disabled; pass --workspace-root to enable)'}`);
+    console.log(`  Workspace roots: ${workspaceRoots?.join(', ') ?? '(not set — browsing is limited to home)'}`);
     console.log(`  Hub URL:        ${configuration.apiUrl}`);
     console.log(`  Machine ID:     ${machine.id}`);
     console.log(`  Control port:   ${controlPort}`);
@@ -1481,11 +1579,13 @@ export function buildCliArgs(
             ? 'copilot'
             : agent === 'opencode'
             ? 'opencode'
-            : agent === 'pi'
-              ? 'pi'
-              : agent === 'agy'
-                ? 'agy'
-                : 'claude';
+            : agent === 'dsh'
+              ? 'dsh'
+              : agent === 'pi'
+                ? 'pi'
+                : agent === 'agy'
+                  ? 'agy'
+                  : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -1506,12 +1606,15 @@ export function buildCliArgs(
     args.push('--fork-session');
   }
   const startingMode = options.startingMode || 'remote';
-  args.push('--hapi-starting-mode', startingMode, '--started-by', 'runner');
+  // Codex shares one engine; Runner owns the wrapper, not a remote mode.
+  if (agent !== 'codex') args.push('--hapi-starting-mode', startingMode);
+  args.push('--started-by', 'runner');
   // Codex, Cursor ACP, OpenCode, Pi native resume, and Claude message-level
   // forks reuse the original HAPI row via --existing-session-id.
   if (agent === 'codex' || agent === 'cursor' || agent === 'pi'
       || agent === 'opencode'
       || agent === 'agy'
+      || agent === 'dsh'
       || (agentCommand === 'claude' && options.forkSession)) {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
     if (existingSessionId) {
@@ -1545,7 +1648,7 @@ export function buildCliArgs(
   }
   // Pi RPC mode has no permission switching; never pass these flags to it
   // (the Pi parser rejects --permission-mode and ignores --yolo).
-  if (agent !== 'pi') {
+  if (agent !== 'pi' && agent !== 'dsh') {
     if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
       args.push('--permission-mode', options.permissionMode);
     } else if (yolo) {

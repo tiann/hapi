@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { asString, isObject } from '@hapi/protocol'
 import type { GrokModelSummary, GrokModelsResponse, GrokReasoningEffortOption } from '@hapi/protocol/apiTypes'
 import { AcpStdioTransport } from '@/agent/backends/acp/AcpStdioTransport'
@@ -107,7 +108,7 @@ export function parseGrokInitializeModels(response: unknown): {
 
 async function runGrokModelsCliProbe(cwd: string): Promise<ListGrokModelsForCwdResponse> {
     return await new Promise((resolve, reject) => {
-        const child = spawn('grok', buildGrokModelsArgs(cwd), {
+        const child = spawn(getAgentLaunchCommand('grok'), buildGrokModelsArgs(cwd), {
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: process.platform === 'win32',
@@ -153,7 +154,7 @@ async function runGrokModelsProbe(cwd: string): Promise<ListGrokModelsForCwdResp
     // The primary ACP probe also uses shell mode on Windows through AcpStdioTransport.
     assertSafeWindowsShellArg(cwd, 'cwd')
     const transport = await AcpStdioTransport.create({
-        command: 'grok',
+        command: getAgentLaunchCommand('grok'),
         args: ['--cwd', cwd, 'agent', '--reasoning-effort', 'low', 'stdio'],
         env: Object.fromEntries(
             Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)

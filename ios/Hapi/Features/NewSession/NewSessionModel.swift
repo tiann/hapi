@@ -22,9 +22,10 @@ struct DirectoryStatusUI: Equatable {
 
 /// Which permission control the current flavor renders (web `PermissionField`).
 enum PermissionUI: Equatable {
-    /// Native permission-mode picker (grok + codex-family).
+    /// Native permission-mode picker (claude, grok, codex-family —
+    /// `NewSessionLogic.usesNativePermissionSelect`).
     case nativeSelect([PermissionModeOption])
-    /// HAPI YOLO toggle (claude/agy/cursor) with the native mode it maps to.
+    /// HAPI YOLO toggle (agy/cursor) with the native mode it maps to.
     case yoloToggle(nativeModeLabel: String?)
     /// Pi: the agent manages its own permissions.
     case managed
@@ -38,6 +39,13 @@ enum CodexModelsState: Equatable {
     /// Runner has no machine RPC (`rpc_target_missing`) — hide the picker.
     case unsupported
     case failed(String)
+}
+
+/// Installed/static-configured Agent catalog for the selected machine.
+enum AgentAvailabilityState: Equatable {
+    case loading
+    case loaded([AgentAvailabilityEntry])
+    case failed(message: String, upgradeRequired: Bool)
 }
 
 // MARK: - Persistence
@@ -119,19 +127,33 @@ final class NewSessionModel {
         String(localized: "Directory does not exist. Creating the session will create it automatically.")
     static let msgDirectoryMissingConfirm =
         String(localized: "Directory does not exist. Tap Create again to create it automatically.")
+    static let msgDirectoryOutsideWorkspaceRoots =
+        String(localized: "Directory must be inside one of this machine's workspace roots.")
+    static let msgDirectoryLookupFailed = String(localized: "Failed to browse directories")
+    static let msgAgentAvailabilityFailed = String(localized: "Failed to check installed Agents")
+    static let msgRunnerUpgradeRequired =
+        String(localized: "Upgrade and restart this machine's HAPI runner before creating sessions.")
+    static let msgNoAvailableAgents =
+        String(localized: "No supported Agents are installed on this machine.")
+    static let msgSelectedAgentUnavailable =
+        String(localized: "The selected Agent is not available on this machine.")
 
     // MARK: Observable state
 
     private(set) var form = NewSessionForm()
     private(set) var suggestions: [String] = []
     private(set) var codexModels: CodexModelsState = .hidden
+    private(set) var agentAvailability: AgentAvailabilityState = .loading
     private(set) var isSpawning = false
     private(set) var spawnError: String?
     private(set) var confirmCreateDirectoryArmed = false
     private(set) var machinesSettled = false
     /// Probed existence per trimmed path (feeds the directory status hint).
     private(set) var pathExistence: [String: Bool] = [:]
+    private(set) var outsideWorkspaceRoots: Set<String> = []
+    private(set) var directoryLookupError: String?
     private(set) var prefsData = NewSessionPrefsData()
+    let directoryBrowser: RemoteDirectoryBrowserModel
 
     // MARK: Wiring
 
@@ -142,9 +164,13 @@ final class NewSessionModel {
 
     @ObservationIgnored private var directoryTask: Task<Void, Never>?
     @ObservationIgnored private var codexTask: Task<Void, Never>?
+    @ObservationIgnored private var availabilityTask: Task<Void, Never>?
+    @ObservationIgnored private var defaultDirectoryTask: Task<Void, Never>?
     @ObservationIgnored private var codexFetchedForMachine: String?
+    @ObservationIgnored private var availabilityFetchedForMachine: String?
     @ObservationIgnored private var suppressSuggestions = false
     @ObservationIgnored private var spawnInFlight = false
+    @ObservationIgnored private var directoryRequestVersion = 0
     /// Parent-listing cache: retyping within the same parent re-filters
     /// locally instead of re-requesting.
     @ObservationIgnored private var cachedListing:
@@ -154,6 +180,10 @@ final class NewSessionModel {
         self.session = session
         self.prefsStore = NewSessionPrefsStore(hubUrl: session.hubUrl)
         self.onCreated = onCreated
+        self.directoryBrowser = RemoteDirectoryBrowserModel(
+            requester: session.api,
+            fallbackError: Self.msgDirectoryLookupFailed
+        )
     }
 
     // MARK: - Lifecycle (paired with the sheet's `.task`)
@@ -162,12 +192,10 @@ final class NewSessionModel {
     /// roster. Call once per presentation.
     func start() async {
         prefsData = prefsStore.readPrefs()
-        var initial = prefsStore.readDraft().map(NewSessionLogic.sanitizeDraft) ?? NewSessionForm()
-        if initial.machineId != nil, initial.trimmedDirectory.isEmpty {
-            initial.directory = recentPaths(for: initial.machineId).first ?? ""
-        }
+        let initial = prefsStore.readDraft().map(NewSessionLogic.sanitizeDraft) ?? NewSessionForm()
         form = initial
         reconcileMachineSelection()
+        refreshAgentAvailability()
         refreshCodexModelsIfNeeded()
         // A restored directory should probe existence but not pop the
         // autocomplete dropdown — suggestions belong to typing.
@@ -210,6 +238,9 @@ final class NewSessionModel {
     }
 
     var directoryStatus: DirectoryStatusUI? {
+        if directoryOutsideWorkspaceRoots {
+            return DirectoryStatusUI(message: Self.msgDirectoryOutsideWorkspaceRoots, isError: true)
+        }
         if missingWorktreeDirectory {
             return DirectoryStatusUI(message: Self.msgWorktreeMissing, isError: true)
         }
@@ -221,13 +252,31 @@ final class NewSessionModel {
                 isError: false
             )
         }
+        if let directoryLookupError {
+            return DirectoryStatusUI(message: directoryLookupError, isError: true)
+        }
         return nil
     }
 
-    /// Creatable flavors (`CREATABLE_AGENT_FLAVORS`), labeled.
+    /// Installed creatable flavors, in runner catalog order.
     var agents: [NewSessionOption] {
-        AgentFlavor.creatableFlavors.map {
+        availableAgentFlavors.map {
             NewSessionOption(value: $0.rawValue, label: $0.displayLabel)
+        }
+    }
+
+    var agentAvailabilityLoading: Bool {
+        agentAvailability == .loading
+    }
+
+    var agentAvailabilityError: String? {
+        switch agentAvailability {
+        case .loading:
+            return nil
+        case .failed(let message, _):
+            return message
+        case .loaded:
+            return availableAgentFlavors.isEmpty ? Self.msgNoAvailableAgents : nil
         }
     }
 
@@ -278,11 +327,11 @@ final class NewSessionModel {
 
     var permission: PermissionUI {
         let agent = form.agent
-        if agent == .pi {
+        if agent == .pi || agent == .dsh {
             return .managed
         }
         if NewSessionLogic.usesNativePermissionSelect(agent) {
-            return .nativeSelect(agent.permissionModes.map { PermissionModeOption(mode: $0) })
+            return .nativeSelect(agent.launchPermissionModes.map { PermissionModeOption(mode: $0) })
         }
         return .yoloToggle(nativeModeLabel: NewSessionLogic.hapiYoloNativeMode(for: agent)?.label)
     }
@@ -316,6 +365,8 @@ final class NewSessionModel {
             && !form.trimmedDirectory.isEmpty
             && !isSpawning
             && !missingWorktreeDirectory
+            && !directoryOutsideWorkspaceRoots
+            && selectedAgentAvailable
             && worktreeNameError == nil
             && !codexValidationPending
     }
@@ -330,12 +381,29 @@ final class NewSessionModel {
         return pathExistence[trimmed]
     }
 
+    private var directoryOutsideWorkspaceRoots: Bool {
+        let trimmed = form.trimmedDirectory
+        return !trimmed.isEmpty && outsideWorkspaceRoots.contains(trimmed)
+    }
+
     private var missingWorktreeDirectory: Bool {
-        form.sessionType == .worktree && directoryExists == false
+        !directoryOutsideWorkspaceRoots && form.sessionType == .worktree && directoryExists == false
     }
 
     private var needsCreationWarning: Bool {
-        form.sessionType == .simple && directoryExists == false
+        !directoryOutsideWorkspaceRoots && form.sessionType == .simple && directoryExists == false
+    }
+
+    private var availableAgentFlavors: [AgentFlavor] {
+        guard case .loaded(let entries) = agentAvailability else { return [] }
+        return entries.compactMap { entry in
+            guard entry.available, AgentFlavor.creatableFlavors.contains(entry.agent) else { return nil }
+            return entry.agent
+        }
+    }
+
+    private var selectedAgentAvailable: Bool {
+        availableAgentFlavors.contains(form.agent)
     }
 
     /// Web `isLaunchPreferenceValidationPending` (codex slice): a restored
@@ -368,6 +436,21 @@ final class NewSessionModel {
 
     func pickRecentPath(_ path: String) {
         pickPath(path)
+    }
+
+    func openDirectoryBrowser() {
+        guard let machine = selectedMachine else { return }
+        directoryBrowser.open(
+            machineId: machine.id,
+            roots: RemoteDirectoryPath.browseRoots(for: machine),
+            initialPath: form.trimmedDirectory
+        )
+    }
+
+    func selectBrowsedDirectory(_ path: String) {
+        if !path.isEmpty {
+            pickPath(path)
+        }
     }
 
     func setAgent(_ agent: AgentFlavor) {
@@ -445,6 +528,10 @@ final class NewSessionModel {
         refreshCodexModelsIfNeeded()
     }
 
+    func retryAgentAvailability() {
+        refreshAgentAvailability(force: true)
+    }
+
     /// Spawn. Directory existence is re-checked server-side first (web
     /// `handleCreate`): a missing worktree base is an error; a missing
     /// simple directory arms a second-tap confirmation, after which the hub
@@ -459,6 +546,10 @@ final class NewSessionModel {
            NewSessionLogic.worktreeNameError(current.worktreeName) != nil {
             return
         }
+        guard selectedAgentAvailable else {
+            spawnError = agentAvailabilityError ?? Self.msgSelectedAgentUnavailable
+            return
+        }
         spawnInFlight = true
         isSpawning = true
         spawnError = nil
@@ -469,33 +560,48 @@ final class NewSessionModel {
             }
             guard let self else { return }
             let api = self.session.api
-            let exists = (try? await api.machinePathsExist(machineId: machineId, paths: [directory]))?[directory]
-            if let exists {
-                self.pathExistence[directory] = exists
-            }
-            if current.sessionType == .worktree, exists == false {
-                self.spawnError = Self.msgWorktreeMissing
-                return
-            }
-            if current.sessionType == .simple, exists == false, !self.confirmCreateDirectoryArmed {
-                self.confirmCreateDirectoryArmed = true
-                return
-            }
-
-            let request = NewSessionLogic.buildSpawnRequest(
-                form: current,
-                codexFastTierVisible: self.codexFastTierVisible(current)
-            )
             do {
+                let pathResult = try await api.machinePathsExist(
+                    machineId: machineId,
+                    paths: [directory]
+                )
+                let exists = pathResult.exists[directory]
+                if let exists {
+                    self.pathExistence[directory] = exists
+                }
+                self.outsideWorkspaceRoots.remove(directory)
+                self.outsideWorkspaceRoots.formUnion(pathResult.outsideWorkspaceRoots ?? [])
+                if pathResult.outsideWorkspaceRoots?.contains(directory) == true {
+                    self.spawnError = Self.msgDirectoryOutsideWorkspaceRoots
+                    return
+                }
+                if current.sessionType == .worktree, exists == false {
+                    self.spawnError = Self.msgWorktreeMissing
+                    return
+                }
+                if current.sessionType == .simple,
+                   exists == false,
+                   !self.confirmCreateDirectoryArmed {
+                    self.confirmCreateDirectoryArmed = true
+                    return
+                }
+
+                let request = NewSessionLogic.buildSpawnRequest(
+                    form: current,
+                    codexFastTierVisible: self.codexFastTierVisible(current)
+                )
                 switch try await api.spawnSession(machineId: machineId, request) {
                 case .success(let sessionId):
                     self.persistOnSuccess(machineId: machineId, directory: directory)
                     self.onCreated(sessionId)
-                case .error(let message):
-                    self.spawnError = message.isEmpty
-                        ? String(localized: "Failed to create session")
-                        : message
+                case .error(let message, let code, _):
+                    self.spawnError = Self.spawnErrorMessage(code: code, fallback: message)
                 }
+            } catch let error as APIError {
+                self.spawnError = Self.spawnErrorMessage(
+                    code: error.code,
+                    fallback: error.errorDescription
+                )
             } catch {
                 self.spawnError = (error as? LocalizedError)?.errorDescription
                     ?? String(localized: "Failed to create session")
@@ -522,6 +628,9 @@ final class NewSessionModel {
         let machines = session.machineStore.machines
         guard !machines.isEmpty else { return }
         if let current = form.machineId, machines.contains(where: { $0.id == current }) {
+            if form.trimmedDirectory.isEmpty {
+                applyMachineSelection(current, resetDirectory: true)
+            }
             return
         }
         let target = machines.first { $0.id == prefsData.lastMachineId } ?? machines[0]
@@ -529,7 +638,11 @@ final class NewSessionModel {
     }
 
     private func applyMachineSelection(_ machineId: String, resetDirectory: Bool) {
+        directoryBrowser.close()
+        defaultDirectoryTask?.cancel()
         pathExistence = [:]
+        outsideWorkspaceRoots = []
+        directoryLookupError = nil
         suggestions = []
         cachedListing = nil
         confirmCreateDirectoryArmed = false
@@ -538,17 +651,56 @@ final class NewSessionModel {
         form.machineId = machineId
         form.model = "auto"
         if resetDirectory {
-            form.directory = recentPaths(for: machineId).first ?? ""
+            let machine = session.machineStore.machines.first { $0.id == machineId }
+            form.directory = machine.flatMap { RemoteDirectoryPath.browseRoots(for: $0).first } ?? ""
         }
         persistDraft()
+        if resetDirectory {
+            resolveDefaultDirectory(machineId: machineId, fallback: form.directory)
+        }
+        refreshAgentAvailability(force: true)
         refreshCodexModelsIfNeeded()
         scheduleDirectoryWork()
+    }
+
+    private func resolveDefaultDirectory(machineId: String, fallback: String) {
+        defaultDirectoryTask?.cancel()
+        let recent = recentPaths(for: machineId)
+        guard !recent.isEmpty else { return }
+        defaultDirectoryTask = Task { [weak self] in
+            guard let self else { return }
+            let result: MachinePathsExistsResponse
+            do {
+                result = try await self.session.api.machinePathsExist(
+                    machineId: machineId,
+                    paths: recent
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let outside = Set(result.outsideWorkspaceRoots ?? [])
+            guard let valid = recent.first(where: {
+                result.exists[$0] == true && !outside.contains($0)
+            }) else {
+                return
+            }
+            guard self.form.machineId == machineId, self.form.directory == fallback else { return }
+            self.suppressSuggestions = true
+            self.form.directory = valid
+            self.persistDraft()
+            self.scheduleDirectoryWork()
+        }
     }
 
     /// Debounced directory work: parent listing for autocomplete + exists
     /// probe, both riding one 250 ms debounce like the Android reference.
     private func scheduleDirectoryWork() {
         directoryTask?.cancel()
+        directoryRequestVersion += 1
+        let requestVersion = directoryRequestVersion
         guard let machineId = form.machineId else {
             suggestions = []
             return
@@ -556,11 +708,16 @@ final class NewSessionModel {
         directoryTask = Task { [weak self] in
             try? await Task.sleep(for: Self.debounce)
             guard !Task.isCancelled, let self else { return }
-            await self.performDirectoryWork(machineId: machineId)
+            guard self.directoryRequestVersion == requestVersion,
+                  self.form.machineId == machineId
+            else {
+                return
+            }
+            await self.performDirectoryWork(machineId: machineId, requestVersion: requestVersion)
         }
     }
 
-    private func performDirectoryWork(machineId: String) async {
+    private func performDirectoryWork(machineId: String, requestVersion: Int) async {
         let text = form.directory
         let trimmed = form.trimmedDirectory
         let api = session.api
@@ -571,33 +728,106 @@ final class NewSessionModel {
             let entries: [MachineDirectoryEntry]
             if let cached = cachedListing, (cached.machineId, cached.parent) == cacheKey {
                 entries = cached.entries
+                directoryLookupError = nil
             } else {
-                let response = try? await api.listMachineDirectory(
-                    machineId: machineId,
-                    path: query.parent
-                )
-                guard !Task.isCancelled else { return }
-                if let response, response.success {
-                    entries = response.entries ?? []
-                    cachedListing = (machineId, query.parent, entries)
-                } else {
+                do {
+                    let response = try await api.listMachineDirectory(
+                        machineId: machineId,
+                        path: query.parent
+                    )
+                    guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
+                    if response.success {
+                        entries = response.entries ?? []
+                        cachedListing = (machineId, query.parent, entries)
+                        directoryLookupError = nil
+                    } else {
+                        entries = []
+                        directoryLookupError = response.error ?? Self.msgDirectoryLookupFailed
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
+                    directoryLookupError = (error as? LocalizedError)?.errorDescription
+                        ?? Self.msgDirectoryLookupFailed
                     entries = []
                 }
             }
+            guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
             // Never suggest the path already typed verbatim.
             suggestions = NewSessionLogic.buildSuggestions(query: query, entries: entries)
                 .filter { $0 != trimmed }
         } else {
             suggestions = []
+            directoryLookupError = nil
         }
 
         if !trimmed.isEmpty {
             // Unknown existence (request failed): no status hint, the spawn
             // re-checks anyway.
-            if let result = try? await api.machinePathsExist(machineId: machineId, paths: [trimmed]) {
-                guard !Task.isCancelled else { return }
-                pathExistence.merge(result) { _, new in new }
+            do {
+                let result = try await api.machinePathsExist(machineId: machineId, paths: [trimmed])
+                guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
+                pathExistence.merge(result.exists) { _, new in new }
+                outsideWorkspaceRoots.remove(trimmed)
+                outsideWorkspaceRoots.formUnion(result.outsideWorkspaceRoots ?? [])
+            } catch is CancellationError {
+                return
+            } catch {
+                // Unknown existence: no status hint, spawn re-checks anyway.
             }
+        }
+    }
+
+    private func isCurrentDirectoryRequest(_ requestVersion: Int, machineId: String) -> Bool {
+        !Task.isCancelled
+            && directoryRequestVersion == requestVersion
+            && form.machineId == machineId
+    }
+
+    private func refreshAgentAvailability(force: Bool = false) {
+        guard let machineId = form.machineId else {
+            availabilityTask?.cancel()
+            availabilityFetchedForMachine = nil
+            agentAvailability = .loading
+            return
+        }
+        if !force,
+           availabilityFetchedForMachine == machineId,
+           agentAvailability != .loading {
+            return
+        }
+        availabilityTask?.cancel()
+        availabilityFetchedForMachine = machineId
+        agentAvailability = .loading
+        availabilityTask = Task { [weak self] in
+            guard let self else { return }
+            let state: AgentAvailabilityState
+            do {
+                let response = try await self.session.api.machineAgentAvailability(machineId: machineId)
+                state = .loaded(response.agents)
+            } catch let error as APIError where error.code == "runner_upgrade_required" {
+                state = .failed(message: Self.msgRunnerUpgradeRequired, upgradeRequired: true)
+            } catch is CancellationError {
+                return
+            } catch is APIError {
+                state = .failed(message: Self.msgAgentAvailabilityFailed, upgradeRequired: false)
+            } catch {
+                state = .failed(
+                    message: (error as? LocalizedError)?.errorDescription
+                        ?? Self.msgAgentAvailabilityFailed,
+                    upgradeRequired: false
+                )
+            }
+            guard !Task.isCancelled, self.form.machineId == machineId else { return }
+            self.agentAvailability = state
+            guard case .loaded = state,
+                  let firstAvailable = self.availableAgentFlavors.first,
+                  !self.availableAgentFlavors.contains(self.form.agent)
+            else {
+                return
+            }
+            self.setAgent(firstAvailable)
         }
     }
 
@@ -636,7 +866,12 @@ final class NewSessionModel {
                         ?? String(localized: "Failed to load Codex models")
                 )
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  self.form.machineId == machineId,
+                  self.form.agent == .codex
+            else {
+                return
+            }
             self.codexModels = state
             if case .loaded = state {
                 // Reconcile restored selections with the live catalog (web
@@ -683,6 +918,20 @@ final class NewSessionModel {
         )
         prefsStore.writePrefs(prefsData)
         prefsStore.clearDraft()
+    }
+
+    private static func spawnErrorMessage(code: String?, fallback: String?) -> String {
+        switch code {
+        case "runner_upgrade_required":
+            return msgRunnerUpgradeRequired
+        case "agent_unavailable":
+            return msgSelectedAgentUnavailable
+        case "outside_workspace_roots":
+            return msgDirectoryOutsideWorkspaceRoots
+        default:
+            let trimmed = fallback?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? String(localized: "Failed to create session") : trimmed
+        }
     }
 
     // MARK: - Formatting (Android `NewSessionViewModel` companion ports)

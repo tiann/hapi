@@ -10,11 +10,12 @@ import {
 } from '@/lib/messageDelivery'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
-import type { ChatBlock, CliOutputBlock, CodexReview, UsageData } from '@/chat/types'
+import type { ChatBlock, CliOutputBlock, CodexReview, RoundSummary, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import { visibleBlockRole } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
+import { orderItemsById } from '@/lib/attachmentOrder'
 
 /**
  * Aggregated metadata for a multi-turn response group, surfaced on the
@@ -27,6 +28,7 @@ export type AggregatedAssistantMeta = {
     invokedAt: number | null
     durationMs: undefined
     turnCount: number
+    roundSummary?: RoundSummary
 }
 
 export type HappyChatMessageMetadata = {
@@ -43,6 +45,7 @@ export type HappyChatMessageMetadata = {
     durationMs?: number
     usage?: UsageData
     model?: string | null
+    roundSummary?: RoundSummary
     review?: CodexReview
     /**
      * Distinct turn count when this block carries an aggregated response
@@ -256,16 +259,31 @@ export function aggregateResponseGroups(
     let groupInvokedAt: number | null = null
     let groupUsage: UsageData | undefined
     let groupTurnCount = 0
+    let groupRoundSummary: RoundSummary | undefined
+    let groupStartedAt: number | null = null
+    let groupCompletedAt: number | null = null
+    let latestUserInvokedAt: number | null = null
 
     const flush = () => {
-        if (groupFirstBlockId !== null && groupTurnCount >= 2) {
+        const roundSummary = groupRoundSummary
+            && groupRoundSummary.provider === 'codex'
+            && groupRoundSummary.durationMs === undefined
+            && groupStartedAt !== null
+            && groupCompletedAt !== null
+            ? {
+                ...groupRoundSummary,
+                durationMs: Math.max(0, groupCompletedAt - groupStartedAt)
+            }
+            : groupRoundSummary
+        if (groupFirstBlockId !== null && (groupTurnCount >= 2 || groupRoundSummary)) {
             const joinedModel = seenModels.length > 0 ? seenModels.join(', ') : null
             aggregates.set(groupFirstBlockId, {
                 usage: groupUsage,
                 model: joinedModel,
                 invokedAt: groupInvokedAt,
                 durationMs: undefined,
-                turnCount: groupTurnCount
+                turnCount: groupTurnCount,
+                roundSummary
             })
         }
         groupFirstBlockId = null
@@ -274,6 +292,9 @@ export function aggregateResponseGroups(
         groupInvokedAt = null
         groupUsage = undefined
         groupTurnCount = 0
+        groupRoundSummary = undefined
+        groupStartedAt = null
+        groupCompletedAt = null
     }
 
     for (const block of blocks) {
@@ -281,12 +302,24 @@ export function aggregateResponseGroups(
         if (role !== 'assistant') {
             // Boundary: close the open group, if any.
             flush()
+            if (block.kind === 'user-text') {
+                latestUserInvokedAt = block.invokedAt ?? null
+            }
             continue
         }
 
         if (groupFirstBlockId === null) {
             groupFirstBlockId = block.id
+            groupStartedAt = latestUserInvokedAt
         }
+        groupCompletedAt = Math.max(groupCompletedAt ?? 0, getBlockPresentationTimestamp(block))
+
+        const roundSummary = block.kind === 'tool-group'
+            ? block.roundSummary
+            : block.kind === 'user-text' || block.kind === 'agent-event'
+                ? undefined
+                : block.roundSummary
+        groupRoundSummary ??= roundSummary
 
         for (const turn of turnSourcesFromBlock(block)) {
             // Prefer the CLI-stamped `localId` when present. When it is null
@@ -737,6 +770,7 @@ export function useHappyRuntime(props: {
         scheduledAt?: number | null,
         intent?: ComposerSendIntent,
     ) => void
+    attachmentOrderRef?: React.MutableRefObject<string[]>
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
@@ -890,7 +924,8 @@ export function useHappyRuntime(props: {
                         model: aggregate.model,
                         invokedAt: aggregate.invokedAt,
                         durationMs: aggregate.durationMs,
-                        turnCount: aggregate.turnCount
+                        turnCount: aggregate.turnCount,
+                        roundSummary: aggregate.roundSummary
                     } satisfies HappyChatMessageMetadata
                 }
             }
@@ -912,14 +947,23 @@ export function useHappyRuntime(props: {
         // failure, or downstream exception cannot leak an explicit queue
         // gesture into the next ordinary send.
         const { text, attachments } = extractMessageContent(message)
-        if (!text && attachments.length === 0) return
+        const orderedAttachments = orderItemsById(
+            attachments,
+            props.attachmentOrderRef?.current ?? [],
+        )
+        if (!text && orderedAttachments.length === 0) return
         // Resolve pendingSchedule at send time (Date.now()) so preset-type schedules
         // ("5 minutes from now") are relative to the actual send action, not the
         // moment the user clicked the preset button.
         const sendNow = Date.now()
         const scheduledAt = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt, intent)
-    }, [props.onSendMessage, props.pendingScheduleRef, props.pendingSendIntentRef])
+        props.onSendMessage(
+            text,
+            orderedAttachments.length > 0 ? orderedAttachments : undefined,
+            scheduledAt,
+            intent,
+        )
+    }, [props.attachmentOrderRef, props.onSendMessage, props.pendingScheduleRef, props.pendingSendIntentRef])
 
     const onCancel = useCallback(async () => {
         await props.onAbort()

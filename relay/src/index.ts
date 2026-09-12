@@ -172,12 +172,16 @@ function mapApnsResult(result: ApnsPushResult): { response: Response; outcome: s
     if (unregistered) {
         return {
             response: pushError(410, 'unregistered'),
-            outcome: `unregistered (apns ${result.status})`
+            outcome: `unregistered (apns ${result.status} ${result.reason})`
         }
     }
     if (result.status === 429) {
-        // APNs itself throttled this device token; surface as retryable.
-        return { response: pushError(429, 'rate_limited'), outcome: 'apns-throttled' }
+        // APNs can throttle delivery or provider-token updates. Keep the
+        // reason in the operator log so the two causes can be distinguished.
+        return {
+            response: pushError(429, 'rate_limited'),
+            outcome: `apns-throttled (apns ${result.status} ${result.reason})`
+        }
     }
     // Everything else (APNs 5xx, and 4xx caused by relay config such as
     // BadTopic / auth problems) is an upstream failure from the hub's view.

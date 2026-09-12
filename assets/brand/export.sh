@@ -81,13 +81,14 @@ magick \
     "$OUT/web/favicon-48x48.png" \
     "$OUT/web/favicon.ico"
 
-# Web/PWA and Apple touch assets.
+# Web/PWA and Apple touch assets reuse the established small-size optical
+# master. Opaque RGB output avoids an extra alpha-compositing pass on install.
 for size in 64 180 192 512; do
-    render "$SVG/hapi-app-icon.svg" "$size" "$OUT/web/hapi-app-${size}x${size}.png"
+    render_rgb "$SVG/hapi-small.svg" "$size" "$OUT/web/hapi-pwa-${size}x${size}.png"
 done
 
 for size in 192 512; do
-    render "$SVG/hapi-maskable.svg" "$size" "$OUT/web/hapi-maskable-${size}x${size}.png"
+    render_rgb "$SVG/hapi-maskable.svg" "$size" "$OUT/web/hapi-maskable-${size}x${size}.png"
 done
 
 # Android legacy launcher assets. API 26+ adaptive and Android 13+ themed
@@ -105,17 +106,18 @@ xxhdpi:144
 xxxhdpi:192
 EOF
 
-# iOS App Store icon: opaque RGB, no alpha channel.
-render_rgb "$SVG/hapi-app-icon.svg" 1024 "$OUT/native/ios/AppIcon.png"
+# Legacy iOS/App Store fallback: opaque RGB, no alpha channel. Xcode 26 uses
+# the layered AppIcon.icon package copied below instead.
+render_rgb "$SVG/hapi-small.svg" 1024 "$OUT/native/ios/AppIcon.png"
 
 # Web application.
 copy_asset "$OUT/web/favicon.ico" "$REPO_ROOT/web/public/favicon.ico"
 copy_asset "$SVG/hapi-small.svg" "$REPO_ROOT/web/public/icon.svg"
 copy_asset "$SVG/hapi-monochrome.svg" "$REPO_ROOT/web/public/mask-icon.svg"
-copy_asset "$OUT/web/hapi-app-180x180.png" "$REPO_ROOT/web/public/apple-touch-icon-180x180.png"
-copy_asset "$OUT/web/hapi-app-64x64.png" "$REPO_ROOT/web/public/pwa-64x64.png"
-copy_asset "$OUT/web/hapi-app-192x192.png" "$REPO_ROOT/web/public/pwa-192x192.png"
-copy_asset "$OUT/web/hapi-app-512x512.png" "$REPO_ROOT/web/public/pwa-512x512.png"
+copy_asset "$OUT/web/hapi-pwa-180x180.png" "$REPO_ROOT/web/public/apple-touch-icon-180x180.png"
+copy_asset "$OUT/web/hapi-pwa-64x64.png" "$REPO_ROOT/web/public/pwa-64x64.png"
+copy_asset "$OUT/web/hapi-pwa-192x192.png" "$REPO_ROOT/web/public/pwa-192x192.png"
+copy_asset "$OUT/web/hapi-pwa-512x512.png" "$REPO_ROOT/web/public/pwa-512x512.png"
 copy_asset "$OUT/web/hapi-maskable-192x192.png" "$REPO_ROOT/web/public/pwa-maskable-192x192.png"
 copy_asset "$OUT/web/hapi-maskable-512x512.png" "$REPO_ROOT/web/public/pwa-maskable-512x512.png"
 
@@ -125,7 +127,7 @@ copy_asset "$SVG/hapi-mark.svg" "$REPO_ROOT/docs/public/logo.svg"
 copy_asset "$OUT/web/favicon.ico" "$REPO_ROOT/website/public/favicon.ico"
 copy_asset "$SVG/hapi-small.svg" "$REPO_ROOT/website/public/icon.svg"
 copy_asset "$SVG/hapi-mark.svg" "$REPO_ROOT/website/public/logo.svg"
-copy_asset "$OUT/web/hapi-app-180x180.png" "$REPO_ROOT/website/public/apple-touch-icon-180x180.png"
+copy_asset "$OUT/web/hapi-pwa-180x180.png" "$REPO_ROOT/website/public/apple-touch-icon-180x180.png"
 
 # Native application assets.
 while IFS=: read -r density _size; do
@@ -144,5 +146,8 @@ EOF
 copy_asset \
     "$OUT/native/ios/AppIcon.png" \
     "$REPO_ROOT/ios/Hapi/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+copy_asset \
+    "$SVG/hapi-optical-mark.svg" \
+    "$REPO_ROOT/ios/Hapi/AppIcon.icon/Assets/hapi-optical-mark.svg"
 
 echo "Synced HAPI brand assets from $ROOT"

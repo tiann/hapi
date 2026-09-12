@@ -49,7 +49,7 @@ class TokenAuthenticatorTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        hubUrl = HubUrls.normalize(server.url("/").toString())!!
+        hubUrl = server.url("/").toString().removeSuffix("/")
         store = InMemoryCredentialStore()
         events = RecordingAuthEvents()
     }
@@ -62,7 +62,7 @@ class TokenAuthenticatorTest {
 
     private fun startSession(jwt: String? = jwt1): HubSession {
         store.set(HubCredentials(hubUrl = hubUrl, accessToken = accessToken, jwt = jwt))
-        return HubSession(hubUrl, store, events).also { session = it }
+        return HubSession(server.url("/"), store, events).also { session = it }
     }
 
     private fun authOk(token: String) = MockResponse()
