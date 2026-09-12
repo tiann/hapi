@@ -40,7 +40,7 @@ function withCurrentModelOption(
     }
 
     const nextOptions = [...options]
-    const autoIndex = nextOptions.findIndex((option) => option.value === null)
+    const autoIndex = nextOptions.findIndex((option) => option.value === null || option.value === 'auto')
     nextOptions.splice(autoIndex >= 0 ? autoIndex + 1 : 0, 0, {
         value: normalizedCurrentModel,
         label: resolveLabel?.(normalizedCurrentModel) ?? normalizedCurrentModel
@@ -144,7 +144,7 @@ export function getModelOptionsForFlavor(
         return []
     }
     if (flavor === 'cursor') {
-        return withCurrentModelOption([{ value: null, label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
+        return withCurrentModelOption([{ value: 'auto', label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
     }
     // Kimi has no predefined model list — show just the auto/default option.
     if (flavor === 'kimi') {

@@ -39,6 +39,22 @@ describe('resolveSessionCursorModelChange', () => {
         })
     })
 
+    it('selecting Auto applies the CLI auto model id', () => {
+        const plan = resolveSessionCursorModelChange({
+            picker,
+            sessionModel: 'composer-2.5[fast=true]',
+            cursorSelectedBase: 'composer-2.5',
+            kind: 'base',
+            value: 'auto'
+        })
+        expect(plan).toEqual({
+            ok: true,
+            wireId: 'auto',
+            nextSelectedBase: 'auto',
+            shouldApply: true
+        })
+    })
+
     it('applies a base change when the base has exactly one wire variant', () => {
         const singlePicker = buildSessionCursorPickerState({
             sessionModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]' }],

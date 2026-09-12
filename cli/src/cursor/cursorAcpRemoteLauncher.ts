@@ -28,6 +28,7 @@ import {
     resolveCursorModeAfterPlanApproval,
     wireIdForCursorSessionState
 } from './utils/cursorModeConfig';
+import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId } from '@hapi/protocol';
 import { CURSOR_PLAN_CONTINUE } from './utils/cursorPlanContinue';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
@@ -74,6 +75,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private softSteerWaiters: Promise<void>[] = [];
     /** True when ACP process was spawned with `--auto-review`. */
     private spawnedWithAutoReview = false;
+    /** True when this ACP process was spawned with `--model auto`. */
+    private spawnedWithCliAuto = false;
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
     private autoReviewSlashQueued = false;
     private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
@@ -368,6 +371,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             throw new Error('Failed to establish Cursor ACP session');
         }
         this.acpSessionId = acpSessionId;
+        this.spawnedWithCliAuto = cursorSpawnModelId(spawnModel) === CURSOR_AUTO_MODEL_ID;
 
         if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
@@ -410,7 +414,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 optimistic: false,
                 throwOnFailure: mustRestoreDesiredModel
             });
-        } else if (this.currentBackendModel && !isSpawnDefaultModel(this.currentBackendModel)) {
+        } else if (this.currentBackendModel && !isCursorAutoModelId(this.currentBackendModel)) {
             this.pushModelStatusLine(this.currentBackendModel);
         }
 
@@ -949,29 +953,39 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const previousModel = this.currentBackendModel ?? this.session.model ?? null;
         const applySeq = ++this.modelApplySeq;
 
-        if (!requested || isSpawnDefaultModel(requested)) {
+        if (!requested || isCursorAutoModelId(requested)) {
             const modelOption = backend.getConfigOptionByCategory?.(acpSessionId, 'model');
-            const defaultWire = modelOption?.options?.find(
-                (option) => isSpawnDefaultModel(option.value)
+            const autoWire = modelOption?.options?.find(
+                (option) => option.value.trim().toLowerCase() === CURSOR_AUTO_MODEL_ID
             )?.value;
-            if (modelOption && defaultWire && backend.setConfigOption) {
+            let appliedLive = false;
+            if (modelOption && autoWire && backend.setConfigOption) {
                 try {
-                    await backend.setConfigOption(acpSessionId, modelOption.id, defaultWire);
-                    backend.pinSessionModelWireId(acpSessionId, defaultWire);
+                    await backend.setConfigOption(acpSessionId, modelOption.id, autoWire);
+                    backend.pinSessionModelWireId(acpSessionId, autoWire);
+                    appliedLive = true;
                 } catch (error) {
-                    logger.debug('[cursor-acp] Failed to set default model via ACP', error);
+                    logger.debug('[cursor-acp] Failed to set auto model via ACP', error);
                     if (options.throwOnFailure) {
-                        throw new Error('Cursor default model is not available via ACP');
+                        throw new Error('Cursor auto model is not available via ACP');
                     }
                 }
-            } else if (options.throwOnFailure) {
-                throw new Error('Cursor default model is not available via ACP');
             }
-            this.currentBackendModel = null;
-            previousSetModel(undefined);
+            // Live ACP catalogs usually advertise `default[]`, which is not CLI
+            // Auto (#1817). Only acknowledge Auto after a confirmed spawn or ACP
+            // `auto` option. In-session Auto without either requires a restart.
+            if (!appliedLive && !this.spawnedWithCliAuto) {
+                if (options.throwOnFailure) {
+                    throw new Error('Cursor Auto requires restarting with --model auto');
+                }
+                return previousModel;
+            }
+            previousSetModel(CURSOR_AUTO_MODEL_ID);
+            this.currentBackendModel = CURSOR_AUTO_MODEL_ID;
+            this.pushModelStatusLine(CURSOR_AUTO_MODEL_ID);
             this.session.pushKeepAlive();
             syncCursorModelsFromAcp(backend, acpSessionId);
-            return null;
+            return CURSOR_AUTO_MODEL_ID;
         }
 
         if (options.optimistic) {
@@ -990,7 +1004,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 this.currentBackendModel = previousModel;
                 previousSetModel(previousModel ?? undefined);
                 this.session.pushKeepAlive();
-            } else if (!options.throwOnFailure && previousModel && !isSpawnDefaultModel(previousModel)) {
+            } else if (!options.throwOnFailure && previousModel && !isCursorAutoModelId(previousModel)) {
                 this.currentBackendModel = previousModel;
                 previousSetModel(previousModel);
                 this.session.pushKeepAlive();
@@ -1014,6 +1028,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const changed = sessionWire !== this.currentBackendModel || this.session.model !== sessionWire;
         this.currentBackendModel = sessionWire;
+        this.spawnedWithCliAuto = false;
         previousSetModel(sessionWire);
         if (changed) {
             this.pushModelStatusLine(sessionWire);
@@ -1025,7 +1040,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private pushModelStatusLine(model: string | null | undefined): void {
         const trimmed = model?.trim();
-        if (!trimmed || isSpawnDefaultModel(trimmed)) {
+        if (!trimmed || isCursorAutoModelId(trimmed)) {
             this.messageBuffer.addMessage('[MODEL:auto]', 'system');
             return;
         }
@@ -1234,11 +1249,6 @@ function formatAcpLoadError(error: unknown): Record<string, unknown> {
         return { ...(error as Record<string, unknown>) };
     }
     return { message: String(error) };
-}
-
-function isSpawnDefaultModel(modelId: string): boolean {
-    const normalized = modelId.trim().toLowerCase();
-    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]';
 }
 
 function syncCursorModelsFromAcp(backend: AcpSdkBackend, acpSessionId: string): void {

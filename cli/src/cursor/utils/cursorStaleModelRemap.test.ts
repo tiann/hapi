@@ -28,6 +28,11 @@ describe('cursorStaleModelRemap', () => {
         expect(resolveCursorSpawnModel('grok-4.5[fast=false]')).toBe('cursor-grok-4.5-medium');
     });
 
+    it('pins default aliases to CLI auto before spawn remap', () => {
+        expect(resolveCursorSpawnModel('auto')).toBe('auto');
+        expect(resolveCursorSpawnModel('default[]')).toBe('auto');
+    });
+
     it('remaps once from stderr Available models on model_not_found', () => {
         const remapped = tryRemapCursorSpawnModelFromError(
             'grok-4.5[fast=true]',
