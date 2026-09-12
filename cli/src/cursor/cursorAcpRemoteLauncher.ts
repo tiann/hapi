@@ -125,7 +125,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private userAbortRequested = false;
     private lastUserMessage: string | null = null;
-    private lastTurnMode: EnhancedMode | null = null;
     /** Set only while the bridge prompt itself is the active turn. */
     private bridgingForEventId: string | null = null;
     private bridgingSource: 'auto' | 'manual' | null = null;
@@ -735,7 +734,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
 
             this.lastUserMessage = batch.message;
-            this.lastTurnMode = batch.mode;
 
             // applyLiveModel / applyCursorAcpMode can take time after dequeue.
             if (this.bridgingForEventId !== null && this.session.queue.hasPendingNonBridgeTurn()) {
@@ -880,6 +878,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         waitSignal.removeEventListener('abort', abortListener);
                     }
                     this.softSteerWaiters = [];
+                }
+                // Soft-steer can emit Error: T / strong stderr after the primary
+                // prompt already settled successfully. Flush those late signals
+                // before clearing attempt state (bridgeable:false — steered input
+                // was already accepted into the session).
+                const lateSoftSteerFailure = this.pendingStderrFailure ?? this.pendingTextFailure;
+                if (lateSoftSteerFailure && !this.turnHasModelError) {
+                    this.recordModelError(lateSoftSteerFailure, { bridgeable: false });
                 }
                 this.activePromptModeHash = null;
                 this.pendingRetryableError = null;
@@ -1389,7 +1395,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.pendingBridgeEventId = bridgedEventId;
         this.pendingBridgeSource = source;
 
-        const mode = this.lastTurnMode ?? {
+        // Live session settings — not lastTurnMode from the failed batch.
+        // Operator may have switched model/mode as recovery before Bridge.
+        const mode: EnhancedMode = {
             permissionMode: this.session.getPermissionMode() as PermissionMode,
             model: this.currentBackendModel ?? this.session.model ?? undefined
         };

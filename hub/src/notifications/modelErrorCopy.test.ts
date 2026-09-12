@@ -52,12 +52,13 @@ describe('formatModelErrorBody', () => {
         expect(body).toContain('Cursor - feature-x')
     })
 
-    it('appends the transient hint when transient', () => {
+    it('appends a neutral transient hint when transient', () => {
         const body = formatModelErrorBody(
             baseNotification({ transient: true }),
             ctx
         )
-        expect(body).toContain('(transient - safe to retry)')
+        expect(body).toContain('(transient)')
+        expect(body).not.toContain('safe to retry')
     })
 
     it('omits the transient hint when not transient', () => {

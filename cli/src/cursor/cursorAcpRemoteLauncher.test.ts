@@ -53,6 +53,8 @@ const harness = vi.hoisted(() => ({
         raw: string
     } | null,
     emitTextOnPrompt: null as string | null,
+    /** Last prompt onMessage — soft-steer late failures reuse the shared handler. */
+    activeOnMessage: null as ((message: AgentMessage) => void) | null,
     promptReject: null as Error | null,
     deferPrompt: null as Promise<void> | null,
     releasePrompt: null as (() => void) | null,
@@ -192,6 +194,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 options?: { shouldSend?: () => boolean }
             ) => {
                 harness.promptCalls++;
+                harness.activeOnMessage = onMessage ?? null;
                 if (harness.deferBeforeSend) {
                     await harness.deferBeforeSend;
                     if (options?.shouldSend && !options.shouldSend()) {
@@ -390,6 +393,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.emitStderrOnInitialize = null;
         harness.emitStderrOnLoadSession = null;
         harness.emitTextOnPrompt = null;
+        harness.activeOnMessage = null;
         harness.promptReject = null;
         harness.deferPrompt = null;
         harness.releasePrompt = null;
@@ -487,6 +491,143 @@ describe('cursorAcpRemoteLauncher', () => {
 
         setAutoBridgeTransientModelErrors(false);
         session.queue.close();
+        await launchPromise;
+    });
+
+    it('records a soft-steer inline failure that arrives after the primary prompt settles', async () => {
+        // Cold-review Major 2026-09-12: primary A succeeds; soft-steer B then emits
+        // Error: T while the launcher waits on softSteerWaiters. Must record modelError
+        // (and suppress ready) instead of discarding pendingTextFailure.
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('prompt A', mode, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('soft steer B', mode, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        // Primary settled successfully; launcher is parked on softSteerWaiters.
+        await vi.waitFor(() => expect(harness.activeOnMessage).toBeTruthy());
+        await new Promise((r) => setTimeout(r, 20));
+
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [resource_exhausted] capacity exceeded'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+
+        const wroteKind = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { kind?: string } | undefined;
+            return err?.kind === 'quota_exhausted';
+        });
+        expect(wroteKind).toBe(true);
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('bridges with the live session mode/model, not the failed batch mode', async () => {
+        // Cold-review Major 2026-09-12: after transient failure, operator switches to
+        // plan (or a new model); Bridge must not reapply lastTurnMode from the failure.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('failed turn', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+
+        session.setPermissionMode('plan');
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    bridgeable?: boolean
+                    transient?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'failed turn',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        const bridged = session.queue.queue.find(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        );
+        expect(bridged?.mode.permissionMode).toBe('plan');
+
+        session.queue.close();
+        nextWait.release?.();
         await launchPromise;
     });
 

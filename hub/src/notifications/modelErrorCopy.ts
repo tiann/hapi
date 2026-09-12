@@ -58,7 +58,7 @@ export function formatModelErrorBody(
     }
     lines.push(`${context.agentName} - ${context.sessionName}`)
     if (notification.transient) {
-        lines.push('(transient - safe to retry)')
+        lines.push('(transient)')
     }
     return lines.join('\n')
 }
