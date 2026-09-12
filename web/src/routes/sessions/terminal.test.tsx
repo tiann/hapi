@@ -8,6 +8,10 @@ const goBackMock = vi.fn()
 const connectMock = vi.fn()
 const resizeMock = vi.fn()
 const disconnectMock = vi.fn()
+const refreshTerminalsMock = vi.fn()
+const createTerminalMock = vi.fn()
+const detachTerminalMock = vi.fn()
+const closeTerminalMock = vi.fn()
 const onOutputMock = vi.fn()
 let onExitHandler: ((code: number | null, signal: string | null) => void) | null = null
 
@@ -32,9 +36,19 @@ function setCompactTerminalControls(compact: boolean) {
     })
 }
 
+let remoteTerminals = [
+    { terminalId: 'terminal-1', createdAt: 1, attached: false },
+]
+let remoteMaxTerminals = 4
+let remoteHasLoadedTerminals = true
+
 const terminalSocketState = {
     state: { status: 'connected' as const },
     connect: connectMock,
+    refreshTerminals: refreshTerminalsMock,
+    createTerminal: createTerminalMock,
+    detachTerminal: detachTerminalMock,
+    closeTerminal: closeTerminalMock,
     write: writeMock,
     resize: resizeMock,
     disconnect: disconnectMock,
@@ -68,12 +82,17 @@ vi.mock('@/hooks/queries/useSession', () => ({
     })
 }))
 
-const capturedTerminalIds: string[] = []
+const capturedTerminalIds: Array<string | null> = []
 
 vi.mock('@/hooks/useTerminalSocket', () => ({
-    useTerminalSocket: (opts: { terminalId: string }) => {
+    useTerminalSocket: (opts: { terminalId: string | null }) => {
         capturedTerminalIds.push(opts.terminalId)
-        return terminalSocketState
+        return {
+            ...terminalSocketState,
+            terminals: remoteTerminals,
+            maxTerminals: remoteMaxTerminals,
+            hasLoadedTerminals: remoteHasLoadedTerminals,
+        }
     }
 }))
 
@@ -92,6 +111,10 @@ function renderWithProviders() {
 describe('TerminalPage paste behavior', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        remoteTerminals = [{ terminalId: 'terminal-1', createdAt: 1, attached: false }]
+        remoteMaxTerminals = 4
+        remoteHasLoadedTerminals = true
+        window.localStorage.clear()
         setCompactTerminalControls(false)
         onExitHandler = null
     })
@@ -129,34 +152,93 @@ describe('TerminalPage paste behavior', () => {
     })
 })
 
-describe('TerminalPage terminal id', () => {
+describe('TerminalPage terminal sessions', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         capturedTerminalIds.length = 0
+        remoteTerminals = [{ terminalId: 'terminal-1', createdAt: 1, attached: false }]
+        remoteMaxTerminals = 4
+        remoteHasLoadedTerminals = true
+        window.localStorage.clear()
+        setCompactTerminalControls(false)
+        onExitHandler = null
     })
 
-    it('generates a unique terminal id per mount so concurrent viewers do not collide', () => {
-        // Two viewers (tabs/devices) of the SAME session must not share one
-        // terminal id: the hub registry would treat the second viewer's reused
-        // id as a stale reconnect and evict the first viewer's PTY ownership.
-        renderWithProviders()
+    it('selects an existing server terminal instead of creating a per-mount terminal', async () => {
         renderWithProviders()
 
-        const distinct = new Set(capturedTerminalIds)
-        expect(distinct.size).toBe(2)
-        // Each id still carries the session for debuggability/scoping.
-        expect([...distinct].every((id) => id.startsWith('term-session-1-'))).toBe(true)
+        await waitFor(() => {
+            expect(screen.getByRole('tab', { name: 'Terminal 1' })).toHaveAttribute('aria-selected', 'true')
+        })
+        expect(createTerminalMock).not.toHaveBeenCalled()
+        expect(capturedTerminalIds.filter(Boolean).every((id) => id === 'terminal-1')).toBe(true)
+    })
+
+    it('switches between server terminals by detaching the previous terminal', async () => {
+        remoteTerminals = [
+            { terminalId: 'terminal-1', createdAt: 1, attached: false },
+            { terminalId: 'terminal-2', createdAt: 2, attached: false },
+        ]
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByRole('tab', { name: 'Terminal 2' })).toHaveAttribute('aria-selected', 'true')
+        })
+        fireEvent.click(screen.getByRole('tab', { name: 'Terminal 1' }))
+
+        expect(detachTerminalMock).toHaveBeenCalledWith('terminal-2')
+        await waitFor(() => {
+            expect(capturedTerminalIds).toContain('terminal-1')
+        })
+    })
+
+    it('creates another terminal only while below the server-advertised max', async () => {
+        renderWithProviders()
+        await waitFor(() => {
+            expect(screen.getByRole('tab', { name: 'Terminal 1' })).toHaveAttribute('aria-selected', 'true')
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'New terminal' }))
+
+        expect(detachTerminalMock).toHaveBeenCalledWith('terminal-1')
+        expect(createTerminalMock).toHaveBeenCalledTimes(1)
+        const [terminalId] = createTerminalMock.mock.calls[0]
+        expect(terminalId).toMatch(/^term-session-1-/)
+    })
+
+    it('disables new terminal creation at the configured max', async () => {
+        remoteMaxTerminals = 1
+        renderWithProviders()
+
+        const newButton = screen.getByRole('button', { name: 'New terminal' })
+        await waitFor(() => expect(newButton).toBeDisabled())
+        fireEvent.click(newButton)
+        expect(createTerminalMock).not.toHaveBeenCalled()
+    })
+
+    it('explicitly closes a terminal from the selector', async () => {
+        renderWithProviders()
+        await waitFor(() => {
+            expect(screen.getByRole('tab', { name: 'Terminal 1' })).toHaveAttribute('aria-selected', 'true')
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close Terminal 1' }))
+        expect(closeTerminalMock).toHaveBeenCalledWith('terminal-1')
     })
 })
 
 describe('TerminalPage exit behavior', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        remoteTerminals = [{ terminalId: 'terminal-1', createdAt: 1, attached: false }]
+        remoteMaxTerminals = 4
+        remoteHasLoadedTerminals = true
+        window.localStorage.clear()
         setCompactTerminalControls(false)
         onExitHandler = null
     })
 
-    it('navigates back to chat shortly after the terminal exits', async () => {
+    it('keeps the terminal page open and refreshes the session list after exit', async () => {
         renderWithProviders()
 
         await waitFor(() => {
@@ -167,18 +249,19 @@ describe('TerminalPage exit behavior', () => {
             onExitHandler?.(0, null)
         })
 
-        await waitFor(
-            () => {
-                expect(goBackMock).toHaveBeenCalledTimes(1)
-            },
-            { timeout: 3000 }
-        )
+        expect(goBackMock).not.toHaveBeenCalled()
+        expect(refreshTerminalsMock).toHaveBeenCalled()
+        expect(screen.getByText(/Terminal exited with code 0/)).toBeInTheDocument()
     })
 })
 
 describe('TerminalPage compact command input', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        remoteTerminals = [{ terminalId: 'terminal-1', createdAt: 1, attached: false }]
+        remoteMaxTerminals = 4
+        remoteHasLoadedTerminals = true
+        window.localStorage.clear()
         setCompactTerminalControls(true)
         onExitHandler = null
         vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {

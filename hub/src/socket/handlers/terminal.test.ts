@@ -15,6 +15,7 @@ class FakeSocket {
     readonly data: Record<string, unknown> = {}
     readonly emitted: EmittedEvent[] = []
     readonly rooms = new Set<string>()
+    nsp: FakeNamespace | null = null
     private readonly handlers = new Map<string, (...args: unknown[]) => void>()
 
     constructor(id: string) {
@@ -33,6 +34,21 @@ class FakeSocket {
 
     join(room: string): void {
         this.rooms.add(room)
+        if (this.nsp) {
+            const members = this.nsp.adapter.rooms.get(room) ?? new Set<string>()
+            members.add(this.id)
+            this.nsp.adapter.rooms.set(room, members)
+        }
+    }
+
+    leave(room: string): void {
+        this.rooms.delete(room)
+        if (!this.nsp) return
+        const members = this.nsp.adapter.rooms.get(room)
+        members?.delete(this.id)
+        if (members?.size === 0) {
+            this.nsp.adapter.rooms.delete(room)
+        }
     }
 
     trigger(event: string, data?: unknown): void {
@@ -70,8 +86,36 @@ class FakeServer {
 type Harness = {
     io: FakeServer
     terminalSocket: FakeSocket
+    terminalNamespace: FakeNamespace
     cliNamespace: FakeNamespace
     terminalRegistry: TerminalRegistry
+}
+
+function registerWebSocket(
+    io: FakeServer,
+    terminalNamespace: FakeNamespace,
+    terminalRegistry: TerminalRegistry,
+    socket: FakeSocket,
+    options?: {
+        sessionActive?: boolean
+        sessionNamespace?: string
+        maxTerminalsPerSocket?: number
+        maxTerminalsPerSession?: number
+    }
+): void {
+    socket.data.namespace = 'default'
+    socket.nsp = terminalNamespace
+    terminalNamespace.sockets.set(socket.id, socket)
+    registerTerminalHandlers(socket as unknown as SocketWithData, {
+        io: io as unknown as SocketServer,
+        getSession: () => ({
+            active: options?.sessionActive ?? true,
+            namespace: options?.sessionNamespace ?? 'default'
+        }),
+        terminalRegistry,
+        maxTerminalsPerSocket: options?.maxTerminalsPerSocket ?? 4,
+        maxTerminalsPerSession: options?.maxTerminalsPerSession ?? 4
+    })
 }
 
 function createHarness(options?: {
@@ -82,22 +126,13 @@ function createHarness(options?: {
 }): Harness {
     const io = new FakeServer()
     const terminalSocket = new FakeSocket('terminal-socket')
-    terminalSocket.data.namespace = 'default'
     const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
     const cliNamespace = io.of('/cli')
+    const terminalNamespace = io.of('/terminal')
 
-    registerTerminalHandlers(terminalSocket as unknown as SocketWithData, {
-        io: io as unknown as SocketServer,
-        getSession: () => ({
-            active: options?.sessionActive ?? true,
-            namespace: options?.sessionNamespace ?? 'default'
-        }),
-        terminalRegistry,
-        maxTerminalsPerSocket: options?.maxTerminalsPerSocket ?? 4,
-        maxTerminalsPerSession: options?.maxTerminalsPerSession ?? 4
-    })
+    registerWebSocket(io, terminalNamespace, terminalRegistry, terminalSocket, options)
 
-    return { io, terminalSocket, cliNamespace, terminalRegistry }
+    return { io, terminalSocket, terminalNamespace, cliNamespace, terminalRegistry }
 }
 
 function connectCliSocket(cliNamespace: FakeNamespace, cliSocket: FakeSocket, sessionId: string): void {
@@ -189,12 +224,12 @@ describe('terminal socket handlers', () => {
         expect(terminalRegistry.get('terminal-1')).toBeNull()
     })
 
-    it('replays buffered output once when a replacement socket takes over the same terminal', () => {
+    it('replays buffered output once when a second socket attaches to the same terminal', () => {
         clearUserTerminalBuffer('session-1', 'terminal-1')
         clearUserTerminalBuffer('session-2', 'terminal-1')
         appendUserTerminalOutput('session-1', 'terminal-1', 'session-one output')
         appendUserTerminalOutput('session-2', 'terminal-1', 'other-session output')
-        const { io, terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const { io, terminalSocket, terminalNamespace, cliNamespace, terminalRegistry } = createHarness()
         const cliSocket = new FakeSocket('cli-socket-1')
         connectCliSocket(cliNamespace, cliSocket, 'session-1')
         terminalSocket.trigger('terminal:create', {
@@ -202,14 +237,7 @@ describe('terminal socket handlers', () => {
         })
 
         const replacement = new FakeSocket('replacement-socket')
-        replacement.data.namespace = 'default'
-        registerTerminalHandlers(replacement as unknown as SocketWithData, {
-            io: io as unknown as SocketServer,
-            getSession: () => ({ active: true, namespace: 'default' }),
-            terminalRegistry,
-            maxTerminalsPerSocket: 4,
-            maxTerminalsPerSession: 4
-        })
+        registerWebSocket(io, terminalNamespace, terminalRegistry, replacement)
         replacement.trigger('terminal:create', {
             sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
         })
@@ -219,6 +247,9 @@ describe('terminal socket handlers', () => {
             terminalId: 'terminal-1', data: 'session-one output'
         } }])
         expect(replayEvents[0]?.data).not.toEqual(expect.objectContaining({ data: 'other-session output' }))
+        expect(terminalRegistry.get('terminal-1')?.viewerSocketIds).toEqual(
+            new Set([terminalSocket.id, replacement.id])
+        )
         clearUserTerminalBuffer('session-1', 'terminal-1')
         clearUserTerminalBuffer('session-2', 'terminal-1')
     })
@@ -240,7 +271,7 @@ describe('terminal socket handlers', () => {
     })
 
     it('preserves the terminal and replays scrollback after a transient socket disconnect', () => {
-        const { io, terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const { io, terminalSocket, terminalNamespace, cliNamespace, terminalRegistry } = createHarness()
         const cliSocket = new FakeSocket('cli-socket-1')
         connectCliSocket(cliNamespace, cliSocket, 'session-1')
 
@@ -259,14 +290,7 @@ describe('terminal socket handlers', () => {
         expect(terminalRegistry.get('terminal-1')).not.toBeNull()
 
         const reconnectedSocket = new FakeSocket('terminal-socket-2')
-        reconnectedSocket.data.namespace = 'default'
-        registerTerminalHandlers(reconnectedSocket as unknown as SocketWithData, {
-            io: io as unknown as SocketServer,
-            getSession: () => ({ active: true, namespace: 'default' }),
-            terminalRegistry,
-            maxTerminalsPerSocket: 4,
-            maxTerminalsPerSession: 4
-        })
+        registerWebSocket(io, terminalNamespace, terminalRegistry, reconnectedSocket)
         reconnectedSocket.trigger('terminal:create', {
             sessionId: 'session-1',
             terminalId: 'terminal-1',
@@ -294,6 +318,174 @@ describe('terminal socket handlers', () => {
         })
 
         expect(terminalSocket.rooms.has('session:session-1')).toBe(true)
+    })
+
+    it('lists persistent terminals and reports the configured session limit', () => {
+        const { terminalSocket, cliNamespace } = createHarness({ maxTerminalsPerSession: 3 })
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:list', { sessionId: 'session-1' })
+
+        const sessionsEvent = lastEmit(terminalSocket, 'terminal:sessions')
+        expect(sessionsEvent?.data).toEqual({
+            sessionId: 'session-1',
+            maxTerminals: 3,
+            terminals: [{
+                terminalId: 'terminal-1',
+                createdAt: expect.any(Number),
+                attached: true
+            }]
+        })
+    })
+
+    it('detaches and later attaches an existing terminal without opening a second PTY', () => {
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:detach', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(terminalRegistry.get('terminal-1')?.viewerSocketIds.size).toBe(0)
+
+        appendUserTerminalOutput('session-1', 'terminal-1', 'kept scrollback')
+        cliSocket.emitted.length = 0
+        terminalSocket.emitted.length = 0
+        terminalSocket.trigger('terminal:attach', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 100, rows: 30
+        })
+
+        expect(lastEmit(cliSocket, 'terminal:open')).toBeUndefined()
+        expect(lastEmit(cliSocket, 'terminal:resize')?.data).toEqual({
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 100, rows: 30
+        })
+        expect(lastEmit(terminalSocket, 'terminal:output')?.data).toEqual({
+            terminalId: 'terminal-1', data: 'kept scrollback'
+        })
+        expect(lastEmit(terminalSocket, 'terminal:ready')?.data).toEqual({
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(terminalRegistry.get('terminal-1')?.viewerSocketIds.has(terminalSocket.id)).toBe(true)
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+    })
+
+    it('allows multiple web viewers to drive the same server-side terminal without takeover', () => {
+        const { io, terminalSocket, terminalNamespace, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+
+        const secondViewer = new FakeSocket('terminal-socket-2')
+        registerWebSocket(io, terminalNamespace, terminalRegistry, secondViewer)
+        secondViewer.trigger('terminal:attach', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 100, rows: 30
+        })
+
+        expect(terminalRegistry.get('terminal-1')?.viewerSocketIds).toEqual(
+            new Set([terminalSocket.id, secondViewer.id])
+        )
+
+        terminalSocket.trigger('terminal:write', { terminalId: 'terminal-1', data: 'from-a' })
+        secondViewer.trigger('terminal:write', { terminalId: 'terminal-1', data: 'from-b' })
+        expect(cliSocket.emitted.filter((event) => event.event === 'terminal:write').map((event) => event.data)).toEqual([
+            { sessionId: 'session-1', terminalId: 'terminal-1', data: 'from-a' },
+            { sessionId: 'session-1', terminalId: 'terminal-1', data: 'from-b' }
+        ])
+
+        secondViewer.trigger('terminal:detach', { sessionId: 'session-1', terminalId: 'terminal-1' })
+        expect(terminalRegistry.get('terminal-1')?.viewerSocketIds).toEqual(new Set([terminalSocket.id]))
+    })
+
+    it('pushes terminal inventory changes to every subscribed web view', () => {
+        const { io, terminalSocket, terminalNamespace, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+        const secondViewer = new FakeSocket('terminal-socket-2')
+        registerWebSocket(io, terminalNamespace, terminalRegistry, secondViewer)
+
+        terminalSocket.trigger('terminal:list', { sessionId: 'session-1' })
+        secondViewer.trigger('terminal:list', { sessionId: 'session-1' })
+        terminalSocket.emitted.length = 0
+        secondViewer.emitted.length = 0
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+
+        expect(lastEmit(secondViewer, 'terminal:sessions')?.data).toEqual({
+            sessionId: 'session-1',
+            maxTerminals: 4,
+            terminals: [{
+                terminalId: 'terminal-1',
+                createdAt: expect.any(Number),
+                attached: true
+            }]
+        })
+
+        terminalSocket.trigger('terminal:close', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(lastEmit(secondViewer, 'terminal:sessions')?.data).toEqual({
+            sessionId: 'session-1',
+            maxTerminals: 4,
+            terminals: []
+        })
+    })
+
+    it('can explicitly close a detached terminal from the session selector', () => {
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:detach', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        terminalSocket.trigger('terminal:close', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+
+        expect(lastEmit(cliSocket, 'terminal:close')?.data).toEqual({
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        expect(terminalRegistry.get('terminal-1')).toBeNull()
+    })
+
+    it('enforces the per-session max even when existing terminals are detached', () => {
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness({
+            maxTerminalsPerSocket: 4,
+            maxTerminalsPerSession: 1
+        })
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+        terminalSocket.trigger('terminal:detach', {
+            sessionId: 'session-1', terminalId: 'terminal-1'
+        })
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-2', cols: 80, rows: 24
+        })
+
+        expect(lastEmit(terminalSocket, 'terminal:error')?.data).toEqual({
+            terminalId: 'terminal-2',
+            message: 'Too many terminals open for this session (max 1).'
+        })
+        expect(terminalRegistry.get('terminal-2')).toBeNull()
     })
 
     describe('agent-terminal:subscribe', () => {
