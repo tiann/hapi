@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import {
     extractAssistantPlainText,
+    hasConversationMessageContent,
     extractNotifySummary,
     getLiveReasoningStreamId,
     getReasoningStreamId,
@@ -399,5 +400,40 @@ describe('reasoning stream identity', () => {
     ])('returns null for %s', (_label, value) => {
         expect(getReasoningStreamId(value)).toBeNull()
         expect(getLiveReasoningStreamId(value)).toBeNull()
+    })
+})
+
+
+describe('hasConversationMessageContent', () => {
+    test.each([
+        ['user text', { role: 'user', content: { type: 'text', text: 'Hello' } }],
+        ['user string', { role: 'user', content: 'Hello' }],
+        ['user blocks', { role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
+        ['attachment only', { role: 'user', content: { type: 'text', text: '', attachments: [{ id: 'file' }] } }],
+        ['Claude output', { role: 'agent', content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: 'Answer' }] } } } }],
+        ['Claude tool', { role: 'agent', content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', id: 'call' }] } } } }],
+        ['Claude user echo', { role: 'agent', content: { type: 'output', data: { type: 'user', message: { content: [{ type: 'text', text: 'Prompt' }] } } } }],
+        ['agent output', { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Answer' } } }],
+        ['agent reasoning', { role: 'agent', content: { type: 'codex', data: { type: 'reasoning', message: 'Thinking' } } }],
+        ['agent tool', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', callId: 'call' } } }],
+        ['compact summary', { role: 'agent', content: { type: 'event', data: { type: 'compact-summary', summary: 'Previous work' } } }],
+    ])('accepts %s', (_label, content) => {
+        expect(hasConversationMessageContent(content)).toBe(true)
+        expect(hasConversationMessageContent({ data: { message: content } })).toBe(true)
+    })
+
+    test.each([
+        null,
+        { role: 'user', content: { type: 'text', text: '  \n', attachments: [] } },
+        { role: 'agent', content: { type: 'output', data: { type: 'assistant', message: { content: [] } } } },
+        { role: 'agent', content: { type: 'output', data: { type: 'system', subtype: 'init' } } },
+        { role: 'agent', content: { type: 'output', data: { type: 'summary', summary: 'Generated title', leafUuid: 'title-id' } } },
+        { role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Session started' } } },
+        { role: 'agent', content: { type: 'event', data: { type: 'switch', mode: 'remote' } } },
+        { role: 'agent', content: { type: 'codex', data: { type: 'token_count', total: 100 } } },
+        { role: 'agent', content: { type: 'codex', data: { type: 'message', message: '  ' } } },
+        { role: 'agent', content: { type: 'codex', data: { type: 'error', message: 'Launch failed' } } },
+    ])('rejects bookkeeping and empty content: %j', (content) => {
+        expect(hasConversationMessageContent(content)).toBe(false)
     })
 })

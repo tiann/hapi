@@ -1148,7 +1148,13 @@ export function normalizeAgentRecord(
                 role: 'event',
                 content: {
                     type: 'token-count',
-                    info: data.info
+                    info: data.info,
+                    ...(data.flavor === 'codex'
+                        ? {
+                            provider: 'codex' as const,
+                            model: asString(data.model) ?? undefined
+                        }
+                        : {})
                 },
                 isSidechain: false,
                 meta,

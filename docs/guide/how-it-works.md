@@ -1,5 +1,9 @@
 # How it Works
 
+**Codex 0.154.0+** uses a [shared app-server](./codex-shared-sessions.md):
+terminal and Web/phone can act simultaneously, without switching ownership.
+The local/remote handoff descriptions below apply to other agent integrations.
+
 HAPI consists of three interconnected components that work together to provide remote AI agent control.
 
 ## Architecture Overview
@@ -56,8 +60,8 @@ The CLI is a wrapper around AI coding agents. It supports multiple agent flavors
 
 **Key Commands:**
 ```bash
-hapi              # Start a session (Claude Code by default)
-hapi <agent>      # Start a session with another agent flavor (see Supported agents)
+hapi              # Choose an agent interactively and start a session
+hapi <agent>      # Start a supported agent directly (required in scripts)
 hapi runner start # Run background service for remote session spawning
 hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
 ```

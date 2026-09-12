@@ -139,7 +139,7 @@ private struct ChangesTabView: View {
                 Text(status.branch ?? String(localized: "Detached HEAD"))
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                Text("\(status.totalStaged) staged · \(status.totalUnstaged) unstaged")
+                Text("\(status.totalStaged, specifier: "%lld") staged · \(status.totalUnstaged, specifier: "%lld") unstaged")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

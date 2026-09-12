@@ -1,7 +1,6 @@
 package app.hapi.companion.ui.markdown
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,17 +13,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -34,7 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
-import app.hapi.companion.ui.theme.HapiExtendedColors
+import app.hapi.companion.ui.components.FullTextAction
 import app.hapi.companion.ui.theme.hapi
 import dev.snipme.highlights.Highlights
 import dev.snipme.highlights.model.BoldHighlight
@@ -43,7 +38,6 @@ import dev.snipme.highlights.model.ColorHighlight
 import dev.snipme.highlights.model.SyntaxLanguage
 import dev.snipme.highlights.model.SyntaxThemes
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** Above this many lines highlighting is skipped and the block renders plain. */
@@ -107,7 +101,7 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
                 modifier = Modifier.weight(1f, fill = false),
             )
             Spacer(Modifier.weight(1f))
-            CopyButton(code, colors)
+            FullTextAction(code, compact = true)
         }
         val highlighted = rememberHighlightedCode(code, language, colors.isDark)
         Box(
@@ -118,42 +112,13 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
             Text(
                 text = highlighted,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
                 softWrap = false,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
         }
     }
-}
-
-@Composable
-private fun CopyButton(code: String, colors: HapiExtendedColors) {
-    // LocalClipboard (the suspend replacement) buys nothing for a plain text
-    // copy and would force a scope launch in the click handler; the deprecated
-    // sync API is the deliberate choice here.
-    @Suppress("DEPRECATION")
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1600)
-            copied = false
-        }
-    }
-    Text(
-        text = stringResource(if (copied) R.string.code_copied else R.string.code_copy),
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Medium,
-        color = if (copied) MaterialTheme.colorScheme.primary else colors.codeHeaderForeground,
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .clickable {
-                clipboard.setText(AnnotatedString(code))
-                copied = true
-            }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    )
 }
 
 @Composable

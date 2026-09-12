@@ -174,6 +174,7 @@ describe('POST /v1/push forwarding', () => {
         { name: 'APNs 400 BadTopic (relay misconfig)', result: { kind: 'rejected', status: 400, reason: 'BadTopic' }, status: 502, code: 'upstream' },
         { name: 'APNs 403 InvalidProviderToken', result: { kind: 'rejected', status: 403, reason: 'InvalidProviderToken' }, status: 502, code: 'upstream' },
         { name: 'APNs 429 TooManyRequests', result: { kind: 'rejected', status: 429, reason: 'TooManyRequests' }, status: 429, code: 'rate_limited' },
+        { name: 'APNs 429 TooManyProviderTokenUpdates', result: { kind: 'rejected', status: 429, reason: 'TooManyProviderTokenUpdates' }, status: 429, code: 'rate_limited' },
         { name: 'APNs 500', result: { kind: 'rejected', status: 500, reason: 'InternalServerError' }, status: 502, code: 'upstream' },
         { name: 'APNs 503', result: { kind: 'rejected', status: 503, reason: 'ServiceUnavailable' }, status: 502, code: 'upstream' },
         { name: 'network failure', result: { kind: 'transport-error', message: 'connect ECONNREFUSED' }, status: 502, code: 'upstream' }
@@ -193,6 +194,23 @@ describe('POST /v1/push forwarding', () => {
         } else {
             expect(parsed).toEqual({ ok: false, code })
         }
+    })
+
+    test.each([
+        { status: 429, reason: 'TooManyRequests', outcome: 'apns-throttled' },
+        { status: 429, reason: 'TooManyProviderTokenUpdates', outcome: 'apns-throttled' },
+        { status: 400, reason: 'BadDeviceToken', outcome: 'unregistered' },
+        { status: 410, reason: 'Unregistered', outcome: 'unregistered' }
+    ])('logs the APNs reason for $status $reason', async ({ status, reason, outcome }) => {
+        const { app, apns, logs } = makeHarness()
+        apns.nextResults.push({ kind: 'rejected', status, reason })
+        await app.handle(
+            pushRequest({ platform: 'ios', token: TOKEN, envelope: ENVELOPE }),
+            '1.2.3.4'
+        )
+        expect(logs).toEqual([
+            `[relay] push token=${hashedTokenPrefix(TOKEN)} outcome=${outcome} (apns ${status} ${reason})`
+        ])
     })
 
     test('never logs the envelope or the raw device token', async () => {

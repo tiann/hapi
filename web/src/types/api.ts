@@ -40,6 +40,7 @@ export type {
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    OpencodeModelVariantsResponse,
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,

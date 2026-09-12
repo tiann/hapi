@@ -218,6 +218,8 @@ private class RecordingChatApi : ChatSessionApi {
         configCalls.value = configCalls.value + "abort:$sessionId"
     }
 
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
+
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse {
         resumeCalls.value = resumeCalls.value + (sessionId to permissionMode)
         return resumeResult ?: throw RuntimeException("resume not scripted")
@@ -424,6 +426,7 @@ private class InteractionHarness(
         drafts = drafts,
         scratchlist = scratchlist,
         pipelineDispatcher = StandardTestDispatcher(testScope.testScheduler),
+        uiDispatcher = StandardTestDispatcher(testScope.testScheduler),
         draftSaveDebounceMs = 10,
         now = { 1_000L },
         localIdGenerator = { "local-${++localIdCounter}" },
@@ -506,6 +509,9 @@ class ChatViewModelInteractionTest {
         harness.api.sendFailures += ApiError(409, code = "session_inactive")
         harness.api.resumeResult = ResumeSessionResponse(sessionId = IX_SESSION)
         harness.viewModel.start()
+        // Entry loading crosses the UI/worker boundary; finish it before
+        // testing an action that intentionally changes the server snapshot.
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
 
         harness.viewModel.setComposerText("wake up")
         harness.viewModel.sendMessage()
@@ -902,6 +908,7 @@ class ChatViewModelInteractionTest {
         val harness = InteractionHarness(this, detail(permissionMode = "default"))
         harness.api.configFailure = ApiError(409, code = "apply_failed")
         harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
 
         var notice: ChatNotice? = null
         val collector = launch(start = CoroutineStart.UNDISPATCHED) {

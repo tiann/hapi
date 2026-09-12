@@ -182,7 +182,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         if (result.type === 'error') {
             const status = result.code === 'access_denied' ? 403
                 : result.code === 'session_not_found' ? 404
-                    : result.code === 'already_local' ? 409
+                    : result.code === 'already_local' || result.code === 'control_mode_not_applicable' ? 409
                         : 500
             return c.json({ error: result.message, code: result.code }, status)
         }

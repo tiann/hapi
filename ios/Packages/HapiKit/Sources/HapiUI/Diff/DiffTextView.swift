@@ -11,6 +11,7 @@ public struct DiffTextView: View {
 
     @State private var expanded = false
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     public init(files: [DiffFile], compact: Bool = false, compactLineLimit: Int = 12) {
         self.files = files
@@ -101,10 +102,11 @@ public struct DiffTextView: View {
                     expanded = true
                 } label: {
                     Text("Show all \(rows.count) lines")
-                        .font(theme.captionFont)
+                        .font(typography.captionFont)
                         .foregroundStyle(theme.link)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
+                        .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
             }
@@ -119,9 +121,9 @@ public struct DiffTextView: View {
         case .fileHeader(let file):
             HStack(spacing: 8) {
                 Text(file.displayPath)
-                    .font(.system(size: theme.captionSize, design: .monospaced))
+                    .font(typography.captionMonoFont)
                     .foregroundStyle(theme.textSecondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 if file.kind == .renamed {
                     badge("renamed", color: theme.warning)
                 }
@@ -137,14 +139,14 @@ public struct DiffTextView: View {
             .background(theme.codeHeaderBackground)
         case .hunkHeader(let header):
             Text(header)
-                .font(theme.codeFont)
+                .font(typography.codeFont)
                 .foregroundStyle(theme.textSecondary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 3)
                 .background(theme.hunkHeaderBackground)
         case .binaryNote:
             Text("Binary file not shown")
-                .font(theme.captionFont)
+                .font(typography.captionFont)
                 .foregroundStyle(theme.textHint)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -174,14 +176,15 @@ public struct DiffTextView: View {
                 + "  "
         )
         text.foregroundColor = theme.textHint
+        text.font = typography.captionMonoFont
         var content = AttributedString(prefix + " " + line.text)
         content.foregroundColor = foreground
         text.append(content)
 
         return Text(text)
-            .font(theme.codeFont)
+            .font(typography.codeFont)
             .padding(.horizontal, 12)
-            .padding(.vertical, 1)
+            .padding(.vertical, typography.codeLineSpacing / 2)
             .background(background ?? Color.clear)
     }
 
@@ -193,7 +196,7 @@ public struct DiffTextView: View {
 
     private func badge(_ label: String, color: Color) -> some View {
         Text(label)
-            .font(.system(size: theme.captionSize - 1, weight: .medium, design: .monospaced))
+            .font(typography.captionMonoFont)
             .foregroundStyle(color)
     }
 }

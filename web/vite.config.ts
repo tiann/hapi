@@ -96,7 +96,16 @@ export default defineConfig({
                 name: 'HAPI',
                 short_name: 'HAPI',
                 description: 'AI-powered development assistant',
-                theme_color: '#ffffff',
+                // An installed Android WebAPK stores theme_color once at install time and uses it
+                // as a fixed toolbar color, so any value here pins the status bar to one appearance.
+                // With none, Chrome falls back to white in light mode and black in dark mode. That
+                // follows the Android system uiMode, not the in-app appearance setting, so the bar
+                // and the app diverge while an appearance override is active. `undefined` is
+                // explicit because the plugin fills in its own #42b883 default otherwise, and the
+                // resulting "theme_color is missing" build warning is wrong: theme_color is
+                // optional for installability.
+                theme_color: undefined,
+                // Splash background stays light; only the status bar needed to become adaptive.
                 background_color: '#ffffff',
                 display: 'standalone',
                 orientation: 'portrait',

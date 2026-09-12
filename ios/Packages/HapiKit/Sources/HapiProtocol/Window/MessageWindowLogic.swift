@@ -255,7 +255,7 @@ public enum MessageWindowLogic {
             ?? (previous.viewMode == .history ? .prepend : .append)
         let effectiveLimit = regularLimit
             ?? (previous.viewMode == .history
-                ? MessageWindowConstants.historyWindowSize
+                ? previous.historyRetentionLimit
                 : MessageWindowConstants.visibleWindowSize)
         let merged = MessageMerge.mergeMessages(previous.messages, retainedIncoming)
         let trim = trimPreservingQueued(merged, regularLimit: effectiveLimit, mode: effectiveMode)

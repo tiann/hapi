@@ -60,7 +60,7 @@ HAPI has three components:
               └───────────┘
 ```
 
-- **CLI**: Start a session with `hapi`. The CLI wraps your AI agent and syncs with the hub.
+- **CLI**: Choose an agent with `hapi`, or start one directly with `hapi <agent>`. The CLI wraps your AI agent and syncs with the hub. Scripts must specify the agent explicitly.
 - **Hub**: Run `hapi hub`. Stores sessions, handles permissions, enables remote access.
 - **Runner**: Run `hapi runner start`. Lets you spawn sessions from phone/web without keeping a terminal open.
 
@@ -212,6 +212,8 @@ On first run, HAPI:
 | `HAPI_TITLE_PROVIDER_MODEL` | - | - | Server-only lightweight model used for generated session titles |
 | `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | - | Maximum title suggestions per session in the rate-limit window |
 | `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | - | Title suggestion rate-limit window in milliseconds |
+| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `64` | - | Maximum completion-token budget per generated title; raise for reasoning-model providers |
+| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | - | Title provider request timeout in milliseconds |
 </details>
 
 The session rename dialog's **Generate** action is unavailable until all three

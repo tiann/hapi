@@ -387,7 +387,7 @@ private struct ScratchlistAttachmentThumb: View {
             .background(Color(uiColor: .tertiarySystemFill))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         } else {
-            Text("📎 \(attachment.filename)")
+            Text(verbatim: "📎 \(attachment.filename)")
                 .font(.caption2)
                 .lineLimit(3)
                 .multilineTextAlignment(.center)
