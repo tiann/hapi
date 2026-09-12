@@ -6,6 +6,7 @@ import type { ConversationStatus } from '@/realtime/types'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import type { TranscriptionMode, TranscriptionProvider } from '@hapi/protocol/voice'
 import { useRealtimeDictation } from './useRealtimeDictation'
+import { getLiveComposerDraft } from './useComposerDraft'
 
 export function appendTranscript(text: string, transcript: string): string {
     const addition = transcript.trim()
@@ -55,25 +56,24 @@ export function recoverFailedVoiceSend(args: {
     sourceSessionId?: string
     sourceDraftAtStart?: string
 }): void {
-    const liveReplacement = args.mounted ? args.getCurrentText() : ''
+    const target = getLiveComposerDraft(args.recoverySessionId)
+    const liveReplacement = target?.getText() ?? (args.mounted ? args.getCurrentText() : '')
+    const replaceLiveText = target?.setText ?? (args.mounted ? args.onTextChange : undefined)
     const sourceSessionId = !args.mounted
         && args.sourceSessionId !== args.recoverySessionId
         ? args.sourceSessionId
         : undefined
     const sourceDraft = sourceSessionId ? getDraft(sourceSessionId) : ''
-    const persistedDraft = sourceDraft && sourceDraft !== args.sourceDraftAtStart
-        ? appendTranscript(getDraft(args.recoverySessionId), sourceDraft)
-        : getDraft(args.recoverySessionId)
-    if (liveReplacement.trim() && liveReplacement !== args.initialText) {
-        const merged = appendTranscript(liveReplacement, args.failedText)
-        saveDraft(args.recoverySessionId, merged)
-        args.onTextChange(merged)
-    } else if (persistedDraft !== '' && persistedDraft !== args.draftAtStart) {
-        saveDraft(args.recoverySessionId, appendTranscript(persistedDraft, args.failedText))
-    } else {
-        saveDraft(args.recoverySessionId, args.failedText)
-        if (args.mounted) args.onTextChange(args.failedText)
+    const persistedDraft = getDraft(args.recoverySessionId)
+    let replacement = liveReplacement.trim() && liveReplacement !== args.initialText
+        ? liveReplacement
+        : persistedDraft !== args.draftAtStart ? persistedDraft : ''
+    if (sourceDraft && sourceDraft !== args.sourceDraftAtStart) {
+        replacement = appendTranscript(replacement, sourceDraft)
     }
+    const merged = appendTranscript(replacement, args.failedText)
+    saveDraft(args.recoverySessionId, merged)
+    replaceLiveText?.(merged)
     if (sourceSessionId) clearDraft(sourceSessionId)
 }
 

@@ -1,6 +1,7 @@
-import { StrictMode } from 'react'
+import { StrictMode, useState } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useComposerDraft } from './useComposerDraft'
 import type { ApiClient } from '@/api/client'
 import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
 import { appendTranscript, useDictation } from './useDictation'
@@ -905,10 +906,20 @@ describe('useDictation', () => {
             saveDraft('session-A', 'source follow-up')
         })
         unmount()
+        const replacement = renderHook(() => {
+            const [text, setText] = useState('')
+            useComposerDraft('session-A-resumed', text, [], false, setText, async () => {})
+            return text
+        })
+        await waitFor(() => expect(replacement.result.current).toBe('newer resumed draft'))
         await act(async () => { rejectSend?.(new Error('network down')) })
         await act(async () => {
             await waitFor(() => expect(getDraft('session-A-resumed')).toBe('newer resumed draft source follow-up initial text voice payload'))
         })
+
+        await waitFor(() => expect(replacement.result.current).toBe('newer resumed draft source follow-up initial text voice payload'))
+        replacement.unmount()
+        expect(getDraft('session-A-resumed')).toBe('newer resumed draft source follow-up initial text voice payload')
 
         // Both follow-ups and the failed voice message survive under the live id.
         expect(getDraft('session-A')).toBe('')
