@@ -34,6 +34,15 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
+    overlayInstallError: null as Error | null,
+    overlayInstall: null as {
+        cwd: string;
+        serverId: string;
+        overlaySessionId?: string;
+        mcpConfigDir?: string;
+        userMcpConfigDir?: string;
+    } | null,
+    newSessionConfig: null as { cwd?: string; mcpServers?: unknown } | null,
     agentActivityListener: null as ((thinking: boolean) => void) | null
 }));
 
@@ -74,9 +83,10 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (harness.loadSessionError) throw harness.loadSessionError;
                 return 'loaded-acp-session';
             }),
-            newSession: vi.fn(async () => {
+            newSession: vi.fn(async (config: { cwd?: string; mcpServers?: unknown }) => {
                 harness.newSessionAttempts += 1;
                 harness.newSessionCalled = true;
+                harness.newSessionConfig = config;
                 if (harness.newSessionError && harness.newSessionAttempts === 1) {
                     harness.stderrErrorHandler?.({
                         type: 'model_not_found',
@@ -203,8 +213,29 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 }));
 
 vi.mock('./utils/cursorMcpOverlay', () => ({
+    CURSOR_HAPI_MCP_SERVER_ID: 'hapi',
     cursorHapiMcpServerId: (sessionId: string) => `hapi-${sessionId}`,
-    installCursorMcpOverlay: () => {
+    resolveCursorMcpConfigDir: () => '/tmp/fake-user-cursor',
+    installCursorMcpOverlay: (
+        cwd: string,
+        _bridge: unknown,
+        options: {
+            serverId: string;
+            overlaySessionId?: string;
+            mcpConfigDir?: string;
+            userMcpConfigDir?: string;
+        },
+    ) => {
+        if (harness.overlayInstallError) {
+            throw harness.overlayInstallError;
+        }
+        harness.overlayInstall = {
+            cwd,
+            serverId: options.serverId,
+            overlaySessionId: options.overlaySessionId,
+            mcpConfigDir: options.mcpConfigDir,
+            userMcpConfigDir: options.userMcpConfigDir,
+        };
         harness.overlayCleanup = vi.fn();
         return { cleanup: harness.overlayCleanup };
     },
@@ -308,6 +339,9 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.stderrErrorHandler = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
+        harness.overlayInstallError = null;
+        harness.overlayInstall = null;
+        harness.newSessionConfig = null;
         harness.agentActivityListener = null;
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
@@ -916,6 +950,40 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
         expect(harness.overlayCleanup).toHaveBeenCalled();
+        expect(harness.overlayInstall).toEqual({
+            cwd: '/tmp/project',
+            serverId: 'hapi',
+            overlaySessionId: 'test-session-id',
+            mcpConfigDir: '/tmp/project/.cursor',
+            userMcpConfigDir: '/tmp/fake-user-cursor',
+        });
+        expect(harness.newSessionConfig).toEqual({
+            cwd: '/tmp/project',
+            mcpServers: [{
+                name: 'hapi',
+                command: 'hapi',
+                args: ['mcp', '--url', 'http://127.0.0.1:1/'],
+                env: [],
+            }],
+        });
+    });
+
+    it('surfaces overlay install failure as a status message and omits ACP mcpServers', async () => {
+        const { MessageBuffer } = await import('@/ui/ink/messageBuffer');
+        const addSpy = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        harness.overlayInstallError = new Error(
+            'Cannot install a second live HAPI MCP mailbox in this workspace (held by session other).',
+        );
+        const session = makeSession(null);
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(addSpy).toHaveBeenCalledWith(
+            expect.stringContaining('HAPI MCP overlay unavailable'),
+            'status',
+        );
+        expect(harness.newSessionConfig?.mcpServers).toEqual([]);
+        addSpy.mockRestore();
     });
 
 
