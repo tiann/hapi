@@ -16,7 +16,7 @@ describe('CodeBlock', () => {
 
     it('renders a header label and truncation badge for long content', () => {
         const longCode = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n')
-        render(
+        const { container } = render(
             <I18nProvider>
                 <CodeBlock
                     code={longCode}
@@ -29,6 +29,7 @@ describe('CodeBlock', () => {
         )
 
         expect(screen.getByText('TypeScript')).toBeInTheDocument()
+        expect(container.querySelector('.aui-code-surface-header')).toHaveClass('pl-[22px]', 'pr-[10px]')
         expect(screen.getByTitle('Copy')).toBeInTheDocument()
         expect(screen.getByText(/Preview truncated/)).toBeInTheDocument()
     })

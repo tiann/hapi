@@ -2,6 +2,7 @@ import { type CSSProperties, type ReactNode } from 'react'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useCodeWrap } from '@/hooks/useCodeWrap'
 import { useShikiHighlightedLines, splitCodeLines } from '@/lib/shiki'
+import { getCodeGutterTrack } from '@/lib/code-gutter'
 import { CopyIcon, CheckIcon, WrapIcon } from '@/components/icons'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -9,8 +10,6 @@ const DEFAULT_COLLAPSE_LINE_THRESHOLD = 18
 const DEFAULT_COLLAPSE_CHAR_THRESHOLD = 1800
 const DEFAULT_COLLAPSED_HEIGHT = 260
 const DEFAULT_SCROLL_HEIGHT = 420
-const GUTTER_HORIZONTAL_PADDING_REM = 1.5
-
 function shouldCollapseCode(code: string, lineThreshold: number, charThreshold: number): boolean {
     if (code.length > charThreshold) return true
     return code.split('\n').length > lineThreshold
@@ -83,7 +82,7 @@ export function CodeBlock(props: {
     // (minmax(0,1fr)) so long lines wrap instead of overflowing; unwrapped it
     // grows to its content (max-content) inside the horizontal-scroll body.
     const codeGridStyle = {
-        gridTemplateColumns: `calc(${lineNumberWidth}ch + ${GUTTER_HORIZONTAL_PADDING_REM}rem) ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
+        gridTemplateColumns: `${getCodeGutterTrack(lineNumberWidth)} ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
     } satisfies CSSProperties
     const codeCellStyle = codeWrap
         ? { whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const }
@@ -96,7 +95,7 @@ export function CodeBlock(props: {
 
     return (
         <div data-hapi-code-block="true" className="aui-code-surface relative min-w-0 max-w-full overflow-hidden rounded-xl bg-[var(--app-code-bg)] shadow-none">
-            <div className="aui-code-surface-header flex items-center justify-between gap-3 bg-[var(--app-code-header-bg)] px-3 py-2">
+            <div className="aui-code-surface-header flex items-center justify-between gap-3 bg-[var(--app-code-header-bg)] pl-[22px] pr-[10px] py-2">
                 <div className="min-w-0 flex-1 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
                     {label}
                 </div>
