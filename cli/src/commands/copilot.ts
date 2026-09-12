@@ -17,6 +17,7 @@ export const copilotCommand: CommandDefinition = {
                 startingMode?: 'local' | 'remote'
                 permissionMode?: CopilotPermissionMode
                 model?: string
+                effort?: string
                 copilotAgentMode?: CopilotAgentMode
                 resumeSessionId?: string
             } = {}
@@ -55,6 +56,12 @@ export const copilotCommand: CommandDefinition = {
                         throw new Error('Missing --model value')
                     }
                     options.model = model
+                } else if (arg === '--effort') {
+                    const effort = commandArgs[++i]
+                    if (!effort) {
+                        throw new Error('Missing --effort value')
+                    }
+                    options.effort = effort
                 } else if (arg === '--copilot-agent-mode' || arg === '--mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !isCopilotAgentMode(mode)) {

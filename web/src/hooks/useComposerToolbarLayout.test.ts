@@ -45,6 +45,20 @@ describe('normalizeComposerToolbarLayout', () => {
         expect([...result.left, ...result.right, ...result.hidden]).toHaveLength(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left.length)
     })
 
+    it('drops legacy Pi-specific toolbar items in favor of generic controls', () => {
+        const result = normalizeComposerToolbarLayout({
+            mode: 'left',
+            left: ['piModel', 'settings', 'piThinking'],
+            right: [],
+            hidden: [],
+        })
+
+        expect(result.left).not.toContain('piModel')
+        expect(result.left).not.toContain('piThinking')
+        expect([...result.left, ...result.right, ...result.hidden]).toContain('model')
+        expect([...result.left, ...result.right, ...result.hidden]).toContain('effort')
+    })
+
     it('preserves hidden tools and keeps newly introduced tools visible', () => {
         const result = normalizeComposerToolbarLayout({
             mode: 'left',

@@ -105,9 +105,26 @@ describe('EffortField', () => {
         expect(values).not.toContain('max')
     })
 
-    it('renders nothing for agents without an effort field', () => {
+    it('renders Antigravity low/medium/high effort', () => {
         const { container } = render(
             <EffortField {...baseProps} agent="agy" />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'auto', 'low', 'medium', 'high'
+        ])
+    })
+
+    it('renders nothing for agents without a create-time effort field', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="gemini" />
+        )
+        expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('does not duplicate Cursor variants as a create-time effort field', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="cursor" />
         )
         expect(container.querySelector('select')).toBeNull()
     })
