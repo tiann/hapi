@@ -176,7 +176,7 @@ describe('session search relevance ranking', () => {
             metadata: {
                 path: '/work/x',
                 name: 'unrelated',
-                summary: { text: 'homelab notes', updatedAt: 1 },
+                summary: { text: 'homelab notes' },
                 machineId: 'home-box',
             },
         })
