@@ -1,4 +1,5 @@
 import { logger } from '@/ui/logger';
+import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
 import type { AgentMessage } from '@/agent/types';
 import {
     PiToolExecutionEndEventSchema,
@@ -41,8 +42,33 @@ export function convertPiCompactionUsage(estimatedTokensAfter: number | undefine
     };
 }
 
+/**
+ * Splits a structured Pi tool result ({ content: TextContent[] | ImageContent[], ... })
+ * into displayable text and image blocks. Returns null for legacy string results
+ * so callers keep the pass-through behavior.
+ */
+export function splitPiToolResult(result: unknown): { text: string; images: unknown[] } | null {
+    if (!result || typeof result !== 'object' || !Array.isArray((result as { content?: unknown }).content)) {
+        return null;
+    }
+    const text: string[] = [];
+    const images: unknown[] = [];
+    for (const block of (result as { content: unknown[] }).content) {
+        if (!block || typeof block !== 'object') {
+            continue;
+        }
+        const record = block as Record<string, unknown>;
+        if (record.type === 'text' && typeof record.text === 'string') {
+            text.push(record.text);
+        } else if (record.type === 'image') {
+            images.push(block);
+        }
+    }
+    return { text: text.join('\n'), images };
+}
+
 /** Converts validated Pi lifecycle events to HAPI chat messages. */
-export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
+export async function convertPiEvent(event: PiAgentEvent): Promise<AgentMessage[]> {
     switch (event.type) {
         case 'tool_execution_start': {
             const parsed = PiToolExecutionStartEventSchema.safeParse(event);
@@ -70,12 +96,62 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
         case 'tool_execution_end': {
             const parsed = PiToolExecutionEndEventSchema.safeParse(event);
             if (!parsed.success) return [];
-            return [{
+
+            const { toolCallId, result, isError } = parsed.data;
+            if (isError) {
+                return [{
+                    type: 'tool_result',
+                    id: toolCallId,
+                    output: result,
+                    status: 'failed',
+                }];
+            }
+
+            const split = splitPiToolResult(result);
+            if (!split) {
+                return [{
+                    type: 'tool_result',
+                    id: toolCallId,
+                    output: result,
+                    status: 'completed',
+                }];
+            }
+
+            const messages: AgentMessage[] = [{
                 type: 'tool_result',
-                id: parsed.data.toolCallId,
-                output: parsed.data.result,
-                status: parsed.data.isError ? 'failed' : 'completed',
+                id: toolCallId,
+                output: split.text,
+                status: 'completed',
             }];
+
+            // Inline image blocks (e.g. from the hapi_display_image extension or
+            // any tool that hands back ImageContent) land in the chat via the
+            // same generated-image pipeline the ACP backend already uses.
+            for (const block of split.images) {
+                try {
+                    const image = await registerGeneratedImageFromAcpBlock(block);
+                    if (!image) {
+                        continue;
+                    }
+                    messages.push({
+                        type: 'generated_image',
+                        imageId: image.id,
+                        fileName: image.fileName,
+                        mimeType: image.mimeType,
+                        source: {
+                            ingress: 'tool_result',
+                            toolName: parsed.data.toolName,
+                            toolCallId,
+                        },
+                    });
+                } catch (error) {
+                    logger.debug(
+                        '[pi] Failed to register tool-result image:',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
+            }
+            return messages;
         }
         case 'turn_end': {
             const turn = event as PiTurnEndEvent;

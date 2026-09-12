@@ -2,63 +2,50 @@ import { describe, it, expect } from 'vitest';
 import { convertPiCompactionUsage, convertPiEvent, convertPiTurnUsage } from './piEventConverter';
 import type { PiAgentEvent } from './types';
 
+// 1x1 red PNG.
+const ONE_PX_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
 describe('convertPiEvent', () => {
-    it('should return empty for message_update with text_delta (accumulated in runPi)', () => {
+    it('should return empty for message_update with text_delta (accumulated in runPi)', async () => {
         // The converter intentionally emits nothing for message_update
         // — runPi accumulates text/thinking deltas and flushes a single
         // snapshot on `message_end`. This avoids the web UI rendering
         // every delta as a separate block (character-by-character column)
         // and the reducer's per-content streamId dedup showing only the
         // last delta as the whole reasoning.
-        const result = convertPiEvent({
+        const result = await convertPiEvent({
             type: 'message_update',
             assistantMessageEvent: { type: 'text_delta', delta: 'hello world' }
         });
         expect(result).toEqual([]);
     });
 
-    it('should return empty for message_update with thinking_delta (accumulated in runPi)', () => {
-        const result = convertPiEvent({
+    it('should return empty for message_update with thinking_delta (accumulated in runPi)', async () => {
+        const result = await convertPiEvent({
             type: 'message_update',
             assistantMessageEvent: { type: 'thinking_delta', delta: 'let me think...' }
         });
         expect(result).toEqual([]);
     });
 
-    it('should return empty for message_update with start sub-type', () => {
+    it('should return empty for message_update with start sub-type', async () => {
         // text_start/thinking_start carry the full partial state and
         // would cause the web UI to render the same text multiple
         // times. The accumulator only listens to deltas.
-        const result = convertPiEvent({
+        const result = await convertPiEvent({
             type: 'message_update',
             assistantMessageEvent: { type: 'start' }
         });
         expect(result).toEqual([]);
     });
 
-    it('should return empty array for message_update with start sub-type', () => {
-        const result = convertPiEvent({
-            type: 'message_update',
-            assistantMessageEvent: { type: 'start' }
-        });
+    it('should return empty array for message_update without assistantMessageEvent', async () => {
+        const result = await convertPiEvent({ type: 'message_update' });
         expect(result).toEqual([]);
     });
 
-    it('should return empty array for message_update with done sub-type', () => {
-        const result = convertPiEvent({
-            type: 'message_update',
-            assistantMessageEvent: { type: 'done', reason: 'stop' }
-        });
-        expect(result).toEqual([]);
-    });
-
-    it('should return empty array for message_update without assistantMessageEvent', () => {
-        const result = convertPiEvent({ type: 'message_update' });
-        expect(result).toEqual([]);
-    });
-
-    it('should convert tool_execution_start to tool_call AgentMessage', () => {
-        const result = convertPiEvent({
+    it('should convert tool_execution_start to tool_call AgentMessage', async () => {
+        const result = await convertPiEvent({
             type: 'tool_execution_start',
             toolCallId: 'tc-1',
             toolName: 'read_file',
@@ -73,8 +60,8 @@ describe('convertPiEvent', () => {
         }]);
     });
 
-    it('maps tool execution progress onto the running tool call id', () => {
-        expect(convertPiEvent({
+    it('maps tool execution progress onto the running tool call id', async () => {
+        expect(await convertPiEvent({
             type: 'tool_execution_update',
             toolCallId: 'tc-1',
             toolName: 'read_file',
@@ -85,8 +72,8 @@ describe('convertPiEvent', () => {
         }]);
     });
 
-    it('should convert tool_execution_end (success) to tool_result AgentMessage', () => {
-        const result = convertPiEvent({
+    it('should convert tool_execution_end (success) to tool_result AgentMessage', async () => {
+        const result = await convertPiEvent({
             type: 'tool_execution_end',
             toolCallId: 'tc-1',
             toolName: 'read_file',
@@ -101,8 +88,8 @@ describe('convertPiEvent', () => {
         }]);
     });
 
-    it('should convert tool_execution_end (error) to failed tool_result AgentMessage', () => {
-        const result = convertPiEvent({
+    it('should convert tool_execution_end (error) to failed tool_result AgentMessage', async () => {
+        const result = await convertPiEvent({
             type: 'tool_execution_end',
             toolCallId: 'tc-1',
             toolName: 'read_file',
@@ -117,17 +104,109 @@ describe('convertPiEvent', () => {
         }]);
     });
 
-    it('drops malformed tool completion events instead of emitting an uncorrelated result', () => {
-        expect(convertPiEvent({
+    it('drops malformed tool completion events instead of emitting an uncorrelated result', async () => {
+        expect(await convertPiEvent({
             type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read_file', isError: false,
         } as never)).toEqual([]);
-        expect(convertPiEvent({
+        expect(await convertPiEvent({
             type: 'tool_execution_end', toolName: 'read_file', result: 'ok', isError: false,
         } as never)).toEqual([]);
     });
 
-    it('should defer turn usage and convert only turn completion', () => {
-        const result = convertPiEvent({
+    it('emits a generated-image message for an inline image block next to the text result', async () => {
+        const result = await convertPiEvent({
+            type: 'tool_execution_end',
+            toolCallId: 'tc-1',
+            toolName: 'hapi_display_image',
+            result: {
+                content: [
+                    { type: 'text', text: 'Here is the screenshot.' },
+                    { type: 'image', data: ONE_PX_PNG, mimeType: 'image/png' },
+                ],
+                details: {},
+            },
+            isError: false
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result[0]).toEqual({
+            type: 'tool_result',
+            id: 'tc-1',
+            output: 'Here is the screenshot.',
+            status: 'completed',
+        });
+        expect(result[1]).toMatchObject({
+            type: 'generated_image',
+            mimeType: 'image/png',
+            source: { ingress: 'tool_result', toolName: 'hapi_display_image', toolCallId: 'tc-1' },
+        });
+        expect(result[1]).toHaveProperty('imageId');
+        expect(result[1]).toHaveProperty('fileName');
+        ;
+    });
+
+    it('joins multiple text blocks and skips a malformed image block', async () => {
+        const result = await convertPiEvent({
+            type: 'tool_execution_end',
+            toolCallId: 'tc-2',
+            toolName: 'hapi_display_image',
+            result: {
+                content: [
+                    { type: 'text', text: 'a' },
+                    { type: 'image', data: 'not-base64!', mimeType: 'image/png' },
+                    { type: 'text', text: 'b' },
+                ],
+                details: {},
+            },
+            isError: false
+        });
+
+        // Invalid image payload is dropped; the text blocks remain the result.
+        expect(result).toEqual([{
+            type: 'tool_result',
+            id: 'tc-2',
+            output: 'a\nb',
+            status: 'completed',
+        }]);
+    });
+
+    it('keeps a structured result without images as the plain text output', async () => {
+        const result = await convertPiEvent({
+            type: 'tool_execution_end',
+            toolCallId: 'tc-3',
+            toolName: 'bash',
+            result: { content: [{ type: 'text', text: 'ok' }], details: {} },
+            isError: false
+        });
+
+        expect(result).toEqual([{
+            type: 'tool_result',
+            id: 'tc-3',
+            output: 'ok',
+            status: 'completed',
+        }]);
+    });
+
+    it('falls back to the raw result when content is not a block array', async () => {
+        const raw = { some: 'other', shape: true };
+        const result = await convertPiEvent({
+            type: 'tool_execution_end',
+            toolCallId: 'tc-4',
+            toolName: 'bash',
+            result: raw,
+            isError: false
+        });
+
+        expect(result).toEqual([{
+            type: 'tool_result',
+            id: 'tc-4',
+            output: raw,
+            status: 'completed',
+        }]);
+    });
+
+    it('should defer turn usage and convert only turn completion', async () => {
+        const result = await convertPiEvent({
             type: 'turn_end',
             message: {
                 usage: {
@@ -215,8 +294,8 @@ describe('convertPiEvent', () => {
         expect(result).toBeNull();
     });
 
-    it('should convert turn_end with toolUse stopReason', () => {
-        const result = convertPiEvent({
+    it('should convert turn_end with toolUse stopReason', async () => {
+        const result = await convertPiEvent({
             type: 'turn_end',
             message: {
                 usage: { input: 50, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 150 },
@@ -232,8 +311,8 @@ describe('convertPiEvent', () => {
         });
     });
 
-    it('should convert turn_end without usage data', () => {
-        const result = convertPiEvent({
+    it('should convert turn_end without usage data', async () => {
+        const result = await convertPiEvent({
             type: 'turn_end'
         });
 
@@ -244,34 +323,33 @@ describe('convertPiEvent', () => {
         });
     });
 
-    it('should return empty array for agent_start', () => {
-        expect(convertPiEvent({ type: 'agent_start' })).toEqual([]);
+    it('should return empty array for agent_start', async () => {
+        expect(await convertPiEvent({ type: 'agent_start' })).toEqual([]);
     });
 
-    it('should return empty array for agent_end', () => {
-        expect(convertPiEvent({ type: 'agent_end', messages: [] })).toEqual([]);
+    it('should return empty array for agent_end', async () => {
+        expect(await convertPiEvent({ type: 'agent_end', messages: [] })).toEqual([]);
     });
 
-    it('should return empty array for response events', () => {
+    it('should return empty array for response events', async () => {
         // Response events use a different type, but we handle gracefully
-        expect(convertPiEvent({ type: 'response', command: 'prompt', success: true } as unknown as PiAgentEvent)).toEqual([]);
+        expect(await convertPiEvent({ type: 'response', command: 'prompt', success: true } as unknown as PiAgentEvent)).toEqual([]);
     });
 
-    it('should return empty array for turn_start', () => {
-        expect(convertPiEvent({ type: 'turn_start' })).toEqual([]);
+    it('should return empty array for turn_start', async () => {
+        expect(await convertPiEvent({ type: 'turn_start' })).toEqual([]);
     });
 
-    it('should return empty array for unknown event types', () => {
-        expect(convertPiEvent({ type: 'something_else' })).toEqual([]);
+    it('should return empty array for unknown event types', async () => {
+        expect(await convertPiEvent({ type: 'something_else' })).toEqual([]);
     });
 
-    it('should not crash on unexpected data structure (safety net)', () => {
+    it('should not crash on unexpected data structure (safety net)', async () => {
         // Simulate a malformed event that somehow passes through
         const weird = Object.create(null);
         weird.type = 'message_update';
         weird.assistantMessageEvent = undefined;
         // Should not throw
-        expect(() => convertPiEvent(weird as unknown as PiAgentEvent)).not.toThrow();
-        expect(convertPiEvent(weird as unknown as PiAgentEvent)).toEqual([]);
+        await expect(convertPiEvent(weird as unknown as PiAgentEvent)).resolves.toEqual([]);
     });
 });
