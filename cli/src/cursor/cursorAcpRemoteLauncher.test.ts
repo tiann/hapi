@@ -412,6 +412,84 @@ describe('cursorAcpRemoteLauncher', () => {
         _resetSharedCursorModelsCacheForTests();
     });
 
+    it('does not auto-bridge after a soft-steer accepted newer input', async () => {
+        // Cold-review Major 2026-09-12: steer B into prompt A, then A hits 429.
+        // Bridge must not replay A (would override the accepted correction).
+        setAutoBridgeTransientModelErrors(true);
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('prompt A', mode, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('correction B', mode, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+
+        expect(session.queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    transient?: boolean
+                    bridgeable?: boolean
+                } | null;
+            })
+            .find((err) => err?.bridgeable === false);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'prompt A',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        setAutoBridgeTransientModelErrors(false);
+        session.queue.close();
+        await launchPromise;
+    });
+
     it('ends the launcher when a soft steer outlives an abort', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

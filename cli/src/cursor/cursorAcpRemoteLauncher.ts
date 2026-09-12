@@ -94,6 +94,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private pendingRetryableFromStderr = false;
     private pendingInlineRetryableError = false;
     private attemptProducedToolActivity = false;
+    /**
+     * Soft-steer accepted newer user text into the active turn. Bridge must
+     * not replay lastUserMessage (pre-steer) after that, or it overrides B.
+     */
+    private turnHasSteeredInput = false;
     private lastAssistantText: string | null = null;
     private turnHasModelError = false;
     /**
@@ -562,18 +567,23 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 let steer: { dispatched: Promise<void>; completed: Promise<void> };
                 try {
+                    // Mark before dispatch so a 429 that settles after steer
+                    // start still fail-closes Bridge (lastUserMessage is A).
+                    this.turnHasSteeredInput = true;
                     steer = backend.beginSoftSteerPrompt(acpSessionId, [{
                         type: 'text',
                         text: taken.item.message
                     }]);
                 } catch (error) {
                     if (isAcpIndeterminateError(error)) {
+                        // May have reached ACP — keep turnHasSteeredInput fail-closed.
                         if (session.queue.markReservationIndeterminate(taken)) {
                             session.client.emitSteerIndeterminate([localId]);
                         }
                         logger.debug('[cursor-acp] soft-steer dispatch outcome unknown', error);
                         return { steered: false, error: 'Steer outcome is being reconciled' };
                     }
+                    this.turnHasSteeredInput = false;
                     logger.debug('[cursor-acp] soft-steer failed to start', error);
                     await restoreQueuedReservation();
                     return { steered: false, error: 'Failed to soft-steer into active turn' };
@@ -665,6 +675,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // after applyLiveModel / applyCursorAcpMode would erase Abort that
             // landed during mode/model setup and still dispatch a Bridge.
             this.userAbortRequested = false;
+            this.turnHasSteeredInput = false;
 
             // Activate bridge attribution only from queue-owned provenance —
             // never from caller-controlled localId (which can forge `bridge:`).
@@ -1199,7 +1210,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const bridgeable = opts?.bridgeable !== false
             && fitsBridgeLimit
             && !isPassThroughCommand
-            && !this.attemptProducedToolActivity;
+            && !this.attemptProducedToolActivity
+            && !this.turnHasSteeredInput;
         const lastUserMessage = bridgeable ? fullMessage : '';
 
         logger.debug(
