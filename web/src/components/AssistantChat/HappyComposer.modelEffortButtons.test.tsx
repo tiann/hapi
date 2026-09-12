@@ -462,6 +462,12 @@ describe('HappyComposer generic model/effort value buttons', () => {
         renderComposer('cursor', {
             model: 'composer-2.5-fast',
             selectedModelBase: 'composer-2.5',
+            selectedModelVariant: 'composer-2.5-fast',
+            modelEffortOptions: [
+                { value: 'composer-2.5-fast', label: 'Fast' },
+                { value: 'composer-2.5-mini', label: 'Composer 2.5 Mini' },
+            ],
+            onModelEffortChange: vi.fn(),
             availableModelOptions: [
                 { value: 'composer-2.5', label: 'Composer 2.5' },
                 { value: 'composer-2.5-fast', label: 'Composer 2.5 Fast' },
@@ -491,6 +497,12 @@ describe('HappyComposer generic model/effort value buttons', () => {
         fireEvent.click(valueButton)
         expect(screen.queryByText('← Models')).toBeNull()
         expect(screen.getByText('Model')).toBeTruthy()
+        fireEvent.click(screen.getAllByRole('button', { name: 'Composer 2.5' })
+            .find((button) => button.className.includes('w-full'))!)
+        fireEvent.click(screen.getAllByRole('button', { name: 'Composer 2.5 Fast' })
+            .find((button) => button.hasAttribute('aria-label'))!)
+        expect(screen.queryByText('← Models')).toBeNull()
+        expect(screen.getByRole('button', { name: 'Composer 2.5 Mini' })).toBeTruthy()
     })
 
     it('exposes no effort action while the Pi catalog is unresolved mid-turn', () => {

@@ -1472,6 +1472,10 @@ export function HappyComposer(props: {
     const handleSettingsToggle = useCallback((section: 'model' | 'effort' | null = null) => {
         haptic('light')
         if (showSettings && section !== settingsSection) {
+            if (section === 'effort') {
+                setCursorDrillDownBase(null)
+                setCursorDrillDownDefaultVariant(null)
+            }
             // Open with a different anchor: switch sections, keep the sheet up.
             setSettingsSection(section)
             return
