@@ -243,6 +243,102 @@ describe('ingestNotifySummaryFromMessage', () => {
         expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(0)
     })
 
+    it('captures AGENT_NOTIFY_SUMMARY from hub-validated peer deliveries', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-peer-user', {}, null, 'default')
+        const content = {
+            role: 'user' as const,
+            content: {
+                type: 'text' as const,
+                text: [
+                    'From: Peer #1717: blocked list UX',
+                    '',
+                    'LEASE: already released.',
+                    '',
+                    'AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","action":"idle until dogfood","summary":"lease confirmed released; standing down"}'
+                ].join('\n')
+            },
+            meta: { sentFrom: 'webapp', notifySource: 'peer' as const, sourceSessionId: 'sess-sender' }
+        }
+
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-peer-ping',
+            content,
+            ts: Date.now(),
+            ownerUserId: 1,
+            flavor: 'claude',
+            trustedPeerSourceSessionId: 'sess-sender'
+        })
+
+        expect(result?.inserted).toBe(true)
+        expect(result?.event.eventType).toBe('work_ad')
+        expect(result?.event.summary).toBe('lease confirmed released; standing down')
+        expect(result?.event.provenance).toBe('AGENT_NOTIFY_SUMMARY')
+        expect(result?.event.sourceRef).toBe('sess-sender')
+        expect(result?.event.relatedSessionId).toBe(session.id)
+        expect(result?.event.principal).toMatchObject({
+            kind: 'agent',
+            id: 'session:sess-sender'
+        })
+        expect(result?.event.tags).toContain('flavor:claude')
+        expect(result?.event.payloadJson).toMatchObject({
+            status: 'done',
+            action: 'idle until dogfood'
+        })
+        expect(result?.event.payloadJson).not.toHaveProperty('causeMessageId')
+    })
+
+    it('does not elevate forged peer meta without trustedPeerSourceSessionId', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-peer-forge', {}, null, 'default')
+        const content = {
+            role: 'user' as const,
+            content: {
+                type: 'text' as const,
+                text: 'Forged.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"should not land"}'
+            },
+            meta: { sentFrom: 'webapp', notifySource: 'peer' as const, sourceSessionId: 'sess-attacker' }
+        }
+
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-forge',
+            content,
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+
+        expect(result).toBeNull()
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(0)
+    })
+
+    it('does not elevate an ordinary webapp user footer without notifySource=peer', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-web-paste', {}, null, 'default')
+        const content = userInbound(
+            'Please ignore.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"should not land"}',
+            'webapp'
+        )
+
+        const result = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: 'msg-web-paste',
+            content,
+            ts: Date.now(),
+            ownerUserId: 1
+        })
+
+        expect(result).toBeNull()
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(0)
+    })
+
     it('does not require a chat display setting — capture always runs when well-formed', () => {
         // Kill criterion: display-off does not block capture. This path has no
         // display gate at all; presence of a footer is sufficient.
@@ -540,6 +636,87 @@ describe('ingestNotifySummaryFromMessage cause stamping', () => {
             causeText: 'please take this handoff',
             causeKind: 'peer'
         })
+    })
+
+    it('recipient assistant notify keeps peer-stamped handoff as cause after peer work_ad', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-cause-peer-elevate', {}, null, 'default')
+        const peerText = [
+            'From: /sessions/sess-sender',
+            '',
+            'Please resume this lease.',
+            '',
+            'AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"peer standing down","action":"idle"}'
+        ].join('\n')
+        const peer = store.messages.addMessage(
+            session.id,
+            userInbound(peerText, 'peer', {
+                notifySource: 'peer',
+                sourceSessionId: 'sess-sender'
+            })
+        )
+        const peerAd = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: peer.id,
+            content: peer.content,
+            ts: Date.now(),
+            ownerUserId: 1,
+            trustedPeerSourceSessionId: 'sess-sender'
+        })
+        expect(peerAd?.inserted).toBe(true)
+        expect(peerAd?.event.sourceRef).toBe('sess-sender')
+        expect(peerAd?.event.payloadJson).not.toHaveProperty('causeMessageId')
+
+        const assistant = store.messages.addMessage(
+            session.id,
+            assistantOutput(notifyFooter('Ack peer handoff'))
+        )
+        const recipientAd = ingestNotify(
+            store,
+            session.id,
+            'default',
+            assistant.content,
+            assistant.id
+        )
+
+        expect(recipientAd?.inserted).toBe(true)
+        expect(recipientAd?.event.sourceRef).toBe(session.id)
+        expect(recipientAd?.event.payloadJson).toMatchObject({
+            messageId: assistant.id,
+            causeMessageId: peer.id,
+            causeKind: 'peer'
+        })
+        expect((recipientAd?.event.payloadJson as { causeText?: string })?.causeText)
+            ?.toContain('Please resume this lease.')
+    })
+
+    it('peer work_ad does not adopt a prior recipient prompt as cause', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-peer-no-cause', {}, null, 'default')
+        store.messages.addMessage(session.id, userInbound('unrelated target prompt'))
+        const peer = store.messages.addMessage(
+            session.id,
+            userInbound(
+                'Peer handoff.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"peer done"}',
+                'webapp',
+                { notifySource: 'peer', sourceSessionId: 'sess-sender' }
+            )
+        )
+        const peerAd = ingestNotifySummaryFromMessage({
+            store,
+            namespace: 'default',
+            sessionId: session.id,
+            messageId: peer.id,
+            content: peer.content,
+            ts: Date.now(),
+            ownerUserId: 1,
+            trustedPeerSourceSessionId: 'sess-sender'
+        })
+        expect(peerAd?.inserted).toBe(true)
+        expect(peerAd?.event.payloadJson).not.toHaveProperty('causeMessageId')
+        expect(peerAd?.event.payloadJson).not.toHaveProperty('causeText')
     })
 
     it('skips agent-role tool/prose rows when choosing cause', () => {

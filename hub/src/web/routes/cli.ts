@@ -5,6 +5,7 @@ import {
     CreateOrLoadSessionRequestSchema,
     ClearOpencodeSessionCallbackRequestSchema,
     CursorMigrateToAcpRequestSchema,
+    PeerMessageRequestSchema,
     PROTOCOL_VERSION
 } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
@@ -283,6 +284,52 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             now: Date.now()
         })
         return c.json({ messages })
+    })
+
+    /**
+     * Peer delivery with trusted source identity (CLI_API_TOKEN namespace).
+     * Path `:id` is the source session; body.targetSessionId is the recipient.
+     * Web JWT `/api/*` cannot stamp notifySource=peer.
+     */
+    app.post('/sessions/:id/peer-messages', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+        const sourceSessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const source = resolveSessionForNamespace(engine, sourceSessionId, namespace)
+        if (!source.ok) {
+            return c.json({ error: source.error }, source.status)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = PeerMessageRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
+        }
+
+        const target = resolveSessionForNamespace(engine, parsed.data.targetSessionId, namespace)
+        if (!target.ok) {
+            return c.json({ error: target.error }, target.status)
+        }
+        if (target.sessionId === source.sessionId) {
+            return c.json({
+                error: 'Source and target session must differ',
+                code: 'peer_source_equals_target'
+            }, 400)
+        }
+        if (!target.session.active) {
+            return c.json({ error: 'Session is not active', code: 'session_inactive' }, 409)
+        }
+
+        await engine.sendMessage(target.sessionId, {
+            text: parsed.data.text,
+            sentFrom: 'peer',
+            notifySource: 'peer',
+            peerSourceSessionId: source.sessionId
+        })
+        return c.json({ ok: true })
     })
 
     app.post('/sessions/:id/migrate-to-acp', async (c) => {
