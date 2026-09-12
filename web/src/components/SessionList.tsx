@@ -179,6 +179,111 @@ type MachineGroup = {
     latestUpdatedAt: number
 }
 
+function usesWindowsSeparators(path: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path)
+}
+
+function stripTrailingSeparators(path: string): string {
+    if (!usesWindowsSeparators(path)) {
+        if (/^\/+$/.test(path)) return '/'
+        return path.replace(/\/+$/, '')
+    }
+    if (/^[A-Za-z]:[\\/]+$/.test(path)) return path.slice(0, 3)
+    return path.replace(/[\\/]+$/, '')
+}
+
+function normalizePathForCompare(path: string): string {
+    const stripped = stripTrailingSeparators(path)
+    return usesWindowsSeparators(path) ? stripped.replace(/\\/g, '/') : stripped
+}
+
+function pathComparisonKey(path: string): string {
+    const normalized = normalizePathForCompare(path)
+    return usesWindowsSeparators(path) ? normalized.toLowerCase() : normalized
+}
+
+function pathIsUnder(parent: string, child: string): boolean {
+    const parentNorm = pathComparisonKey(parent)
+    const childNorm = pathComparisonKey(child)
+    return childNorm === parentNorm || childNorm.startsWith(`${parentNorm}/`)
+}
+
+function isHapiSiblingWorktree(basePath: string, worktreePath: string): boolean {
+    const baseNorm = pathComparisonKey(basePath)
+    const worktreeNorm = pathComparisonKey(worktreePath)
+    return worktreeNorm.startsWith(`${baseNorm}-worktrees/`)
+}
+
+export type SessionGroupDirectorySource = {
+    path?: string | null
+    worktree?: { basePath?: string | null; worktreePath?: string | null } | null
+}
+
+/**
+ * Directory used as the sidebar project-group key.
+ *
+ * Prefer worktree.basePath when the session path lives under it. When basePath
+ * is a realpath of a symlink prefix (CLI realpaths worktreePath/basePath while
+ * metadata.path may still use the logical spelling), require worktreePath to
+ * sit under basePath before rewriting the group root from path — display-name
+ * collision alone is not alias evidence.
+ */
+export function resolveSessionGroupDirectory(source: SessionGroupDirectorySource): string {
+    // Do not trim(): trailing/leading spaces are valid POSIX path characters and
+    // group.directory feeds Copy Path / New Session.
+    const path = source.path ?? ''
+    const basePath = source.worktree?.basePath ?? ''
+    const worktreePath = source.worktree?.worktreePath ?? ''
+    if (!basePath && !path) return 'Other'
+    if (!basePath) return stripTrailingSeparators(path)
+    if (!path) return stripTrailingSeparators(basePath)
+
+    const normBase = stripTrailingSeparators(basePath)
+    if (pathIsUnder(normBase, path)) {
+        // On Windows, prefer path's casing for the shared root so a mixed-case
+        // logical spelling and a lowercased realpath base still share one key.
+        if (usesWindowsSeparators(path) || usesWindowsSeparators(basePath)) {
+            const rootLen = normalizePathForCompare(normBase).length
+            return stripTrailingSeparators(path.slice(0, rootLen))
+        }
+        return normBase
+    }
+
+    // Alias evidence: realpathed worktreePath under realpathed basePath (or
+    // HAPI's sibling `<repo>-worktrees/<name>` layout), while path still uses a
+    // logical spelling of the same checkout.
+    const nestedUnderBase = pathIsUnder(normBase, worktreePath)
+    const siblingBesideBase = isHapiSiblingWorktree(normBase, worktreePath)
+    if (!worktreePath || (!nestedUnderBase && !siblingBesideBase)) {
+        return normBase
+    }
+
+    const baseNorm = normalizePathForCompare(normBase)
+    const worktreeNorm = normalizePathForCompare(worktreePath)
+    const pathNorm = normalizePathForCompare(path)
+    const suffix = worktreeNorm.slice(baseNorm.length)
+    if (!suffix) return normBase
+
+    // Prefer the occurrence whose parent matches basePath's display name so a
+    // nested cwd that repeats the worktree suffix does not win via lastIndexOf.
+    // Slice the original path so Windows forward-slash spelling is preserved.
+    const windowsPath = usesWindowsSeparators(path) || usesWindowsSeparators(basePath)
+    const baseDisplay = getPathDisplayName(baseNorm)
+    const suffixFlags = windowsPath ? 'gi' : 'g'
+    const suffixPattern = new RegExp(`${suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=/|$)`, suffixFlags)
+    for (const match of pathNorm.matchAll(suffixPattern)) {
+        const index = match.index
+        if (index === undefined) continue
+        const candidateDisplay = getPathDisplayName(pathNorm.slice(0, index))
+        const displayMatches = windowsPath
+            ? candidateDisplay.toLowerCase() === baseDisplay.toLowerCase()
+            : candidateDisplay === baseDisplay
+        if (!displayMatches) continue
+        return stripTrailingSeparators(path.slice(0, index))
+    }
+    return normBase
+}
+
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
@@ -277,16 +382,19 @@ export function getPreviousSessionVisibleCount(current: number, step: number): n
     return Math.max(normalizedStep, current - normalizedStep)
 }
 
-function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
+export function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+        const directory = resolveSessionGroupDirectory(session.metadata ?? {})
         const machineId = session.metadata?.machineId ?? null
-        const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
+        const directoryKey = usesWindowsSeparators(directory)
+            ? pathComparisonKey(directory)
+            : directory
+        const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${directoryKey}`
         if (!groups.has(key)) {
             groups.set(key, {
-                directory: path,
+                directory,
                 machineId,
                 sessions: []
             })
@@ -1541,7 +1649,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getPathDisplayName(resolveSessionGroupDirectory(s.metadata ?? {}))}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />
@@ -2045,7 +2153,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getPathDisplayName(resolveSessionGroupDirectory(s.metadata ?? {}))}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />
