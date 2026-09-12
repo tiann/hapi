@@ -209,12 +209,9 @@ describe('MessageActions', () => {
         expect(screen.getByRole('button', { name: '分叉' })).toHaveAttribute('title', '分叉')
     })
 
-    it('localizes the Fork confirmation dialog in Simplified Chinese', async () => {
+    it('invokes Fork directly without a confirmation dialog', async () => {
         localStorage.setItem('hapi-lang', 'zh-CN')
-        let resolveFork: (() => void) | undefined
-        const onFork = vi.fn(() => new Promise<void>((resolve) => {
-            resolveFork = resolve
-        }))
+        const onFork = vi.fn(async () => {})
 
         renderActions({
             align: 'end',
@@ -224,17 +221,8 @@ describe('MessageActions', () => {
         })
 
         fireEvent.click(screen.getByRole('button', { name: '分叉' }))
-        const dialog = screen.getByRole('dialog')
-        expect(dialog.textContent).toContain('分叉对话')
-        expect(dialog.textContent).toContain('从此处创建新会话？')
-        expect(dialog.textContent).toContain('当前会话不会被修改。')
-
-        fireEvent.click(within(dialog).getByRole('button', { name: '分叉' }))
-        expect(onFork).toHaveBeenCalledTimes(1)
-        expect(within(dialog).getByRole('button', { name: '分叉中…' })).not.toBeNull()
-
-        resolveFork?.()
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+        await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1))
+        expect(screen.queryByRole('dialog')).toBeNull()
     })
 
     it('localizes the Rewind confirmation dialog in Simplified Chinese', async () => {
@@ -315,9 +303,9 @@ describe('MessageActions', () => {
     })
 
     it('hides all history actions while a confirmation is pending', async () => {
-        let resolveFork: (() => void) | undefined
-        const onFork = vi.fn(() => new Promise<void>((resolve) => {
-            resolveFork = resolve
+        let resolveRewind: (() => void) | undefined
+        const onRewind = vi.fn(() => new Promise<void>((resolve) => {
+            resolveRewind = resolve
         }))
 
         renderActions({
@@ -325,20 +313,20 @@ describe('MessageActions', () => {
             copyText: 'body',
             showFork: true,
             showRewind: true,
-            onFork,
-            onRewind: async () => {}
+            onFork: async () => {},
+            onRewind
         })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Fork' }))
-        fireEvent.click(screen.getAllByRole('button', { name: 'Fork' }).at(-1)!)
+        fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+        fireEvent.click(screen.getAllByRole('button', { name: 'Rewind' }).at(-1)!)
 
         await waitFor(() => {
             expect(document.querySelector('.happy-message-actions')?.querySelectorAll('button')).toHaveLength(1)
         })
-        expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
 
-        resolveFork?.()
-        await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1))
+        resolveRewind?.()
+        await waitFor(() => expect(onRewind).toHaveBeenCalledTimes(1))
     })
 
     it('orders user actions as Share, Rewind, Fork, Copy', () => {
@@ -401,20 +389,13 @@ describe('MessageActions', () => {
         }
     })
 
-    it('shows Fork confirm dialog and calls onFork only after confirm', async () => {
+    it('calls onFork immediately when the Fork action is clicked', async () => {
         const onFork = vi.fn(async () => {})
         renderActions({ align: 'start', copyText: 'body', showFork: true, onFork })
 
         fireEvent.click(screen.getByRole('button', { name: 'Fork' }))
-        expect(onFork).not.toHaveBeenCalled()
-        expect(screen.getByText('Fork conversation')).toBeTruthy()
-
-        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-        expect(onFork).not.toHaveBeenCalled()
-
-        fireEvent.click(screen.getByRole('button', { name: 'Fork' }))
-        fireEvent.click(screen.getAllByRole('button', { name: 'Fork' }).at(-1)!)
-        expect(onFork).toHaveBeenCalledTimes(1)
+        await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1))
+        expect(screen.queryByText('Fork conversation')).toBeNull()
     })
 
     it('shows Rewind destructive confirm and calls onRewind only after confirm', async () => {
