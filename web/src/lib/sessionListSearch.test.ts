@@ -164,4 +164,32 @@ describe('session search relevance ranking', () => {
         expect(index.matchedIds.has('path-only')).toBe(false)
         expect(index.matchedIds.has('ha')).toBe(true)
     })
+
+    it('picks the best field by post-bonus contribution, not raw weight', () => {
+        // Machine "Home" (weight 2 × boundary 1.75 = 3.5) must beat a mid-token
+        // title hit like "homelab" (weight 10 × 1 = 10)... wait, 10 > 3.5 so title still wins.
+        // Use summary (weight 3, mid-token) vs machine boundary (2 × 1.75 = 3.5):
+        // raw-weight picker would keep summary (3 > 2) → score 3; post-bonus picks machine → 3.5.
+        const session = makeSession({
+            id: 'boundary-wins',
+            updatedAt: 1,
+            metadata: {
+                path: '/work/x',
+                name: 'unrelated',
+                summary: { text: 'homelab notes', updatedAt: 1 },
+                machineId: 'home-box',
+            },
+        })
+        const index = buildSessionSearchScoreIndex([session], 'home', (id) =>
+            id === 'home-box' ? 'Home' : 'oos'
+        )
+        expect(index.matchedIds.has('boundary-wins')).toBe(true)
+        // Sanity: score should reflect machine boundary contribution (2 * idf * 1.75),
+        // not the weaker mid-token summary contribution (3 * idf * 1).
+        const idfAlone = index.scores.get('boundary-wins') ?? 0
+        expect(idfAlone).toBeGreaterThan(0)
+        // Rebuild with only summary match to compare: strip machine label.
+        const summaryOnly = buildSessionSearchScoreIndex([session], 'home', () => 'oos')
+        expect(summaryOnly.scores.get('boundary-wins') ?? 0).toBeLessThan(idfAlone)
+    })
 })

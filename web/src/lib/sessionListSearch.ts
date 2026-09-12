@@ -85,13 +85,18 @@ function bestWeightedHitForTerm(
 ): { weight: number; boundary: boolean } {
     let bestWeight = 0
     let bestBoundary = false
+    let bestContribution = 0
     for (const [field, weight] of Object.entries(SESSION_SEARCH_FIELD_WEIGHTS) as Array<
         [SessionSearchField, number]
     >) {
         const values = fields[field]
         if (!fieldValuesMatchTerm(values, term, wildcard)) continue
         const boundary = wildcard ? true : fieldValuesHaveBoundary(values, term)
-        if (weight > bestWeight || (weight === bestWeight && boundary && !bestBoundary)) {
+        const contribution = weight * (boundary ? SESSION_SEARCH_BOUNDARY_BONUS : 1)
+        // Compare post-bonus contribution so a boundary hit on a lighter field
+        // can beat a mid-token hit on a heavier one when that is the true max.
+        if (contribution > bestContribution) {
+            bestContribution = contribution
             bestWeight = weight
             bestBoundary = boundary
         }
