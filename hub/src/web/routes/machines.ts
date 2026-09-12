@@ -285,7 +285,9 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            const result = await engine.listAgyModelsForMachine(machineId)
+            const result = await engine.listAgyModelsForMachine(machineId, {
+                refresh: c.req.query('refresh') === 'true'
+            })
             return c.json(result)
         } catch (error) {
             return c.json({

@@ -4,6 +4,11 @@ import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import type { FileSearchItem, GitFileStatus } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
 import { DirectoryTree } from '@/components/SessionFiles/DirectoryTree'
+import { FileActionMenu } from '@/components/FileActionMenu'
+import { useFileMenuTrigger } from '@/hooks/useFileMenuTrigger'
+import type { AnchoredMenuPoint } from '@/hooks/useAnchoredMenu'
+import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
+import { resolveAbsoluteFilePath } from '@/lib/file-path'
 import { SessionHeader } from '@/components/SessionHeader'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
@@ -257,15 +262,20 @@ function LineChanges(props: { added: number; removed: number }) {
 function GitFileRow(props: {
     file: GitFileStatus
     onOpen: () => void
+    onOpenMenu: (point: AnchoredMenuPoint) => void
     showDivider: boolean
 }) {
     const { t } = useTranslation()
     const subtitle = getProjectRootLabel(props.file.filePath, t)
+    const rowHandlers = useFileMenuTrigger({
+        onOpen: props.onOpen,
+        onOpenMenu: props.onOpenMenu,
+    })
 
     return (
         <button
             type="button"
-            onClick={props.onOpen}
+            {...rowHandlers}
             className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors ${props.showDivider ? 'border-b border-[var(--app-divider)]' : ''}`}
         >
             <FileIcon fileName={props.file.fileName} size={22} />
@@ -284,10 +294,15 @@ function GitFileRow(props: {
 function SearchResultRow(props: {
     file: FileSearchItem
     onOpen: () => void
+    onOpenMenu: (point: AnchoredMenuPoint) => void
     showDivider: boolean
 }) {
     const { locale } = useTranslation()
     const metadata = formatFileMetadata(props.file.size, props.file.modified, locale)
+    const rowHandlers = useFileMenuTrigger({
+        onOpen: props.onOpen,
+        onOpenMenu: props.onOpenMenu,
+    })
     const icon = props.file.fileType === 'file'
         ? <FileIcon fileName={props.file.fileName} size={22} />
         : <FolderIcon className="text-[var(--app-link)]" />
@@ -295,7 +310,7 @@ function SearchResultRow(props: {
     return (
         <button
             type="button"
-            onClick={props.onOpen}
+            {...rowHandlers}
             className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors ${props.showDivider ? 'border-b border-[var(--app-divider)]' : ''}`}
         >
             {icon}
@@ -343,7 +358,14 @@ export default function FilesPage() {
 
     const [activeTab, setActiveTab] = useState<FilesTab>(() => search.tab ?? readFilesTab())
     const [directorySort, setDirectorySort] = useState<DirectorySort>(readDirectorySort)
+    const [fileMenu, setFileMenu] = useState<{ path: string; point: AnchoredMenuPoint } | null>(null)
     const searchQuery = search.query ?? ''
+
+    const openFileMenu = useCallback((path: string, point: AnchoredMenuPoint) => {
+        setFileMenu({ path, point })
+    }, [])
+
+    const closeFileMenu = useCallback(() => setFileMenu(null), [])
 
     const setSearchQuery = useCallback((query: string) => {
         navigate({
@@ -424,6 +446,15 @@ export default function FilesPage() {
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
     }, [activeTab, navigate, searchQuery, sessionId])
+
+    const handleAddFileToComposer = useCallback((path: string) => {
+        appendFileReferenceToComposerDraft(sessionId, path)
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId },
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+        })
+    }, [navigate, sessionId])
 
     const branchLabel = getDetachedBranchLabel(gitStatus?.branch, t)
     const showGitErrorBanner = Boolean(gitError)
@@ -640,6 +671,7 @@ export default function FilesPage() {
                                         key={file.fullPath}
                                         file={file}
                                         onOpen={() => handleOpenFile(file.fullPath)}
+                                        onOpenMenu={(point) => openFileMenu(file.fullPath, point)}
                                         showDivider={index < sortedSearchResults.length - 1}
                                     />
                                 ))}
@@ -652,6 +684,7 @@ export default function FilesPage() {
                             sessionId={sessionId}
                             rootLabel={rootLabel}
                             onOpenFile={(path) => handleOpenFile(path)}
+                            onRequestFileMenu={openFileMenu}
                             sort={directorySort}
                         />
                     ) : gitLoading ? (
@@ -668,6 +701,7 @@ export default function FilesPage() {
                                             key={`staged-${file.fullPath}-${index}`}
                                             file={file}
                                             onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
+                                            onOpenMenu={(point) => openFileMenu(file.fullPath, point)}
                                             showDivider={index < gitStatus.stagedFiles.length - 1 || gitStatus.unstagedFiles.length > 0}
                                         />
                                     ))}
@@ -684,6 +718,7 @@ export default function FilesPage() {
                                             key={`unstaged-${file.fullPath}-${index}`}
                                             file={file}
                                             onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
+                                            onOpenMenu={(point) => openFileMenu(file.fullPath, point)}
                                             showDivider={index < gitStatus.unstagedFiles.length - 1}
                                         />
                                     ))}
@@ -705,6 +740,17 @@ export default function FilesPage() {
                     )}
                 </div>
             </div>
+
+            <FileActionMenu
+                isOpen={fileMenu !== null}
+                onClose={closeFileMenu}
+                relativePath={fileMenu?.path ?? ''}
+                absolutePath={resolveAbsoluteFilePath(session.metadata?.path, fileMenu?.path ?? '')}
+                anchorPoint={fileMenu?.point ?? { x: 0, y: 0 }}
+                onAddToComposer={() => {
+                    if (fileMenu) handleAddFileToComposer(fileMenu.path)
+                }}
+            />
         </div>
     )
 }

@@ -36,6 +36,9 @@ re-runs this suite whenever `android/**` or `shared/fixtures/**` change.
 
 ## Building
 
+Native chat scrolling architecture and acceptance checklist:
+[Native transcript scrolling](../docs/native-chat-scrolling.md).
+
 Requires an Android SDK for `:app`/`:core:data` (set `ANDROID_HOME` or
 `android/local.properties` with `sdk.dir=...`). `:core:protocol` alone needs
 only a JDK.
@@ -54,8 +57,99 @@ only the needed projects:
 ./gradlew --no-configuration-cache --configure-on-demand :core:protocol:test
 ```
 
-CI (`.github/workflows/android.yml`) runs the protocol tests and
-`:app:assembleDebug` on every PR touching `android/**` or `shared/fixtures/**`.
+CI (`.github/workflows/android.yml`) runs protocol/data/app unit tests,
+`:app:assembleDebug`, `:app:lintDebug`, and Compose instrumentation on API 29
+and API 36 for PRs touching `android/**` or `shared/fixtures/**`.
+
+## Tool previews
+
+Ordinary chat tools stay compact summaries. Tap a tool or tool group to open a native
+Navigation Compose page; Back returns one level, Close returns to the chat.
+Groups start at their latest tool, retain their position when returning from
+details, and never follow streaming updates automatically. The **Latest tool**
+toolbar action scrolls explicitly. Agent processes have their own page with
+lazy child rows. Approvals remain in the conversation or a live process page;
+ordinary tool detail pages are read-only.
+
+Plan proposals (`ExitPlanMode` / `exit_plan_mode`) start fully expanded in the
+conversation, rendering the complete `input.plan` Markdown before approval
+controls. Tapping the header folds the card. Plan documents are prewarmed in the
+chat Markdown cache and do not use the ordinary tool-output paging budget; raw
+input/result remains under Source.
+
+Details recognize namespaced command/script/patch calls, unwrap common
+nested result envelopes, and keep command exit/status metadata visible. File
+reads use source-language highlighting; web/agent prose uses Markdown. **Source**
+reveals the original input/result, including fields omitted from the preview.
+Mixed text/media results stay JSON instead of dropping non-text blocks.
+
+Question details show recorded selections, custom answers and notes with
+Markdown questions/options. `request_user_input` also restores answers from
+historical results; live permission answers take precedence. Answered cards
+avoid duplicate results, but retain errors and the full input/result/answers
+under **Source**. The pending answer form remains unchanged.
+
+Tool inputs/outputs display one part at a time, up to 20,000 Unicode graphemes
+or 400 source lines. Previous/Next replace the mounted part; visited parts do
+not accumulate. Large diffs/Markdown use paged source. JSON formatting and
+output preparation run off the UI thread. File mutation details also offer
+**View current file**, distinct from the recorded tool input/result.
+
+Inspectors share the conversation's pipeline and SSE subscription. Opening one
+freezes tail following, cancels hidden history loading and recording, and hides
+the keyboard. Returning retains the transcript anchor. Trimmed selections remain
+readable as labeled snapshots; an epoch reset closes obsolete inspectors.
+
+## Long messages and reading layout
+
+User prompts remain inline through 8,000 graphemes and 120 source lines. Larger
+prompts show a 2,000-grapheme / 24-line preview and **View full message** opens a
+reader with one 4,000-grapheme / 80-line part mounted. Pagination preserves
+whitespace, CRLF, emoji and combining sequences exactly; character counts refer
+to Unicode graphemes, not UTF-16 offsets.
+
+**Copy full content** uses the clipboard up to 64 Ki UTF-16 code units. Larger
+content, or a failed clipboard operation, offers UTF-8 file export through
+FileProvider and Android's sharesheet; Binder receives a URI, not the text.
+Exports older than 24 hours are cleaned on the next export.
+
+Body/composer/user text uses 16sp/24sp, code/diff/terminal 14sp/20sp, captions
+12sp/16sp. Content and composer share a centered 720dp reading column with
+16dp minimum side margins. Bubble widths use actual container constraints,
+including split-screen; Android font scaling remains enabled.
+
+## Connection status and home filters
+
+The chat subtitle reserves its height. **Reconnecting · Tap to retry** appears
+after four continuous foreground seconds of outage; retry/backoff transitions
+do not restart that grace period. Transport state is separate from message
+events. Default-network/interface/route changes wake reconnect immediately,
+preserving replay cursors; background retries defer until foreground. A local
+hub route does not need Android's internet-validation capability.
+
+Home keeps the Sessions title and new-session FAB. **Filters** opens a Material
+3 single-selection sheet. Choices come from all sessions, including historical
+machines; names/IDs determine ordering, never counts. Duplicate names include
+IDs; unnamed and unknown machines are labeled. The applied filter has a Clear
+action, is transient per home/hub, and is cleared when no longer valid.
+The home holder follows the active connection instance, releasing the previous
+store and filter even when switching back to a previously used hub URL.
+
+Pairing and Settings both link to the [privacy policy](https://hapi.run/docs/privacy).
+These controls and notices ship in English and Simplified Chinese.
+
+### Validation status (2026-09-12)
+
+Protocol/data/app JVM suites: 707 tests passed. Debug APK, instrumentation APK
+and lint passed. API 29: 19 chat/reader regressions passed, including large-font
+pagination, source/answer rendering, exact clipboard text, and FileProvider URI
+export. The opt-in frame probe was skipped.
+
+The local API 36 software emulator completed boot but Android killed the
+instrumentation process for a startup ANR before any tests ran; system services
+also timed out on this host without KVM. API 36 remains pending the CI job with
+KVM. No 60/120 Hz device frame-time, memory, or predictive-back measurements are
+claimed by these checks.
 
 ## Pairing
 
@@ -97,7 +191,7 @@ drops it from the roster.
 
 - **M0** — this scaffold: modules, version catalog, CI, placeholder screen.
 - **M1** — foundations: wire types + modes catalog; auth + `HapiApi` (MockWebServer-tested); `SseEngine` reconnect state machine + versioned patches (gzip streaming verified); pairing UI + `hapicompanion://bind` deep link.
-- **M2** — read-only chat: chat pipeline port gated on fixtures all-green; session list; `MessageWindowStore` port; Markdown renderer; read-only chat screen (`LazyColumn(reverseLayout = true)`).
+- **M2** — read-only chat: chat pipeline port gated on fixtures all-green; session list; `MessageWindowStore` port; Markdown renderer; read-only chat screen (`LazyColumn` with chronological stable keys).
 - **M3** — interaction: composer (optimistic send/queue/steer/drafts), permission approvals UX, session controls (mode/model/abort/resume/rename/archive), new session, dictation.
   - **B-M3ce landed** — voice dictation: mic button in the composer (`RECORD_AUDIO` requested at first use), `MediaRecorder` → m4a/AAC, provider discovery via `GET /api/voice/transcription/providers` on chat entry (first `standard`-capable provider; mic hidden until available, including unconfigured/unreachable hubs), upload through the multipart `POST /api/voice/transcription`, transcript appended at the composer text with a space separator; `DictationController` is a plain seam over recorder + API, JVM-tested with fakes. Slash commands: typing a lone `/token` opens a dropdown merging the session's `metadata.slashCommands` names with the `GET /slash-commands` RPC list (RPC entries win dedupe; exact → prefix → contains filtering), tap inserts `/name ` (the skills `$` trigger is deferred). Session ops: list long-press sheet and chat top-bar overflow gain Rename (`PATCH /sessions/:id`, optimistic name with roll-forward on failure), Delete (confirm; 409-while-active surfaced), and Reopen for inactive sessions (`POST /reopen`; a superseding id reuses the supersede path — window seed + draft move + navigate-replace; 422 missing-metadata formatted); chat shows an inactive-session bar ("send to resume, or Reopen").
 - **M4** — FCM push (register → notification actions via expedited WorkManager) + files/git viewer, Scratchlist, usage/storage stats.

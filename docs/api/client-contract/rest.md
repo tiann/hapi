@@ -48,6 +48,7 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
+| `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
 | `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/502/503 |
 | `GET /api/sessions/:id/slash-commands` | — | `SlashCommandsResponse` `{success, commands?, error?}` |
 | `GET /api/sessions/:id/skills` | — | `SkillsResponse`-shaped `{success, ...}` |
@@ -79,6 +80,11 @@ The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the reque
 
 Source: `hub/src/web/routes/permissions.ts`. Pending requests are **not messages**: they live in `session.agentState.requests` (keyed by request id) and move to `agentState.completedRequests` when resolved — schemas `AgentStateRequestSchema` / `AgentStateCompletedRequestSchema` in `shared/src/schemas.ts`.
 
+Shared Codex completed requests may have `status: 'resolved'`: native completion
+is known, but the winner/answer is not. Render a neutral status, not Approved or
+an inferred selection. A successful approve HTTP response only submitted a
+candidate. `canceled` can instead mean withdrawal after a transport disconnect.
+
 | Method & path | Request | Response |
 |---|---|---|
 | `POST /api/sessions/:id/permissions/:requestId/approve` | `{mode?, allowTools?: string[], decision?, answers?}` | `{ok: true}` |
@@ -102,13 +108,24 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |
 | `POST /api/sessions/:id/copilot-agent-mode` | `{mode}` | copilot (remote-only) |
 
+`metadata.capabilities.concurrentClients === true`: ignore the legacy
+`agentState.controlledByUser` input/settings gate. Shared keepalives have no
+ownership mode. `/switch` returns HTTP 409 with
+`code: 'control_mode_not_applicable'`; do not offer takeover. The remote-only
+Codex configuration restrictions above do not apply to these sessions.
+
+Shared `/clear` has no global `supersededBySessionId` change; clients other than
+the caller stay on the original thread. Fork may return an already-bound shared
+child; the hub must not spawn a second engine. Use advertised history
+capabilities: shared Codex currently supports fork, not in-place rewind.
+
 All respond `{ok: true}`; apply-failures return 409 with a message. Model/effort **catalogs** (RPC-wrapped; all return `{success, ...} \| {success: false, error}`):
 
 | Method & path | Notes |
 |---|---|
 | `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/pi-models` | Active session of the matching flavor; 400 otherwise |
 | `GET /api/sessions/:id/opencode-reasoning-effort-options`, `/grok-reasoning-effort-options` | Same pattern |
-| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers) |
+| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
 | `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=` | `cwd` query required (400 without) |
 
 ### Machines & spawning

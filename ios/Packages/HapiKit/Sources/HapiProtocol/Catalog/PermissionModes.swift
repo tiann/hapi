@@ -82,6 +82,11 @@ public struct PermissionModeOption: Equatable, Sendable {
 }
 
 extension AgentFlavor {
+    /// New Codex sessions use the shared runtime, without HAPI Safe Yolo.
+    public var launchPermissionModes: [PermissionMode] {
+        permissionModes.filter { self != .codex || $0 != .safeYolo }
+    }
+
     /// Permission modes offered for this flavor, in picker order.
     ///
     /// Ports the per-flavor arrays in `shared/src/modes.ts`

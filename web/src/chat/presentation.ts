@@ -94,9 +94,16 @@ function formatLimitType(limitType: string | undefined): string {
 export function formatDuration(ms: number): string {
     const seconds = ms / 1000
     if (seconds < 60) return `${seconds.toFixed(1)}s`
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.round(seconds % 60)
-    return `${mins}m ${secs}s`
+
+    const totalSeconds = Math.round(seconds)
+    const hours = Math.floor(totalSeconds / 3_600)
+    const minutes = Math.floor((totalSeconds % 3_600) / 60)
+    const remainingSeconds = totalSeconds % 60
+    const parts: string[] = []
+    if (hours > 0) parts.push(`${hours}h`)
+    if (minutes > 0) parts.push(`${minutes}m`)
+    if (remainingSeconds > 0) parts.push(`${remainingSeconds}s`)
+    return parts.join(' ')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

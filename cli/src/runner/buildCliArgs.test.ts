@@ -133,8 +133,6 @@ describe('buildCliArgs', () => {
             'codex',
             'resume',
             'codex-thread-1',
-            '--hapi-starting-mode',
-            'remote',
             '--started-by',
             'runner',
             '--existing-session-id',

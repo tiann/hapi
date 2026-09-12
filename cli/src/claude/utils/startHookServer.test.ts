@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { request } from 'node:http'
 import { startHookServer, type SessionHookData } from './startHookServer'
 
@@ -115,6 +115,107 @@ describe('startHookServer', () => {
         expect(hookCalled).toBe(false)
     })
 
+    describe('permission-request', () => {
+        const payload = { hook_event_name: 'PermissionRequest', session_id: 's-1', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Color?' }] } }
+        const sendPermission = (port: number, token?: string, body: unknown = payload) =>
+            sendHookRequest(port, JSON.stringify(body), token, '/hook/permission-request')
+
+        it('authenticates and validates before invoking the permission handler', async () => {
+            const handler = vi.fn(async () => null)
+            const server = await startHookServer({ onSessionHook: () => {}, onPermissionRequest: handler })
+            try {
+                expect((await sendPermission(server.port)).statusCode).toBe(401)
+                expect((await sendPermission(server.port, 'wrong-token')).statusCode).toBe(401)
+                expect((await sendPermission(server.port, server.token, { ...payload, tool_input: null })).statusCode).toBe(400)
+                expect(handler).not.toHaveBeenCalled()
+            } finally {
+                server.stop()
+            }
+        })
+
+        it('holds the response for an explicit answer and preserves structured input', async () => {
+            const decision = { behavior: 'allow' as const, updatedInput: { ...payload.tool_input, answers: { 'Color?': 'Blue' } } }
+            const deferred = Promise.withResolvers<typeof decision>()
+            const handler = vi.fn(() => deferred.promise)
+            const server = await startHookServer({ onSessionHook: () => {}, onPermissionRequest: handler })
+            try {
+                let returned = false
+                const response = sendPermission(server.port, server.token).then(value => { returned = true; return value })
+                await vi.waitFor(() => expect(handler).toHaveBeenCalled())
+                expect(returned).toBe(false)
+                expect(handler.mock.calls[0]).toEqual([payload, expect.any(AbortSignal)])
+                deferred.resolve(decision)
+                expect(JSON.parse((await response).body)).toEqual(decision)
+            } finally {
+                server.stop()
+            }
+        })
+
+        it.each(['absent', 'null', 'error'] as const)('leaves the native flow untouched when handler is %s', async mode => {
+            const server = await startHookServer({
+                onSessionHook: () => {},
+                onPermissionRequest: mode === 'absent' ? undefined : async () => {
+                    if (mode === 'error') throw new Error('bridge unavailable')
+                    return null
+                }
+            })
+            try {
+                const response = await sendPermission(server.port, server.token)
+                expect(response.statusCode).toBe(200)
+                expect(JSON.parse(response.body)).toEqual({})
+            } finally {
+                server.stop()
+            }
+        })
+
+        it('aborts the pending bridge when the hook process disconnects', async () => {
+            const started = Promise.withResolvers<AbortSignal>()
+            const canceled = Promise.withResolvers<void>()
+            const server = await startHookServer({
+                onSessionHook: () => {},
+                onPermissionRequest: (_data, signal) => {
+                    started.resolve(signal)
+                    signal.addEventListener('abort', () => canceled.resolve(), { once: true })
+                    return new Promise(() => {})
+                }
+            })
+            const req = request({ host: '127.0.0.1', port: server.port, path: '/hook/permission-request', method: 'POST', headers: {
+                'x-hapi-hook-token': server.token, 'Content-Type': 'application/json'
+            } })
+            req.on('error', () => {})
+            try {
+                req.end(JSON.stringify(payload))
+                const signal = await started.promise
+                req.destroy()
+                await canceled.promise
+                expect(signal.aborted).toBe(true)
+            } finally {
+                req.destroy()
+                server.stop()
+            }
+        })
+
+        it('releases pending hooks without a decision on server shutdown', async () => {
+            const started = Promise.withResolvers<AbortSignal>()
+            const server = await startHookServer({
+                onSessionHook: () => {},
+                onPermissionRequest: (_data, signal) => {
+                    started.resolve(signal)
+                    return new Promise(() => {})
+                }
+            })
+            try {
+                const response = sendPermission(server.port, server.token)
+                const signal = await started.promise
+                server.stop()
+                expect(signal.aborted).toBe(true)
+                expect(JSON.parse((await response).body)).toEqual({})
+            } finally {
+                server.stop()
+            }
+        })
+    })
+
     describe('pre-tool-use', () => {
         const sendPreToolUse = (port: number, payload: unknown, token?: string) =>
             sendHookRequest(port, JSON.stringify(payload), token, '/hook/pre-tool-use')
@@ -144,7 +245,7 @@ describe('startHookServer', () => {
             expect((received as { tool_name?: string }).tool_name).toBe('Bash')
         })
 
-        it('allows by default when no onPreToolUse handler is wired', async () => {
+        it('makes no decision when no onPreToolUse handler is wired', async () => {
             const server = await startHookServer({ onSessionHook: () => {} })
             try {
                 const response = await sendPreToolUse(
@@ -153,7 +254,7 @@ describe('startHookServer', () => {
                     server.token
                 )
                 expect(response.statusCode).toBe(200)
-                expect(JSON.parse(response.body)).toEqual({ permissionDecision: 'allow' })
+                expect(JSON.parse(response.body)).toEqual({})
             } finally {
                 server.stop()
             }

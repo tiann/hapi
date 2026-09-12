@@ -13,6 +13,7 @@ public struct CodeBlockView: View {
     public let code: String
 
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
     @Environment(\.hapiSyntaxHighlighter) private var highlighter
     @Environment(\.hapiPasteboard) private var pasteboard
 
@@ -39,7 +40,8 @@ public struct CodeBlockView: View {
             header
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(highlighted ?? AttributedString(code))
-                    .font(theme.codeFont)
+                    .font(typography.codeFont)
+                    .lineSpacing(typography.codeLineSpacing)
                     .foregroundStyle(theme.textPrimary)
                     .textSelection(.enabled)
                     .padding(12)
@@ -59,9 +61,9 @@ public struct CodeBlockView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text(displayLanguage)
-                .font(.system(size: theme.captionSize, design: .monospaced))
+                .font(typography.captionMonoFont)
                 .foregroundStyle(theme.textSecondary)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
             Button {
                 // Explicit MainActor hop: keeps the @MainActor pasteboard
@@ -76,14 +78,14 @@ public struct CodeBlockView: View {
                 }
             } label: {
                 Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: theme.captionSize))
+                    .font(typography.captionFont)
+                    .frame(minWidth: 44, minHeight: 44)
                     .foregroundStyle(showCopied ? theme.success : theme.textSecondary)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text(showCopied ? "Copied" : "Copy code"))
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
         .background(theme.codeHeaderBackground)
     }
 }

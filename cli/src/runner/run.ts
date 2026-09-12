@@ -32,6 +32,7 @@ import {
 } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
+import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
@@ -418,7 +419,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
 
     // Helper functions
-    const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
+    const getCurrentChildren = () => Array.from(pidToTrackedSession.values()).flatMap(session => session.sharedSessions
+      ? Object.entries(session.sharedSessions).map(([happySessionId, metadata]) => ({ ...session, happySessionId, happySessionMetadataFromLocalWebhook: metadata }))
+      : [session]);
 
     // Handle webhook from HAPI session reporting itself
     const onHappySessionWebhook = (sessionId: string, sessionMetadata: Metadata) => {
@@ -435,6 +438,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // Check if we already have this PID (runner-spawned)
       const existingSession = pidToTrackedSession.get(pid);
+
+      if (existingSession && sessionMetadata.capabilities?.concurrentClients) {
+        existingSession.sharedSessions ??= {};
+        if (sessionMetadata.lifecycleState === 'archived') {
+          delete existingSession.sharedSessions[sessionId];
+          return;
+        }
+        existingSession.sharedSessions[sessionId] = sessionMetadata;
+        invalidateVerifiedExit(sessionId);
+        // Native /new or /fork cannot replace the primary spawn confirmation.
+        if (existingSession.happySessionId && existingSession.happySessionId !== sessionId) return;
+      }
 
       if (existingSession && existingSession.startedBy === 'runner') {
         // Update runner-spawned session with reported data
@@ -470,6 +485,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // anything claiming `'runner'` here must be the second case and
         // should be ignored + terminated instead of silently promoted.
         if (sessionMetadata.startedBy === 'runner') {
+          // A shared root can report /new after a Runner restart. Unknown is
+          // not proof of an orphan: never kill its sibling roots. Known spawn
+          // timeouts already terminate their ChildProcess tree at the source.
+          // No registry scan/adoption lifecycle is needed for live attachment.
+          if (sessionMetadata.capabilities?.concurrentClients) return;
           logger.debug(
             `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
           );
@@ -486,6 +506,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
         // New session started externally (terminal)
         const trackedSession: TrackedSession = {
+          ...(sessionMetadata.capabilities?.concurrentClients ? { sharedSessions: { [sessionId]: sessionMetadata } } : {}),
           startedBy: 'hapi directly - likely by user from terminal',
           happySessionId: sessionId,
           happySessionMetadataFromLocalWebhook: sessionMetadata,
@@ -989,6 +1010,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
+      const { findRuntime } = await import('@/codex/shared/registry');
+      const sharedRuntime = await findRuntime(sessionId);
+      if (sharedRuntime) {
+        try {
+          const { runtimeControl } = await import('@/codex/shared/frontend');
+          await runtimeControl(sharedRuntime, 'hapi/stopSession', sessionId);
+          const tracked = pidToTrackedSession.get(sharedRuntime.pid);
+          if (tracked?.sharedSessions) delete tracked.sharedSessions[sessionId];
+          return 'stopped';
+        } catch { return 'still_alive'; }
+      }
+      if ((await readRuntimes()).some(runtime => runtime.hub === configuration.apiUrl && runtime.authHash === runtimeAuthHash()
+        && runtime.sessions[sessionId]?.active && runtimeMayBeAlive(runtime))) return 'still_alive';
+      // Missing registry is not permission to kill siblings in a live execution.
+      if ([...pidToTrackedSession.values()].some(session => session.sharedSessions?.[sessionId])) return 'still_alive';
+
       // Try to find by sessionId first
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (session.happySessionId === sessionId ||
@@ -1102,6 +1139,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Handle child process exit
     const onChildExited = (pid: number) => {
       const session = pidToTrackedSession.get(pid);
+      for (const id of Object.keys(session?.sharedSessions ?? {})) rememberVerifiedExit(id);
       const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);
       if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
       const confirmedSessionId = session?.happySessionId ?? pidToConfirmedSessionId.get(pid);
@@ -1146,8 +1184,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // but in compiled binary mode (`bun build --compile`) the raw argv shape is
     // `[hapi, runner, start-sync, ...]` so slice(2) produced `['start-sync', ...]`.
     // The replacement then spawned `hapi start-sync ...`, which `resolveCommand`
-    // treats as an unknown top-level command - falling back to Claude instead
-    // of starting the runner. `getCliArgs()` strips runtime + entrypoint
+    // now rejects as an unknown top-level command (previously it fell back to
+    // Claude). `getCliArgs()` strips runtime + entrypoint
     // correctly in all execution modes.
     //
     // Defensive guard: only replay the captured argv when it actually starts
@@ -1166,6 +1204,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Write initial runner state (no lock needed for state file)
     const fileState: RunnerLocallyPersistedState = {
+      sharedCodexRuntime: true,
       pid: process.pid,
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
@@ -1588,7 +1627,8 @@ export function buildCliArgs(
     args.push('--fork-session');
   }
   const startingMode = options.startingMode || 'remote';
-  args.push('--hapi-starting-mode', startingMode, '--started-by', 'runner');
+  if (agent !== 'codex') args.push('--hapi-starting-mode', startingMode);
+  args.push('--started-by', 'runner');
   const existingSessionId = options.existingSessionId;
   if (existingSessionId) {
     args.push('--existing-session-id', existingSessionId);

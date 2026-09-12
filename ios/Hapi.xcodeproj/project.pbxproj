@@ -11,6 +11,9 @@
 		A100000000000000000000C5 /* HapiClient in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000C3 /* HapiClient */; };
 		A100000000000000000000C8 /* HapiUI in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000C7 /* HapiUI */; };
 		A200000000000000000000D4 /* HapiNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A200000000000000000000A4 /* HapiNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A300000000000000000000C4 /* HapiProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000C2 /* HapiProtocol */; };
+		A300000000000000000000C5 /* HapiClient in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000C3 /* HapiClient */; };
+		A300000000000000000000C8 /* HapiUI in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000C7 /* HapiUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -20,6 +23,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = A200000000000000000000A5;
 			remoteInfo = HapiNotificationService;
+		};
+		A300000000000000000000D2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A100000000000000000000A6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A100000000000000000000A5;
+			remoteInfo = Hapi;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -40,6 +50,7 @@
 /* Begin PBXFileReference section */
 		A100000000000000000000A4 /* Hapi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Hapi.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A200000000000000000000A4 /* HapiNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = HapiNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A300000000000000000000A4 /* HapiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HapiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -76,6 +87,11 @@
 			path = HapiNotificationService;
 			sourceTree = "<group>";
 		};
+		A300000000000000000000A2 /* HapiTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = HapiTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -96,6 +112,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A300000000000000000000A8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A300000000000000000000C4 /* HapiProtocol in Frameworks */,
+				A300000000000000000000C5 /* HapiClient in Frameworks */,
+				A300000000000000000000C8 /* HapiUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -104,6 +130,7 @@
 			children = (
 				A100000000000000000000A2 /* Hapi */,
 				A200000000000000000000A2 /* HapiNotificationService */,
+				A300000000000000000000A2 /* HapiTests */,
 				A100000000000000000000A3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -113,6 +140,7 @@
 			children = (
 				A100000000000000000000A4 /* Hapi.app */,
 				A200000000000000000000A4 /* HapiNotificationService.appex */,
+				A300000000000000000000A4 /* HapiTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -169,6 +197,32 @@
 			productReference = A200000000000000000000A4 /* HapiNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		A300000000000000000000A5 /* HapiTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A300000000000000000000B4 /* Build configuration list for PBXNativeTarget "HapiTests" */;
+			buildPhases = (
+				A300000000000000000000A7 /* Sources */,
+				A300000000000000000000A8 /* Frameworks */,
+				A300000000000000000000A9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A300000000000000000000D1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A300000000000000000000A2 /* HapiTests */,
+			);
+			name = HapiTests;
+			packageProductDependencies = (
+				A100000000000000000000C2 /* HapiProtocol */,
+				A100000000000000000000C3 /* HapiClient */,
+				A100000000000000000000C7 /* HapiUI */,
+			);
+			productName = HapiTests;
+			productReference = A300000000000000000000A4 /* HapiTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -207,6 +261,7 @@
 			targets = (
 				A100000000000000000000A5 /* Hapi */,
 				A200000000000000000000A5 /* HapiNotificationService */,
+				A300000000000000000000A5 /* HapiTests */,
 			);
 		};
 /* End PBXProject section */
@@ -220,6 +275,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A200000000000000000000A9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A300000000000000000000A9 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -243,6 +305,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A300000000000000000000A7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -250,6 +319,11 @@
 			isa = PBXTargetDependency;
 			target = A200000000000000000000A5 /* HapiNotificationService */;
 			targetProxy = A200000000000000000000D2 /* PBXContainerItemProxy */;
+		};
+		A300000000000000000000D1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A100000000000000000000A5 /* Hapi */;
+			targetProxy = A300000000000000000000D2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -423,6 +497,38 @@
 			};
 			name = Release;
 		};
+		A300000000000000000000B5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.companion.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hapi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Hapi";
+			};
+			name = Debug;
+		};
+		A300000000000000000000B6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.companion.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hapi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Hapi";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -449,6 +555,15 @@
 			buildConfigurations = (
 				A200000000000000000000B5 /* Debug */,
 				A200000000000000000000B6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A300000000000000000000B4 /* Build configuration list for PBXNativeTarget "HapiTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A300000000000000000000B5 /* Debug */,
+				A300000000000000000000B6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

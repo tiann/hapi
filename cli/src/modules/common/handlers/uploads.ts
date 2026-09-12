@@ -26,6 +26,7 @@ const uploadDirs = new Map<string, string>()
 const uploadFileIdentities = new Map<string, Map<string, string>>()
 const uploadDirPromises = new Map<string, Promise<string>>()
 const uploadDirCleanupRequested = new Set<string>()
+const retainedUploadDirs = new Set<string>()
 let cleanupRegistered = false
 const MAX_FILENAME_COMPONENT_BYTES = 255
 
@@ -123,6 +124,7 @@ async function getOrCreateUploadDir(sessionId?: string): Promise<string> {
 
 export async function cleanupUploadDir(sessionId?: string): Promise<void> {
     const sessionKey = getSessionKey(sessionId)
+    retainedUploadDirs.delete(sessionKey)
     uploadDirCleanupRequested.add(sessionKey)
 
     try {
@@ -154,12 +156,19 @@ export async function cleanupUploadDir(sessionId?: string): Promise<void> {
     }
 }
 
+/** Pending native input still references these temporary files after suspension.
+ * Explicit cleanup still removes them; otherwise normal OS temp cleanup applies. */
+export function preserveUploadDirOnExit(sessionId: string): void {
+    retainedUploadDirs.add(getSessionKey(sessionId))
+}
+
 function cleanupUploadDirsSync(): void {
-    const dirs = Array.from(uploadDirs.values())
+    const dirs = Array.from(uploadDirs.entries()).filter(([key]) => !retainedUploadDirs.has(key)).map(([, dir]) => dir)
     uploadDirs.clear()
     uploadFileIdentities.clear()
     uploadDirPromises.clear()
     uploadDirCleanupRequested.clear()
+    retainedUploadDirs.clear()
 
     for (const dir of dirs) {
         try {

@@ -93,7 +93,7 @@ fun ChatComposer(
     onDictationCancel: () -> Unit = {},
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
@@ -137,7 +137,7 @@ fun ChatComposer(
                     BasicTextField(
                         value = state.text,
                         onValueChange = onTextChange,
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),

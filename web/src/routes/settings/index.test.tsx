@@ -253,6 +253,7 @@ describe('responsive settings pages', () => {
         expect(await screen.findByRole('checkbox', { name: 'Show status summaries in chat' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
+        expect(screen.getByText('选择是否在聊天中显示已有的会话状态摘要。')).toBeInTheDocument()
     })
 
     it('offers summary display without restoring agent prompt controls', async () => {

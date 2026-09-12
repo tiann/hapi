@@ -386,7 +386,7 @@ public enum NewSessionLogic {
             sessionType: draft.sessionType,
             worktreeName: draft.worktreeName
         )
-        if !base.agent.permissionModes.contains(base.permissionMode) {
+        if !base.agent.launchPermissionModes.contains(base.permissionMode) {
             base.permissionMode = .default
         }
         return base

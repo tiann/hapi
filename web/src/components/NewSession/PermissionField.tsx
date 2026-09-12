@@ -1,7 +1,7 @@
 import {
     getAgentConfigDescriptor,
     getPermissionModeLabel,
-    getPermissionModeOptionsForFlavor,
+    getLaunchPermissionModesForFlavor,
     resolveHapiYoloPermissionMode,
     type PermissionMode
 } from '@hapi/protocol'
@@ -61,7 +61,7 @@ export function PermissionField(props: PermissionFieldProps) {
     }
 
     if (field.kind === 'select' && usesNativePermissionSelect(props.agent)) {
-        const options = getPermissionModeOptionsForFlavor(props.agent)
+        const options = getLaunchPermissionModesForFlavor(props.agent)
         return (
             <div className="flex flex-col gap-1.5 px-3 py-3">
                 <label className="text-xs font-medium text-[var(--app-hint)]">
@@ -73,12 +73,12 @@ export function PermissionField(props: PermissionFieldProps) {
                     disabled={props.isDisabled}
                     className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
                 >
-                    {options.map((option) => {
-                        const unavailable = option.mode === 'auto'
+                    {options.map((mode) => {
+                        const unavailable = mode === 'auto'
                             && props.autoPermissionModeSupported === false
                         return (
-                            <option key={option.mode} value={option.mode} disabled={unavailable}>
-                                {option.label}{unavailable ? ` (${t('newSession.grokAutoUnavailable')})` : ''}
+                            <option key={mode} value={mode} disabled={unavailable}>
+                                {getPermissionModeLabel(mode)}{unavailable ? ` (${t('newSession.grokAutoUnavailable')})` : ''}
                             </option>
                         )
                     })}

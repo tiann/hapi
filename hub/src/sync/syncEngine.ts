@@ -15,7 +15,7 @@ import {
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SpawnSessionWithRemitRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
-import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
 import { posix, win32 } from 'node:path'
@@ -111,7 +111,7 @@ export type LocalResumeTargetResult =
 
 export type LocalHandoffResult =
     | { type: 'success' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' }
 
 export type ClearOpencodeSessionResult =
     | { type: 'success'; sessionId: string }
@@ -245,6 +245,16 @@ export class SyncEngine {
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.eventPublisher.subscribe((event) => {
+            if (event.type === 'message-received') {
+                if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
+                    && hasConversationMessageContent(event.message.content)) {
+                    this.sessionCache.refreshConversationContent(event.sessionId)
+                }
+            } else if (event.type === 'message-cancelled' || event.type === 'messages-invalidated') {
+                this.sessionCache.refreshConversationContent(event.sessionId)
+            }
+        })
         this.machineCache = new MachineCache(store, this.eventPublisher)
         this.messageService = new MessageService(
             store,
@@ -1139,7 +1149,7 @@ export class SyncEngine {
         if (!isSteeringSupportedForSession(session.metadata)) {
             return { status: 'failed', error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions', localId: null }
         }
-        if (session.agentState?.controlledByUser === true) {
+        if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
         }
 
@@ -1221,7 +1231,7 @@ export class SyncEngine {
         if (!session.active) {
             throw new Error('Session must be active')
         }
-        if (session.agentState?.controlledByUser === true) {
+        if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             throw new Error('Conversation history actions require a remote session')
         }
         if (session.thinking) {
@@ -1488,6 +1498,11 @@ export class SyncEngine {
 
         if (!rpcResult?.nativeSessionId) {
             return { type: 'error', message: 'Native fork did not return a session id' }
+        }
+        if (rpcResult.sessionId) {
+            const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
+            if (!child || child.metadata?.forkedFrom !== sessionId) return { type: 'error', message: 'Invalid shared-runtime fork binding' }
+            return { type: 'success', sessionId: child.id }
         }
 
         // Native fork RPC can race CLI metadata/transcript updates. Construct
@@ -1977,7 +1992,35 @@ export class SyncEngine {
         })
     }
 
+    private async validateSharedChild(source: Session, id: string, nativeId?: string): Promise<Session | null> {
+        if (!source.metadata?.capabilities?.concurrentClients || id === source.id) return null
+        const deadline = Date.now() + 5_000
+        do {
+            const child = this.sessionCache.refreshSession(id)
+            if (child && child.namespace === source.namespace
+                && child.metadata?.machineId === source.metadata.machineId
+                && child.metadata?.hostPid === source.metadata.hostPid
+                && child.metadata?.capabilities?.concurrentClients
+                && child.metadata.codexSessionId && (!nativeId || child.metadata.codexSessionId === nativeId)) return child
+            await new Promise(resolve => setTimeout(resolve, 50))
+        } while (Date.now() < deadline)
+        return null
+    }
+
+    async clearConversation(sessionId: string, namespace: string): Promise<{ sessionId: string }> {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok || !access.session.active || !access.session.metadata?.capabilities?.concurrentClients) {
+            throw new Error('Clear requires an active shared session')
+        }
+        const result = await this.rpcGateway.clearConversation(access.sessionId)
+        const child = await this.validateSharedChild(access.session, result.sessionId)
+        if (!child) throw new Error('Invalid shared-runtime clear binding')
+        // No superseded-session redirect: only the initiating client navigates.
+        return { sessionId: child.id }
+    }
+
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
+        if (this.getSession(sessionId)?.metadata?.capabilities?.concurrentClients) throw new Error('control_mode_not_applicable')
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
@@ -2536,9 +2579,11 @@ export class SyncEngine {
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (operation.state === 'aborted') {
-            return replacementSessionId === operation.replacementSessionId
-                ? { type: 'success', sessionId }
-                : { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            if (replacementSessionId !== operation.replacementSessionId) {
+                return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            }
+            this.sessionCache.refreshConversationContent(operation.replacementSessionId)
+            return { type: 'success', sessionId }
         }
         const required = { replacementSessionId, state: expectedState, requireInactive }
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -2547,6 +2592,7 @@ export class SyncEngine {
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
             if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
+                this.sessionCache.refreshConversationContent(current.replacementSessionId)
                 return { type: 'success', sessionId }
             }
             if ((required.requireInactive && latest.active)
@@ -2558,6 +2604,7 @@ export class SyncEngine {
             }, latest.metadataVersion, namespace, required)
             if (result.result === 'success') {
                 this.sessionCache.refreshSession(sessionId)
+                this.sessionCache.refreshConversationContent(current.replacementSessionId)
                 return { type: 'success', sessionId }
             }
             if (result.result !== 'version-mismatch') break
@@ -3871,11 +3918,14 @@ export class SyncEngine {
             }
         }
 
+        if (access.session.metadata?.capabilities?.concurrentClients) {
+            return { type: 'error', message: 'Shared sessions attach without handoff', code: 'control_mode_not_applicable' }
+        }
         if (!access.session.active) {
             return { type: 'success' }
         }
 
-        if (access.session.agentState?.controlledByUser === true) {
+        if (access.session.agentState?.controlledByUser === true && !access.session.metadata?.capabilities?.concurrentClients) {
             return {
                 type: 'error',
                 message: 'Session is already controlled by a local terminal',
@@ -4420,8 +4470,11 @@ export class SyncEngine {
         return await this.rpcGateway.listSkills(sessionId, flavor)
     }
 
-    async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
-        return await this.rpcGateway.listAgyModelsForMachine(machineId)
+    async listAgyModelsForMachine(
+        machineId: string,
+        options?: { refresh?: boolean }
+    ): Promise<RpcListAgyModelsResponse> {
+        return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {

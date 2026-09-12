@@ -1,6 +1,7 @@
 import Foundation
 import HapiClient
 import HapiProtocol
+import HapiUI
 import Observation
 
 /// Chat top-bar state: title cascade + status dot + meta line.
@@ -50,10 +51,22 @@ final class ChatModel {
     private(set) var loadFailed = false
     /// Tail-sync warning — the degraded banner.
     private(set) var warning: String?
-    /// Bumps on tail-side content changes (drives the new-messages pill).
+    /// Bumps on tail-side content changes.
     private(set) var tailRevision = 0
     /// Bumps when an older page was prepended (drives scroll re-anchoring).
     private(set) var historyVersion = 0
+    private(set) var historyPaging = ChatHistoryPagingState()
+    private(set) var followsTail = true
+    private(set) var jumpToLatestToken = 0
+    private(set) var isJumpingToLatest = false
+    private(set) var hasTrimmedTail = false
+    let toolInspection = ToolInspectionState()
+    private(set) var visibleSurfaces = Set<String>()
+    var isInspectingContent: Bool {
+        toolInspection.owner != nil || visibleSurfaces.contains {
+            $0.hasPrefix("process:") || $0.hasPrefix("message:") || $0.hasPrefix("inspector:")
+        }
+    }
 
     /// Transient toast text (interaction failures/notices); auto-dismissed.
     private(set) var notice: String?
@@ -82,6 +95,9 @@ final class ChatModel {
     let dictation: DictationController
     @ObservationIgnored private let pipeline = ChatPipeline()
     @ObservationIgnored let imageLoader: GeneratedImageLoader
+    @ObservationIgnored let presentationState = ChatPresentationState()
+    @ObservationIgnored let markdownCache = MarkdownRenderCache()
+    @ObservationIgnored private var previousMarkdownSources: Set<String> = []
     /// Authed thumbnail/viewer loader for scratchlist attachments (A-M4b).
     @ObservationIgnored let scratchlistAttachments: ScratchlistAttachmentLoader
 
@@ -95,6 +111,15 @@ final class ChatModel {
     @ObservationIgnored private var pipelineTask: Task<Void, Never>?
     @ObservationIgnored private var statesTask: Task<Void, Never>?
     @ObservationIgnored private var olderTask: Task<Void, Never>?
+    @ObservationIgnored private var jumpTask: Task<Void, Never>?
+    @ObservationIgnored private var historyRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var historyCancellation: Task<Void, Never>?
+    @ObservationIgnored private var windowModeTask: Task<Void, Never>?
+    @ObservationIgnored private var historyGate: ChatHistoryRequestGate?
+    @ObservationIgnored private var viewportNeedsOlder = false
+    @ObservationIgnored private var lastHistoryLayout: (version: Int, progress: Bool)?
+    @ObservationIgnored private var lastEpoch: Int?
+    @ObservationIgnored private var historyPumpScheduled = false
     @ObservationIgnored private var isActive = false
     @ObservationIgnored private var everStarted = false
 
@@ -120,8 +145,41 @@ final class ChatModel {
 
     // MARK: - Lifecycle (paired with the screen's appear/disappear)
 
+    /// Navigation/sheet handoffs keep a single session pipe alive. Deferring
+    /// the final release also absorbs SwiftUI's disappear-before-appear order.
+    func retainSurface(_ id: String) {
+        visibleSurfaces.insert(id)
+        start()
+    }
+
+    func releaseSurface(_ id: String) {
+        visibleSurfaces.remove(id)
+        Task { [weak self] in
+            await Task.yield()
+            guard let self, self.visibleSurfaces.isEmpty else { return }
+            self.stop()
+        }
+    }
+
+    func beginContentInspection() {
+        dictation.cancel()
+        jumpTask?.cancel()
+        jumpTask = nil
+        isJumpingToLatest = false
+        readingViewportChanged(followsTail: false, needsOlder: false)
+    }
+
+    @discardableResult
+    func inspectToolGroup(_ id: String, owner: String) -> Bool {
+        guard toolInspection.openGroup(id, owner: owner) else { return false }
+        beginContentInspection()
+        retainSurface("inspector:\(owner)")
+        return true
+    }
+
     func start() {
         guard !isActive else { return }
+        let preservingHistory = everStarted && (!followsTail || hasTrimmedTail)
         isActive = true
         if everStarted {
             // Coming back from a stop (e.g. a full-screen cover fired the
@@ -154,11 +212,17 @@ final class ChatModel {
         // (the Android ChatViewModel start/stop pairing).
         hub.scratchlist.open(sessionId)
         let chat = chat
+        chat.onSessionRemoved = { [weak self] in
+            self?.toolInspection.invalidate()
+            self?.blocks = []
+            self?.isInitialLoading = false
+            self?.hasMore = false
+        }
         chat.onStoreActivity = { [weak self] in
             self?.scheduleRecompute()
         }
         Task { [weak self] in
-            await chat.start()
+            await chat.start(preservingHistory: preservingHistory)
             guard let self, self.isActive, self.chat === chat else { return }
             guard let controller = chat.windowController else { return }
             self.statesTask = Task { [weak self] in
@@ -180,8 +244,10 @@ final class ChatModel {
         statesTask = nil
         pipelineTask?.cancel()
         pipelineTask = nil
-        olderTask?.cancel()
-        olderTask = nil
+        cancelHistory()
+        jumpTask?.cancel()
+        jumpTask = nil
+        isJumpingToLatest = false
         noticeTask?.cancel()
         noticeTask = nil
         // Discard an in-flight take — the mic must not stay hot off-screen
@@ -208,18 +274,141 @@ final class ChatModel {
 
     // MARK: - Actions
 
-    /// Reader requested older history: one page. Returns whether it started;
-    /// busy/tail-sync rejections must not change the view's saved anchor.
-    @discardableResult
-    func loadOlder() -> Bool {
-        guard olderTask == nil, let controller = chat.windowController else { return false }
-        guard let windowState, windowState.hasMore,
-              !windowState.isLoadingMore, !windowState.isSyncingTail else { return false }
-        olderTask = Task { [weak self] in
-            _ = await controller.fetchOlder()
-            self?.olderTask = nil
+    func readingViewportChanged(followsTail: Bool, needsOlder: Bool) {
+        let followsTail = isInspectingContent ? false : followsTail
+        let needsOlder = isInspectingContent ? false : needsOlder
+        let changedMode = self.followsTail != followsTail
+        self.followsTail = followsTail
+        viewportNeedsOlder = needsOlder
+        if changedMode, !isJumpingToLatest, let controller = chat.windowController {
+            if followsTail && hasTrimmedTail { jumpToLatest(); return }
+            let previous = windowModeTask
+            windowModeTask = Task {
+                await previous?.value
+                await controller.setViewMode(followsTail ? .tail : .history)
+            }
         }
-        return true
+        if !needsOlder, olderTask != nil || historyPaging.phase == .retrying {
+            cancelHistory()
+        }
+        scheduleHistoryPump()
+    }
+
+    func historyLaidOut(version: Int, madeProgress: Bool) {
+        if lastHistoryLayout?.version == version {
+            let progress = (lastHistoryLayout?.progress ?? false) || madeProgress
+            lastHistoryLayout = (version, progress)
+        } else {
+            lastHistoryLayout = (version, madeProgress)
+        }
+        acknowledgeHistoryLayout()
+    }
+
+    private func acknowledgeHistoryLayout() {
+        guard let layout = lastHistoryLayout else { return }
+        if historyPaging.laidOut(historyVersion: layout.version, madeProgress: layout.progress) {
+            scheduleHistoryPump()
+        }
+    }
+
+    func retryHistory() {
+        historyPaging.resume()
+        viewportNeedsOlder = true
+        scheduleHistoryPump()
+    }
+
+    private func scheduleHistoryPump() {
+        guard !historyPumpScheduled else { return }
+        historyPumpScheduled = true
+        Task { [weak self] in
+            // Layout's viewport report must arrive before we re-evaluate
+            // demand; an inserted page may have filled the entire buffer.
+            await Task.yield()
+            guard let self else { return }
+            self.historyPumpScheduled = false
+            self.pumpHistory()
+        }
+    }
+
+    private func pumpHistory() {
+        guard isActive, !isInspectingContent, !isJumpingToLatest, viewportNeedsOlder, hasMore,
+              !isSyncingTail, !isLoadingOlder, olderTask == nil,
+              let controller = chat.windowController,
+              let request = historyPaging.begin() else { return }
+        let gate = ChatHistoryRequestGate()
+        historyGate = gate
+        let cancellation = historyCancellation
+        let modeChange = windowModeTask
+        olderTask = Task { [weak self] in
+            await cancellation?.value
+            await modeChange?.value
+            guard !Task.isCancelled, gate.allowsApply else { return }
+            let outcome = await controller.fetchOlder(onBeforeApply: { _ in gate.allowsApply })
+            guard let self, self.historyPaging.generation == request else { return }
+            self.olderTask = nil
+            self.historyGate = nil
+            let delay = self.historyPaging.received(outcome, generation: request)
+            self.acknowledgeHistoryLayout()
+            // A completed tail sync may already have tried to pump while
+            // olderTask was occupied. Stale pages never acknowledge layout.
+            switch outcome {
+            case .stopped(.invalidated), .stopped(.epochReset): self.scheduleHistoryPump()
+            default: break
+            }
+            if let delay {
+                self.historyRetryTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    guard !Task.isCancelled, let self else { return }
+                    if self.historyPaging.retryElapsed(generation: request) { self.scheduleHistoryPump() }
+                }
+            }
+        }
+    }
+
+    private func cancelHistory() {
+        historyGate?.invalidate()
+        historyGate = nil
+        olderTask?.cancel()
+        olderTask = nil
+        historyRetryTask?.cancel()
+        historyRetryTask = nil
+        historyPaging.cancel()
+        lastHistoryLayout = nil
+        if let controller = chat.windowController {
+            let previous = historyCancellation
+            historyCancellation = Task {
+                await previous?.value
+                await controller.cancelOlderLoad()
+            }
+        }
+    }
+
+    func jumpToLatest() {
+        guard isActive, !isJumpingToLatest, let controller = chat.windowController else { return }
+        cancelHistory()
+        viewportNeedsOlder = false
+        isJumpingToLatest = true
+        let chat = chat
+        let cancellation = historyCancellation
+        let modeChange = windowModeTask
+        jumpTask = Task { [weak self] in
+            await cancellation?.value
+            await modeChange?.value
+            guard !Task.isCancelled else { return }
+            if await controller.state.requiresLatestReset {
+                await controller.syncTail(ensureAfterCurrent: true, allowingHistoryReset: true)
+            }
+            guard !Task.isCancelled, let self, self.isActive, self.chat === chat else { return }
+            self.isJumpingToLatest = false
+            self.jumpTask = nil
+            // A failed catch-up must not claim that the retained window is
+            // the live tail, or trim away the reader's remaining history.
+            guard await !controller.state.requiresLatestReset else { return }
+            await controller.setViewMode(.tail)
+            guard !Task.isCancelled, self.chat === chat else { return }
+            self.followsTail = true
+            self.jumpToLatestToken += 1
+        }
     }
 
     /// Error state → try again (detail + a tail sync past any in-flight run).
@@ -270,6 +459,17 @@ final class ChatModel {
                     agentState: detail?.agentState,
                     hasMoreMessages: window.hasMore
                 )
+                let sources = Set(visible.flatMap { block -> [String] in
+                    guard case .block(let value) = block else { return [] }
+                    switch value {
+                    case .agentText(let text): return [text.text]
+                    case .agentReasoning(let text): return [text.text]
+                    case .toolCall(let block): return planProposalMarkdown(block.tool).map { [$0] } ?? []
+                    default: return []
+                    }
+                })
+                await markdownCache.prepare(Array(sources.subtracting(previousMarkdownSources)))
+                previousMarkdownSources = sources
                 guard !Task.isCancelled else { return }
                 apply(visible, window: window, detail: detail, summary: summary, machines: machines)
             }
@@ -291,10 +491,36 @@ final class ChatModel {
         summary: SessionSummary?,
         machines: [Machine]
     ) {
+        guard !chat.isRemoved else { return }
+        if let previousEpoch = lastEpoch, let epoch = window.epoch, previousEpoch != epoch {
+            cancelHistory()
+            jumpToLatestToken += 1
+            toolInspection.invalidate()
+            toolInspection.update(visible)
+        }
+        if let epoch = window.epoch { lastEpoch = epoch }
         // Session/machine status events can arrive without new messages.
         // Do not invalidate the entire lazy transcript for identical output.
         if blocks != visible {
             blocks = visible
+            toolInspection.update(visible)
+            var liveIDs = Set<String>()
+            func collect(_ block: ChatBlock) {
+                liveIDs.insert(block.id)
+                if case .toolCall(let tool) = block {
+                    if let request = tool.tool.permission?.id { liveIDs.insert(request) }
+                    tool.children.forEach(collect)
+                }
+            }
+            for block in visible {
+                switch block {
+                case .block(let value): collect(value)
+                case .toolGroup(let group):
+                    liveIDs.insert(group.id)
+                    group.tools.forEach { collect(.toolCall($0)) }
+                }
+            }
+            presentationState.prune(to: liveIDs)
         }
         header = Self.buildHeader(
             sessionId: sessionId,
@@ -304,11 +530,14 @@ final class ChatModel {
         )
         basePath = detail?.metadata?.path ?? summary?.metadata?.path
         hasMore = window.hasMore
+        historyPaging.refreshAvailability(hasMore: hasMore)
         isLoadingOlder = window.isLoadingMore
         isSyncingTail = window.isSyncingTail
         warning = window.warning
         tailRevision = window.tailRevision
         historyVersion = window.historyVersion
+        hasTrimmedTail = window.requiresLatestReset
+        scheduleHistoryPump()
 
         let isEmpty = visible.isEmpty
         // syncGeneration 0 = no tail sync has even begun (the moment between
@@ -321,7 +550,7 @@ final class ChatModel {
         // is fresher (summary via the global pipe, detail via this one).
         // markSeen is monotonic, so stale inputs cannot rewind it.
         let updatedAt = max(detail?.updatedAt ?? 0, summary?.updatedAt ?? 0)
-        if updatedAt > 0 {
+        if updatedAt > 0 && !isInspectingContent {
             hub.lastSeenStore.markSeen(sessionId: sessionId, seenAt: updatedAt)
         }
     }

@@ -28,10 +28,11 @@ export class CodexSessionTitles {
     constructor(
         private readonly metadata: Pick<ApiSessionClient, 'getMetadata' | 'updateMetadata'>,
         private readonly cwd: string,
-        private readonly getThreadId: () => string | null
+        private readonly getThreadId: () => string | null,
+        connection?: { endpoint: string; token?: string }
     ) {
         this.syncMetadata = createNativeSessionTitleMetadataSync(metadata);
-        this.client = new CodexAppServerClient({ cwd });
+        this.client = new CodexAppServerClient({ cwd, ...connection });
     }
 
     sync(threadId: string, name: unknown): void {

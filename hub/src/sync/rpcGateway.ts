@@ -491,6 +491,10 @@ export class RpcGateway {
         ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResult
     }
 
+    async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ClearConversation, {}, 120_000) as { sessionId: string }
+    }
+
     async rewindConversation(
         sessionId: string,
         params: { messageLocalId: string }
@@ -507,8 +511,9 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListOpencodeReasoningEffortOptions, {}) as RpcListOpencodeReasoningEffortOptionsResponse
     }
 
-    async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
-        return await this.machineRpc(machineId, RPC_METHODS.ListAgyModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListAgyModelsResponse
+    async listAgyModelsForMachine(machineId: string, options?: { refresh?: boolean }): Promise<RpcListAgyModelsResponse> {
+        const params = { refresh: options?.refresh === true }
+        return await this.machineRpc(machineId, RPC_METHODS.ListAgyModels, params, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListAgyModelsResponse
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {

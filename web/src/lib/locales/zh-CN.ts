@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex 用量',
-  'codexUsage.ordinary': '常规用量',
-  'codexUsage.unknown': '未知',
-  'codexUsage.remaining': '剩余 {percent}%',
-  'codexUsage.window': '{minutes} 分钟窗口',
-  'codexUsage.resets': '重置时间 {time}',
-
   // Loading states
   'loading': '加载中…',
   'authorizing': '认证中…',
@@ -517,6 +510,12 @@ export default {
   'files.sort.smallest': '最小优先',
   'files.sort.largest': '最大优先',
 
+  // 文件右键菜单
+  'file.menu.title': '文件操作',
+  'file.menu.copyPath': '复制路径',
+  'file.menu.copyAbsolutePath': '复制绝对路径',
+  'file.menu.addToComposer': '添加到对话框',
+
   // File page
   'file.page.fallbackName': '文件',
   'file.page.unknownPath': '未知路径',
@@ -588,6 +587,7 @@ export default {
   'tool.question': '问题',
   'tool.selectOption': '请至少选择一个选项或输入答案。',
   'tool.waitingForApproval': '等待审批…',
+  'tool.resolved': '已在 Codex 中处理',
   'tool.canceled': '已取消',
   'tool.approvedForSession': '本会话已批准',
   'tool.aborted': '已中止',

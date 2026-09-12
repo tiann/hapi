@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex Usage',
-  'codexUsage.ordinary': 'Ordinary usage',
-  'codexUsage.unknown': 'Unknown',
-  'codexUsage.remaining': '{percent}% remaining',
-  'codexUsage.window': '{minutes} min window',
-  'codexUsage.resets': 'Resets {time}',
-
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',
@@ -372,10 +365,11 @@ export default {
   'newSession.model.loadFailed': 'Failed to load models',
   'newSession.model.selectVariant': 'Select variant',
   'newSession.model.cursorUnavailable': 'No Cursor models yet. Start a Cursor session once, or use Auto.',
-  'newSession.agyModel.checkingAuth': 'Checking Antigravity authentication…',
+  'newSession.agyModel.fetchingModels': 'Fetching available models…',
   'newSession.agyModel.authRequired': 'Authentication required',
   'newSession.agyModel.authHint': 'Please run `agy` in a terminal to sign in with Google.',
   'newSession.agyModel.retry': 'Retry',
+  'newSession.agyModel.notListed': 'no longer listed',
   'newSession.agyModel.noModels': 'No Antigravity models available',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',
@@ -518,6 +512,12 @@ export default {
   'files.sort.smallest': 'Smallest first',
   'files.sort.largest': 'Largest first',
 
+  // File context menu
+  'file.menu.title': 'File actions',
+  'file.menu.copyPath': 'Copy path',
+  'file.menu.copyAbsolutePath': 'Copy absolute path',
+  'file.menu.addToComposer': 'Add to composer',
+
   // File page
   'file.page.fallbackName': 'File',
   'file.page.unknownPath': 'Unknown path',
@@ -589,6 +589,7 @@ export default {
   'tool.question': 'Question',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
+  'tool.resolved': 'Resolved in Codex',
   'tool.canceled': 'Canceled',
   'tool.approvedForSession': 'Approved For Session',
   'tool.aborted': 'Aborted',

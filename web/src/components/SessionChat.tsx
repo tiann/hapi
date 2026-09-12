@@ -7,6 +7,7 @@ import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/rea
 import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
 import { ApiError, type ApiClient } from '@/api/client'
 import type {
+    AgyModelSummary,
     AttachmentMetadata,
     CodexCollaborationMode,
     CodexModelSummary,
@@ -90,6 +91,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
+import { useAgyModels } from '@/hooks/queries/useAgyModels'
 import {
     mergeCursorCliModelSkus,
     resolveCursorBaseFromWire
@@ -152,6 +154,24 @@ export function resolvePiContextWindow(
         : models?.find((candidate) => candidate.modelId === legacyModelId)
 
     return model?.contextWindow
+}
+
+/**
+ * Composer options for an agy session, from the same machine catalog New Session
+ * reads. `undefined` until the machine answers, so the picker falls back to the
+ * built-in list rather than rendering empty.
+ */
+export function buildAgyComposerModelOptions(
+    availableModels: AgyModelSummary[]
+): Array<{ value: string; label: string }> | undefined {
+    if (availableModels.length === 0) {
+        return undefined
+    }
+
+    return availableModels.map((model) => ({
+        value: model.modelId,
+        label: model.name ?? model.modelId
+    }))
 }
 
 export async function applyModelChangeWithReasoningRollback(args: {
@@ -918,9 +938,15 @@ function SessionChatInner(props: SessionChatProps) {
                 }
                 return accepted
             }
+            if (!scratchlistMode && scheduledAt == null && !attachments?.length
+                && props.session.metadata?.capabilities?.concurrentClients && /^\/(clear|new)\s*$/.test(text.trim())) {
+                const result = await props.api.clearConversation(props.session.id)
+                await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId }, ...PRESERVE_SESSION_SIDEBAR_SCROLL })
+                return { attemptId: null }
+            }
             return props.onSend(text, attachments, scheduledAt, deliveryMode)
         },
-        [props.onSend, props.api, props.session.id, scratchlist, scratchlistMode],
+        [props.onSend, props.api, props.session.id, props.session.metadata?.capabilities?.concurrentClients, navigate, scratchlist, scratchlistMode],
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
     // The effort-options query is keyed by session only, so a stale option
@@ -939,7 +965,7 @@ function SessionChatInner(props: SessionChatProps) {
         if (!effortInvalidationKey || sessionModel === undefined) return
         void queryClient.resetQueries({ queryKey: effortInvalidationKey, exact: true })
     }, [agentFlavor, sessionId, sessionModel, queryClient])
-    const controlledByUser = props.session.agentState?.controlledByUser === true
+    const controlledByUser = props.session.agentState?.controlledByUser === true && !props.session.metadata?.capabilities?.concurrentClients
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
     const codexModelsState = useCodexModels({
         api: props.api,
@@ -1075,6 +1101,19 @@ function SessionChatInner(props: SessionChatProps) {
         sessionCliModelSkus,
         props.session.model
     ])
+    const agyModelsState = useAgyModels({
+        api: props.api,
+        machineId: sessionMachineId,
+        enabled: agentFlavor === 'agy' && props.session.active && Boolean(sessionMachineId)
+    })
+    // Options only: the composer has no surface for a catalog warning, so a
+    // machine whose sign-in has lapsed shows its last known list here and New
+    // Session is where that gets explained.
+    const agyModelOptions = useMemo(() => (
+        agentFlavor === 'agy'
+            ? buildAgyComposerModelOptions(agyModelsState.availableModels)
+            : undefined
+    ), [agentFlavor, agyModelsState.availableModels])
     const piModelsState = usePiModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1985,6 +2024,7 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        concurrentClients={props.session.metadata?.capabilities?.concurrentClients}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
@@ -2002,6 +2042,8 @@ function SessionChatInner(props: SessionChatProps) {
                                             ? grokModelOptions
                                         : agentFlavor === 'copilot'
                                             ? copilotModelOptions
+                                        : agentFlavor === 'agy'
+                                            ? agyModelOptions
                                         // Pi gets its provider-qualified model list from the piModels prop;
                                         // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
