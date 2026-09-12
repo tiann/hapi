@@ -1272,11 +1272,19 @@ export function markMessagesRequeued(sessionId: string, localIds: string[]): voi
     updateState(sessionId, (previous) => {
         let changed = false
         const messages = previous.messages.map((message) => {
-            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === undefined) {
+            if (
+                !message.localId
+                || !idSet.has(message.localId)
+                || (message.deliveryState === undefined && message.queueDismissed !== true)
+            ) {
                 return message
             }
             changed = true
-            const { deliveryState: _deliveryState, ...requeued } = message
+            const {
+                deliveryState: _deliveryState,
+                queueDismissed: _queueDismissed,
+                ...requeued
+            } = message
             return requeued
         })
         return changed ? buildState(previous, { messages }) : previous

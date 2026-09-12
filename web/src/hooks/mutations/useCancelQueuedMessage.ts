@@ -35,8 +35,9 @@ type CancelQueuedMessageInput = {
  *  3c. On success with status='busy': the row is inside an async steer / unknown outcome.
  *      First-time busy restores a held indeterminate copy so the user can retry or cancel.
  *      Cancel/Edit on an *already* indeterminate row force-dismisses from the floating bar
- *      (#1839) via queueDismissed — the row stays in the window so a later messages-consumed
- *      SSE can still promote it into the thread.
+ *      (#1839) via queueDismissed — restored before getQueuedState so a concurrent
+ *      messages-consumed SSE can still mark the row sent, then left alone in onSuccess
+ *      so we do not overwrite that acknowledgement with an uninvoked snapshot.
  *      If getQueuedState reports the row was already consumed, mutationFn upgrades the
  *      result to `invoked` so Edit toasts instead of prefilling a duplicate.
  *  4. On error: re-insert the snapshot so the bar comes back; haptic error feedback.
@@ -54,6 +55,13 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
             // callers (Edit) decide to prefill. Returning synthetic `invoked` keeps
             // the existing Edit toast path and avoids a duplicate composer send.
             if (result.status === 'busy' && input.snapshot.deliveryState === 'indeterminate') {
+                // Restore a hidden hold BEFORE the queued-state lookup so a
+                // messages-consumed SSE during that await can still land.
+                appendOptimisticMessage(input.sessionId, {
+                    ...input.snapshot,
+                    deliveryState: 'indeterminate',
+                    queueDismissed: true,
+                })
                 try {
                     const state = await api.getQueuedState(input.sessionId, [input.localId])
                     const invoked = state.invokedLocalMessages.find((item) => item.localId === input.localId)
@@ -82,16 +90,10 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
         },
         onSuccess: async (result, input) => {
             if (result.status === 'busy') {
-                const forceDismiss = input.snapshot.deliveryState === 'indeterminate'
-                if (forceDismiss) {
-                    // Keep a hidden copy so a later messages-consumed SSE can
-                    // still promote the row into the thread (markMessagesConsumed
-                    // is a no-op when the row is fully absent).
-                    appendOptimisticMessage(input.sessionId, {
-                        ...input.snapshot,
-                        deliveryState: 'indeterminate',
-                        queueDismissed: true,
-                    })
+                if (input.snapshot.deliveryState === 'indeterminate') {
+                    // mutationFn already restored the queueDismissed hold (and may
+                    // have been upgraded by a concurrent messages-consumed SSE).
+                    // Do not overwrite with a fresh uninvoked snapshot.
                     return
                 }
                 // The row is inside an async steer: restore a held copy, not a

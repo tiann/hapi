@@ -147,6 +147,11 @@ describe('useCancelQueuedMessage', () => {
                 invokedAt: 42,
             }))
         })
-        expect(storeMocks.appendOptimisticMessage).toHaveBeenCalledTimes(1)
+        // Hidden hold restored before getQueuedState, then sent after synthetic invoked.
+        expect(storeMocks.appendOptimisticMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({
+            deliveryState: 'indeterminate',
+            queueDismissed: true,
+        }))
+        expect(storeMocks.appendOptimisticMessage).toHaveBeenCalledTimes(2)
     })
 })
