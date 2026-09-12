@@ -127,4 +127,14 @@ describe('shared native queue', () => {
         expect(rpc.mock.calls[3]).toEqual(['turn/steer', { threadId: 'thread', expectedTurnId: 'turn-a', input, clientUserMessageId: 'local' }]);
         expect(queue.state('local')).toBe('queued');
     });
+    it('steers a fresh peer nudge that was never queued', async () => {
+        const { queue, rpc, consumed } = await fixture();
+        rpc.mockResolvedValueOnce({});
+        expect(await queue.steer('peer-1', 'turn-live', input)).toEqual({ steered: true });
+        expect(rpc).toHaveBeenCalledWith('turn/steer', {
+            threadId: 'thread', expectedTurnId: 'turn-live', input, clientUserMessageId: 'peer-1'
+        });
+        expect(consumed).toHaveBeenCalledWith(['peer-1'], true);
+        expect(rpc.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
+    });
 });
