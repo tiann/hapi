@@ -1557,6 +1557,31 @@ describe('history view and older pagination', () => {
     // no outline-close or view-mode transition to release it, so the window
     // would stay unbounded for the rest of the session. Without the boundary
     // the base tail trim keeps the window bounded.
+    it.each(['tail', 'history'] as const)('compacts reasoning snapshots with an outline boundary in %s mode', async (mode) => {
+        const id = sessionId(`outline-reasoning-${mode}`)
+        const all = Array.from({ length: 400 }, (_, index) =>
+            makeAgentMessage({ id: `m-${index + 1}`, seq: index + 1, at: index + 1 })
+        )
+        const api = createApi(vi.fn()
+            .mockResolvedValueOnce(latestResponse(all.slice(200), {
+                epoch: 0, hasMore: true, nextBeforeAt: 201, nextBeforeSeq: 201
+            }))
+            .mockResolvedValueOnce(beforeResponse(all.slice(0, 200), {
+                epoch: 0, hasMore: false, nextBeforeAt: 1, nextBeforeSeq: 1
+            })))
+        await syncTailMessages(api, id)
+        await fetchOlderMessages(api, id, { shouldInstallBoundary: () => true })
+        if (mode === 'history') setMessageViewMode(id, mode)
+        for (let seq = 401; seq <= 801; seq += 1) {
+            ingestIncomingMessages(id, [makeReasoningMessage(`reasoning-${seq}`, 'stream', seq, seq)])
+        }
+        ingestIncomingMessages(id, [makeAgentMessage({ id: 'reply', seq: 802, at: 802 })])
+        const messages = getMessageWindowState(id).messages
+        expect(messages.filter(message => message.id.startsWith('reasoning-')).map(message => message.id)).toEqual(['reasoning-801'])
+        expect(messages.some(message => message.id === 'reply')).toBe(true)
+        expect(messages).toHaveLength(402)
+    })
+
     it('invalidates an outline load when its boundary is released at the tail cap', async () => {
         const id = sessionId('outline-release-at-cap')
         const all = Array.from({ length: 600 }, (_, index) =>

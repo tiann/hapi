@@ -585,7 +585,7 @@ function mergeIntoWindow(
     const mode = options.mode ?? (previous.viewMode === 'history' ? 'prepend' : 'append')
     const regularLimit = options.regularLimit
         ?? (previous.viewMode === 'history' ? HISTORY_WINDOW_SIZE : VISIBLE_WINDOW_SIZE)
-    const merged = mergeMessages(previous.messages, retainedIncoming)
+    const merged = dropSupersededReasoningSnapshots(mergeMessages(previous.messages, retainedIncoming))
 
     const boundaryAt = options.historyBoundaryAt !== undefined
         ? options.historyBoundaryAt
