@@ -454,7 +454,11 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByText('Default')).toBeNull()
     })
 
-    it('clears Cursor variant drill-down when the sheet is closed through the value button', () => {
+    it.each(['model', 'settings'])('keeps Cursor drill-down reachable and resets it after closing from %s', (entry) => {
+        if (entry === 'settings') runtime.toolbarLayout = {
+            mode: 'left', left: ['attachment', 'effort', 'settings', 'expand'], right: [],
+            hidden: ['model', 'terminal', 'switch', 'voiceMic', 'scratchlist', 'schedule', 'abort'],
+        }
         renderComposer('cursor', {
             model: 'composer-2.5-fast',
             selectedModelBase: 'composer-2.5',
@@ -471,7 +475,7 @@ describe('HappyComposer generic model/effort value buttons', () => {
                 : [],
         })
         // Open from the value button (label resolves to the selected base).
-        const valueButton = screen.getByRole('button', { name: 'Composer 2.5' })
+        const valueButton = screen.getByRole('button', { name: entry === 'settings' ? 'Settings' : 'Composer 2.5' })
         fireEvent.click(valueButton)
         // Drill into the multi-variant base row: the Model section is replaced
         // by the variant sub-list with a back control.
@@ -480,6 +484,7 @@ describe('HappyComposer generic model/effort value buttons', () => {
         fireEvent.click(baseRow)
         expect(screen.queryByText('Model')).toBeNull()
         expect(screen.getByText('← Models')).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Composer 2.5 Mini' })).toBeTruthy()
         // Close and reopen through the value button: drill-down must reset to
         // the base model list (same behavior as the gear toggle).
         fireEvent.click(valueButton)

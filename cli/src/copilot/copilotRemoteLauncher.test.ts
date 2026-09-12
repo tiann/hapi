@@ -24,6 +24,7 @@ type LauncherInternals = {
     applyInitialAgentMode: () => Promise<void>;
     currentBackendModel: string | null;
     appliedModelSelection: string | null;
+    reconcileAppliedModelSelection: () => void;
     defaultBackendEffort: string | null;
     applyQueuedModel: (model: string) => Promise<string | null>;
     applyEffort: (effort: string | null) => Promise<string | null>;
@@ -55,6 +56,20 @@ function createLauncher(
 }
 
 describe('CopilotRemoteLauncher.applyAgentMode', () => {
+    it('reconciles equivalent selections but keeps the applied tag during a real model switch', () => {
+        const { internals, session } = createLauncher(vi.fn());
+        internals.currentBackendModel = 'gpt-5.6';
+        vi.mocked(session.getModel).mockReturnValue('gpt-5.6');
+        internals.reconcileAppliedModelSelection();
+        expect(internals.appliedModelSelection).toBe('gpt-5.6');
+        vi.mocked(session.getModel).mockReturnValue('gpt-next');
+        internals.reconcileAppliedModelSelection();
+        expect(internals.appliedModelSelection).toBe('gpt-5.6');
+        internals.currentBackendModel = 'auto';
+        vi.mocked(session.getModel).mockReturnValue(null);
+        internals.reconcileAppliedModelSelection();
+        expect(internals.appliedModelSelection).toBeNull();
+    });
     it('attributes usage to the active Copilot model', () => {
         const { internals, session } = createLauncher(vi.fn().mockResolvedValue(undefined));
         internals.currentBackendModel = 'gpt-5.6';

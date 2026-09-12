@@ -120,6 +120,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         session.setRemoteAgentModeApplier((agentMode) => this.applyAgentMode(agentMode));
         session.setRemoteEffortApplier((effort) => this.applyEffort(effort));
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListSessionReasoningEffortOptions, async () => {
+            this.reconcileAppliedModelSelection();
             const option = backend.getThoughtLevelConfigOption(acpSessionId);
             return {
                 success: true,
@@ -505,6 +506,13 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         const discoveredEffort = this.backend?.getThoughtLevelConfigOption?.(sessionId)?.currentValue ?? null;
         this.defaultBackendEffort = discoveredEffort;
         this.publishEffort(discoveredEffort);
+    }
+
+    private reconcileAppliedModelSelection(): void {
+        const selectedModel = this.session.getModel() ?? null;
+        if ((selectedModel ?? 'auto') === this.currentBackendModel) {
+            this.appliedModelSelection = selectedModel;
+        }
     }
 
     private recordAppliedModelSelection(backendModel: string | null): void {

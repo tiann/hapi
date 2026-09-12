@@ -1779,7 +1779,7 @@ export function HappyComposer(props: {
             settingsSection === 'model' || (settingsSection === null && showModelSettingsInSettings)
         ) && sheetModelAreaOn
         const sheetModelEffortSettings = showModelEffortSettings && (
-            (cursorVariantDrillDownActive && settingsSection === 'model')
+            (cursorVariantDrillDownActive && settingsSection !== 'effort')
             || (!cursorVariantDrillDownActive && settingsSection === 'effort')
             || (settingsSection === null && showModelEffortSettingsInSettings)
         ) && (cursorVariantDrillDownActive ? sheetModelAreaOn : sheetEffortAreaOn)
