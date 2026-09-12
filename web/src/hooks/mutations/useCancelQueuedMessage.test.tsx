@@ -10,12 +10,14 @@ const storeMocks = vi.hoisted(() => ({
     appendOptimisticMessage: vi.fn(),
     removeOptimisticMessage: vi.fn(),
     markMessagesConsumed: vi.fn(),
+    markMessagesRequeued: vi.fn(),
 }))
 
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: storeMocks.appendOptimisticMessage,
     removeOptimisticMessage: storeMocks.removeOptimisticMessage,
     markMessagesConsumed: storeMocks.markMessagesConsumed,
+    markMessagesRequeued: storeMocks.markMessagesRequeued,
 }))
 
 vi.mock('@/hooks/usePlatform', () => ({
@@ -153,5 +155,34 @@ describe('useCancelQueuedMessage', () => {
             queueDismissed: true,
         }))
         expect(storeMocks.appendOptimisticMessage).toHaveBeenCalledTimes(2)
+    })
+
+    it('clears force-dismiss when getQueuedState reports the row is back in FIFO', async () => {
+        const api = {
+            cancelMessage: vi.fn().mockResolvedValue({ status: 'busy', localId: 'local-1' }),
+            getQueuedState: vi.fn().mockResolvedValue({
+                invokedLocalMessages: [],
+                queuedLocalIds: ['local-1'],
+            }),
+        } as unknown as ApiClient
+        const snapshot = makeSnapshot({ deliveryState: 'indeterminate' })
+
+        const { result } = renderHook(() => useCancelQueuedMessage(api), { wrapper: createWrapper() })
+
+        let cancelResult: unknown
+        await act(async () => {
+            cancelResult = await result.current.mutateAsync({
+                sessionId: 'session-1',
+                messageId: 'server-message-id',
+                localId: 'local-1',
+                snapshot,
+            })
+        })
+
+        expect(cancelResult).toEqual({ status: 'busy', localId: 'local-1' })
+        expect(storeMocks.appendOptimisticMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({
+            queueDismissed: true,
+        }))
+        expect(storeMocks.markMessagesRequeued).toHaveBeenCalledWith('session-1', ['local-1'])
     })
 })

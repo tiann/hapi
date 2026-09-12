@@ -5,6 +5,7 @@ import type { CancelMessageResponse } from '@hapi/protocol/schemas'
 import {
     appendOptimisticMessage,
     markMessagesConsumed,
+    markMessagesRequeued,
     removeOptimisticMessage,
 } from '@/lib/message-window-store'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -77,6 +78,11 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                                 invokedAt: invoked.invokedAt,
                             },
                         }
+                    }
+                    // Steer may have failed and returned the row to FIFO while DELETE
+                    // was still in flight. Clear the hidden hold so Edit/Cancel return.
+                    if (state.queuedLocalIds.includes(input.localId)) {
+                        markMessagesRequeued(input.sessionId, [input.localId])
                     }
                 } catch {
                     // Fall through to busy force-dismiss; SSE / reconnect may still reconcile.
