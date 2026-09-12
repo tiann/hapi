@@ -13,7 +13,7 @@ import { expect, test } from '@playwright/test'
 
 test('running session: outline load-earlier keeps the loaded range and the viewport stable', async ({ page }) => {
     test.setTimeout(90_000)
-    await page.goto('/e2e-fixtures/history-load-fixture.html?outline=1')
+    await page.goto('/e2e-fixtures/history-load-fixture.html?outline=1&slowBefore=1')
     const viewport = page.locator('.chat-scroll-y')
     await expect(viewport).toBeVisible()
     // Initial tail sync + initial scroll-settling window.
@@ -32,6 +32,7 @@ test('running session: outline load-earlier keeps the loaded range and the viewp
     await expect.poll(async () => await page.evaluate(() =>
         window.__probe.requests.filter((r) => r.direction === 'before').length
     ), { timeout: 10_000 }).toBeGreaterThanOrEqual(1)
+    await page.evaluate(() => window.__probe.startStreaming(150))
     await expect.poll(async () => await page.evaluate(() =>
         document.querySelector('.happy-thread-messages')?.childElementCount ?? 0
     ), { timeout: 10_000 }).toBeGreaterThanOrEqual(400)
@@ -78,6 +79,7 @@ test('running session: outline load-earlier keeps the loaded range and the viewp
     console.log('final:', JSON.stringify(final), 'flewUp:', flewUp, 'loadedRangeEvicted:', loadedRangeEvicted)
 
     expect(final.beforeReqs).toBeGreaterThanOrEqual(1)
+    expect(final.streamed).toBeGreaterThan(0)
     // The loaded older page was applied and survived the streaming ingests.
     expect(final.childCount).toBeGreaterThanOrEqual(400)
     expect(final.firstSeq).toBe(801)

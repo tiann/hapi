@@ -1582,6 +1582,31 @@ describe('history view and older pagination', () => {
         expect(messages).toHaveLength(402)
     })
 
+    it('keeps the agent-run budget separate while browsing protected history', async () => {
+        const id = sessionId('outline-agent-run-budget')
+        const all = Array.from({ length: 400 }, (_, index) =>
+            makeAgentMessage({ id: `m-${index + 1}`, seq: index + 1, at: index + 1 })
+        )
+        const api = createApi(vi.fn()
+            .mockResolvedValueOnce(latestResponse(all.slice(200), {
+                epoch: 0, hasMore: true, nextBeforeAt: 201, nextBeforeSeq: 201
+            }))
+            .mockResolvedValueOnce(beforeResponse(all.slice(0, 200), {
+                epoch: 0, hasMore: false, nextBeforeAt: 1, nextBeforeSeq: 1
+            })))
+        await syncTailMessages(api, id)
+        await fetchOlderMessages(api, id, { shouldInstallBoundary: () => true })
+        setMessageViewMode(id, 'history')
+        for (let seq = 401; seq <= 1201; seq += 1) {
+            ingestIncomingMessages(id, [makeAgentRunMessage(`run-${seq}`, seq, seq)])
+        }
+        ingestIncomingMessages(id, [makeAgentMessage({ id: 'reply', seq: 1202, at: 1202 })])
+        const messages = getMessageWindowState(id).messages
+        expect(messages.filter(message => message.id.startsWith('run-'))).toHaveLength(800)
+        expect(messages.filter(message => message.id.startsWith('m-'))).toHaveLength(400)
+        expect(messages.some(message => message.id === 'reply')).toBe(true)
+    })
+
     it('invalidates an outline load when its boundary is released at the tail cap', async () => {
         const id = sessionId('outline-release-at-cap')
         const all = Array.from({ length: 600 }, (_, index) =>

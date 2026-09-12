@@ -616,35 +616,10 @@ function mergeIntoWindow(
             kept = merged
             dropped = []
         } else {
-            const queued = merged.filter(isQueuedForInvocation)
-            const queuedIds = new Set(queued.map((message) => message.id))
-            const trimmable = merged.filter((message) => !queuedIds.has(message.id))
-            const loaded: DecryptedMessage[] = []
-            const tail: DecryptedMessage[] = []
-            for (const message of trimmable) {
-                const position = messagePosition(message)
-                if (!position) {
-                    loaded.push(message)
-                    continue
-                }
-                if (comparePosition(position, boundary) < 0) {
-                    loaded.push(message)
-                } else {
-                    tail.push(message)
-                }
-            }
-            const loadedTrim = sliceForTrim(loaded, totalCap, 'prepend')
-            const tailTrim = sliceForTrim(tail, Math.max(0, totalCap - loadedTrim.kept.length), 'prepend')
-            kept = mergeMessages([...loadedTrim.kept, ...tailTrim.kept], queued)
-            const keptIds = new Set(kept.map((message) => message.id))
-            dropped = merged.filter((message) => !keptIds.has(message.id))
-            if (dropped.length > 0) {
-                const droppedNewestPosition = derivePosition(dropped, 'newest')
-                const mergedNewestPosition = derivePosition(merged, 'newest')
-                droppedNewest = droppedNewestPosition !== null
-                    && mergedNewestPosition !== null
-                    && comparePosition(droppedNewestPosition, mergedNewestPosition) === 0
-            }
+            const trimmed = trimPreservingQueued(merged, totalCap, 'prepend')
+            kept = trimmed.kept
+            dropped = trimmed.dropped
+            droppedNewest = dropped.length > 0
         }
     } else {
         const trimmed = trimPreservingQueued(merged, regularLimit, mode)
