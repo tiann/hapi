@@ -4,6 +4,8 @@ import { CopilotRemoteLauncher } from './copilotRemoteLauncher';
 import type { AgentMessage } from '@/agent/types';
 import * as bridge from '@/codex/utils/buildHapiMcpBridge';
 import * as copilotBackend from './utils/copilotBackend';
+import { MessageQueue2 } from '@/utils/MessageQueue2';
+import type { CopilotMode } from './types';
 
 type LauncherInternals = {
     backend: {
@@ -58,6 +60,36 @@ function createLauncher(
 }
 
 describe('CopilotRemoteLauncher.applyAgentMode', () => {
+    it('delivers a queued prompt when an advertised effort is rejected by the provider', async () => {
+        const { launcher, session } = createLauncher(vi.fn());
+        const queue = new MessageQueue2<CopilotMode>(mode => JSON.stringify(mode));
+        queue.push('deliver this prompt', { permissionMode: 'default', effort: 'low' });
+        queue.close();
+        const backend = {
+            initialize: vi.fn(async () => {}), newSession: vi.fn(async () => 'copilot-session'),
+            onStderrError: vi.fn(), setSessionInfoUpdateListener: vi.fn(), onPermissionRequest: vi.fn(),
+            getConfigOptionByCategory: vi.fn(), getSessionModelsMetadata: vi.fn(),
+            getThoughtLevelConfigOption: vi.fn(() => ({ id: 'thought_level', options: [{ value: 'low' }, { value: 'medium' }], currentValue: 'medium' })),
+            setConfigOption: vi.fn(async () => { throw new Error('Invalid params'); }),
+            setMode: vi.fn(async () => {}), prompt: vi.fn(async () => {}), refreshSessionInfo: vi.fn(async () => {}),
+        };
+        Object.assign(session, {
+            queue, getAgentMode: () => 'interactive', getPermissionMode: () => 'default',
+            onSessionFound: vi.fn(), setRemoteAgentModeApplier: vi.fn(), setRemoteEffortApplier: vi.fn(), onThinkingChange: vi.fn(),
+            client: { rpcHandlerManager: { registerHandler: vi.fn() }, updateAgentState: vi.fn() },
+        });
+        const bridgeSpy = vi.spyOn(bridge, 'buildHapiMcpBridge').mockResolvedValue({ server: { stop: vi.fn() }, mcpServers: {} } as never);
+        const backendSpy = vi.spyOn(copilotBackend, 'createCopilotBackend').mockReturnValue(backend as never);
+        try {
+            await (launcher as unknown as { runMainLoop: () => Promise<void> }).runMainLoop();
+            expect(backend.setConfigOption).toHaveBeenCalledWith('copilot-session', 'thought_level', 'low');
+            expect(backend.prompt).toHaveBeenCalledWith('copilot-session', [{ type: 'text', text: 'deliver this prompt' }], expect.any(Function));
+            expect(session.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Invalid params') }));
+        } finally {
+            bridgeSpy.mockRestore();
+            backendSpy.mockRestore();
+        }
+    });
     it('rejects discovery after its backend is retired or the launcher exits', async () => {
         const { launcher, internals, session } = createLauncher(vi.fn());
         const backend = {

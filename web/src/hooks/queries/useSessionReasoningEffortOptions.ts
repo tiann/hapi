@@ -53,18 +53,18 @@ export function useSessionReasoningEffortOptions(args: {
             return selectSessionReasoningEffortResponse(response, args.model)
         },
         enabled,
-        staleTime: 30_000,
+        staleTime: 0,
         retry: (failureCount) => shouldRetrySessionReasoningEffortQuery(failureCount),
         refetchInterval: (query) => getSessionReasoningEffortRefetchInterval(
             enabled,
-            query.state.data as SessionReasoningEffortResponse | undefined,
+            query.state.status === 'error' ? undefined : query.state.data as SessionReasoningEffortResponse | undefined,
             query.state.dataUpdateCount + query.state.errorUpdateCount
         ),
     })
 
     return {
-        options: query.data?.options ?? [],
-        currentValue: query.data?.currentValue ?? null,
+        options: query.isFetching || query.isError ? [] : (query.data?.options ?? []),
+        currentValue: query.isFetching || query.isError ? null : (query.data?.currentValue ?? null),
         isLoading: query.isLoading,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load session effort options')

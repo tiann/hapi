@@ -1,11 +1,46 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
 import {
     getSessionReasoningEffortRefetchInterval,
     selectSessionReasoningEffortResponse,
-    shouldRetrySessionReasoningEffortQuery
+    shouldRetrySessionReasoningEffortQuery,
+    useSessionReasoningEffortOptions
 } from './useSessionReasoningEffortOptions'
 
 describe('useSessionReasoningEffortOptions retry policy', () => {
+    it.each([false, true])('hides cached A options until A to B to A is revalidated, requestFails=%s', async (requestFails) => {
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
+        const responseA = { success: true, model: 'A', options: [{ value: 'high', name: 'High' }], currentValue: 'high' }
+        const responseB = { success: true, model: 'B', options: [{ value: 'low', name: 'Low' }], currentValue: 'low' }
+        let resolveDiscovery!: (response: typeof responseB) => void
+        let rejectDiscovery!: (error: Error) => void
+        const getSessionReasoningEffortOptions = vi.fn()
+            .mockResolvedValueOnce(responseA)
+            .mockResolvedValueOnce(responseB)
+            .mockImplementationOnce(() => new Promise((resolve, reject) => { resolveDiscovery = resolve; rejectDiscovery = reject }))
+            .mockRejectedValue(new Error('offline'))
+        const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: queryClient }, children)
+        const { result, rerender, unmount } = renderHook(({ model }) => useSessionReasoningEffortOptions({
+            api: { getSessionReasoningEffortOptions } as never, sessionId: 'session', model, enabled: true
+        }), { wrapper, initialProps: { model: 'A' } })
+        try {
+            await waitFor(() => expect(result.current.options).toEqual(responseA.options))
+            rerender({ model: 'B' })
+            await waitFor(() => expect(result.current.options).toEqual(responseB.options))
+            rerender({ model: 'A' })
+            expect(result.current.options).toEqual([])
+            expect(result.current.currentValue).toBeNull()
+            await waitFor(() => expect(getSessionReasoningEffortOptions).toHaveBeenCalledTimes(3))
+            await act(async () => requestFails ? rejectDiscovery(new Error('offline')) : resolveDiscovery(responseB))
+            await waitFor(() => expect(result.current.error).toBe(requestFails ? 'offline' : 'Session model is still switching'))
+            expect(result.current.options).toEqual([])
+        } finally {
+            unmount()
+            queryClient.clear()
+        }
+    })
     it('retries transient failures up to three times', () => {
         expect(shouldRetrySessionReasoningEffortQuery(0)).toBe(true)
         expect(shouldRetrySessionReasoningEffortQuery(2)).toBe(true)

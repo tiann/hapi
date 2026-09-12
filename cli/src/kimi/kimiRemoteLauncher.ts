@@ -230,9 +230,6 @@ export class KimiRemoteLauncher extends RemoteLauncherBase {
                 try {
                     await this.applyEffort(requestedEffort);
                 } catch (error) {
-                    if (!isEffortUnavailableError(error)) {
-                        throw error;
-                    }
                     const message = error instanceof Error ? error.message : String(error);
                     this.rollbackEffort(batch, this.currentBackendEffort);
                     session.sendSessionEvent({

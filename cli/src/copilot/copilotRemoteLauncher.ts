@@ -211,9 +211,6 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 try {
                     await this.applyEffort(requestedEffort);
                 } catch (error) {
-                    if (!isEffortUnavailableError(error)) {
-                        throw error;
-                    }
                     const message = error instanceof Error ? error.message : String(error);
                     logger.warn('[copilot-remote] Inline effort switch failed', error);
                     this.rollbackEffort(batch, this.currentBackendEffort);

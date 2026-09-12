@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
     prompts: [] as unknown[][],
     setConfigOptionCalls: [] as unknown[][],
     rejectedModel: null as string | null,
+    rejectEffort: false,
     onPrompt: null as (() => Promise<void>) | null,
     thoughtLevelOption: {
         id: 'thought_level',
@@ -38,6 +39,7 @@ vi.mock('./utils/kimiBackend', () => ({
         }),
         setConfigOption: vi.fn(async (...args: unknown[]) => {
             harness.setConfigOptionCalls.push(args)
+            if (harness.rejectEffort) throw new Error('Invalid params')
         }),
         getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => category === 'model'
             ? { id: 'model', currentValue: 'kimi-default', options: [{ value: 'kimi-default' }] }
@@ -121,6 +123,7 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         harness.prompts = []
         harness.setConfigOptionCalls = []
         harness.rejectedModel = null
+        harness.rejectEffort = false
         harness.onPrompt = null
         vi.restoreAllMocks()
         harness.thoughtLevelOption = {
@@ -149,6 +152,15 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({
             success: false, error: 'Remote session is not ready'
         })
+    })
+
+    it('delivers queued prompts when an advertised effort is rejected by the provider', async () => {
+        harness.rejectEffort = true
+        const session = createSession({ permissionMode: 'default', model: 'kimi-k2', effort: 'low' })
+        await expect(kimiRemoteLauncher(session as never, { model: 'kimi-k2' })).resolves.toBe('exit')
+        expect(harness.setConfigOptionCalls).toContainEqual(['kimi-session-1', 'thought_level', 'low'])
+        expect(harness.prompts).toHaveLength(2)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Invalid params') }))
     })
 
     it('falls back when the startup effort is unsupported by the model', async () => {
