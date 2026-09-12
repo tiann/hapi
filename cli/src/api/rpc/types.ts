@@ -8,7 +8,8 @@
  * @template TResponse - The response data type
  */
 export type RpcHandler<TRequest = any, TResponse = any> = (
-    data: TRequest
+    data: TRequest,
+    signal?: AbortSignal
 ) => TResponse | Promise<TResponse>;
 
 /**
@@ -22,6 +23,7 @@ export type RpcHandlerMap = Map<string, RpcHandler>;
 export interface RpcRequest {
     method: string;
     params: string; // JSON string
+    requestId?: string;
 }
 
 /**

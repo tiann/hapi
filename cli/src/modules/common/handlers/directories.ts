@@ -20,6 +20,24 @@ interface StatFilesRequest {
     paths: string[]
 }
 
+const STAT_FILES_BATCH_SIZE = 16
+
+type StatFileEntry = NonNullable<StatFilesResponse['entries']>[number]
+
+async function statFile(path: string, workingDirectory: string): Promise<StatFileEntry> {
+    try {
+        const stats = await stat(resolve(workingDirectory, path))
+        return {
+            path,
+            size: stats.size,
+            modified: stats.mtime.getTime()
+        }
+    } catch (error) {
+        logger.debug(`Failed to stat ${path}:`, error)
+        return { path }
+    }
+}
+
 interface TreeNode {
     name: string
     path: string
@@ -97,7 +115,7 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
         }
     })
 
-    rpcHandlerManager.registerHandler<StatFilesRequest, StatFilesResponse>(RPC_METHODS.StatFiles, async (data) => {
+    rpcHandlerManager.registerHandler<StatFilesRequest, StatFilesResponse>(RPC_METHODS.StatFiles, async (data, signal) => {
         if (!Array.isArray(data.paths) || data.paths.length > 500) {
             return rpcError('Invalid file paths')
         }
@@ -109,19 +127,13 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
             }
         }
 
-        const entries = await Promise.all(data.paths.map(async (path) => {
-            try {
-                const stats = await stat(resolve(workingDirectory, path))
-                return {
-                    path,
-                    size: stats.size,
-                    modified: stats.mtime.getTime()
-                }
-            } catch (error) {
-                logger.debug(`Failed to stat ${path}:`, error)
-                return { path }
-            }
-        }))
+        const entries: StatFileEntry[] = []
+        for (let index = 0; index < data.paths.length; index += STAT_FILES_BATCH_SIZE) {
+            signal?.throwIfAborted()
+            const batch = data.paths.slice(index, index + STAT_FILES_BATCH_SIZE)
+            entries.push(...await Promise.all(batch.map((path) => statFile(path, workingDirectory))))
+        }
+        signal?.throwIfAborted()
 
         return { success: true, entries }
     })

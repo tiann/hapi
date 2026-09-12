@@ -218,7 +218,8 @@ Ordinary web/native session updates use SSE, not the CLI Socket.IO namespace.
 ### Hub events (hub to CLI clients, `/cli`)
 
 - `update` - Broadcast session/message updates.
-- `rpc-request` - Incoming RPC call.
+- `rpc-request` - Incoming RPC call; cancellable requests carry a `requestId`.
+- `rpc-cancel` - Cancel an in-flight RPC by `requestId`.
 
 See `src/socket/rpcRegistry.ts` for RPC routing.
 

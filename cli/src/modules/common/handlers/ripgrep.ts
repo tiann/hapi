@@ -19,8 +19,12 @@ interface RipgrepResponse {
     error?: string
 }
 
+function isAbortError(error: unknown): error is Error {
+    return error instanceof Error && error.name === 'AbortError'
+}
+
 export function registerRipgrepHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string): void {
-    rpcHandlerManager.registerHandler<RipgrepRequest, RipgrepResponse>(RPC_METHODS.Ripgrep, async (data) => {
+    rpcHandlerManager.registerHandler<RipgrepRequest, RipgrepResponse>(RPC_METHODS.Ripgrep, async (data, signal) => {
         logger.debug('Ripgrep request with args:', data.args, 'cwd:', data.cwd)
 
         if (data.cwd) {
@@ -32,7 +36,7 @@ export function registerRipgrepHandlers(rpcHandlerManager: RpcHandlerManager, wo
 
         try {
             const result = data.fileSearch
-                ? await runFileSearch(data.args, { ...data.fileSearch, cwd: data.cwd })
+                ? await runFileSearch(data.args, { ...data.fileSearch, cwd: data.cwd }, signal)
                 : await runRipgrep(data.args, { cwd: data.cwd })
             return {
                 success: true,
@@ -41,6 +45,9 @@ export function registerRipgrepHandlers(rpcHandlerManager: RpcHandlerManager, wo
                 stderr: result.stderr.toString()
             }
         } catch (error) {
+            if (isAbortError(error)) {
+                throw error
+            }
             logger.debug('Failed to run ripgrep:', error)
             return rpcError(getErrorMessage(error, 'Failed to run ripgrep'))
         }
