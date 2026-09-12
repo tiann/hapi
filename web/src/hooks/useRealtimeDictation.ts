@@ -83,7 +83,7 @@ export function useRealtimeDictation(config: {
                         // catch compares against this to avoid clobbering text the
                         // operator typed into the resumed composer while the request
                         // was in flight.
-                        if (resumed) recoveryDraftAtStart = getDraft(targetSessionId)
+                        if (resumed && targetSessionId !== pendingSend.sessionId) recoveryDraftAtStart = getDraft(targetSessionId)
                     }
                     await sendMsg(targetSessionId, finalMessage, pendingSend.deliveryMode)
                     if (resumed) {

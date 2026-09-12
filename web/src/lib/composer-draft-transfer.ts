@@ -286,6 +286,7 @@ async function awaitInactivePersist(sessionId: string): Promise<void> {
 }
 
 export type TransferComposerDraftOptions = {
+    preserveTargetAttachments?: boolean
     /**
      * Text captured at send/resume time, or a resolver sampled before saving.
      * The resolver can preserve destination edits made during attachment transfer.
@@ -365,6 +366,17 @@ export async function transferComposerDraft(
             }
         }
 
+        let targetAttachments: AttachmentDraftInput[] = []
+        if (options?.preserveTargetAttachments) {
+            try {
+                await awaitInactivePersist(targetSessionId)
+                targetAttachments = await loadPersistedAttachments(targetSessionId, { throwOnError: true })
+            } catch (error) {
+                saveDraft(targetSessionId, resolveTransferredText(text, options))
+                throw error
+            }
+        }
+
         const buildTransferredAttachments = (): AttachmentDraftInput[] => {
             // Sample cancellation at write time (after any awaited IDB drain inside
             // moveDraftAttachments) so a remove() during the wait still drops the file.
@@ -397,7 +409,10 @@ export async function transferComposerDraft(
                     path: undefined,
                     uploadSessionId: undefined,
                 }))
-            return mergeAttachmentsById(normalizedBase, normalizedPending)
+            const moved = mergeAttachmentsById(normalizedBase, normalizedPending)
+            return options?.preserveTargetAttachments
+                ? mergeAttachmentsById(liveSnapshots.get(targetSessionId)?.attachments ?? targetAttachments, moved)
+                : moved
         }
 
         let attachments: AttachmentDraftInput[]
@@ -426,6 +441,7 @@ export async function transferComposerDraft(
                     const latest = pendingState?.latest
                     const textMarker = pendingState?.latestText
                     const cancelMarker = cancellationRevision()
+                    const targetSnapshot = liveSnapshots.get(targetSessionId)
                     transferredText = samplePendingTransferText(
                         sourceSessionId,
                         getDraft(sourceSessionId),
@@ -441,6 +457,7 @@ export async function transferComposerDraft(
                         after?.latest === latest
                         && after?.latestText === textMarker
                         && cancellationRevision() === cancelMarker
+                        && (!options?.preserveTargetAttachments || liveSnapshots.get(targetSessionId) === targetSnapshot)
                     ) {
                         break
                     }

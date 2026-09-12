@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useComposerDraft } from './useComposerDraft'
 import type { ApiClient } from '@/api/client'
 import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
+import { getDraftAttachments, saveDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { useRealtimeDictation } from './useRealtimeDictation'
 import { useDictation } from './useDictation'
 
@@ -108,6 +109,8 @@ describe('useRealtimeDictation', () => {
             saveDraft('session-A', sourceDraft)
             saveDraft('session-A-resumed', 'destination draft')
         })
+        const attachment = new File(['follow-up'], 'follow-up.txt')
+        saveDraftAttachments('session-A-resumed', [{ id: 'target-file', file: attachment }])
         const replacement = renderHook(() => {
             const [text, setText] = useState('')
             useComposerDraft('session-A-resumed', text, [], false, setText, async () => {})
@@ -123,6 +126,11 @@ describe('useRealtimeDictation', () => {
         await waitFor(() => expect(replacement.result.current.text).toBe(expected))
         replacement.unmount()
         expect(getDraft('session-A-resumed')).toBe(expected)
+        expect((await getDraftAttachments('session-A-resumed')).map(file => file.name)).toEqual(['follow-up.txt'])
+        const addAttachment = vi.fn(async () => {})
+        const reopened = renderHook(() => useComposerDraft('session-A-resumed', '', [], true, vi.fn(), addAttachment))
+        await waitFor(() => expect(addAttachment).toHaveBeenCalledWith(expect.objectContaining({ name: 'follow-up.txt' })))
+        reopened.unmount()
     })
 
     it('recovers a post-resume send failure under the resumed session id', async () => {
@@ -167,7 +175,7 @@ describe('useRealtimeDictation', () => {
         expect(onSessionResolved).toHaveBeenCalledWith('session-A-resumed')
     })
 
-    it('preserves source and target follow-up drafts when a post-resume send fails after unmount', async () => {
+    it.each([false, true])('preserves follow-up drafts after an unmounted resume/send failure, sameId=%s', async (sameId) => {
         Object.defineProperty(navigator, 'mediaDevices', {
             configurable: true,
             value: { getUserMedia: vi.fn() }
@@ -178,7 +186,14 @@ describe('useRealtimeDictation', () => {
         let rejectSend: ((error: Error) => void) | null = null
         const sendMessage = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject }))
         const onFinalTranscript = vi.fn()
-        const resolveSessionId = vi.fn(async () => ({ sessionId: 'session-A-resumed', resumed: true }))
+        const resolveSessionId = vi.fn(async () => {
+            if (sameId) {
+                saveDraft('session-A', 'source follow-up')
+                unmount()
+                await Promise.resolve()
+            }
+            return { sessionId: sameId ? 'session-A' : 'session-A-resumed', resumed: true }
+        })
         const onSessionResolved = vi.fn()
         clearDraft('session-A')
         clearDraft('session-A-resumed')
@@ -204,6 +219,12 @@ describe('useRealtimeDictation', () => {
         await act(async () => {
             await waitFor(() => expect(sendMessage).toHaveBeenCalled())
         })
+        if (sameId) {
+            await act(async () => { rejectSend?.(new Error('network down')) })
+            await waitFor(() => expect(getDraft('session-A')).toBe('source follow-up explicit initial text spoken words'))
+            expect(onSessionResolved).toHaveBeenCalledWith('session-A')
+            return
+        }
         act(() => {
             saveDraft('session-A-resumed', 'newer resumed draft')
             saveDraft('session-A', 'source follow-up')
