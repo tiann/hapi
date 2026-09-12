@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionSummary } from '@/types/api'
-import { isWildcardSearch, matchesSearchQuery } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
+import {
+    buildSessionSearchScoreIndex,
+    compareSessionsBySearchRelevance,
+    rankSessionGroupsBySearchRelevance,
+    sessionMatchesQuery,
+    sortSessionsBySearchRelevance,
+} from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
@@ -514,30 +520,10 @@ function SessionPreviewArrowIcon(props: { direction: 'up' | 'down'; className?: 
 }
 
 export { getSessionTitle } from '@/lib/sessionTitle'
+export { sessionMatchesQuery } from '@/lib/sessionListSearch'
 
 export function normalizeSearch(value: string | null | undefined): string {
     return (value ?? '').trim().toLowerCase()
-}
-
-export function sessionMatchesQuery(session: SessionSummary, query: string, machineLabel: string): boolean {
-    if (!query) return true
-    const searchableParts = [
-        getSessionTitle(session),
-        getWorktreeSessionLabel(session),
-        session.id,
-        session.metadata?.path,
-        session.metadata?.worktree?.basePath,
-        session.metadata?.worktree?.worktreePath,
-        session.metadata?.name,
-        session.metadata?.summary?.text,
-        session.metadata?.flavor,
-        machineLabel,
-    ]
-        .filter((part): part is string => typeof part === 'string' && part.length > 0)
-    if (isWildcardSearch(query)) {
-        return searchableParts.some((part) => matchesSearchQuery(part, query))
-    }
-    return searchableParts.join('\n').toLowerCase().includes(query)
 }
 
 
@@ -1256,18 +1242,37 @@ export function SessionList(props: {
         () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
         [allSessions]
     )
+    const hasTextQuery = normalizedQuery.length > 0
+    const timeScopedSessions = useMemo(
+        () => timeRange === null
+            ? allSessions
+            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange)),
+        [allSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+    )
+    const searchScoreIndex = useMemo(
+        () => hasTextQuery
+            ? buildSessionSearchScoreIndex(timeScopedSessions, normalizedQuery, resolveMachineLabel)
+            : null,
+        [hasTextQuery, timeScopedSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+    )
     const visibleSessions = useMemo(
-        () => isFiltering
-            ? allSessions.filter(session => (
-                sessionMatchesTimeRange(session, timeRange)
-                && sessionMatchesQuery(
-                    session,
-                    normalizedQuery,
-                    resolveMachineLabel(session.metadata?.machineId ?? null)
-                )
-            ))
-            : allSessions,
-        [allSessions, isFiltering, normalizedQuery, timeRange?.start, timeRange?.end, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        () => {
+            if (!isFiltering) return allSessions
+            const matched = hasTextQuery && searchScoreIndex
+                ? timeScopedSessions.filter(session => (searchScoreIndex.scores.get(session.id) ?? 0) > 0)
+                : timeScopedSessions.filter(session => (
+                    sessionMatchesQuery(
+                        session,
+                        normalizedQuery,
+                        resolveMachineLabel(session.metadata?.machineId ?? null)
+                    )
+                ))
+            if (hasTextQuery && searchScoreIndex) {
+                return sortSessionsBySearchRelevance(matched, searchScoreIndex)
+            }
+            return matched
+        },
+        [allSessions, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, timeScopedSessions, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const allGroups = useMemo(
         () => groupSessionsByDirectory(allSessions),
@@ -1320,10 +1325,12 @@ export function SessionList(props: {
         [unreadFilteredSessions, activeMachineFilter]
     )
     const globalPinnedSessions = useMemo(() => {
-        return machineFilteredSessions
-            .filter((session) => Boolean(session.globalPinned))
-            .sort((a, b) => b.updatedAt - a.updatedAt)
-    }, [machineFilteredSessions])
+        const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
+        if (searchScoreIndex && hasTextQuery) {
+            return sortSessionsBySearchRelevance(pinned, searchScoreIndex)
+        }
+        return [...pinned].sort((a, b) => b.updatedAt - a.updatedAt)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery])
     const runningSessions = useMemo(() => {
         const buckets: Record<RunningBucketKey, SessionSummary[]> = {
             working: [],
@@ -1350,23 +1357,35 @@ export function SessionList(props: {
             }
         }
         const byRecent = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt
+        const byRelevanceOrRecent = (a: SessionSummary, b: SessionSummary) => {
+            if (searchScoreIndex && hasTextQuery) {
+                return compareSessionsBySearchRelevance(a, b, searchScoreIndex)
+            }
+            return byRecent(a, b)
+        }
         for (const key of Object.keys(buckets) as RunningBucketKey[]) {
-            buckets[key].sort(byRecent)
+            buckets[key].sort(byRelevanceOrRecent)
         }
         return buckets
-    }, [machineFilteredSessions, pinInProgressSessions])
+    }, [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery])
     const runningSessionTotal = runningSessions.working.length
         + runningSessions.pending.length
     const activeSessionTotal = runningSessions.active.length
     const groups = useMemo(
-        () => groupSessionsByDirectory(
-            machineFilteredSessions.filter((session) => {
-                if (session.globalPinned) return false
-                if (pinInProgressSessions && !session.pinned && isPinnedInProgressSession(session)) return false
-                return true
-            })
-        ),
-        [machineFilteredSessions, pinInProgressSessions]
+        () => {
+            const grouped = groupSessionsByDirectory(
+                machineFilteredSessions.filter((session) => {
+                    if (session.globalPinned) return false
+                    if (pinInProgressSessions && !session.pinned && isPinnedInProgressSession(session)) return false
+                    return true
+                })
+            )
+            if (searchScoreIndex && hasTextQuery) {
+                return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
+            }
+            return grouped
+        },
+        [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
