@@ -29,7 +29,7 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { resolveSessionHeaderMachineLabel } from '@/components/SessionHeader'
-import { formatRelativeTime } from '@/lib/relativeTime'
+import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
@@ -576,6 +576,7 @@ export function HappyThread(props: {
         )
         const lastActiveAt = props.session.activeAt || props.session.updatedAt || props.session.createdAt
         const lastActiveLabel = lastActiveAt > 0 ? formatRelativeTime(lastActiveAt, t) : null
+        const lastActiveAbsolute = lastActiveLabel ? formatAbsoluteDateTime(lastActiveAt) : null
         const createdAtLabel = formatSessionHeaderTimestamp(props.session.createdAt, locale)
         const updatedAtLabel = formatSessionHeaderTimestamp(props.session.updatedAt, locale)
         const worktreeBranch = props.session.metadata?.worktree?.branch?.trim() || null
@@ -587,7 +588,7 @@ export function HappyThread(props: {
             machine: machineLabel ? {
                 text: `${headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}${machineLabel}`,
             } : undefined,
-            lastActive: lastActiveLabel ? { text: lastActiveLabel } : undefined,
+            lastActive: lastActiveLabel ? { text: lastActiveLabel, title: lastActiveAbsolute } : undefined,
             model: modelLabel ? {
                 text: `${headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}${modelLabel.value}`,
             } : undefined,

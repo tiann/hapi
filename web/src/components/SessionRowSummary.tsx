@@ -6,7 +6,7 @@ import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds 
 import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
-import { formatRelativeTime } from '@/lib/relativeTime'
+import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt } from '@/lib/codexImportedSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
@@ -79,17 +79,24 @@ function formatCodexImportedRelativeTime(
     return formatRelativeTime(value, t)
 }
 
+function getSessionTimeStamp(session: SessionSummary): number | null {
+    const importedAt = session.metadata?.flavor === 'codex'
+        ? getCodexImportedAt(session.metadata?.agentSessionId)
+        : null
+    if (importedAt !== null) return importedAt
+    return Number.isFinite(session.updatedAt) ? session.updatedAt : null
+}
+
 function getSessionTimeLabel(
     session: SessionSummary,
     t: (key: string, params?: Record<string, string | number>) => string
 ): string | null {
-    const importedAt = session.metadata?.flavor === 'codex'
-        ? getCodexImportedAt(session.metadata?.agentSessionId)
-        : null
-    if (importedAt !== null) {
-        return formatCodexImportedRelativeTime(importedAt, t)
+    const stamp = getSessionTimeStamp(session)
+    if (stamp === null) return null
+    if (session.metadata?.flavor === 'codex' && getCodexImportedAt(session.metadata?.agentSessionId) !== null) {
+        return formatCodexImportedRelativeTime(stamp, t)
     }
-    return formatRelativeTime(session.updatedAt, t)
+    return formatRelativeTime(stamp, t)
 }
 
 /**
@@ -162,6 +169,8 @@ export function SessionRowSummary(props: {
     const attentionId = attentionTooltipIdProp ?? ownedIds.attentionId
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
     const timeLabel = getSessionTimeLabel(s, t)
+    const timeStamp = getSessionTimeStamp(s)
+    const timeAbsolute = timeStamp !== null ? formatAbsoluteDateTime(timeStamp) : null
 
     return (
         <div className={`flex w-full min-w-0 flex-col gap-1 ${className ?? ''}`}>
@@ -284,7 +293,13 @@ export function SessionRowSummary(props: {
                         </span>
                     ) : null}
                     {timeLabel ? (
-                        <span className="min-w-0 truncate whitespace-nowrap tabular-nums text-[var(--app-hint)]">{timeLabel}</span>
+                        <span
+                            className="min-w-0 truncate whitespace-nowrap tabular-nums text-[var(--app-hint)]"
+                            title={timeAbsolute ?? undefined}
+                            data-testid="session-row-age"
+                        >
+                            {timeLabel}
+                        </span>
                     ) : null}
                 </div>
             </div>
