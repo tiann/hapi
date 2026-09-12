@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { KimiMode } from './types'
+import * as kimiConfig from './utils/config'
 
 const harness = vi.hoisted(() => ({
     prompts: [] as unknown[][],
     setConfigOptionCalls: [] as unknown[][],
     rejectedModel: null as string | null,
+    onPrompt: null as (() => Promise<void>) | null,
     thoughtLevelOption: {
         id: 'thought_level',
         currentValue: 'medium',
@@ -43,6 +45,7 @@ vi.mock('./utils/kimiBackend', () => ({
         getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption),
         prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
             harness.prompts.push(content)
+            await harness.onPrompt?.()
         }),
         cancelPrompt: vi.fn(async () => {}),
         respondToPermission: vi.fn(async () => {}),
@@ -118,6 +121,8 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         harness.prompts = []
         harness.setConfigOptionCalls = []
         harness.rejectedModel = null
+        harness.onPrompt = null
+        vi.restoreAllMocks()
         harness.thoughtLevelOption = {
             id: 'thought_level',
             currentValue: 'medium',
@@ -151,6 +156,25 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         expect(harness.prompts).toHaveLength(2)
         expect(harness.setConfigOptionCalls).not.toContainEqual(['kimi-session-1', 'thought_level', 'high'])
         expect(session.setEffort).toHaveBeenCalledWith('medium')
+    })
+
+    it('keeps effort discovery available when Default resolves to the unchanged backend', async () => {
+        vi.spyOn(kimiConfig, 'resolveKimiRuntimeConfig').mockReturnValue({ model: 'kimi-k2', modelSource: 'local' })
+        const session = createSession()
+        let selectedModel: string | null = 'kimi-k2'
+        session.getModel = () => selectedModel
+        let checks = 0
+        harness.onPrompt = async () => {
+            selectedModel = null
+            await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({
+                success: true, model: null, options: harness.thoughtLevelOption.options
+            })
+            checks += 1
+        }
+        await kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
+        expect(checks).toBe(2)
+        selectedModel = 'kimi-pending'
+        await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({ model: null })
     })
 
     it('reports the default HAPI model selection for a concrete backend default', async () => {
