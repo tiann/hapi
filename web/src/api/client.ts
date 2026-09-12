@@ -8,6 +8,7 @@ import type {
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
     CodexArchiveSessionResponse,
+    DecryptedMessage,
     CodexCollaborationMode,
     CopilotAgentMode,
     FileSearchResponse,
@@ -23,7 +24,7 @@ import type {
     SkillsResponse,
     SpawnResponse,
     VisibilityPayload,
-    HapiSessionExport,
+    HapiSessionExportResponse,
     HubHealthResponse,
     SessionResponse,
     SessionTitleSuggestionResponse,
@@ -31,6 +32,7 @@ import type {
 } from '@/types/api'
 import type {
     AgyModelsResponse,
+    AgentAvailabilityResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -46,6 +48,7 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
+    OpencodeModelVariantsResponse,
     OpencodeReasoningEffortResponse,
     PiModelsResponse,
     QueuedStateResponse,
@@ -59,6 +62,11 @@ import type {
 import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
+
+export type RetryIndeterminateMessageResponse =
+    | { status: 'retried' | 'already-queued' | 'retry-unavailable'; localId: string | null }
+    | { status: 'invoked'; message: DecryptedMessage }
+    | { status: 'not-found' }
 
 export type ProviderCredentialSource = 'env' | 'settings' | 'none'
 
@@ -347,9 +355,13 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getSessionExport(sessionId: string, options?: { signal?: AbortSignal }): Promise<HapiSessionExport> {
-        return await this.request<HapiSessionExport>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/export`,
+    async getSessionExport(
+        sessionId: string,
+        options?: { force?: boolean; signal?: AbortSignal }
+    ): Promise<HapiSessionExportResponse> {
+        const query = options?.force ? '?force=true' : ''
+        return await this.request<HapiSessionExportResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/export${query}`,
             { signal: options?.signal }
         )
     }
@@ -555,11 +567,22 @@ export class ApiClient {
         return response as SteerQueuedMessageResponse
     }
 
+    async retryIndeterminateMessage(sessionId: string, messageId: string): Promise<RetryIndeterminateMessageResponse> {
+        return await this.request<RetryIndeterminateMessageResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/retry`,
+            { method: 'POST' }
+        )
+    }
+
     async abortSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, {
             method: 'POST',
             body: JSON.stringify({})
         })
+    }
+
+    async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/clear`, { method: 'POST' })
     }
 
     async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
@@ -784,6 +807,12 @@ export class ApiClient {
         )
     }
 
+    async getMachineAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
+        return await this.request<AgentAvailabilityResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-availability`
+        )
+    }
+
     async checkMachinePathsExists(
         machineId: string,
         paths: string[]
@@ -833,9 +862,14 @@ export class ApiClient {
         })
     }
 
-    async getMachineAgyModels(machineId: string): Promise<AgyModelsResponse> {
+    async getMachineAgyModels(
+        machineId: string,
+        options?: { refresh?: boolean }
+    ): Promise<AgyModelsResponse> {
+        // Without `refresh` the machine may answer from its cached catalog.
+        const query = options?.refresh ? '?refresh=true' : ''
         return await this.request<AgyModelsResponse>(
-            `/api/machines/${encodeURIComponent(machineId)}/agy-models`
+            `/api/machines/${encodeURIComponent(machineId)}/agy-models${query}`
         )
     }
 
@@ -892,6 +926,12 @@ export class ApiClient {
     async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
+        )
+    }
+
+    async getMachineOpencodeModelVariants(machineId: string, cwd?: string | null): Promise<OpencodeModelVariantsResponse> {
+        return await this.request<OpencodeModelVariantsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/opencode-model-variants${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`
         )
     }
 

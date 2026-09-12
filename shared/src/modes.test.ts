@@ -8,6 +8,8 @@ import {
     getPermissionModeTone,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
+    isSteeringSupportedForFlavor,
+    isSteeringSupportedForSession,
 } from './modes'
 
 describe('Gemini CLI sunset (read-only, not creatable)', () => {
@@ -36,6 +38,10 @@ describe('getPermissionModesForFlavor', () => {
             'plan',
             'bypassPermissions'
         ])
+    })
+
+    test("returns no HAPI mode selector for DSH's server-owned permission policy", () => {
+        expect(getPermissionModesForFlavor('dsh')).toEqual([])
     })
 
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
@@ -70,6 +76,8 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('acceptEdits', 'grok')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('auto', 'grok')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('yolo', 'grok')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('read-only', 'dsh')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('plan', 'dsh')).toBe(false)
     })
 
     test("no mode is allowed for pi", () => {
@@ -127,5 +135,50 @@ describe('claude auto permission mode', () => {
     it('has a label and tone', () => {
         expect(getPermissionModeLabel('auto')).toBe('Auto')
         expect(getPermissionModeTone('auto')).toBe('warning')
+    })
+})
+
+describe('isSteeringSupportedForFlavor', () => {
+    it('supports codex, cursor and pi', () => {
+        expect(isSteeringSupportedForFlavor('codex')).toBe(true)
+        expect(isSteeringSupportedForFlavor('cursor')).toBe(true)
+        expect(isSteeringSupportedForFlavor('pi')).toBe(true)
+        expect(isSteeringSupportedForFlavor('claude')).toBe(false)
+        expect(isSteeringSupportedForFlavor('opencode')).toBe(false)
+        expect(isSteeringSupportedForFlavor(undefined)).toBe(false)
+        expect(isSteeringSupportedForFlavor(null)).toBe(false)
+    })
+})
+
+describe('isSteeringSupportedForSession', () => {
+    it('supports codex and pi sessions', () => {
+        expect(isSteeringSupportedForSession({ flavor: 'codex' })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'pi' })).toBe(true)
+    })
+
+    it('supports Cursor ACP sessions', () => {
+        expect(isSteeringSupportedForSession({
+            flavor: 'cursor',
+            cursorSessionProtocol: 'acp',
+            cursorSessionId: 'sess-1',
+        })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'cursor' })).toBe(true)
+    })
+
+    it('rejects legacy Cursor stream-json sessions', () => {
+        expect(isSteeringSupportedForSession({
+            flavor: 'cursor',
+            cursorSessionProtocol: 'stream-json',
+            cursorSessionId: 'legacy-1',
+        })).toBe(false)
+        expect(isSteeringSupportedForSession({
+            flavor: 'cursor',
+            cursorSessionId: 'legacy-without-protocol',
+        })).toBe(false)
+    })
+
+    it('rejects non-steerable flavors', () => {
+        expect(isSteeringSupportedForSession({ flavor: 'claude' })).toBe(false)
+        expect(isSteeringSupportedForSession(null)).toBe(false)
     })
 })

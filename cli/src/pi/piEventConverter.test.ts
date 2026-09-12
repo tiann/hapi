@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { convertPiEvent, convertPiTurnUsage } from './piEventConverter';
+import { convertPiCompactionUsage, convertPiEvent, convertPiTurnUsage } from './piEventConverter';
 import type { PiAgentEvent } from './types';
 
 describe('convertPiEvent', () => {
@@ -181,6 +181,16 @@ describe('convertPiEvent', () => {
             totalTokens: 315,
             contextTokens: 315
         });
+    });
+
+    it('should build context-only usage from a compaction estimate', () => {
+        expect(convertPiCompactionUsage(120)).toEqual({
+            type: 'usage',
+            inputTokens: 0,
+            outputTokens: 0,
+            contextTokens: 120,
+        });
+        expect(convertPiCompactionUsage(undefined)).toBeNull();
     });
 
     it('should preserve prior usage when Pi explicitly reports unknown context', () => {

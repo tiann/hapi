@@ -5,7 +5,6 @@ import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
-import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -41,9 +40,6 @@ class RegisterDeviceWorker(
             if (runAttemptCount + 1 >= MAX_ATTEMPTS) Result.failure() else Result.retry()
         }
     }
-
-    override suspend fun getForegroundInfo(): ForegroundInfo =
-        PushNotifications.workerForegroundInfo(applicationContext)
 
     companion object {
         const val KEY_HUB_URL = "hubUrl"

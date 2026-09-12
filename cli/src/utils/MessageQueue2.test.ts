@@ -573,6 +573,95 @@ describe('MessageQueue2', () => {
         });
     });
 
+    it('restores a reserved item relative to surviving neighbors', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('a', 'A', 'a');
+        queue.push('b', 'B', 'b');
+        queue.push('c', 'B', 'c');
+
+        const reservation = queue.takeByLocalId('b');
+        expect(reservation).not.toBeNull();
+        expect(queue.cancelByLocalId('a')).toBe(true);
+        expect(queue.restoreReservation(reservation!)).toBe(true);
+        expect(queue.queue.map((item) => item.localId)).toEqual(['b', 'c']);
+    });
+
+    it('restores multiple reservations in FIFO order regardless of completion order', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('a', 'A', 'a');
+        queue.push('b', 'A', 'b');
+        queue.push('c', 'A', 'c');
+        queue.push('d', 'A', 'd');
+        const b = queue.takeByLocalId('b');
+        const c = queue.takeByLocalId('c');
+        expect(b).not.toBeNull();
+        expect(c).not.toBeNull();
+        expect(queue.restoreReservation(c!)).toBe(true);
+        expect(queue.restoreReservation(b!)).toBe(true);
+        expect(queue.queue.map((item) => item.localId)).toEqual(['a', 'b', 'c', 'd']);
+    });
+
+    it('retries an indeterminate reservation without automatic replay', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('b', 'B', 'b');
+        const reservation = queue.takeByLocalId('b');
+        expect(reservation).not.toBeNull();
+        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
+        expect(queue.size()).toBe(0);
+        expect(queue.takeByLocalId('b')).toBe(reservation);
+        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+        expect(queue.restoreReservation(reservation!)).toBe(true);
+        expect(queue.takeByLocalId('b')).toBe(reservation);
+    });
+
+    it('allows a positive reconciliation after a queue reset', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('steer', 'B', 'steer');
+        const reservation = queue.takeByLocalId('steer');
+        expect(reservation).not.toBeNull();
+        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
+        queue.reset();
+        expect(queue.commitReservation(reservation!)).toBe(true);
+    });
+
+    it('preserves a dispatched reservation across an abort reset', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('b', 'B', 'b');
+        const reservation = queue.takeByLocalId('b');
+        expect(reservation).not.toBeNull();
+        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+        queue.reset({ preserveDispatchingReservations: true });
+        expect(queue.cancelByLocalId('b')).toBe('in-flight');
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
+        expect(queue.commitReservation(reservation!)).toBe(true);
+    });
+
+    it('releases an indeterminate reservation on explicit cancel', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('old', 'B', 'b');
+        const reservation = queue.takeByLocalId('b');
+        expect(reservation).not.toBeNull();
+        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
+        expect(queue.cancelByLocalId('b')).toBe(true);
+        queue.push('replacement', 'B', 'b');
+        expect(queue.takeByLocalId('b')?.item.message).toBe('replacement');
+    });
+
+    it('does not restore an indeterminate reservation after clear', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('b', 'B', 'b');
+        const reservation = queue.takeByLocalId('b');
+        expect(reservation).not.toBeNull();
+        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
+        queue.pushIsolateAndClear('clear', 'B');
+        expect(queue.restoreReservation(reservation!)).toBe(false);
+        expect(queue.queue.map((item) => item.message)).toEqual(['clear']);
+    });
+
     it('should differentiate between pushImmediate and pushIsolateAndClear behavior', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         

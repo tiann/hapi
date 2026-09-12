@@ -9,9 +9,14 @@ vi.mock('@/lib/use-translation', () => ({
 import { AgentSelector } from './AgentSelector'
 import type { AgentType } from './types'
 
-function renderedAgentValues(): string[] {
+function renderedAgentValues(agents: readonly AgentType[] = CREATABLE_AGENT_FLAVORS): string[] {
     const { container } = render(
-        <AgentSelector agent={'claude' as AgentType} isDisabled={false} onAgentChange={() => {}} />
+        <AgentSelector
+            agent={'claude' as AgentType}
+            agents={agents}
+            isDisabled={false}
+            onAgentChange={() => {}}
+        />
     )
     return Array.from(container.querySelectorAll('input[type="radio"]'))
         .map((el) => (el as HTMLInputElement).value)
@@ -24,5 +29,9 @@ describe('AgentSelector', () => {
 
     it('offers exactly the creatable agent flavors', () => {
         expect(renderedAgentValues()).toEqual([...CREATABLE_AGENT_FLAVORS])
+    })
+
+    it('renders only Agents reported available by the machine', () => {
+        expect(renderedAgentValues(['claude', 'codex'])).toEqual(['claude', 'codex'])
     })
 })

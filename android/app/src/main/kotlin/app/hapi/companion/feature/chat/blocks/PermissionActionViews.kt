@@ -23,6 +23,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -216,8 +217,8 @@ private fun AskUserQuestionFooter(
     val questions = remember(tool.id, tool.input) { parseAskUserQuestions(tool.input, cursorDialect) }
 
     // Selection state per question index.
-    val selected = remember(tool.id) { mutableStateOf(mapOf<Int, Set<Int>>()) }
-    val otherText = remember(tool.id) { mutableStateOf(mapOf<Int, String>()) }
+    val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<Int, Set<Int>>()) }
+    val otherText = rememberSaveable(tool.id) { mutableStateOf(mapOf<Int, String>()) }
     var validationError by remember(tool.id) { mutableStateOf<String?>(null) }
 
     Column(
@@ -413,8 +414,8 @@ private fun RequestUserInputFooter(
     val resolving = override == PermissionRowOverride.Resolving
     val questions = remember(tool.id, tool.input) { parseRequestUserInputQuestions(tool.input) }
 
-    val selected = remember(tool.id) { mutableStateOf(mapOf<String, Set<String>>()) }
-    val notes = remember(tool.id) {
+    val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<String, Set<String>>()) }
+    val notes = rememberSaveable(tool.id) {
         mutableStateOf(questions.associate { it.id to it.prefill.orEmpty() })
     }
     var validationError by remember(tool.id) { mutableStateOf<String?>(null) }

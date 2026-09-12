@@ -2,7 +2,6 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import {
     detectHookEventName,
-    buildPreToolUseStdout,
     buildAgyPreToolUseStdout,
     runSessionHookForwarder
 } from './sessionHookForwarder';
@@ -16,23 +15,6 @@ describe('detectHookEventName', () => {
     it('returns null for non-JSON or missing event name', () => {
         expect(detectHookEventName('not json')).toBeNull();
         expect(detectHookEventName(JSON.stringify({ session_id: 'x' }))).toBeNull();
-    });
-});
-
-describe('buildPreToolUseStdout', () => {
-    it('wraps an allow decision in claude hookSpecificOutput shape', () => {
-        const out = JSON.parse(buildPreToolUseStdout({ permissionDecision: 'allow' }));
-        expect(out).toEqual({
-            hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' }
-        });
-    });
-
-    it('includes reason and updatedInput when present', () => {
-        const out = JSON.parse(
-            buildPreToolUseStdout({ permissionDecision: 'deny', reason: 'no', updatedInput: { a: 1 } })
-        );
-        expect(out.hookSpecificOutput.permissionDecisionReason).toBe('no');
-        expect(out.hookSpecificOutput.updatedInput).toEqual({ a: 1 });
     });
 });
 
@@ -126,68 +108,110 @@ describe('buildAgyPreToolUseStdout', () => {
     });
 });
 
-describe('runSessionHookForwarder — PreToolUse routing', () => {
-    it('POSTs PreToolUse to /hook/pre-tool-use and echoes the decision on stdout', async () => {
+describe('runSessionHookForwarder — PermissionRequest routing', () => {
+    it('preserves structured answers in the native PermissionRequest envelope', async () => {
+        const decision = { behavior: 'allow', updatedInput: { questions: [{ question: 'Color?' }], answers: { 'Color?': 'Blue,Green' } } };
+        const port = await startStub(() => ({ status: 200, body: JSON.stringify(decision) }));
+        const out = captureStdout();
+        try {
+            await withStdin(JSON.stringify({ hook_event_name: 'PermissionRequest' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok']));
+        } finally {
+            out.restore();
+        }
+        expect(JSON.parse(out.get())).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } });
+    });
+
+    it.each(['{}', 'null', 'invalid JSON', '{"behavior":"ask"}'])('makes no decision on an empty/invalid bridge reply: %s', async body => {
+        const port = await startStub(() => ({ status: 200, body }));
+        const out = captureStdout();
+        try {
+            await withStdin(JSON.stringify({ hook_event_name: 'PermissionRequest' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok']));
+        } finally {
+            out.restore();
+        }
+        expect(out.get()).toBe('');
+    });
+
+    it('forwards Claude PreToolUse as observation only, even if the server replies allow', async () => {
+        let hitPath = '';
+        const port = await startStub(path => {
+            hitPath = path;
+            return { status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) };
+        });
+        const out = captureStdout();
+        try {
+            await withStdin(JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 's-1', tool_use_id: 't-1' }),
+                () => runSessionHookForwarder(['--flavor', 'claude', '--port', String(port), '--token', 'tok']));
+        } finally {
+            out.restore();
+        }
+        expect(hitPath).toBe('/hook/session-start');
+        expect(out.get()).toBe('');
+    });
+
+    it('POSTs PermissionRequest to /hook/permission-request and echoes the decision on stdout', async () => {
         let hitPath = '';
         const port = await startStub((path) => {
             hitPath = path;
-            return { status: 200, body: JSON.stringify({ permissionDecision: 'allow' }) };
+            return { status: 200, body: JSON.stringify({ behavior: 'allow' }) };
         });
 
         const out = captureStdout();
         try {
             await withStdin(
-                JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'tc-1' }),
+                JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_use_id: 'tc-1' }),
                 () => runSessionHookForwarder(['--port', String(port), '--token', 'tok'])
             );
         } finally {
             out.restore();
         }
 
-        expect(hitPath).toBe('/hook/pre-tool-use');
+        expect(hitPath).toBe('/hook/permission-request');
         expect(JSON.parse(out.get())).toEqual({
-            hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' }
+            hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } }
         });
     });
 
-    it('fails closed (deny) when the bridge returns an error status', async () => {
+    it('leaves the native prompt unchanged when the bridge returns an error status', async () => {
         const port = await startStub(() => ({ status: 500, body: 'boom' }));
 
         const out = captureStdout();
         try {
             await withStdin(
-                JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_use_id: 'tc-2' }),
+                JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Write', tool_use_id: 'tc-2' }),
                 () => runSessionHookForwarder(['--port', String(port), '--token', 'tok'])
             );
         } finally {
             out.restore();
         }
 
-        expect(JSON.parse(out.get()).hookSpecificOutput.permissionDecision).toBe('deny');
+        expect(out.get()).toBe('');
     });
 
-    it('does not time out a slow PreToolUse approval (waits past the 1s SessionStart cap)', async () => {
+    it('does not time out a slow PermissionRequest approval (waits past the 1s SessionStart cap)', async () => {
         // The web approval modal can take far longer than the 1s fire-and-forget
-        // SessionStart forward cap. A forward-level timeout on the pre-tool-use
-        // POST would deny every approval the user doesn't answer within one
+        // SessionStart forward cap. A forward-level timeout on the permission
+        // POST would withdraw every approval the user doesn't answer within one
         // second (the hook-side timeout is 3600s). Regression guard: a 1.3s
         // reply (past SESSION_HOOK_FORWARD_TIMEOUT_MS = 1s) must still allow.
         const port = await startDelayedStub(1_300, {
             status: 200,
-            body: JSON.stringify({ permissionDecision: 'allow' })
+            body: JSON.stringify({ behavior: 'allow' })
         });
 
         const out = captureStdout();
         try {
             await withStdin(
-                JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'tc-slow' }),
+                JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_use_id: 'tc-slow' }),
                 () => runSessionHookForwarder(['--port', String(port), '--token', 'tok'])
             );
         } finally {
             out.restore();
         }
 
-        expect(JSON.parse(out.get()).hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(JSON.parse(out.get()).hookSpecificOutput.decision.behavior).toBe('allow');
     }, 10_000);
 
     it('routes SessionStart to /hook/session-start and writes nothing to stdout', async () => {

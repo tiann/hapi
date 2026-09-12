@@ -9,6 +9,7 @@ public enum MessageStatus: String, Codable, Sendable {
     case sending
     case sent
     case failed
+    case indeterminate
 }
 
 /// Wire tri-state of `invokedAt` (`pagination.md` "Queued semantics"):
@@ -101,7 +102,7 @@ public final class WindowMessage: Sendable, Equatable {
             createdAt: wire.createdAt,
             invokedAt: wire.invokedAt.map(InvokedAtField.number) ?? .null,
             scheduledAt: wire.scheduledAt,
-            status: status
+            status: status ?? (wire.deliveryState == "indeterminate" ? .indeterminate : nil)
         )
     }
 
@@ -151,6 +152,10 @@ public final class WindowMessage: Sendable, Equatable {
         )
     }
 
+    public func withDeliveryState(_ state: String?) -> WindowMessage {
+        withStatus(state == "indeterminate" ? .indeterminate : (status ?? .queued))
+    }
+
     /// Copy with the client-side status replaced.
     public func withStatus(_ status: MessageStatus) -> WindowMessage {
         WindowMessage(
@@ -170,7 +175,8 @@ public final class WindowMessage: Sendable, Equatable {
             content: content,
             createdAt: createdAt,
             invokedAt: invokedAt.numberValue,
-            scheduledAt: scheduledAt
+            scheduledAt: scheduledAt,
+            deliveryState: status == .indeterminate ? "indeterminate" : nil
         )
     }
 }

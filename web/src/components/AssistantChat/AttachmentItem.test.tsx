@@ -33,6 +33,21 @@ function renderAttachment() {
     )
 }
 
+function renderAttachmentWithControls() {
+    return render(
+        <I18nProvider>
+            <AttachmentItem
+                dragHandleProps={{
+                    onPointerDown: vi.fn(),
+                    onKeyDown: vi.fn(),
+                    ariaLabel: 'Reorder attachment notes.txt',
+                    title: 'Drag to reorder attachment',
+                }}
+            />
+        </I18nProvider>
+    )
+}
+
 describe('AttachmentItem', () => {
     it('renders an image preview with its filename and an always-visible remove button', () => {
         mocks.attachment = {
@@ -89,6 +104,25 @@ describe('AttachmentItem', () => {
 
         expect(screen.queryByRole('img')).not.toBeInTheDocument()
         expect(screen.getByText('notes.txt')).toBeInTheDocument()
+    })
+
+    it('uses centered, unboxed controls for non-image attachments', () => {
+        mocks.attachment = {
+            name: 'notes.txt',
+            status: { type: 'requires-action', reason: 'composer-send' }
+        }
+
+        renderAttachmentWithControls()
+
+        const dragHandle = screen.getByTestId('attachment-drag-handle')
+        const removeButton = screen.getByRole('button', { name: 'Remove attachment' })
+        expect(dragHandle.parentElement).toHaveClass('gap-1.5', 'px-2')
+
+        for (const control of [dragHandle, removeButton]) {
+            expect(control).toHaveClass('hapi-composer-attachment-file-control', 'h-6', 'w-6', '-mx-1', 'items-center')
+            expect(control).not.toHaveClass('absolute', 'top-1/2', '-translate-y-1/2')
+            expect(control.querySelector('span')).toBeNull()
+        }
     })
 
     it('keeps upload errors in the existing error layout', () => {

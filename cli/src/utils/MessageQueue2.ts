@@ -1,12 +1,25 @@
 import { logger } from "@/ui/logger";
 
-interface QueueItem<T> {
+export interface QueueItem<T> {
     message: string;
     mode: T;
     modeHash: string;
     localId?: string;
     isolate?: boolean; // If true, this message must be processed alone
+    /** Stable FIFO key used when an async reservation is restored later. */
+    enqueueOrder?: number;
 }
+
+export type QueueReservation<T> = {
+    item: QueueItem<T>;
+    index: number;
+    previousItem: QueueItem<T> | null;
+    nextItem: QueueItem<T> | null;
+    /** Once ambiguous, retries must remain held unless explicitly committed. */
+    originIndeterminate: boolean;
+    cancelReason?: 'explicit' | 'queue-reset';
+    state: 'reserved' | 'dispatching' | 'indeterminate' | 'cancelled';
+};
 
 /**
  * A mode-aware message queue that stores messages with their modes.
@@ -19,6 +32,10 @@ export class MessageQueue2<T> {
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
     onBatchConsumed: ((localIds: string[]) => void) | null = null;
     modeHasher: (mode: T) => string;
+    private readonly reservations = new Map<string, QueueReservation<T>>();
+    private readonly consumedReservations = new Set<string>();
+    private nextEnqueueOrder = 0;
+    private previousEnqueueOrder = -1;
 
     constructor(
         modeHasher: (mode: T) => string,
@@ -47,13 +64,16 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] push() called with mode hash: ${modeHash}`);
 
-        this.queue.push({
+        const item = {
             message,
             mode,
             modeHash,
             localId,
-            isolate: false
-        });
+            isolate: false,
+            enqueueOrder: this.nextEnqueueOrder++
+        };
+        Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
+        this.queue.push(item);
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
@@ -83,13 +103,16 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] pushImmediate() called with mode hash: ${modeHash}`);
 
-        this.queue.push({
+        const item = {
             message,
             mode,
             modeHash,
             localId,
-            isolate: false
-        });
+            isolate: false,
+            enqueueOrder: this.nextEnqueueOrder++
+        };
+        Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
+        this.queue.push(item);
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
@@ -122,13 +145,16 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] pushIsolated() called with mode hash: ${modeHash} - preserving ${this.queue.length} pending messages`);
 
-        this.queue.push({
+        const item = {
             message,
             mode,
             modeHash,
             localId,
-            isolate: true
-        });
+            isolate: true,
+            enqueueOrder: this.nextEnqueueOrder++
+        };
+        Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
+        this.queue.push(item);
 
         if (this.onMessageHandler) {
             this.onMessageHandler(message, mode);
@@ -159,14 +185,20 @@ export class MessageQueue2<T> {
 
         // Clear any pending messages to ensure this message is processed in complete isolation
         this.queue = [];
+        // Reservations live outside this.queue; a steer awaiting an explicit
+        // rejection must not restore a prompt the clear command discarded.
+        this.cancelReservations();
 
-        this.queue.push({
+        const item = {
             message,
             mode,
             modeHash,
             localId,
-            isolate: true
-        });
+            isolate: true,
+            enqueueOrder: this.nextEnqueueOrder++
+        };
+        Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
+        this.queue.push(item);
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
@@ -195,13 +227,16 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] unshift() called with mode hash: ${modeHash}`);
 
-        this.queue.unshift({
+        const item = {
             message,
             mode,
             modeHash,
             localId,
-            isolate: false
-        });
+            isolate: false,
+            enqueueOrder: this.previousEnqueueOrder--
+        };
+        Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
+        this.queue.unshift(item);
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
@@ -234,13 +269,16 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] unshiftIsolated() called with mode hash: ${modeHash}`);
 
-        this.queue.unshift({
+        const item = {
             message,
             mode,
             modeHash,
             localId,
-            isolate: true
-        });
+            isolate: true,
+            enqueueOrder: this.previousEnqueueOrder--
+        };
+        Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
+        this.queue.unshift(item);
 
         if (this.onMessageHandler) {
             this.onMessageHandler(message, mode);
@@ -261,20 +299,207 @@ export class MessageQueue2<T> {
      * Best-effort: if the CLI is offline when cancel is issued, the message
      * may already have been collected for invocation and won't be found here.
      */
-    cancelByLocalId(localId: string): boolean {
+    cancelByLocalId(localId: string): boolean | 'in-flight' | 'indeterminate' | 'consumed' {
         if (!localId) return false;
         const idx = this.queue.findIndex(item => item.localId === localId);
-        if (idx === -1) return false;
-        this.queue.splice(idx, 1);
+        if (idx !== -1) {
+            this.queue.splice(idx, 1);
+            return true;
+        }
+        const reservation = this.reservations.get(localId);
+        if (!reservation) {
+            return this.consumedReservations.has(localId) ? 'consumed' : false;
+        }
+        if (reservation.state === 'dispatching') {
+            // The row is inside an async steer: it cannot be removed, but it is
+            // also NOT already consumed — the hub must not stamp invoked_at.
+            return 'in-flight';
+        }
+        if (reservation.state === 'indeterminate') {
+            // Explicit Cancel/ Edit is the user's resolution of an unknown
+            // outcome; release the held reservation so it cannot settle later.
+            reservation.cancelReason = 'explicit';
+            reservation.state = 'cancelled';
+            this.reservations.delete(localId);
+            return true;
+        }
+        reservation.cancelReason = 'explicit';
+        reservation.state = 'cancelled';
+        this.reservations.delete(localId);
         return true;
+    }
+
+    /**
+     * Look up a queued item by localId without removing it.
+     */
+    peekByLocalId(localId: string): QueueItem<T> | null {
+        if (!localId) return null;
+        return this.queue.find(item => item.localId === localId) ?? null;
+    }
+
+    /**
+     * Remove and return a queued item by localId (with its original index),
+     * or null if not found. Pair with {@link restoreTakenItem} when an async
+     * operation may need to put the item back in order.
+     */
+    takeByLocalId(localId: string): QueueReservation<T> | null {
+        if (!localId) return null;
+
+        // An indeterminate steer is deliberately held outside the normal queue.
+        // A later explicit Steer retries that same reservation; automatic queue
+        // drains never see it.
+        const existing = this.reservations.get(localId);
+        if (existing) {
+            if (existing.state !== 'indeterminate') return null;
+            existing.state = 'reserved';
+            return existing;
+        }
+
+        const idx = this.queue.findIndex(item => item.localId === localId);
+        if (idx === -1) return null;
+        const [item] = this.queue.splice(idx, 1);
+        if (!item) return null;
+        const reservation: QueueReservation<T> = {
+            item,
+            index: idx,
+            previousItem: this.queue[idx - 1] ?? null,
+            nextItem: this.queue[idx] ?? null,
+            originIndeterminate: false,
+            state: 'reserved'
+        };
+        if (item.localId) {
+            this.reservations.set(item.localId, reservation);
+        }
+        return reservation;
+    }
+
+    /**
+     * Re-insert an item previously removed by {@link takeByLocalId} at its
+     * original index (clamped if the queue shrank).
+     */
+    restoreReservation(reservation: QueueReservation<T>): boolean {
+        if (reservation.state === 'cancelled') {
+            return false;
+        }
+        if (reservation.originIndeterminate) {
+            reservation.state = 'indeterminate';
+            return true;
+        }
+        if (this.closed) {
+            throw new Error('Cannot restore into closed queue');
+        }
+        if (reservation.item.localId) {
+            if (this.reservations.get(reservation.item.localId) !== reservation) {
+                return false;
+            }
+            this.reservations.delete(reservation.item.localId);
+        }
+        const order = reservation.item.enqueueOrder;
+        const orderedIndex = order === undefined
+            ? -1
+            : this.queue.findIndex((item) => item.enqueueOrder !== undefined && item.enqueueOrder > order);
+        const nextIndex = reservation.nextItem
+            ? this.queue.indexOf(reservation.nextItem)
+            : -1;
+        const previousIndex = reservation.previousItem
+            ? this.queue.indexOf(reservation.previousItem)
+            : -1;
+        const idx = orderedIndex >= 0
+            ? orderedIndex
+            : nextIndex >= 0
+                ? nextIndex
+                : previousIndex >= 0
+                    ? previousIndex + 1
+                    : this.queue.length;
+        this.queue.splice(idx, 0, reservation.item);
+        if (this.waiter) {
+            const waiter = this.waiter;
+            this.waiter = null;
+            waiter(true);
+        }
+        return true;
+    }
+
+    commitReservation(reservation: QueueReservation<T>): boolean {
+        if (reservation.state === 'cancelled' && reservation.cancelReason !== 'queue-reset') {
+            return false;
+        }
+        if (reservation.item.localId) {
+            const active = this.reservations.get(reservation.item.localId);
+            if (active === reservation) {
+                this.reservations.delete(reservation.item.localId);
+            } else if (reservation.cancelReason !== 'queue-reset') {
+                return false;
+            }
+            this.rememberConsumedReservation(reservation.item.localId);
+        }
+        return true;
+    }
+
+    beginReservationDispatch(reservation: QueueReservation<T>): boolean {
+        if (reservation.state !== 'reserved') {
+            return false;
+        }
+        if (reservation.item.localId && this.reservations.get(reservation.item.localId) !== reservation) {
+            return false;
+        }
+        reservation.state = 'dispatching';
+        return true;
+    }
+
+    restoreTakenItem(taken: QueueReservation<T>): void {
+        this.restoreReservation(taken);
+    }
+
+    /** Release a held reservation only for the explicit retry path. */
+    releaseIndeterminateReservation(localId: string): boolean {
+        const reservation = this.reservations.get(localId);
+        if (!reservation || reservation.state !== 'indeterminate') return false;
+        reservation.cancelReason = 'explicit';
+        reservation.state = 'cancelled';
+        this.reservations.delete(localId);
+        return true;
+    }
+
+    /** Hold a dispatched steer for explicit retry/cancel without replaying it. */
+    markReservationIndeterminate(reservation: QueueReservation<T>): boolean {
+        if (reservation.state !== 'dispatching') return false;
+        if (reservation.item.localId && this.reservations.get(reservation.item.localId) !== reservation) {
+            return false;
+        }
+        reservation.originIndeterminate = true;
+        reservation.state = 'indeterminate';
+        return true;
+    }
+
+    private rememberConsumedReservation(localId: string): void {
+        this.consumedReservations.delete(localId);
+        this.consumedReservations.add(localId);
+        while (this.consumedReservations.size > 256) {
+            const oldest = this.consumedReservations.values().next().value;
+            if (oldest === undefined) break;
+            this.consumedReservations.delete(oldest);
+        }
+    }
+
+    private cancelReservations(preserveDispatching = false): void {
+        for (const [localId, reservation] of this.reservations) {
+            if (preserveDispatching && (reservation.state === 'dispatching' || reservation.state === 'indeterminate')) {
+                continue;
+            }
+            reservation.cancelReason = 'queue-reset';
+            reservation.state = 'cancelled';
+            this.reservations.delete(localId);
+        }
     }
 
     /**
      * Reset the queue - clears all messages and resets to empty state
      */
-    reset(): void {
+    reset(options?: { preserveDispatchingReservations?: boolean }): void {
         logger.debug(`[MessageQueue2] reset() called. Clearing ${this.queue.length} messages`);
         this.queue = [];
+        this.cancelReservations(options?.preserveDispatchingReservations === true);
         this.closed = false;
 
         // Clear waiter without calling it since we're not closing
@@ -298,6 +523,7 @@ export class MessageQueue2<T> {
     close(): void {
         logger.debug(`[MessageQueue2] close() called`);
         this.closed = true;
+        this.cancelReservations();
 
         // Notify any waiting caller
         if (this.waiter) {

@@ -83,7 +83,7 @@ The runner supports spawning sessions with different AI agents:
 | Agent | Command | Token Environment |
 |-------|---------|-------------------|
 | `claude` (default) | `hapi claude` | `CLAUDE_CODE_OAUTH_TOKEN` |
-| `codex` | `hapi codex` | `CODEX_HOME` (temp directory with `auth.json`) |
+| `codex` | `hapi codex` | `CODEX_HOME` (temp directory with `auth.json` and a copy of user `config.toml`) |
 | `grok` | `hapi grok` | Grok CLI login or `XAI_API_KEY` |
 | `opencode` | `hapi opencode` | OpenCode config (no token injection) |
 
@@ -91,7 +91,7 @@ The runner supports spawning sessions with different AI agents:
 
 When spawning a session with a token:
 - **Claude**: Sets `CLAUDE_CODE_OAUTH_TOKEN` environment variable
-- **Codex**: Creates temp directory at `os.tmpdir()/hapi-codex-*`, writes token to `auth.json`, sets `CODEX_HOME`
+- **Codex**: Creates temp directory at `os.tmpdir()/hapi-codex-*`, copies the user's `config.toml` when present, writes the token to `auth.json`, and sets `CODEX_HOME`. Only the config file is copied so user MCP settings survive without copying unrelated Codex state; the copied config is cleaned up when the child exits or fails to start. Windows package-manager MCP commands are proxied by the Codex launcher path; listed `env_vars` remain the source of external MCP credentials.
 - **Grok Build**: No token injection; relies on Grok CLI login or `XAI_API_KEY` in the runner environment
 - **OpenCode**: No token injection; relies on OpenCode's own configuration
 

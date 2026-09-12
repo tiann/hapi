@@ -4,6 +4,7 @@ import type { ApiClient } from '@/api/client'
 vi.mock('./message-window-store', () => ({
     getQueuedReconcileCandidateLocalIds: vi.fn(),
     markMessagesConsumed: vi.fn(),
+    markMessagesIndeterminate: vi.fn(),
     reconcileQueuedLocalIds: vi.fn(),
     syncTailMessages: vi.fn(),
 }))
@@ -11,6 +12,7 @@ vi.mock('./message-window-store', () => ({
 import {
     getQueuedReconcileCandidateLocalIds,
     markMessagesConsumed,
+    markMessagesIndeterminate,
     reconcileQueuedLocalIds,
     syncTailMessages,
 } from './message-window-store'
@@ -19,6 +21,7 @@ import { reconcileQueuedStateAfterConnect } from './queued-state-reconciliation'
 const mockSyncTailMessages = vi.mocked(syncTailMessages)
 const mockGetCandidates = vi.mocked(getQueuedReconcileCandidateLocalIds)
 const mockMarkMessagesConsumed = vi.mocked(markMessagesConsumed)
+const mockMarkMessagesIndeterminate = vi.mocked(markMessagesIndeterminate)
 const mockReconcileQueuedLocalIds = vi.mocked(reconcileQueuedLocalIds)
 
 function createMockApi(
@@ -35,6 +38,7 @@ describe('reconcileQueuedStateAfterConnect', () => {
         vi.clearAllMocks()
         mockSyncTailMessages.mockResolvedValue(undefined)
         mockGetCandidates.mockReturnValue([])
+        mockMarkMessagesIndeterminate.mockClear()
     })
 
     it('waits for the latest messages before snapshotting and querying queued state', async () => {

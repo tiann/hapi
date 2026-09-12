@@ -76,6 +76,23 @@ describe('EffortField', () => {
         expect(container.querySelector('select')).toBeNull()
     })
 
+    it('filters Pi thinking levels by the selected model thinkingLevelMap', () => {
+        const { container } = render(
+            <EffortField
+                {...baseProps}
+                agent="pi"
+                piSelectedModel={{
+                    reasoning: true,
+                    thinkingLevelMap: { off: null, minimal: null, xhigh: 'xhigh', max: 'max' },
+                }}
+            />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'auto', 'low', 'medium', 'high', 'xhigh', 'max'
+        ])
+    })
+
     it('renders Codex reasoning effort options', () => {
         const { container } = render(
             <EffortField {...baseProps} agent="codex" />
@@ -93,5 +110,32 @@ describe('EffortField', () => {
             <EffortField {...baseProps} agent="agy" />
         )
         expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('renders OpenCode dynamic variants with a default entry', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={['low', 'high', 'max']} />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'default', 'low', 'high', 'max'
+        ])
+    })
+
+    it('hides the OpenCode effort field when variants are an empty array', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={[]} />
+        )
+        expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('falls back to static OpenCode presets when variants are not provided', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={null} />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'default', 'low', 'medium', 'high', 'max'
+        ])
     })
 })

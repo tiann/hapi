@@ -125,6 +125,7 @@
                 "tone": "danger"
             }
         ],
+        "dsh": [],
         "gemini": [
             {
                 "label": "Default",

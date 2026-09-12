@@ -4,10 +4,11 @@
  */
 
 import { existsSync } from 'node:fs'
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { logger } from '@/ui/logger'
+import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand'
 
 const windowsPath = path.win32
 
@@ -97,7 +98,7 @@ function findWindowsClaudePath(): string | null {
  * On Unix: Returns 'claude' if command works, or actual path via which
  * Runs from home directory to avoid local cwd side effects
  */
-function findGlobalClaudePath(): string | null {
+function findGlobalClaudePath(env: Record<string, string | undefined>): string | null {
     const homeDir = homedir()
 
     // Windows: Always return absolute path for shell: false compatibility
@@ -105,35 +106,13 @@ function findGlobalClaudePath(): string | null {
         return findWindowsClaudePath()
     }
 
-    // Unix: Check if 'claude' command works directly from home dir
-    try {
-        execSync('claude --version', {
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homeDir
-        })
-        logger.debug('[Claude SDK] Global claude command available')
-        return 'claude'
-    } catch {
-        // claude command not available globally
-    }
-
-    // FALLBACK for Unix: try which to get actual path
-    try {
-        const result = execSync('which claude', {
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homeDir
-        }).trim()
-        if (result && existsSync(result)) {
-            logger.debug(`[Claude SDK] Found global claude path via which: ${result}`)
-            return result
-        }
-    } catch {
-        // which didn't find it
-    }
-
-    return null
+    const resolved = resolveExecutable('claude', {
+        pathValue: env.PATH,
+        pathExt: env.PATHEXT,
+        cwd: homeDir,
+    })
+    if (resolved) logger.debug(`[Claude SDK] Found global claude path: ${resolved}`)
+    return resolved
 }
 
 /**
@@ -142,12 +121,14 @@ function findGlobalClaudePath(): string | null {
  * Environment variables:
  * - HAPI_CLAUDE_PATH: Force a specific path to claude executable
  */
-export function getDefaultClaudeCodePath(): string {
+export function getDefaultClaudeCodePath(
+    env: Record<string, string | undefined> = process.env,
+): string {
     // Allow explicit override via env var. On Windows, tolerate npm
     // shim paths (`claude.cmd` / extensionless `claude`) by resolving them
     // to the real `claude.exe` because Claude is spawned with shell:false.
-    if (process.env.HAPI_CLAUDE_PATH) {
-        const configuredPath = process.env.HAPI_CLAUDE_PATH
+    if (env.HAPI_CLAUDE_PATH) {
+        const configuredPath = getAgentLaunchCommand('claude', env)
         if (process.platform === 'win32') {
             const resolved = resolveWindowsClaudePathCandidate(configuredPath)
             if (resolved) {
@@ -160,7 +141,7 @@ export function getDefaultClaudeCodePath(): string {
     }
 
     // Find global claude
-    const globalPath = findGlobalClaudePath()
+    const globalPath = findGlobalClaudePath(env)
     if (!globalPath) {
         throw new Error('Claude Code CLI not found on PATH. Install Claude Code or set HAPI_CLAUDE_PATH.')
     }

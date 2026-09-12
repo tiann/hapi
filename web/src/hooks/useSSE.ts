@@ -21,7 +21,8 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
+import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
+import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import { applySessionDetailPatch } from '@/lib/sessionPatch'
 
 // Pure patch-application rules live in @/lib/sessionPatch (React-free, shared
@@ -40,6 +41,8 @@ export type SSEScope = 'global' | 'full'
 const MESSAGE_STREAM_EVENT_TYPES = new Set<SyncEvent['type']>([
     'message-received',
     'messages-consumed',
+    'messages-indeterminate',
+    'messages-requeued',
     'message-cancelled',
     'scheduled-matured'
 ])
@@ -680,6 +683,8 @@ export function useSSE(options: {
                 if (
                     event.type === 'message-cancelled'
                     || event.type === 'messages-consumed'
+                    || event.type === 'messages-indeterminate'
+                    || event.type === 'messages-requeued'
                     || event.type === 'scheduled-matured'
                 ) {
                     queueSessionListInvalidation()
@@ -689,7 +694,13 @@ export function useSSE(options: {
                 // reconnect gaps or while another session is selected, only the global
                 // connection may be alive — still clear the queued bar / optimistic rows.
                 if (event.type === 'messages-consumed') {
-                    markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
+                    markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt, event.steered)
+                }
+                if (event.type === 'messages-indeterminate') {
+                    markMessagesIndeterminate(event.sessionId, event.localIds)
+                }
+                if (event.type === 'messages-requeued') {
+                    markMessagesRequeued(event.sessionId, event.localIds)
                 }
                 if (event.type === 'message-cancelled') {
                     removeOptimisticMessage(event.sessionId, event.messageId)
@@ -699,7 +710,15 @@ export function useSSE(options: {
             }
 
             if (event.type === 'messages-consumed') {
-                markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
+                markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt, event.steered)
+            }
+
+            if (event.type === 'messages-indeterminate') {
+                markMessagesIndeterminate(event.sessionId, event.localIds)
+            }
+
+            if (event.type === 'messages-requeued') {
+                markMessagesRequeued(event.sessionId, event.localIds)
             }
 
             if (event.type === 'message-cancelled') {
@@ -744,6 +763,10 @@ export function useSSE(options: {
                         queueSessionListInvalidation()
                     }
                 }
+            }
+
+            if (event.type === 'machine-agy-models-updated') {
+                void applyAgyCatalogAnnouncement(queryClient, event.machineId)
             }
 
             if (event.type === 'machine-updated') {

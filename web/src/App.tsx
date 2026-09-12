@@ -9,19 +9,23 @@ import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
+import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
+import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
 import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib/appSseSubscriptions'
+import { canUseAppBadging, useAppBadge } from '@/hooks/useAppBadge'
+import { useAppBadgePreference } from '@/hooks/useAppBadgePreference'
 import { reconcileQueuedStateAfterConnect } from '@/lib/queued-state-reconciliation'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
@@ -172,6 +176,20 @@ function AppInner() {
     const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
     const pushPromptedRef = useRef(false)
+    const { appBadgeEnabled: appBadgePreferenceEnabled } = useAppBadgePreference()
+    const appBadgeEnabled = Boolean(api && token && appBadgePreferenceEnabled && canUseAppBadging())
+    const {
+        sessions: appBadgeSessions,
+        isLoading: appBadgeSessionsLoading,
+        error: appBadgeSessionsError,
+    } = useSessions(api, { enabled: appBadgeEnabled })
+    useAppBadge({
+        enabled: appBadgeEnabled,
+        scope: baseUrl,
+        sessions: appBadgeSessions,
+        isLoading: appBadgeSessionsLoading,
+        hasError: Boolean(appBadgeSessionsError),
+    })
     const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
 
     useEffect(() => {
@@ -260,7 +278,8 @@ function AppInner() {
             // freshness window on `useSession`, a previously-viewed session that
             // received updates during the SSE gap would otherwise serve stale
             // cached data on remount.  See tiann/hapi#884.
-            queryClient.invalidateQueries({ queryKey: ['session'] })
+            queryClient.invalidateQueries({ queryKey: ['session'] }),
+            refreshAllAgyCatalogs(queryClient)
         ]
         const refreshMessages = (selectedSessionId && api)
             ? syncTailMessages(api, selectedSessionId)
@@ -291,7 +310,11 @@ function AppInner() {
         if (!api || event.sessionId !== selectedSessionId) {
             return
         }
-        clearMessageWindow(event.sessionId)
+        if (event.reason === 'rewind' && event.truncateFromLocalId) {
+            rewindMessageWindow(event.sessionId, event.truncateFromLocalId)
+        } else {
+            clearMessageWindow(event.sessionId)
+        }
         void syncTailMessages(api, event.sessionId)
     }, [api, selectedSessionId])
 

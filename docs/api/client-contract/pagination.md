@@ -140,9 +140,11 @@ Lifecycle:
 2. On POST success: status → `queued` if the session is currently thinking, else `sent`. On failure: drop the row and restore the composer (or keep it as `failed` with a retry affordance when attachments are involved).
 3. **Echo**: the hub emits `message-received` carrying the stored row (server `id`, real `seq`, same `localId`). Merging a stored row whose `localId` matches an optimistic row **replaces** the optimistic one, preserving the client-side `status` and any already-known `invokedAt` the server row lacks. Fallback when no `localId` echo matches: drop an optimistic `sent` row when a server user message lands within **10 s** of the same position.
 4. **`messages-consumed {localIds, invokedAt}`** (SSE): stamp `invokedAt` and flip status to `sent` on matching rows (skip `failed` ones). This is what moves a message out of the queued bar and into the thread at its invocation position.
-5. **`message-cancelled {messageId, localId?}`** (SSE): remove the row (match either id).
+5. **`messages-indeterminate {localIds}`** (SSE): the steer outcome is unknown. Keep `invokedAt: null`, mark `deliveryState:'indeterminate'`, exclude the row from automatic replay, and show explicit Retry/Cancel actions.
+6. **`messages-requeued {localIds}`** (SSE): an explicit Retry restored normal queue delivery; clear `deliveryState`.
+7. **`message-cancelled {messageId, localId?}`** (SSE): remove the row (match either id).
 
-**Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly** and `status !== 'failed'`. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, rows sent without a `localId` are stamped invoked at insert and can never be queued.
+**Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly**, `deliveryState !== 'indeterminate'`, and `status !== 'failed'`. An indeterminate row remains visible in the unresolved-delivery bar but is not eligible for automatic delivery. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, rows sent without a `localId` are stamped invoked at insert and can never be queued.
 
 ### Queued-state recovery
 
@@ -179,6 +181,7 @@ Response `{"ok": true}`. Sending to an inactive session returns `409 {"error":"S
 |---|---|---|
 | `{"status":"cancelled","localId":string\|null}` | Row deleted (or already gone). Bumps the epoch. | Remove the row. |
 | `{"status":"invoked","message":DecryptedMessage}` | Too late — the agent consumed it before the cancel landed. | **Ingest the returned message** as the authoritative row (correct `invokedAt`, status `sent`); do not resurrect the queued snapshot. |
+| `{"status":"busy","localId":string}` | A live steer is still resolving. | Restore the row as indeterminate; reconcile queued state before allowing Retry/Cancel. |
 
 Other subscribers learn the same outcome via `message-cancelled` / `messages-consumed` SSE events.
 

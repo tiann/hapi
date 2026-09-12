@@ -35,6 +35,7 @@ export const OpencodeClearOperationSchema = z.object({
 export type OpencodeClearOperation = z.infer<typeof OpencodeClearOperationSchema>
 
 const SessionCapabilitiesSchema = z.object({
+    concurrentClients: z.boolean().optional(),
     terminal: z.boolean().optional(),
     conversationHistory: ConversationHistoryCapabilitiesSchema.optional()
 })
@@ -166,6 +167,8 @@ export type Metadata = z.infer<typeof MetadataSchema>
 
 export const AgentStateRequestSchema = z.object({
     tool: z.string(),
+    // Correlation only; replies use the request map key, never this tool id.
+    toolCallId: z.string().optional(),
     arguments: z.unknown(),
     createdAt: z.number().nullish()
 })
@@ -174,10 +177,11 @@ export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>
 
 export const AgentStateCompletedRequestSchema = z.object({
     tool: z.string(),
+    toolCallId: z.string().optional(),
     arguments: z.unknown(),
     createdAt: z.number().nullish(),
     completedAt: z.number().nullish(),
-    status: z.enum(['canceled', 'denied', 'approved']),
+    status: z.enum(['canceled', 'denied', 'approved', 'resolved']),
     reason: z.string().optional(),
     mode: z.string().optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
@@ -194,6 +198,9 @@ export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedReque
 
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
+    // True while the CLI is delivering a queued message into the active turn
+    // (Steer). Surfaced so the web can reflect the inject in progress.
+    steeringActive: z.boolean().nullish(),
     // The mode the session was started in. Persisted so reopen/resume can
     // re-spawn in the same mode — notably 'pty', which has no agent terminal
     // otherwise (a reopened PTY session would silently fall back to 'remote').
@@ -296,12 +303,18 @@ export const DecryptedMessageSchema = z.object({
     content: z.unknown(),
     createdAt: z.number(),
     invokedAt: z.number().nullable().optional(),
-    scheduledAt: z.number().nullable().optional()
+    scheduledAt: z.number().nullable().optional(),
+    // The agent was sent the steer but its final outcome could not be proven.
+    // The row stays uninvoked and requires an explicit user resolution.
+    deliveryState: z.literal('indeterminate').optional(),
+    // Live signal via messages-consumed (steered:true); not persisted by the hub.
+    steered: z.boolean().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
 
 export const SessionSchema = z.object({
+    hasConversationContent: z.boolean().optional(),
     id: z.string(),
     namespace: z.string(),
     seq: z.number(),
@@ -462,6 +475,7 @@ export const RunnerStateSchema = z.object({
     httpPort: z.number().optional(),
     startedAt: z.number().optional(),
     capabilities: z.object({
+        codexSharedRuntime: z.literal(true).optional(),
         piExistingSessionResume: z.literal(true).optional(),
         agentConfigs: z.array(AgentConfigDescriptorSchema).optional()
     }).optional(),
@@ -550,7 +564,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         message: DecryptedMessageSchema
     }),
     SessionChangedSchema.extend({
-        type: z.literal('messages-invalidated')
+        type: z.literal('messages-invalidated'),
+        reason: z.literal('rewind').optional(),
+        truncateFromLocalId: z.string().min(1).optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('scheduled-matured')
@@ -562,6 +578,14 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     MachineChangedSchema.extend({
         type: z.literal('machine-updated'),
         data: MachineUpdatedDataSchema.optional()
+    }),
+    /**
+     * The machine re-checked `agy models` in the background and the listing
+     * changed. Carries no catalog: clients refetch the machine's agy-models
+     * route, which answers from the machine's cache.
+     */
+    MachineChangedSchema.extend({
+        type: z.literal('machine-agy-models-updated')
     }),
     SessionEventBaseSchema.extend({
         type: z.literal('toast'),
@@ -575,7 +599,17 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('messages-consumed'),
         localIds: z.array(z.string()),
-        invokedAt: z.number()
+        invokedAt: z.number(),
+        // True when messages were steered into an active turn (not a normal queue drain).
+        steered: z.boolean().optional()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('messages-indeterminate'),
+        localIds: z.array(z.string())
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('messages-requeued'),
+        localIds: z.array(z.string())
     }),
     SessionChangedSchema.extend({
         type: z.literal('message-cancelled'),
@@ -609,6 +643,8 @@ export type SyncEvent = z.infer<typeof SyncEventSchema>
 export const CancelMessageResponseSchema = z.discriminatedUnion('status', [
     z.object({ status: z.literal('cancelled'), localId: z.string().nullable() }),
     z.object({ status: z.literal('invoked'), message: DecryptedMessageSchema }),
+    // The row is inside an async steer: not removed, but not consumed either.
+    z.object({ status: z.literal('busy'), localId: z.string() }),
 ])
 
 export type CancelMessageResponse = z.infer<typeof CancelMessageResponseSchema>

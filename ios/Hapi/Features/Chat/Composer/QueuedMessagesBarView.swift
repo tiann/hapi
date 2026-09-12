@@ -46,6 +46,11 @@ private struct QueuedRowView: View {
                 Text(row.text.isEmpty ? row.attachmentNames.joined(separator: ", ") : row.text)
                     .font(.footnote)
                     .lineLimit(2)
+                if row.indeterminate {
+                    Text("Delivery outcome unknown")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
                 if let scheduledAt = row.scheduledAt {
                     Text("Scheduled · \(Self.timeLabel(scheduledAt))")
                         .font(.caption2)
@@ -53,7 +58,13 @@ private struct QueuedRowView: View {
                 }
             }
             Spacer(minLength: 8)
-            if row.canSteer {
+            if row.indeterminate {
+                Button("Retry") {
+                    interactor.retryIndeterminateMessage(row.id)
+                }
+                .font(.footnote.weight(.medium))
+                .disabled(!row.canAct)
+            } else if row.canSteer {
                 Button("Steer") {
                     interactor.steerQueuedMessage(row.id)
                 }

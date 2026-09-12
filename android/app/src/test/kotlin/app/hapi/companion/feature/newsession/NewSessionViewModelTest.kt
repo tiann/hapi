@@ -4,6 +4,9 @@ package app.hapi.companion.feature.newsession
 
 import app.hapi.data.api.ApiError
 import app.hapi.data.store.MachineListStore
+import app.hapi.protocol.catalog.AgentFlavor
+import app.hapi.protocol.wire.AgentAvailabilityEntry
+import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.HapiJson
@@ -11,9 +14,12 @@ import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MachineDirectoryEntry
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachineMetadata
+import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 import app.hapi.protocol.wire.SyncEvent
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.suspendCoroutine
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -28,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
@@ -40,26 +47,49 @@ private class FakeGateway : NewSessionGateway {
     val pathsExistCalls = mutableListOf<Pair<String, List<String>>>()
     val spawnCalls = mutableListOf<Pair<String, SpawnSessionRequest>>()
     val codexCalls = mutableListOf<String>()
+    val availabilityCalls = mutableListOf<String>()
+    val includeHiddenCalls = mutableListOf<Boolean>()
 
     var entries: List<MachineDirectoryEntry> = emptyList()
     var existsAnswer: (String) -> Boolean? = { true }
     var spawnResult: SpawnResponse = SpawnResponse(type = "success", sessionId = "s-new")
     var codexResult: CodexModelsResponse = CodexModelsResponse(success = true, models = emptyList())
     var codexThrows: Exception? = null
+    var availabilityResult = AgentAvailabilityResponse(
+        AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
+    )
+    var availabilityThrows: Exception? = null
+    var outsideWorkspaceRoots: Set<String> = emptySet()
+    var listDirectoryHandler: (suspend (String, Boolean) -> MachineListDirectoryResponse)? = null
 
     override suspend fun spawn(machineId: String, request: SpawnSessionRequest): SpawnResponse {
         spawnCalls.add(machineId to request)
         return spawnResult
     }
 
-    override suspend fun listDirectory(machineId: String, path: String): MachineListDirectoryResponse {
+    override suspend fun listDirectory(
+        machineId: String,
+        path: String,
+        includeHidden: Boolean,
+    ): MachineListDirectoryResponse {
         listDirectoryCalls.add(machineId to path)
+        includeHiddenCalls.add(includeHidden)
+        listDirectoryHandler?.let { return it(path, includeHidden) }
         return MachineListDirectoryResponse(success = true, entries = entries)
     }
 
-    override suspend fun pathsExist(machineId: String, paths: List<String>): Map<String, Boolean> {
+    override suspend fun pathsExist(machineId: String, paths: List<String>): MachinePathsExistsResponse {
         pathsExistCalls.add(machineId to paths)
-        return paths.mapNotNull { path -> existsAnswer(path)?.let { path to it } }.toMap()
+        return MachinePathsExistsResponse(
+            exists = paths.mapNotNull { path -> existsAnswer(path)?.let { path to it } }.toMap(),
+            outsideWorkspaceRoots = paths.filter { it in outsideWorkspaceRoots }.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    override suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse {
+        availabilityCalls.add(machineId)
+        availabilityThrows?.let { throw it }
+        return availabilityResult
     }
 
     override suspend fun codexModels(machineId: String): CodexModelsResponse {
@@ -99,7 +129,12 @@ private class FakePrefs(
     }
 }
 
-private fun machine(id: String, host: String = "devbox"): Machine = Machine(
+private fun machine(
+    id: String,
+    host: String = "devbox",
+    homeDir: String? = null,
+    workspaceRoots: List<String>? = null,
+): Machine = Machine(
     id = id,
     namespace = "default",
     seq = 1,
@@ -107,7 +142,13 @@ private fun machine(id: String, host: String = "devbox"): Machine = Machine(
     updatedAt = 1,
     active = true,
     activeAt = 1,
-    metadata = MachineMetadata(host = host, platform = "linux", happyCliVersion = "1.0.0"),
+    metadata = MachineMetadata(
+        host = host,
+        platform = "linux",
+        happyCliVersion = "1.0.0",
+        homeDir = homeDir,
+        workspaceRoots = workspaceRoots,
+    ),
     metadataVersion = 1,
     runnerState = null,
     runnerStateVersion = 1,
@@ -123,7 +164,7 @@ private fun encode(request: SpawnSessionRequest): JsonObject =
 class SpawnBodyTest {
 
     @Test
-    fun `claude simple session with model, effort and yolo off`() {
+    fun `claude simple session with model, effort and permission mode`() {
         val body = encode(
             NewSessionLogic.buildSpawnRequest(
                 NewSessionForm(
@@ -132,23 +173,27 @@ class SpawnBodyTest {
                     agent = "claude",
                     model = "opus",
                     effort = "high",
-                    yolo = false,
+                    permissionMode = "plan",
+                    yolo = true,
                 ),
                 codexFastTierVisible = false,
             ),
         )
-        // Exact SpawnSessionRequestSchema field set — yolo false IS sent for
-        // claude; permissionMode / reasoning / codex fields are absent.
+        // Exact SpawnSessionRequestSchema field set — claude is on the native
+        // permission select now, so permissionMode IS sent (even a picked
+        // non-default mode) and yolo is absent, even when set on the form (a
+        // stale toggle value from before the flavor switch).
         assertEquals(
-            setOf("directory", "agent", "model", "effort", "yolo", "sessionType"),
+            setOf("directory", "agent", "model", "effort", "permissionMode", "sessionType"),
             body.keys,
         )
         assertEquals("/data/github/hapi", body["directory"]!!.jsonPrimitive.content)
         assertEquals("claude", body["agent"]!!.jsonPrimitive.content)
         assertEquals("opus", body["model"]!!.jsonPrimitive.content)
         assertEquals("high", body["effort"]!!.jsonPrimitive.content)
-        assertEquals(false, body["yolo"]!!.jsonPrimitive.boolean)
+        assertEquals("plan", body["permissionMode"]!!.jsonPrimitive.content)
         assertEquals("simple", body["sessionType"]!!.jsonPrimitive.content)
+        assertNull(body["yolo"])
     }
 
     @Test
@@ -161,7 +206,7 @@ class SpawnBodyTest {
                     agent = "codex",
                     model = "gpt-5.2-codex",
                     modelReasoningEffort = "high",
-                    permissionMode = "safe-yolo",
+                    permissionMode = "read-only",
                     yolo = true, // must NOT leak into the body for codex-family
                     sessionType = SESSION_TYPE_WORKTREE,
                     worktreeName = "  feature-x  ",
@@ -181,7 +226,7 @@ class SpawnBodyTest {
         assertEquals("codex", body["agent"]!!.jsonPrimitive.content)
         assertEquals("gpt-5.2-codex", body["model"]!!.jsonPrimitive.content)
         assertEquals("high", body["modelReasoningEffort"]!!.jsonPrimitive.content)
-        assertEquals("safe-yolo", body["permissionMode"]!!.jsonPrimitive.content)
+        assertEquals("read-only", body["permissionMode"]!!.jsonPrimitive.content)
         assertEquals("worktree", body["sessionType"]!!.jsonPrimitive.content)
         assertEquals("feature-x", body["worktreeName"]!!.jsonPrimitive.content)
         assertEquals("fast", body["serviceTier"]!!.jsonPrimitive.content)
@@ -210,6 +255,17 @@ class SpawnBodyTest {
         // Cursor has no v1 model picker: even a stashed model id is not sent.
         assertEquals(setOf("directory", "agent", "yolo", "sessionType"), cursor.keys)
         assertEquals(true, cursor["yolo"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `dsh uses managed permission policy and omits yolo`() {
+        val body = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "dsh", yolo = true),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "sessionType"), body.keys)
     }
 
     @Test
@@ -272,6 +328,29 @@ class NewSessionLogicTest {
     }
 
     @Test
+    fun `windows drive and UNC autocomplete preserve separators`() {
+        assertEquals(
+            NewSessionLogic.ParentQuery("C:\\Users", "pro", "\\"),
+            NewSessionLogic.parentQuery("C:\\Users\\pro"),
+        )
+        assertEquals(
+            NewSessionLogic.ParentQuery("C:\\", "Use", "\\"),
+            NewSessionLogic.parentQuery("C:\\Use"),
+        )
+        assertEquals(
+            NewSessionLogic.ParentQuery("\\\\server\\share", "pro", "\\"),
+            NewSessionLogic.parentQuery("\\\\server\\share\\pro"),
+        )
+        assertEquals(
+            listOf("C:\\Users\\projects"),
+            NewSessionLogic.buildSuggestions(
+                NewSessionLogic.ParentQuery("C:\\Users", "pro", "\\"),
+                listOf(dir("projects")),
+            ),
+        )
+    }
+
+    @Test
     fun `recent paths LRU dedupes to front and caps at 8`() {
         var list = emptyList<String>()
         for (i in 1..10) list = NewSessionLogic.pushRecent(list, "/p$i")
@@ -322,10 +401,12 @@ class NewSessionLogicTest {
         )
         assertEquals("default", badMode.permissionMode)
 
-        val goodMode = NewSessionLogic.sanitizeDraft(
+        val staleMode = NewSessionLogic.sanitizeDraft(
             NewSessionForm(agent = "codex", permissionMode = "safe-yolo"),
         )
-        assertEquals("safe-yolo", goodMode.permissionMode)
+        assertEquals("default", staleMode.permissionMode)
+        assertEquals(listOf("default", "read-only", "yolo"), app.hapi.protocol.catalog.PermissionModes.forLaunch("codex").map { it.wireId })
+        assertEquals("safe-yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "kimi", permissionMode = "safe-yolo")).permissionMode)
     }
 }
 
@@ -393,6 +474,36 @@ class NewSessionViewModelTest {
     }
 
     @Test
+    fun `stale autocomplete response cannot replace newer suggestions`() = runTest {
+        val gateway = FakeGateway()
+        var staleContinuation: Continuation<MachineListDirectoryResponse>? = null
+        gateway.listDirectoryHandler = { path, _ ->
+            when (path) {
+                "/old" -> suspendCoroutine { staleContinuation = it }
+                "/new" -> MachineListDirectoryResponse(success = true, entries = listOf(dir("beta")))
+                else -> MachineListDirectoryResponse(success = true, entries = emptyList())
+            }
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setDirectory("/old/a")
+        advanceTimeBy(250)
+        runCurrent()
+        assertNotNull(staleContinuation)
+
+        vm.setDirectory("/new/b")
+        advanceUntilIdle()
+        assertEquals(listOf("/new/beta"), vm.uiState.value.suggestions)
+
+        staleContinuation!!.resumeWith(
+            Result.success(MachineListDirectoryResponse(success = true, entries = listOf(dir("alpha")))),
+        )
+        advanceUntilIdle()
+        assertEquals(listOf("/new/beta"), vm.uiState.value.suggestions)
+    }
+
+    @Test
     fun `picking a suggestion suppresses the dropdown but keeps the exists probe`() = runTest {
         val gateway = FakeGateway().apply { entries = listOf(dir("github")) }
         val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
@@ -456,6 +567,90 @@ class NewSessionViewModelTest {
         assertFalse(vm.uiState.value.isSpawning)
         assertFalse(prefs.draftCleared)
         assertNotNull(prefs.draft) // edits persisted for back-out
+    }
+
+    @Test
+    fun `availability hides unavailable agents and falls back to the first available agent`() = runTest {
+        val gateway = FakeGateway().apply {
+            availabilityResult = AgentAvailabilityResponse(
+                listOf(
+                    AgentAvailabilityEntry(agent = "claude", available = false, reason = "not_found"),
+                    AgentAvailabilityEntry(agent = "codex", available = true),
+                ),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        assertEquals(listOf("codex"), vm.uiState.value.agents.map { it.value })
+        assertEquals("codex", vm.uiState.value.form.agent)
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.canCreate)
+    }
+
+    @Test
+    fun `old runner availability failure blocks create and asks for upgrade`() = runTest {
+        val gateway = FakeGateway().apply {
+            availabilityThrows = ApiError(status = 409, code = "runner_upgrade_required", body = null)
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.canCreate)
+        assertEquals(NewSessionStrings().runnerUpgradeRequired, vm.uiState.value.agentAvailabilityError)
+        vm.create()
+        advanceUntilIdle()
+        assertEquals(NewSessionStrings().runnerUpgradeRequired, vm.uiState.value.spawnError)
+        assertTrue(gateway.spawnCalls.isEmpty())
+    }
+
+    @Test
+    fun `create relies on runner preflight without refreshing availability`() = runTest {
+        val gateway = FakeGateway().apply {
+            spawnResult = SpawnResponse(
+                type = "error",
+                message = "claude is not installed or is not on PATH",
+                code = "agent_unavailable",
+                agent = "claude",
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.canCreate)
+
+        val availabilityCallsBeforeCreate = gateway.availabilityCalls.size
+        vm.create()
+        advanceUntilIdle()
+
+        assertEquals(NewSessionStrings().selectedAgentUnavailable, vm.uiState.value.spawnError)
+        assertEquals(availabilityCallsBeforeCreate, gateway.availabilityCalls.size)
+        assertEquals(1, gateway.spawnCalls.size)
+    }
+
+    @Test
+    fun `outside workspace root is shown and refused before spawn`() = runTest {
+        val gateway = FakeGateway().apply { outsideWorkspaceRoots = setOf("/outside/repo") }
+        val vm = buildViewModel(
+            gateway,
+            FakeMachineStore(listOf(machine("m1", workspaceRoots = listOf("/workspace")))),
+            FakePrefs(),
+        )
+        advanceUntilIdle()
+        vm.setDirectory("/outside/repo")
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.canCreate)
+        assertTrue(vm.uiState.value.directoryStatus!!.isError)
+        assertEquals(NewSessionStrings().directoryOutsideWorkspaceRoots, vm.uiState.value.directoryStatus?.message)
+        vm.create()
+        advanceUntilIdle()
+        assertEquals(NewSessionStrings().directoryOutsideWorkspaceRoots, vm.uiState.value.spawnError)
+        assertTrue(gateway.spawnCalls.isEmpty())
     }
 
     @Test
@@ -542,6 +737,68 @@ class NewSessionViewModelTest {
         assertEquals("m2", vm.uiState.value.form.machineId)
         assertEquals("/work/repo", vm.uiState.value.form.directory)
         assertEquals(listOf("/work/repo"), vm.uiState.value.recentPaths)
+    }
+
+    @Test
+    fun `default directory uses valid recent path then workspace root or home`() = runTest {
+        val gateway = FakeGateway().apply { outsideWorkspaceRoots = setOf("/outside") }
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                recentPaths = mapOf("m1" to listOf("/outside", "/workspace/recent")),
+            ),
+        )
+        val vm = buildViewModel(
+            gateway,
+            FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev", workspaceRoots = listOf("/workspace")))),
+            prefs,
+        )
+        advanceUntilIdle()
+        assertEquals("/workspace/recent", vm.uiState.value.form.directory)
+
+        val homeVm = buildViewModel(
+            FakeGateway(),
+            FakeMachineStore(listOf(machine("home", homeDir = "/home/dev"))),
+            FakePrefs(),
+        )
+        advanceUntilIdle()
+        assertEquals("/home/dev", homeVm.uiState.value.form.directory)
+        homeVm.openDirectoryBrowser()
+        advanceUntilIdle()
+        assertEquals(listOf("/home/dev"), homeVm.directoryBrowser.state.value.roots)
+    }
+
+    @Test
+    fun `directory picker stays within roots and forwards hidden toggle`() = runTest {
+        val gateway = FakeGateway().apply { entries = listOf(dir("repo"), dir("archive")) }
+        val vm = buildViewModel(
+            gateway,
+            FakeMachineStore(listOf(machine("m1", workspaceRoots = listOf("/workspace", "/other")))),
+            FakePrefs(),
+        )
+        advanceUntilIdle()
+
+        vm.openDirectoryBrowser()
+        advanceUntilIdle()
+        assertEquals("/workspace", vm.directoryBrowser.state.value.path)
+        val callsBeforeEscape = gateway.listDirectoryCalls.size
+        vm.directoryBrowser.navigate("/workspace-other")
+        advanceUntilIdle()
+        assertEquals(callsBeforeEscape, gateway.listDirectoryCalls.size)
+
+        vm.directoryBrowser.navigateEntry("repo")
+        advanceUntilIdle()
+        assertEquals("/workspace/repo", vm.directoryBrowser.state.value.path)
+        assertTrue(vm.directoryBrowser.state.value.canGoUp)
+        vm.directoryBrowser.setIncludeHidden(true)
+        advanceUntilIdle()
+        assertTrue(gateway.includeHiddenCalls.last())
+        vm.directoryBrowser.navigateUp()
+        advanceUntilIdle()
+        assertEquals("/workspace", vm.directoryBrowser.state.value.path)
+        vm.selectBrowsedDirectory(vm.directoryBrowser.state.value.path)
+        advanceUntilIdle()
+        assertFalse(vm.directoryBrowser.state.value.open)
+        assertEquals("/workspace", vm.uiState.value.form.directory)
     }
 
     @Test
@@ -656,6 +913,12 @@ class NewSessionViewModelTest {
         assertTrue(vm.uiState.value.permission is PermissionUi.Managed)
 
         vm.setAgent("claude")
+        advanceUntilIdle()
+        // Claude is on the native select now; the YOLO toggle only remains for
+        // the flavors still carrying it (cursor here).
+        assertTrue(vm.uiState.value.permission is PermissionUi.NativeSelect)
+
+        vm.setAgent("cursor")
         advanceUntilIdle()
         val toggle = vm.uiState.value.permission
         assertTrue(toggle is PermissionUi.YoloToggle)

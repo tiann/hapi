@@ -3,6 +3,7 @@ package app.hapi.companion.fcm
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.core.app.RemoteInput
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -108,7 +109,15 @@ class NotificationActionReceiver : BroadcastReceiver() {
         request: OneTimeWorkRequest.Builder,
     ) {
         val work = request
-            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            // Expedited only where it rides JobScheduler (API 31+). Below 31
+            // expedited work must run as a foreground service — the FGS
+            // permissions plus the Play Console declaration they drag in are
+            // not worth a few seconds of enqueue latency on 26–30.
+            .apply {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                }
+            }
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_SECONDS, TimeUnit.SECONDS)
             .build()

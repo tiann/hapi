@@ -17,9 +17,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="container flex h-16 items-center justify-between">
           <div className="flex items-center gap-2">
             <Link href="/" className="flex items-center gap-2 group">
-              <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center border-2 border-border shadow-hard-sm group-hover:translate-y-0.5 group-hover:shadow-none transition-all">
-                <span className="text-primary-foreground font-bold text-lg">H</span>
-              </div>
+              <img src="/logo.svg" alt="" className="h-8 w-8 transition-transform group-hover:translate-y-0.5" />
               <span className="font-bold text-xl tracking-tight">HAPI</span>
             </Link>
           </div>
@@ -76,9 +74,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
             <div className="col-span-1 md:col-span-2">
               <div className="flex items-center gap-2 mb-4">
-                <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center border-2 border-border shadow-hard-sm">
-                  <span className="text-primary-foreground font-bold text-lg">H</span>
-                </div>
+                <img src="/logo.svg" alt="" className="h-8 w-8" />
                 <span className="font-bold text-xl tracking-tight">HAPI</span>
               </div>
               <p className="text-muted-foreground text-sm max-w-xs leading-relaxed" dangerouslySetInnerHTML={{ __html: t('footer.desc') }} />

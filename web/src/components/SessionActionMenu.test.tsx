@@ -74,6 +74,25 @@ describe('SessionActionMenu - Pin action', () => {
     })
 })
 
+describe('SessionActionMenu - Mark unread action', () => {
+    it('fires the mark-unread handler and closes the menu', () => {
+        const onMarkUnread = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onMarkUnread, onClose })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }))
+
+        expect(onMarkUnread).toHaveBeenCalledTimes(1)
+        expect(onClose).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not render the action when no handler is provided', () => {
+        renderMenu()
+
+        expect(screen.queryByRole('menuitem', { name: 'Mark as unread' })).toBeNull()
+    })
+})
+
 describe('SessionActionMenu - positioning', () => {
     it('centers the menu on the supplied anchor', () => {
         const originalInnerWidth = window.innerWidth

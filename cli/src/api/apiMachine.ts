@@ -3,9 +3,8 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
-import { readdir, realpath, stat } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
@@ -14,6 +13,7 @@ import {
     ListCodexSessionsRpcRequestSchema,
     ListPiSessionsRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
+    type AgentAvailabilityResponse,
     type ListCodexSessionsRpcResponse,
     type ListPiSessionsRpcResponse,
     type MachineDirectoryEntry,
@@ -29,11 +29,16 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
     type ListOpencodeModelsForCwdRequest,
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
+import {
+    listOpencodeModelVariants,
+    type ListOpencodeModelVariantsResponse
+} from '../modules/common/opencodeModelVariants'
 import {
     listGrokModelsForCwd,
     type ListGrokModelsForCwdRequest,
@@ -53,6 +58,10 @@ import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
 import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
+import { MachinePathPolicy } from './machinePathPolicy'
+import { getAgentAvailabilityResponse } from '@/agent/agentAvailability'
+
+export { normalizeWindowsDriveRoot } from './machinePathPolicy'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
@@ -75,30 +84,6 @@ interface CursorChatStoreStatusRequest {
     homeDir?: string
 }
 
-export function normalizeWindowsDriveRoot(path: string): string {
-    return /^[A-Za-z]:$/.test(path) ? `${path}\\` : path
-}
-
-function canonicalRealpathSync(path: string): string {
-    return normalizeWindowsDriveRoot(realpathSync.native(path))
-}
-
-function normalizeWorkspaceRoots(paths?: string[]): string[] | undefined {
-    if (!paths?.length) {
-        return undefined
-    }
-
-    const normalized = Array.from(new Set(paths.map((path) => {
-        try {
-            return canonicalRealpathSync(path)
-        } catch {
-            return normalizeWindowsDriveRoot(resolvePath(path))
-        }
-    })))
-
-    return normalized.length > 0 ? normalized : undefined
-}
-
 function workspaceRootsEqual(left?: string[], right?: string[]): boolean {
     const normalizedLeft = left ?? []
     const normalizedRight = right ?? []
@@ -119,17 +104,17 @@ export class ApiMachineClient {
     private keepAliveStartTimeout: ReturnType<typeof setTimeout> | null = null
     private rpcHandlerManager: RpcHandlerManager
 
-    private readonly normalizedWorkspaceRoots: string[] | undefined
+    private readonly pathPolicy: MachinePathPolicy
 
     constructor(
         private readonly token: string,
         private readonly machine: Machine,
         private readonly workspaceRoots?: string[]
     ) {
-        // Realpath roots once so all subsequent comparisons are against
-        // canonical, symlink-resolved locations. Falls back to lexical
-        // resolution if realpath fails so we still get protection.
-        this.normalizedWorkspaceRoots = normalizeWorkspaceRoots(workspaceRoots)
+        this.pathPolicy = new MachinePathPolicy({
+            workspaceRoots,
+            homeDirectory: this.machine.metadata?.homeDir ?? homedir(),
+        })
 
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.machine.id,
@@ -138,23 +123,44 @@ export class ApiMachineClient {
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
 
+        // Only the machine daemon answers `<machineId>:listAgyModels`, so it is
+        // the one process that can tell the hub its catalog moved.
+        setAgyCatalogChangeListener(() => {
+            this.socket.emit('machine-agy-models-changed', { machineId: this.machine.id })
+        })
+
+        this.rpcHandlerManager.registerHandler<unknown, AgentAvailabilityResponse>(
+            RPC_METHODS.AgentAvailability,
+            async () => getAgentAvailabilityResponse()
+        )
+
         this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>(RPC_METHODS.PathExists, async (params) => {
             const rawPaths = Array.isArray(params?.paths) ? params.paths : []
             const uniquePaths = Array.from(new Set(rawPaths.filter((path): path is string => typeof path === 'string')))
             const exists: Record<string, boolean> = {}
+            const outsideWorkspaceRoots: string[] = []
 
             await Promise.all(uniquePaths.map(async (path) => {
                 const trimmed = path.trim()
                 if (!trimmed) return
+                const resolved = await this.pathPolicy.resolveForCheck(trimmed)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolved)) {
+                    exists[trimmed] = false
+                    outsideWorkspaceRoots.push(trimmed)
+                    return
+                }
                 try {
-                    const stats = await stat(trimmed)
+                    const stats = await stat(resolved)
                     exists[trimmed] = stats.isDirectory()
                 } catch {
                     exists[trimmed] = false
                 }
             }))
 
-            return { exists }
+            return {
+                exists,
+                ...(outsideWorkspaceRoots.length > 0 ? { outsideWorkspaceRoots } : {}),
+            }
         })
 
         this.rpcHandlerManager.registerHandler<CursorChatStoreStatusRequest, CursorChatStoreStatus>(
@@ -170,10 +176,6 @@ export class ApiMachineClient {
         )
 
         this.rpcHandlerManager.registerHandler<ListMachineDirectoryRequest, MachineListDirectoryResponse>(RPC_METHODS.ListMachineDirectory, async (params) => {
-            if (!this.normalizedWorkspaceRoots?.length) {
-                return { success: false, error: 'Workspace browsing is not enabled for this machine' }
-            }
-
             const rawPath = typeof params?.path === 'string' ? params.path.trim() : ''
             if (!rawPath) {
                 return { success: false, error: 'Path is required' }
@@ -181,9 +183,9 @@ export class ApiMachineClient {
 
             const includeHidden = params?.includeHidden === true
 
-            const targetPath = await this.resolveForWorkspaceCheck(rawPath)
-            if (!this.isWithinWorkspaceRoots(targetPath)) {
-                return { success: false, error: 'Path is outside workspace roots' }
+            const targetPath = await this.pathPolicy.resolveForCheck(rawPath)
+            if (!this.pathPolicy.isWithinBrowseRoots(targetPath)) {
+                return { success: false, error: 'Path is outside browse roots' }
             }
 
             try {
@@ -256,12 +258,29 @@ export class ApiMachineClient {
                     return { success: false, error: 'cwd is required' }
                 }
 
-                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                     return { success: false, error: 'Path is outside workspace roots' }
                 }
 
                 return await listOpencodeModelsForCwd(resolvedCwd)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<{ cwd?: string | null }, ListOpencodeModelVariantsResponse>(
+            RPC_METHODS.ListOpencodeModelVariants,
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (!rawCwd) {
+                    return { success: false, error: 'cwd is required' }
+                }
+
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace roots' }
+                }
+
+                return await listOpencodeModelVariants({ cwd: resolvedCwd })
             }
         )
 
@@ -271,8 +290,8 @@ export class ApiMachineClient {
                 const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
                 if (!rawCwd) return { success: false, error: 'cwd is required' }
 
-                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                     return { success: false, error: 'Path is outside workspace roots' }
                 }
 
@@ -286,8 +305,8 @@ export class ApiMachineClient {
                 const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
                 if (!rawCwd) return { success: false, error: 'cwd is required' }
 
-                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                     return { success: false, error: 'Path is outside workspace roots' }
                 }
 
@@ -302,8 +321,8 @@ export class ApiMachineClient {
                 if (!parsed.success) return { success: false, error: 'Invalid Codex sessions request' }
                 const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
                 if (rawCwd) {
-                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
@@ -342,8 +361,8 @@ export class ApiMachineClient {
                 if (!parsed.success) return { success: false, error: 'Invalid Pi sessions request' }
                 const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
                 if (rawCwd) {
-                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
@@ -361,50 +380,11 @@ export class ApiMachineClient {
     }
 
     private async isLocalSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
-        if (!this.normalizedWorkspaceRoots?.length) return true
+        if (!this.pathPolicy.hasWorkspaceRoots()) return true
         const cwd = session.cwd?.trim()
         if (!cwd) return false
-        const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
-        return this.isWithinWorkspaceRoots(resolvedCwd)
-    }
-
-    private isWithinWorkspaceRoots(absolutePath: string): boolean {
-        if (!this.normalizedWorkspaceRoots?.length) return true
-        return this.normalizedWorkspaceRoots.some((workspaceRoot) => {
-            const rel = relative(workspaceRoot, absolutePath)
-            return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-        })
-    }
-
-    /**
-     * Canonicalize a path for workspace-root containment checks. Resolves
-     * symlinks via realpath so a symlink such as `/safe/out -> /etc` cannot
-     * be used to escape the configured root with a lexical-only check.
-     *
-     * If the path doesn't exist (e.g. a session is being spawned in a
-     * directory we'll create), walks up to the nearest existing ancestor
-     * and realpaths *that*, joining the missing tail back on. This way the
-     * check still runs against the real on-disk location once any
-     * intermediate symlink in the parent chain has been resolved.
-     */
-    private async resolveForWorkspaceCheck(path: string): Promise<string> {
-        const absolute = resolvePath(path)
-        try {
-            return normalizeWindowsDriveRoot(await realpath(absolute))
-        } catch {
-            const missing: string[] = []
-            let cursor = absolute
-            while (cursor !== dirname(cursor)) {
-                missing.unshift(basename(cursor))
-                cursor = dirname(cursor)
-                try {
-                    return join(normalizeWindowsDriveRoot(await realpath(cursor)), ...missing)
-                } catch {
-                    // keep walking to the nearest existing parent
-                }
-            }
-            return normalizeWindowsDriveRoot(absolute)
-        }
+        const resolvedCwd = await this.pathPolicy.resolveForCheck(cwd)
+        return this.pathPolicy.isWithinSpawnRoots(resolvedCwd)
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
@@ -415,9 +395,13 @@ export class ApiMachineClient {
                 throw new Error('Directory is required')
             }
 
-            const resolvedDirectory = await this.resolveForWorkspaceCheck(directory)
-            if (!this.isWithinWorkspaceRoots(resolvedDirectory)) {
-                return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace roots' }
+            const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
+            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
+                return {
+                    type: 'error',
+                    errorMessage: 'Directory is outside this machine\'s workspace roots',
+                    code: 'outside_workspace_roots',
+                }
             }
 
             const result = await spawnSession({
@@ -440,7 +424,8 @@ export class ApiMachineClient {
                 sessionType,
                 worktreeName,
                 startingMode,
-                forkSession: forkSession === true
+                forkSession: forkSession === true,
+                validateDirectory: async (path) => await this.pathPolicy.allowsSpawn(path),
             })
 
             switch (result.type) {
@@ -449,7 +434,12 @@ export class ApiMachineClient {
                 case 'requestToApproveDirectoryCreation':
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory }
                 case 'error':
-                    return { type: 'error', errorMessage: result.errorMessage }
+                    return {
+                        type: 'error',
+                        errorMessage: result.errorMessage,
+                        code: result.code,
+                        agent: result.agent,
+                    }
             }
         })
 
@@ -693,6 +683,8 @@ export class ApiMachineClient {
 
     shutdown(): void {
         this.stopKeepAlive()
+        // The listener holds this client, and the socket is about to close.
+        setAgyCatalogChangeListener(null)
         if (this.socket) {
             this.socket.close()
         }

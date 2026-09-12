@@ -28,7 +28,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 
-private const val HUB = "http://localhost:3006"
+private const val HUB = "https://localhost:3006"
 
 /** Programmable [PairingClient]: default = healthy v1 hub + accepted token. */
 private class FakePairingClient : PairingClient {
@@ -83,7 +83,7 @@ class PairingViewModelTest {
         val vm = viewModel()
 
         // Sloppy spelling + padded token: normalized origin, trimmed (never split) token.
-        vm.pair("HTTP://LocalHost:3006/some/path", "  tok_9f8:team  ")
+        vm.pair("HTTPS://LocalHost:3006/some/path", "  tok_9f8:team  ")
         assertEquals(PairingUiState.Validating, vm.state.value)
 
         advanceUntilIdle()
@@ -129,7 +129,7 @@ class PairingViewModelTest {
     }
 
     @Test
-    fun `malformed url errors immediately without any network call`() = runVmTest {
+    fun `non-https or malformed url errors immediately without any network call`() = runVmTest {
         val vm = viewModel()
 
         vm.pair("not a url", "tok")
@@ -139,6 +139,9 @@ class PairingViewModelTest {
         assertEquals(PairingUiState.Idle, vm.state.value)
 
         vm.pair("ftp://hub.example", "tok")
+        assertEquals(PairingUiState.Error(PairingError.InvalidUrl), vm.state.value)
+
+        vm.pair("http://hub.example", "tok")
         assertEquals(PairingUiState.Error(PairingError.InvalidUrl), vm.state.value)
 
         advanceUntilIdle()
@@ -182,9 +185,9 @@ class PairingViewModelTest {
             vm.prefill.value,
         )
 
-        vm.prefillFromLink(BindLink(hubUrl = "http://other.example:8080", accessToken = "code2"))
+        vm.prefillFromLink(BindLink(hubUrl = "https://other.example:8443", accessToken = "code2"))
         assertEquals(
-            BindPrefill(hubUrl = "http://other.example:8080", accessToken = "code2", alreadyPaired = false),
+            BindPrefill(hubUrl = "https://other.example:8443", accessToken = "code2", alreadyPaired = false),
             vm.prefill.value,
         )
     }

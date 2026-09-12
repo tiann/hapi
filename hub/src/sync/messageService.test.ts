@@ -2,8 +2,8 @@
  * MessageService.cancelQueuedMessage race scenario tests
  *
  * Race-A: CLI ack returns { removed: true }  → DB DELETE + status='cancelled'
- * Race-B: CLI ack returns { removed: false } (already shift()-ed) → markMessagesInvoked + status='invoked'
- * Race-C: CLI ack times out (500 ms)         → markMessagesInvoked + status='invoked'
+ * Race-B: CLI ack returns { removed: false } → indeterminate + status='busy'
+ * Race-C: CLI ack times out (500 ms)         → indeterminate + status='busy'
  * Race-D (CLI offline): no CLI socket in room → immediate DELETE, message-cancelled emit, no ack call
  * Race-E (partial ack): broadcast ack receives err + [{ removed: true }] → DELETE + status='cancelled'
  */
@@ -12,8 +12,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MessageService } from './messageService'
+import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
+import { SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
 import type { Session, SyncEvent } from '@hapi/protocol/types'
 
 // ---------------------------------------------------------------------------
@@ -55,7 +57,15 @@ function toProtocolSession(session: ReturnType<typeof makeSession>): Session {
     }
 }
 
-type AckCallback = (err: Error | null, responses: Array<{ removed: boolean }>) => void
+type AckCallback = (
+    err: Error | null,
+    responses: Array<{
+        removed: boolean
+        inFlight?: boolean
+        indeterminate?: boolean
+        consumed?: boolean
+    }>
+) => void
 
 function makeIo(onEmit: (ack: AckCallback) => void, socketCount = 1): Server {
     const broadcastRoom = {
@@ -93,6 +103,24 @@ function makePublisher() {
 // ---------------------------------------------------------------------------
 
 describe('MessageService goal status filtering', () => {
+    it('does not discard or replay an uncertain shared input on a not-found cancellation ACK', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('shared-unknown', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'possibly executing' } }, 'shared-q')
+        store.messages.setMessagesDeliveryState(session.id, ['shared-q'], 'indeterminate')
+        const service = new MessageService(store, makeIo(ack => ack(null, [{ removed: false }])), makePublisher() as unknown as EventPublisher)
+        expect(await service.cancelQueuedMessage(session.id, 'shared-q')).toEqual({ status: 'busy', localId: 'shared-q' })
+        expect(await service.retryIndeterminateMessage(session.id, 'shared-q')).toEqual({ status: 'retry-unavailable', localId: 'shared-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-q').status).toBe('indeterminate')
+    })
+    it('does not discard a shared native queue when the worker is disconnected from the hub', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('shared-offline', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'may be executing' } }, 'shared-q')
+        const service = new MessageService(store, makeIo(() => { throw new Error('offline') }, 0), makePublisher() as unknown as EventPublisher)
+        expect(await service.cancelQueuedMessage(session.id, 'shared-q')).toEqual({ status: 'busy', localId: 'shared-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-q').status).toBe('indeterminate')
+    })
     function redundantGoalStatusContent(message: string): unknown {
         return {
             role: 'agent',
@@ -175,21 +203,39 @@ describe('MessageService goal status filtering', () => {
         expect(result.payload.messages.map((message) => message.id)).toEqual([normal.id, scheduled.id])
     })
 
-    it('returns too-large instead of truncating an export over the cap', () => {
-        const store = makeStore()
-        const session = makeSession(store, 'session-export-cap')
-
-        store.messages.addMessage(session.id, { role: 'user', content: 'One' })
-        store.messages.addMessage(session.id, { role: 'agent', content: 'Two' })
+    it('warns above the recommended threshold and exports the full history after confirmation', () => {
+        const sessionStore = makeStore()
+        const session = makeSession(sessionStore, 'session-export-warning')
+        const rows = Array.from({ length: SESSION_EXPORT_MESSAGE_LIMIT + 1 }, (_, index) => ({
+            id: `message-${index}`,
+            sessionId: session.id,
+            content: { role: 'user', content: `Message ${index}` },
+            createdAt: index + 1,
+            seq: index + 1,
+            localId: null,
+            invokedAt: index + 1,
+            scheduledAt: null
+        })) as ReturnType<Store['messages']['getAllMessages']>
+        const store = {
+            messages: { getAllMessages: () => rows },
+            scratchlist: { list: () => [] }
+        } as unknown as Store
 
         const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
-        const result = service.getSessionExport(session.id, toProtocolSession(session), 1)
+        const warning = service.getSessionExport(session.id, toProtocolSession(session))
 
-        expect(result).toEqual({
-            type: 'too-large',
-            count: 2,
-            limit: 1
+        if (warning.type !== 'warning') throw new Error('Expected export warning')
+        expect(typeof warning.estimatedBytes).toBe('number')
+        expect(warning).toMatchObject({
+            type: 'warning',
+            count: SESSION_EXPORT_MESSAGE_LIMIT + 1,
+            limit: SESSION_EXPORT_MESSAGE_LIMIT
         })
+
+        const confirmed = service.getSessionExport(session.id, toProtocolSession(session), { force: true })
+        expect(confirmed.type).toBe('success')
+        if (confirmed.type !== 'success') throw new Error('Expected confirmed export')
+        expect(confirmed.payload.messages).toHaveLength(SESSION_EXPORT_MESSAGE_LIMIT + 1)
     })
 
     it('includes scratchlist text and attachment metadata in chronological order (tiann/hapi#1235)', () => {
@@ -497,16 +543,64 @@ describe('MessageService.getQueuedState', () => {
             'local-other'
         ])).toEqual({
             queuedLocalIds: ['local-queued', 'local-future'],
+            indeterminateLocalIds: [],
             invokedLocalMessages: [{ localId: 'local-invoked', invokedAt: 1_000 }]
         })
         expect(service.getQueuedState(session.id, [])).toEqual({
             queuedLocalIds: [],
+            indeterminateLocalIds: [],
             invokedLocalMessages: []
         })
     })
 })
 
 describe('MessageService.cancelQueuedMessage race scenarios', () => {
+    describe('indeterminate cancel recheck', () => {
+        it('returns invoked when consumption wins during the cancel ACK wait', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-indeterminate-cancel')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-indeterminate-cancel'
+            )
+            store.messages.markMessagesIndeterminate(session.id, [msg.localId!])
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                store.messages.markMessagesInvoked(session.id, [msg.localId!], 2_000)
+                callback(null, [{ removed: false }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            expect(publisher.events.some((event) => event.type === 'message-cancelled')).toBe(false)
+        })
+    })
+
+    describe('indeterminate explicit cancel', () => {
+        it('releases and deletes a held reservation after confirmed removal', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'indeterminate-cancel')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'discard' } },
+                'local-indeterminate'
+            )
+            store.messages.markMessagesIndeterminate(session.id, [msg.localId!])
+            const publisher = makePublisher()
+            const service = new MessageService(store, makeIo((callback) => {
+                callback(null, [{ removed: true }])
+            }), publisher as any)
+
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+            expect(result).toEqual({ status: 'cancelled', localId: 'local-indeterminate' })
+            expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toEqual({ status: 'absent' })
+            expect(publisher.events.some((event) => event.type === 'message-cancelled')).toBe(true)
+        })
+    })
+
     describe('Race-A: CLI ack removed:true → DELETE + status=cancelled', () => {
         it('returns cancelled and emits message-cancelled SSE after CLI confirms removal', async () => {
             const store = makeStore()
@@ -542,8 +636,8 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
         })
     })
 
-    describe('Race-B: CLI ack removed:false (already shift()-ed) → markMessagesInvoked + status=invoked', () => {
-        it('returns invoked with message row when CLI says item was already consumed', async () => {
+    describe('Race-B: CLI ack removed:false is ambiguous → indeterminate + status=busy', () => {
+        it('does not claim delivery when the CLI cannot find the item', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-b')
             const msg = store.messages.addMessage(
@@ -554,47 +648,35 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
 
             const publisher = makePublisher()
             const io = makeIo((callback) => {
-                // CLI already shifted the item before the cancel arrived
+                // Not found does not distinguish a reservation from consumption.
                 callback(null, [{ removed: false }])
             })
 
             const service = new MessageService(store, io, publisher as any)
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
-            expect(result.status).toBe('invoked')
-            if (result.status === 'invoked') {
-                expect(result.message.id).toBe(msg.id)
-                expect(result.message.localId).toBe('local-b')
-                expect(result.message.invokedAt).not.toBeNull()
-            }
+            expect(result).toEqual({ status: 'busy', localId: 'local-b' })
 
-            // Row must still exist but now have invoked_at set
+            // The durable row remains held and is never presented as sent.
             const rows = store.messages.getMessages(session.id)
             const row = rows.find(r => r.id === msg.id)
             expect(row).toBeDefined()
-            expect(row!.invokedAt).not.toBeNull()
+            expect(row!.invokedAt).toBeNull()
+            expect(row!.deliveryState).toBe('indeterminate')
 
             // No message-cancelled SSE should have been emitted
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeUndefined()
 
-            // messages-consumed SSE must be broadcast so other web clients clear the queued row
-            const consumed = publisher.events.find(e => e.type === 'messages-consumed')
-            expect(consumed).toBeDefined()
-            if (consumed?.type === 'messages-consumed') {
-                expect(consumed.sessionId).toBe(session.id)
-                expect(consumed.localIds).toEqual(['local-b'])
-                expect(typeof consumed.invokedAt).toBe('number')
-            }
-
-            // messages-consumed must be emitted exactly once
             const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
-            expect(consumedCount).toBe(1)
+            expect(consumedCount).toBe(0)
+            const held = publisher.events.find(e => e.type === 'messages-indeterminate')
+            expect(held).toBeDefined()
         })
     })
 
-    describe('Race-C: CLI ack timeout → markMessagesInvoked + status=invoked', () => {
-        it('returns invoked with message row when CLI does not respond within timeout', async () => {
+    describe('Race-C: CLI ack timeout → indeterminate + status=busy', () => {
+        it('does not claim delivery when the CLI does not respond', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-c')
             const msg = store.messages.addMessage(
@@ -612,34 +694,49 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             const service = new MessageService(store, io, publisher as any)
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
-            expect(result.status).toBe('invoked')
-            if (result.status === 'invoked') {
-                expect(result.message.id).toBe(msg.id)
-                expect(result.message.invokedAt).not.toBeNull()
-            }
+            expect(result).toEqual({ status: 'busy', localId: 'local-c' })
 
-            // Row must still exist with invoked_at stamped
+            // Row remains held without invoked_at.
             const rows = store.messages.getMessages(session.id)
             const row = rows.find(r => r.id === msg.id)
             expect(row).toBeDefined()
-            expect(row!.invokedAt).not.toBeNull()
+            expect(row!.invokedAt).toBeNull()
+            expect(row!.deliveryState).toBe('indeterminate')
 
             // No message-cancelled SSE
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeUndefined()
 
-            // messages-consumed SSE must be broadcast so other web clients clear the queued row
-            const consumed = publisher.events.find(e => e.type === 'messages-consumed')
-            expect(consumed).toBeDefined()
-            if (consumed?.type === 'messages-consumed') {
-                expect(consumed.sessionId).toBe(session.id)
-                expect(consumed.localIds).toEqual(['local-c'])
-                expect(typeof consumed.invokedAt).toBe('number')
-            }
-
-            // messages-consumed must be emitted exactly once
             const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
-            expect(consumedCount).toBe(1)
+            expect(consumedCount).toBe(0)
+            const held = publisher.events.find(e => e.type === 'messages-indeterminate')
+            expect(held).toBeDefined()
+        })
+    })
+
+    describe('positive consumed ACK', () => {
+        it('returns invoked only when the CLI explicitly confirms consumption', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-consumed')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-consumed'
+            )
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                callback(null, [{ removed: false, consumed: true }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            if (result.status === 'invoked') {
+                expect(result.message.localId).toBe('local-consumed')
+                expect(result.message.invokedAt).not.toBeNull()
+            }
+            expect(publisher.events.filter(e => e.type === 'messages-consumed')).toHaveLength(1)
         })
     })
 
@@ -768,12 +865,9 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
 
 describe('MessageService — cancel × mature race (scheduled messages)', () => {
     // The 5-second mature tick widens the cancel race window for scheduled
-    // messages compared to immediately-queued ones.  When mature fires first,
-    // the CLI shifts the row; a subsequent cancel call gets 'not-found' from
-    // the CLI ack, which stamps invoked_at (PR #568 contract preserved).
-    // The web client surfaces this as "sent".  This test documents that the
-    // behaviour is intentional — it is the expected outcome, not a bug.
-    it('cancel after mature-emit stamps invoked_at (race resolved as invoked — expected behavior)', async () => {
+    // messages compared to immediately-queued ones. When mature fires first,
+    // a later not-found cancel ACK is ambiguous and must not claim delivery.
+    it('holds a mature message as indeterminate after an ambiguous cancel ACK', async () => {
         const store = makeStore()
         const session = makeSession(store, 'race-sched-mature')
         const publisher = makePublisher()
@@ -800,17 +894,12 @@ describe('MessageService — cancel × mature race (scheduled messages)', () => 
         // Then cancel arrives — CLI says not-found
         const result = await service.cancelQueuedMessage(session.id, msg.id)
 
-        // Expected behavior: invoked_at is stamped (PR #568 contract preserved)
-        // Web client will show the message as "sent"
-        expect(result.status).toBe('invoked')
-        if (result.status === 'invoked') {
-            expect(result.message.localId).toBe('local-sched-race')
-            expect(result.message.invokedAt).not.toBeNull()
-        }
+        expect(result).toEqual({ status: 'busy', localId: 'local-sched-race' })
 
-        // messages-consumed SSE ensures web clients remove it from the queued bar
-        const consumed = publisher.events.find(e => e.type === 'messages-consumed')
-        expect(consumed).toBeDefined()
+        const held = store.messages.lookupQueuedMessage(session.id, msg.id)
+        expect(held.status).toBe('indeterminate')
+        expect(publisher.events.some(e => e.type === 'messages-consumed')).toBe(false)
+        expect(publisher.events.some(e => e.type === 'messages-indeterminate')).toBe(true)
     })
 })
 
@@ -1124,6 +1213,21 @@ describe('MessageService.sendMessage deliveryMode', () => {
         } as unknown as Server
         return { io, cliEmitted }
     }
+
+    it('skips the OpenCode delivery-gate scan when heartbeat replay has no queued messages', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'empty-heartbeat-replay')
+        const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)
+        const originalGateCheck = store.isOpenCodeClearDeliveryGated.bind(store)
+        let gateChecks = 0
+        store.isOpenCodeClearDeliveryGated = (sessionId: string) => {
+            gateChecks += 1
+            return originalGateCheck(sessionId)
+        }
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(gateChecks).toBe(0)
+    })
 
     it('persists Pi steer provenance but downgrades every deferred CLI delivery to queue', async () => {
         const store = makeStore()

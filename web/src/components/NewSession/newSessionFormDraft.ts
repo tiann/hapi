@@ -1,14 +1,16 @@
 import {
     CREATABLE_AGENT_FLAVORS,
     GROK_PERMISSION_MODES,
-    getPermissionModesForFlavor,
+    getLaunchPermissionModesForFlavor,
     normalizeCopilotAgentMode,
+    resolveHapiYoloPermissionMode,
     type CodexCollaborationMode,
     type CopilotAgentMode,
     type GrokPermissionMode,
     type PermissionMode
 } from '@hapi/protocol'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
+import { LEGACY_YOLO_BRIDGE_AGENTS } from '@/lib/codexFamilyPermissionAgents'
 
 const DRAFT_STORAGE_KEY = 'hapi:new-session-form-draft'
 
@@ -23,7 +25,7 @@ export type NewSessionFormDraft = {
     collaborationMode: CodexCollaborationMode
     copilotAgentMode: CopilotAgentMode
     yoloMode: boolean
-    codexFamilyPermissionMode: PermissionMode
+    nativePermissionMode: PermissionMode
     grokPermissionMode: GrokPermissionMode
     sessionType: SessionType
     worktreeName: string
@@ -72,14 +74,17 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 ? normalizeCopilotAgentMode(parsed.copilotAgentMode)
                 : 'interactive',
             yoloMode: Boolean(parsed.yoloMode),
-            codexFamilyPermissionMode: (() => {
-                const modes = getPermissionModesForFlavor(restoredAgent)
-                const parsedMode = parsed.codexFamilyPermissionMode as PermissionMode | undefined
+            nativePermissionMode: (() => {
+                const modes = getLaunchPermissionModesForFlavor(restoredAgent)
+                const parsedMode = parsed.nativePermissionMode as PermissionMode | undefined
                 if (agentPreserved && parsedMode && modes.includes(parsedMode)) {
                     return parsedMode
                 }
-                if (agentPreserved && parsed.yoloMode && modes.includes('yolo')) {
-                    return 'yolo'
+                const yoloBridgeMode = LEGACY_YOLO_BRIDGE_AGENTS.includes(restoredAgent)
+                    ? resolveHapiYoloPermissionMode(restoredAgent)
+                    : null
+                if (agentPreserved && parsedMode === undefined && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
+                    return yoloBridgeMode
                 }
                 return 'default'
             })(),

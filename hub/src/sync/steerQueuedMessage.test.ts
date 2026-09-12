@@ -48,12 +48,12 @@ describe('SyncEngine.steerQueuedMessage', () => {
         }
     })
 
-    it('rejects non-pi sessions without invoking the CLI', async () => {
+    it('rejects unsupported flavors without invoking the CLI', async () => {
         const { store, engine } = createEngine()
         try {
             const session = engine.getOrCreateSession(
-                'steer-codex',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                'steer-claude',
+                { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
                 { requests: {}, completedRequests: {} },
                 'default'
             )
@@ -63,7 +63,7 @@ describe('SyncEngine.steerQueuedMessage', () => {
 
             expect(result).toEqual({
                 status: 'failed',
-                error: 'Steering is only supported for Pi sessions',
+                error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions',
                 localId: null
             })
         } finally {

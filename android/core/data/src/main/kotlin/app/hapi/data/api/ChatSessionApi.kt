@@ -2,6 +2,7 @@ package app.hapi.data.api
 
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
@@ -41,11 +42,17 @@ interface AttachmentUploadApi {
  * and [AttachmentUploadApi] for the composer attachment flow (B-M3f).
  */
 interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
+    /** Shared root creation; only the initiating client navigates. */
+    suspend fun clearConversation(sessionId: String): ResumeSessionResponse
+
     /** `POST /api/sessions/:id/messages` — `{ok:true}`; the row arrives via SSE. */
     suspend fun sendMessage(sessionId: String, message: SendMessageRequest)
 
     /** `DELETE /api/sessions/:id/messages/:messageId` — `cancelled` or `invoked` (too late). */
     suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse
+
+    /** `POST /api/sessions/:id/messages/:messageId/retry` — explicit unknown-delivery retry. */
+    suspend fun retryIndeterminateMessage(sessionId: String, messageId: String): RetryIndeterminateMessageResponse
 
     /** `POST /api/sessions/:id/messages/:messageId/steer` — `steered`/`invoked`/`failed`. */
     suspend fun steerMessage(sessionId: String, messageId: String): SteerQueuedMessageResponse

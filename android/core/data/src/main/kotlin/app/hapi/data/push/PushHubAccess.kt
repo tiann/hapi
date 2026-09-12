@@ -17,11 +17,24 @@ import app.hapi.data.auth.HubRegistry
  * Sessions are opened per call and closed immediately; push actions are rare
  * enough that connection reuse is irrelevant.
  */
-class PushHubAccess(
+class PushHubAccess internal constructor(
     val registry: HubRegistry,
-    private val credentialStore: CredentialStore,
-    private val authEvents: AuthEvents? = null,
+    private val sessionFactory: (String) -> HubSession,
 ) {
+    constructor(
+        registry: HubRegistry,
+        credentialStore: CredentialStore,
+        authEvents: AuthEvents? = null,
+    ) : this(
+        registry = registry,
+        sessionFactory = { hubUrl ->
+            HubSession(
+                hubUrl = hubUrl,
+                credentialStore = credentialStore,
+                authEvents = authEvents,
+            )
+        },
+    )
 
     /**
      * Paired hub origins with the active hub first — the try-order for
@@ -38,11 +51,7 @@ class PushHubAccess(
 
     /** Runs [block] against a freshly constructed authed client for [hubUrl]. */
     suspend fun <T> withApi(hubUrl: String, block: suspend (HapiApi) -> T): T {
-        val session = HubSession(
-            hubUrl = hubUrl,
-            credentialStore = credentialStore,
-            authEvents = authEvents,
-        )
+        val session = sessionFactory(hubUrl)
         return try {
             block(session.api)
         } finally {

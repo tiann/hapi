@@ -1,4 +1,4 @@
-import type { ChatBlock, ToolCallBlock } from '@/chat/types'
+import type { ChatBlock, RoundSummary, ToolCallBlock } from '@/chat/types'
 import { getCodexCommandActions, isCodexExplorationTool } from '@/chat/codexCommandPresentation'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
@@ -33,6 +33,7 @@ export type ToolGroupBlock = {
     needsOlderHistory: boolean
     activityTitle?: string | null
     presentationMode?: 'default' | 'codex-exploration'
+    roundSummary?: RoundSummary
     summary: ToolGroupSummary
 }
 
@@ -314,6 +315,7 @@ export function buildVisibleChatBlocks(
             needsOlderHistory,
             activityTitle,
             presentationMode: groupingFamily,
+            roundSummary: tools[0].roundSummary,
             summary: summarizeToolGroup(tools)
         })
         index = cursor - 1

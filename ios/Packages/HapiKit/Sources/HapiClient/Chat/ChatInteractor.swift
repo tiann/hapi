@@ -202,6 +202,19 @@ public final class ChatInteractor {
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
+            if attachmentMetadata == nil && (text == "/clear" || text == "/new")
+                && self.sessionStore.detail(for: self.sessionId)?.metadata?.capabilities?.concurrentClients == true {
+                defer { self.isSending = false }
+                do {
+                    let result = try await self.api.clearConversation(id: self.sessionId)
+                    self.sessionStore.scheduleRefresh()
+                    self.emit(.sessionSuperseded(sessionId: result.sessionId))
+                } catch {
+                    self.setComposerText(text)
+                    self.emit(.notice(Self.errorMessage(error, fallback: "Failed to create conversation")))
+                }
+                return
+            }
             await self.performSend(
                 text: text,
                 localId: localId,
@@ -417,7 +430,8 @@ public final class ChatInteractor {
                 attachmentNames: preview.attachmentNames,
                 scheduledAt: row.scheduledAt,
                 canAct: canAct,
-                canSteer: canAct && thinking && row.scheduledAt == nil
+                canSteer: canAct && thinking && row.scheduledAt == nil && row.status != .indeterminate,
+                indeterminate: row.status == .indeterminate
             )
         }
     }
@@ -434,6 +448,7 @@ public final class ChatInteractor {
     private enum CancelVerdict {
         case cancelled
         case invoked
+        case busy
     }
 
     /// The cancel verdict, or nil on guard/error.
@@ -454,11 +469,41 @@ public final class ChatInteractor {
             case .invoked(let message):
                 await store.applyCancelInvoked(localId: localId, message: WindowMessage(wire: message))
                 return .invoked
+            case .busy:
+                await store.appendOptimistic(row.withDeliveryState("indeterminate"))
+                try? await store.reconcileQueuedState()
+                return .busy
             }
         } catch {
             await store.appendOptimistic(row)
             emit(.notice(Self.errorMessage(error, fallback: "Failed to cancel queued message")))
             return nil
+        }
+    }
+
+    public func retryIndeterminateMessage(_ messageId: String) {
+        guard !queuedOpPending else { return }
+        queuedOpPending = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.queuedOpPending = false }
+            do {
+                let response = try await api.retryIndeterminateMessage(sessionId: sessionId, messageId: messageId)
+                if response.status == "invoked", let message = response.message,
+                   let localId = message.localId, let invokedAt = message.invokedAt {
+                    await (windowController()).markConsumed(localIds: [localId], invokedAt: invokedAt)
+                } else if response.status == "retried" || response.status == "already-queued",
+                          let localId = response.localId {
+                    await (windowController()).markRequeued(localIds: [localId])
+                } else if response.status == "not-found" {
+                    await (windowController()).removeMessage(localIdOrId: messageId)
+                    emit(.notice("Message is no longer available"))
+                } else if response.status == "retry-unavailable" {
+                    emit(.notice("Delivery is still being resolved"))
+                }
+            } catch {
+                emit(.notice(Self.errorMessage(error, fallback: "Failed to retry message")))
+            }
         }
     }
 
@@ -485,6 +530,8 @@ public final class ChatInteractor {
                 }
             case .invoked:
                 self.emit(.notice("Already delivered to the agent"))
+            case .busy:
+                self.emit(.notice("Delivery outcome is unknown; message remains queued"))
             case nil:
                 break
             }

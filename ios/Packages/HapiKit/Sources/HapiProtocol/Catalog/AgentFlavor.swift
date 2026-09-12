@@ -11,6 +11,7 @@ public enum AgentFlavor: Equatable, Hashable, Sendable {
     case agy
     case claude
     case codex
+    case dsh
     case copilot
     case cursor
     case gemini
@@ -22,7 +23,7 @@ public enum AgentFlavor: Equatable, Hashable, Sendable {
 
     /// Order matches `AGENT_FLAVORS`.
     public static let knownFlavors: [AgentFlavor] = [
-        .agy, .claude, .codex, .copilot, .cursor, .gemini, .grok, .kimi, .opencode, .pi,
+        .agy, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .kimi, .opencode, .pi,
     ]
 
     /// Flavors offered when creating a new session (`CREATABLE_AGENT_FLAVORS`).
@@ -42,6 +43,7 @@ extension AgentFlavor: RawRepresentable {
         case "agy": self = .agy
         case "claude": self = .claude
         case "codex": self = .codex
+        case "dsh": self = .dsh
         case "copilot": self = .copilot
         case "cursor": self = .cursor
         case "gemini": self = .gemini
@@ -58,6 +60,7 @@ extension AgentFlavor: RawRepresentable {
         case .agy: return "agy"
         case .claude: return "claude"
         case .codex: return "codex"
+        case .dsh: return "dsh"
         case .copilot: return "copilot"
         case .cursor: return "cursor"
         case .gemini: return "gemini"
@@ -91,6 +94,7 @@ extension AgentFlavor {
         case .agy: return "Antigravity"
         case .claude: return "Claude"
         case .codex: return "Codex"
+        case .dsh: return "DeepSeek Harness"
         case .copilot: return "Copilot"
         case .cursor: return "Cursor"
         case .gemini: return "Gemini"
@@ -102,9 +106,13 @@ extension AgentFlavor {
         }
     }
 
-    /// `hasCapability(flavor, 'model-change')` — true for every known flavor.
+    /// `hasCapability(flavor, 'model-change')` — false for DSH's server-owned
+    /// model selection and unknown flavors.
     public var supportsModelChange: Bool {
-        isKnown
+        switch self {
+        case .dsh, .other: return false
+        default: return true
+        }
     }
 
     /// `hasCapability(flavor, 'effort')` — claude, grok, and pi only.

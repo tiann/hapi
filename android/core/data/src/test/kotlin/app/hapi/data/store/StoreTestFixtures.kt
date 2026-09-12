@@ -125,4 +125,4 @@ fun MockWebServer.enqueueJson(body: String, code: Int = 200) {
 }
 
 fun apiFor(server: MockWebServer): HapiApi =
-    HapiApi(server.url("/").toString(), OkHttpClient())
+    HapiApi(server.url("/"), OkHttpClient())

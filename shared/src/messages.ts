@@ -1,3 +1,4 @@
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import { isObject } from './utils'
 
 type RoleWrappedRecord = {
@@ -67,6 +68,48 @@ export function isRedundantGoalStatusMessageText(value: unknown): boolean {
         || /^Goal (active|paused|complete|blocked|limited by (?:budget|usage))(?:$|\s+·\s+)/.test(message)
 }
 
+/**
+ * ACP agents stream thoughts one token at a time, so the CLI coalesces them
+ * into a buffer and re-sends the whole buffer under a stable stream id every
+ * few hundred milliseconds. Every snapshot but the newest is dead weight: the
+ * buffer only ever grows, so an older snapshot is a strict prefix of a newer
+ * one and the timeline collapses them back into a single block anyway.
+ *
+ * These two readers let the hub and the web keep one message per stream
+ * instead of one per snapshot. They are deliberately separate:
+ *
+ *  - `getReasoningStreamId` answers "which stream does this belong to" and so
+ *    also matches the settled message that closes a stream. That message is
+ *    what triggers the final cleanup of its own leftovers.
+ *  - `getLiveReasoningStreamId` answers "is this a replaceable snapshot", and
+ *    so only ever matches something safe to drop.
+ *
+ * Anything unrecognised reads as `null`, which means "keep it".
+ */
+function readReasoningStreamId(value: unknown, liveOnly: boolean): string | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent') return null
+
+    const content = record.content
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'reasoning') return null
+    if (liveOnly && data.live !== true) return null
+
+    const id = data.id
+    if (typeof id !== 'string' || id.trim().length === 0) return null
+    return id
+}
+
+export function getReasoningStreamId(value: unknown): string | null {
+    return readReasoningStreamId(value, false)
+}
+
+export function getLiveReasoningStreamId(value: unknown): string | null {
+    return readReasoningStreamId(value, true)
+}
+
 export function isRedundantGoalStatusEventContent(value: unknown): boolean {
     const record = unwrapRoleWrappedRecordEnvelope(value)
     if (record?.role !== 'agent') return false
@@ -134,6 +177,53 @@ export function extractAssistantPlainText(content: unknown): string | null {
     }
 
     return null
+}
+
+function hasConversationBlock(value: unknown): boolean {
+    if (typeof value === 'string') return value.trim().length > 0
+    if (Array.isArray(value)) return value.some(hasConversationBlock)
+    if (!isObject(value)) return false
+    if (value.type === 'text') {
+        return hasConversationBlock(value.text)
+            || (Array.isArray(value.attachments) && value.attachments.length > 0)
+    }
+    if (value.type === 'thinking') return hasConversationBlock(value.thinking)
+    if (value.type === 'image' || value.type === 'document') return isObject(value.source)
+    if (value.type === 'tool_use') return typeof value.name === 'string' && value.name.trim().length > 0
+    if (value.type === 'tool_result') return hasConversationBlock(value.content)
+    return false
+}
+
+/** Conversation payloads, not launch/status/usage events or display titles. */
+export function hasConversationMessageContent(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role === 'user') return hasConversationBlock(record.content)
+    if (record?.role !== 'agent' || !isObject(record.content)) return false
+    const content = record.content
+    if (extractAssistantPlainText(content)?.trim()) return true
+    const data = isObject(content.data) ? content.data : null
+    if (!data) return false
+    if (content.type === 'output') {
+        if (data.type === 'assistant' || data.type === 'user') {
+            return isObject(data.message) && hasConversationBlock(data.message.content)
+        }
+        return data.type === 'agy_tool_action' && hasConversationBlock(data.content)
+    }
+    if (content.type === 'event') {
+        return data.type === 'compact-summary' && hasConversationBlock(data.summary)
+    }
+    if (content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    if (data.type === 'reasoning') return hasConversationBlock(data.message)
+    if (data.type === 'compact-summary') return hasConversationBlock(data.summary)
+    if (data.type === 'tool-call' || data.type === 'tool-call-result') {
+        return typeof data.callId === 'string' && data.callId.trim().length > 0
+    }
+    if (data.type === 'generated-image') return hasConversationBlock(data.imageId ?? data.image_id)
+    if (data.type === 'plan' || data.type === 'plan_update') {
+        const entries = data.entries ?? data.plan ?? data.update ?? data.items ?? data.steps
+        return Array.isArray(entries) && entries.length > 0
+    }
+    return false
 }
 
 const NOTIFY_SUMMARY_PREFIX = 'AGENT_NOTIFY_SUMMARY '

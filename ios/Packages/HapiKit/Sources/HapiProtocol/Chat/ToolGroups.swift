@@ -299,23 +299,40 @@ private func getGroupingFamily(_ block: ToolCallBlock) -> ToolGroupBlock.Present
     return isCodexExplorationTool(block) ? .codexExploration : .default
 }
 
-/// Port of `createToolGroupId` — reuses a previous group's id when the run
-/// still shares a boundary tool with it (scroll-anchor stability).
+/// Boundary-based identity reuse, with native list uniqueness guarantees:
+/// splits may claim an old ID only once; fresh runs cannot steal a later
+/// group's historical ID. No row-index or random IDs (scroll-anchor stability).
 private func createToolGroupId(
     tools: [ToolCallBlock],
     needsOlderHistory: Bool,
-    previousGroups: [ToolGroupBlock]
+    previousGroups: [ToolGroupBlock],
+    reservedGroupIds: Set<String>,
+    usedIds: inout Set<String>
 ) -> String {
     let firstToolId = tools.first?.id ?? "unknown"
     let lastToolId = tools.last?.id ?? firstToolId
 
-    if let previous = previousGroups.first(where: { $0.firstToolId == firstToolId || $0.lastToolId == lastToolId }) {
+    if let previous = previousGroups.first(where: {
+        ($0.firstToolId == firstToolId || $0.lastToolId == lastToolId) && !usedIds.contains($0.id)
+    }) {
+        usedIds.insert(previous.id)
         return previous.id
     }
 
-    return needsOlderHistory
-        ? "tool-group:\(lastToolId)"
-        : "tool-group:\(firstToolId)"
+    let boundaries = needsOlderHistory ? [lastToolId, firstToolId] : [firstToolId, lastToolId]
+    for boundary in boundaries {
+        let candidate = "tool-group:\(boundary)"
+        if !reservedGroupIds.contains(candidate), usedIds.insert(candidate).inserted { return candidate }
+    }
+    let base = "tool-group:\(boundaries[0])"
+    var suffix = 2
+    var candidate = "\(base)#\(suffix)"
+    while reservedGroupIds.contains(candidate) || usedIds.contains(candidate) {
+        suffix += 1
+        candidate = "\(base)#\(suffix)"
+    }
+    usedIds.insert(candidate)
+    return candidate
 }
 
 // MARK: - buildVisibleChatBlocks
@@ -327,6 +344,9 @@ public func buildVisibleChatBlocks(
 ) -> [VisibleChatBlock] {
     var visibleBlocks: [VisibleChatBlock] = []
     let previousGroups = options.previousGroups
+    let reservedGroupIds = Set(previousGroups.map(\.id))
+    // Includes flattened tool children as well as ordinary display blocks.
+    var usedIds = Set(blocks.map(\.id))
 
     var index = 0
     while index < blocks.count {
@@ -367,7 +387,8 @@ public func buildVisibleChatBlocks(
             return getInputStringAny(previousBlock.tool.input, ["title"])
         }()
         visibleBlocks.append(.toolGroup(ToolGroupBlock(
-            id: createToolGroupId(tools: tools, needsOlderHistory: needsOlderHistory, previousGroups: previousGroups),
+            id: createToolGroupId(tools: tools, needsOlderHistory: needsOlderHistory,
+                                  previousGroups: previousGroups, reservedGroupIds: reservedGroupIds, usedIds: &usedIds),
             createdAt: tools[0].createdAt,
             invokedAt: tools[0].invokedAt,
             firstToolId: tools[0].id,

@@ -33,6 +33,10 @@ For local network access:
 http://<your-computer-ip>:3006
 ```
 
+That cleartext URL is for a browser/PWA on your trusted LAN. The native
+Android companion requires an HTTPS hub URL; use `hapi hub --relay` or place
+an HTTPS reverse proxy/tunnel in front of the hub.
+
 If your phone cannot connect, make sure the hub is not only listening on `127.0.0.1`. For LAN access, set `listenHost` to `0.0.0.0` in `~/.hapi/settings.json` or set `HAPI_LISTEN_HOST=0.0.0.0`, then restart `hapi hub`.
 
 For internet access:
@@ -129,6 +133,16 @@ Only if they have your access token. For additional security:
 
 ## Troubleshooting
 
+### Why does a session stop when its laptop host sleeps?
+
+Remote mode changes where you control the agent, not where it executes. The machine running the CLI or runner must remain awake. If the hub runs elsewhere, the web app may still load while that execution machine is unavailable. Running the hub on a server does not move an existing laptop session to that server.
+
+First verify a small request with the laptop open. If that fails too, check the agent's pending permissions, CLI connection, and network before changing power settings. Terminal disconnection and operating-system sleep are separate problems: preserving a process after an SSH disconnect does not let it execute while its host is asleep.
+
+For a MacBook that must work with the lid closed, use a supported external-display setup or a compatible closed-lid solution. Leaving the lid open with idle sleep managed is another option. Keep an active laptop powered and ventilated. After closing the lid, confirm new command output from the phone before relying on a long run.
+
+This [Apple Silicon MacBook setup guide](https://clamshell.dev/guides/keep-claude-code-running-lid-closed#phone-check) includes a two-minute timestamp check and an optional Clamshell setup. Clamshell is a separate paid app with a trial; HAPI does not require it.
+
 ### "Connection refused" error
 
 - Ensure hub is running: `hapi hub`
@@ -156,6 +170,9 @@ Then restart `hapi hub` and open:
 ```bash
 http://<your-computer-ip>:3006
 ```
+
+This direct LAN URL is for browser/PWA access. The native Android companion
+requires HTTPS (`hapi hub --relay`, or your own HTTPS reverse proxy/tunnel).
 
 Also verify your OS firewall allows inbound connections on port `3006`.
 

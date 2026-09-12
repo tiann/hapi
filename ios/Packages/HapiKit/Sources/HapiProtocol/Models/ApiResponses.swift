@@ -128,7 +128,7 @@ public struct ReopenSessionResponse: Codable, Equatable, Sendable {
 /// spawn is still HTTP 200 with `type: 'error'`.
 public enum SpawnResponse: Equatable, Sendable {
     case success(sessionId: String)
-    case error(message: String)
+    case error(message: String, code: String?, agent: AgentFlavor?)
 }
 
 extension SpawnResponse: Decodable {
@@ -136,6 +136,8 @@ extension SpawnResponse: Decodable {
         case type
         case sessionId
         case message
+        case code
+        case agent
     }
 
     public init(from decoder: Decoder) throws {
@@ -145,7 +147,11 @@ extension SpawnResponse: Decodable {
         case "success":
             self = .success(sessionId: try container.decode(String.self, forKey: .sessionId))
         case "error":
-            self = .error(message: try container.decode(String.self, forKey: .message))
+            self = .error(
+                message: try container.decodeIfPresent(String.self, forKey: .message) ?? "",
+                code: try container.decodeIfPresent(String.self, forKey: .code),
+                agent: try container.decodeIfPresent(AgentFlavor.self, forKey: .agent)
+            )
         default:
             throw DecodingError.dataCorrupted(DecodingError.Context(
                 codingPath: decoder.codingPath,
@@ -157,12 +163,19 @@ extension SpawnResponse: Decodable {
 
 // MARK: - Message queue operations
 
+public struct RetryIndeterminateMessageResponse: Decodable, Equatable, Sendable {
+    public let status: String
+    public let localId: String?
+    public let message: DecryptedMessage?
+}
+
 /// Body of `DELETE /api/sessions/:id/messages/:messageId`, discriminated on
 /// `status`. `invoked` means the cancel arrived too late — the message was
 /// already handed to the agent.
 public enum CancelMessageResponse: Equatable, Sendable {
     case cancelled(localId: String?)
     case invoked(message: DecryptedMessage)
+    case busy(localId: String)
 }
 
 extension CancelMessageResponse: Decodable {
@@ -180,6 +193,8 @@ extension CancelMessageResponse: Decodable {
             self = .cancelled(localId: try container.decodeIfPresent(String.self, forKey: .localId))
         case "invoked":
             self = .invoked(message: try container.decode(DecryptedMessage.self, forKey: .message))
+        case "busy":
+            self = .busy(localId: try container.decode(String.self, forKey: .localId))
         default:
             throw DecodingError.dataCorrupted(DecodingError.Context(
                 codingPath: decoder.codingPath,
@@ -243,10 +258,16 @@ public struct InvokedLocalMessage: Codable, Equatable, Sendable {
 public struct QueuedStateResponse: Codable, Equatable, Sendable {
     public var queuedLocalIds: [String]
     public var invokedLocalMessages: [InvokedLocalMessage]
+    public var indeterminateLocalIds: [String]?
 
-    public init(queuedLocalIds: [String], invokedLocalMessages: [InvokedLocalMessage]) {
+    public init(
+        queuedLocalIds: [String],
+        invokedLocalMessages: [InvokedLocalMessage],
+        indeterminateLocalIds: [String]? = nil
+    ) {
         self.queuedLocalIds = queuedLocalIds
         self.invokedLocalMessages = invokedLocalMessages
+        self.indeterminateLocalIds = indeterminateLocalIds
     }
 }
 
@@ -381,9 +402,36 @@ public struct MachineListDirectoryResponse: Codable, Equatable, Sendable {
 /// Body of `POST /api/machines/:id/paths/exists`.
 public struct MachinePathsExistsResponse: Codable, Equatable, Sendable {
     public var exists: [String: Bool]
+    public var outsideWorkspaceRoots: [String]?
 
-    public init(exists: [String: Bool]) {
+    public init(exists: [String: Bool], outsideWorkspaceRoots: [String]? = nil) {
         self.exists = exists
+        self.outsideWorkspaceRoots = outsideWorkspaceRoots
+    }
+}
+
+// MARK: - Agent availability
+
+/// Installed/static-configured Agent status reported by a machine runner.
+public struct AgentAvailabilityEntry: Codable, Equatable, Sendable {
+    public var agent: AgentFlavor
+    public var available: Bool
+    /// `not_found | invalid_configuration`; open string for forward compatibility.
+    public var reason: String?
+
+    public init(agent: AgentFlavor, available: Bool, reason: String? = nil) {
+        self.agent = agent
+        self.available = available
+        self.reason = reason
+    }
+}
+
+/// Body of `GET /api/machines/:id/agent-availability`.
+public struct AgentAvailabilityResponse: Codable, Equatable, Sendable {
+    public var agents: [AgentAvailabilityEntry]
+
+    public init(agents: [AgentAvailabilityEntry]) {
+        self.agents = agents
     }
 }
 

@@ -1,6 +1,7 @@
 import { useAuiState } from '@assistant-ui/react'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import { useTranslation } from '@/lib/use-translation'
+import { MessageActionButton } from './MessageActionButton'
 
 function ShareIcon(props: { className?: string }) {
     return (
@@ -49,12 +50,10 @@ export function ShareTurnButton(props: {
     const fallbackText = props.fallbackText?.trim() ?? ''
 
     return (
-        <button
-            type="button"
+        <MessageActionButton
             data-hapi-share-action="true"
-            title={t('message.shareTurn')}
-            aria-label={t('message.shareTurn')}
-            className={props.className ?? 'rounded-md p-0.5 opacity-60 transition-[opacity,background-color] hover:bg-[var(--app-subtle-bg)] sm:opacity-0 sm:group-hover/msg:opacity-100'}
+            label={t('message.shareTurn')}
+            className={props.className}
             onClick={(event) => {
                 event.stopPropagation()
                 const messageElement = event.currentTarget.closest('[data-hapi-message-role]')
@@ -69,7 +68,7 @@ export function ShareTurnButton(props: {
                 )
             }}
         >
-            <ShareIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
-        </button>
+            <ShareIcon className="h-3.5 w-3.5" />
+        </MessageActionButton>
     )
 }

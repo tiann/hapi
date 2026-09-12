@@ -31,6 +31,7 @@ enum class MessageStatus(val wire: String) {
     Sending("sending"),
     Sent("sent"),
     Failed("failed"),
+    Indeterminate("indeterminate"),
     ;
 
     companion object {
@@ -79,7 +80,10 @@ data class WindowMessage(
 }
 
 fun DecryptedMessage.asWindowMessage(status: MessageStatus? = null): WindowMessage =
-    WindowMessage(this, status)
+    WindowMessage(
+        this,
+        status ?: if (deliveryState == "indeterminate") MessageStatus.Indeterminate else null,
+    )
 
 /**
  * Serializes as the wire object plus an optional `status` key — the same
