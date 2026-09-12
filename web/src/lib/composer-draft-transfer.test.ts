@@ -85,6 +85,28 @@ describe('transferComposerDraft', () => {
         resetSession('target-a')
     })
 
+    it('preserves target upload metadata while transferring source attachments', async () => {
+        const source = new File(['source'], 'source.txt')
+        const target = new File(['target'], 'target.txt')
+        setComposerDraftSnapshot('source-a', 'source', [{ id: 'source-file', file: source, path: '/old/path', uploadSessionId: 'source-a' }])
+        mocks.getDraftAttachments.mockResolvedValueOnce([target])
+        mocks.getRestoredUploadMetadata.mockReturnValueOnce({ id: 'target-file', path: '/target/path', uploadSessionId: 'target-a' })
+        await transferComposerDraft('source-a', 'target-a', [], { preserveTargetAttachments: true })
+        expectMovedAttachments('source-a', 'target-a', [
+            { id: 'target-file', file: target, path: '/target/path', uploadSessionId: 'target-a', previewUrl: undefined },
+            { id: 'source-file', file: source, path: undefined, uploadSessionId: undefined },
+        ])
+    })
+
+    it('does not move attachments when reading the preserved target fails', async () => {
+        setComposerDraftSnapshot('source-a', 'source', [])
+        mocks.getDraftAttachments.mockRejectedValueOnce(new Error('storage unavailable'))
+        await expect(transferComposerDraft('source-a', 'target-a', [], { preserveTargetAttachments: true }))
+            .rejects.toThrow('storage unavailable')
+        expect(mocks.moveDraftAttachments).not.toHaveBeenCalled()
+        expect(composerDraftWasHandedOff('source-a')).toBe(false)
+    })
+
     it('prefers the live composer snapshot when reopening the visible session', async () => {
         const file = new File(['draft'], 'draft.txt')
         setComposerDraftSnapshot('old-live', 'latest text', [{ id: 'a1', file }])
@@ -436,6 +458,28 @@ describe('handoffComposerDraft', () => {
 
         expect(mocks.saveDraft).toHaveBeenCalledWith('target-a', 'submitted hello')
         expect(composerDraftWasHandedOff('source-a')).toBe(true)
+    })
+
+    it('samples text overrides after the attachment transfer completes', async () => {
+        setComposerDraftSnapshot('source-a', 'source follow-up', [])
+        let targetDraft = 'old destination'
+        let releaseDrain!: () => void
+        const drainGate = new Promise<void>(resolve => { releaseDrain = resolve })
+        mocks.moveDraftAttachments.mockImplementation(async (
+            _source: string,
+            _target: string,
+            resolveAttachments: () => Array<{ id: string; file: File }>,
+        ) => {
+            await drainGate
+            return resolveAttachments()
+        })
+        const transfer = transferComposerDraft('source-a', 'target-a', [], {
+            textOverride: sampled => `${targetDraft} ${sampled}`,
+        })
+        targetDraft = 'latest destination'
+        releaseDrain()
+        await transfer
+        expect(mocks.saveDraft).toHaveBeenCalledWith('target-a', 'latest destination source follow-up')
     })
 
     it('applies textOverride on same-id resume when attachments stay put', async () => {
