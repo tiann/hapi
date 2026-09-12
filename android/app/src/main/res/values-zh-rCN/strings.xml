@@ -56,6 +56,7 @@
     <string name="home_menu">菜单</string>
     <string name="home_settings">设置</string>
     <string name="home_hub">Hub</string>
+    <string name="home_hub_menu">Hub 与设置</string>
     <string name="home_switch_hub">切换 hub</string>
     <string name="home_pair_another">配对另一个 hub…</string>
     <string name="home_sign_out">退出登录</string>
@@ -563,9 +564,10 @@
     <string name="chat_show_image">查看图片</string>
     <string name="chat_reconnecting_retry">正在重新连接… 点按重试</string>
     <string name="sessions_filters">筛选</string>
+    <string name="sessions_filters_active">已应用筛选</string>
     <string name="sessions_clear_filter">清除筛选</string>
     <string name="sessions_machine_fallback">机器 · %1$s</string>
-    <string name="sessions_filter_summary">机器：%1$s</string>
+    <string name="sessions_filter_summary">筛选：%1$s</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
     <string name="chat_tool_resolved">已处理</string>

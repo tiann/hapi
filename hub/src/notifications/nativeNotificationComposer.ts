@@ -19,7 +19,7 @@ const READY_BODY_GLANCE_LIMIT = 280
  * Platform-neutral native notification content: the exact FCM data-contract
  * fields (contract version 1) before they are wrapped for a concrete
  * transport. FcmNotificationChannel maps this onto the FCM data payload;
- * IosPushNotificationChannel canonicalizes + encrypts it into the E2E
+ * Android relay and IosPushNotificationChannel encrypt it into the E2E
  * envelope (PUSH SPEC v1). Keeping one composer guarantees Android and iOS
  * operators read the same words for the same event.
  */

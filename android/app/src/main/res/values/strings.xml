@@ -49,6 +49,7 @@
     <string name="home_menu">Menu</string>
     <string name="home_settings">Settings</string>
     <string name="home_hub">Hub</string>
+    <string name="home_hub_menu">Hubs and settings</string>
     <string name="home_switch_hub">Switch hub</string>
     <string name="home_pair_another">Pair another hub…</string>
     <string name="home_sign_out">Sign out</string>
@@ -557,9 +558,10 @@
     <string name="chat_show_image">Show image</string>
     <string name="chat_reconnecting_retry">Reconnecting… Tap to retry</string>
     <string name="sessions_filters">Filters</string>
+    <string name="sessions_filters_active">Filters applied</string>
     <string name="sessions_clear_filter">Clear filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_filter_summary">Machine: %1$s</string>
+    <string name="sessions_filter_summary">Filtered by: %1$s</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
 </resources>
