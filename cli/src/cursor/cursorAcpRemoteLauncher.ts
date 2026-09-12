@@ -897,16 +897,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
+                // Always clear Bridge attribution. Permission-card abort sets
+                // userAbortRequested without handleAbort, so leaving the ID set
+                // would false-RECOVER on the next successful normal turn.
+                const bridgedEventId = this.bridgingForEventId;
+                const bridgedSource = this.bridgingSource ?? 'manual';
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
                 if (
-                    !this.userAbortRequested
+                    bridgedEventId
+                    && !this.userAbortRequested
                     && !this.turnHasModelError
-                    && this.bridgingForEventId !== null
                 ) {
-                    const eventId = this.bridgingForEventId;
-                    const source = this.bridgingSource ?? 'manual';
-                    this.markModelErrorBridgeSucceeded(eventId, source);
-                    this.bridgingForEventId = null;
-                    this.bridgingSource = null;
+                    this.markModelErrorBridgeSucceeded(bridgedEventId, bridgedSource);
                 }
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     sendReady();
@@ -1055,7 +1058,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         extensionAdapter: CursorExtensionAdapter,
         response: { id: string; approved: boolean; decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort' }
     ): Promise<boolean> {
-        if (response.decision === 'abort') this.userAbortRequested = true;
+        if (response.decision === 'abort') {
+            // Permission abort does not call handleAbort — still close the Bridge
+            // replay gate if tools already ran on this bridge turn.
+            this.closeBridgeReplayGateIfToolActivityDuringBridge();
+            this.userAbortRequested = true;
+        }
         return extensionAdapter.handlePermissionResponse(response);
     }
 
@@ -1433,6 +1441,35 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.pendingBridgeSource = null;
     }
 
+    /**
+     * Aborting an in-flight Bridge after tool side effects must close the
+     * replay gate. handleAbort clears bridgingForEventId and turn cleanup
+     * resets attemptProducedToolActivity, so without this stamp a second
+     * Bridge would re-send lastUserMessage and re-run completed tools.
+     */
+    private closeBridgeReplayGateIfToolActivityDuringBridge(): void {
+        const err = this.lastRecordedModelError;
+        if (
+            !err
+            || this.bridgingForEventId !== err.eventId
+            || !this.attemptProducedToolActivity
+            || err.bridgeable === false
+        ) {
+            return;
+        }
+        this.lastRecordedModelError = { ...err, bridgeable: false };
+        this.session.client.updateMetadata((metadata) => {
+            const current = metadata.lastModelError;
+            if (!current || current.eventId !== err.eventId) {
+                return metadata;
+            }
+            return {
+                ...metadata,
+                lastModelError: { ...current, bridgeable: false }
+            };
+        });
+    }
+
     private markModelErrorBridgeSucceeded(eventId: string, source: 'auto' | 'manual'): void {
         const current = this.lastRecordedModelError;
         if (!current || current.eventId !== eventId) {
@@ -1691,6 +1728,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // Mark + clear bridge gates BEFORE any await. Otherwise a settling
         // bridge prompt can race markModelErrorBridgeSucceeded and falsely
         // persist bridgedForEventId / modelErrorBridged after the operator canceled.
+        // If the aborted Bridge already produced tool side effects, close the
+        // replay gate so a second Bridge cannot re-run completed shell/edit tools.
+        this.closeBridgeReplayGateIfToolActivityDuringBridge();
         this.userAbortRequested = true;
         this.cancelPendingBridge();
         this.bridgingForEventId = null;

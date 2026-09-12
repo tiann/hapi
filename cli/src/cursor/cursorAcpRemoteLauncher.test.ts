@@ -268,6 +268,27 @@ vi.mock('./utils/cursorExtensionAdapter', () => ({
 
 vi.mock('@/agent/permissionAdapter', () => ({
     PermissionAdapter: class {
+        constructor(
+            client: { rpcHandlerManager?: { registerHandler?: (method: string, handler: (payload: unknown) => Promise<unknown>) => void } },
+            _backend: unknown,
+            _getMode: unknown,
+            onResponse?: (response: {
+                id: string
+                approved: boolean
+                decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            }) => Promise<boolean>
+        ) {
+            if (onResponse && client?.rpcHandlerManager?.registerHandler) {
+                client.rpcHandlerManager.registerHandler(
+                    'permission',
+                    async (payload: unknown) => onResponse(payload as {
+                        id: string
+                        approved: boolean
+                        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+                    })
+                );
+            }
+        }
         cancelAll = vi.fn(async () => {});
     }
 }));
@@ -2478,6 +2499,217 @@ describe('cursorAcpRemoteLauncher', () => {
             return err?.bridgedForEventId === eventId;
         });
         expect(wroteBridgedForEventId).toBe(false);
+    });
+
+    it('closes Bridge replay after Abort once the bridge turn produced tool activity', async () => {
+        // Cold-review Major 2026-09-12: Abort during an in-flight Bridge that already
+        // ran shell/edit tools must set bridgeable:false — otherwise a second Bridge
+        // replays the original prompt despite completed side effects.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+                registerHandler: ReturnType<typeof vi.fn>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    bridgeable?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        await vi.waitFor(() => expect(harness.activeOnMessage).toBeTruthy());
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'tool-bridge-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        });
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        harness.deferPrompt = null;
+        releaseBridge();
+
+        await vi.waitFor(() => {
+            const closed = client.updateMetadata.mock.calls.some((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return false;
+                const err = updater({}).lastModelError as { eventId?: string; bridgeable?: boolean } | undefined;
+                return err?.eventId === recorded!.eventId && err?.bridgeable === false;
+            });
+            expect(closed).toBe(true);
+        });
+
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('does not emit recovered after a permission-card abort during Bridge', async () => {
+        // Cold-review Major 2026-09-12: permission decision:abort sets
+        // userAbortRequested but never calls handleAbort — finally must still
+        // clear bridgingForEventId so a later normal turn cannot false-RECOVER.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+                registerHandler: ReturnType<typeof vi.fn>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        const permissionHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission) as
+            ((payload: unknown) => Promise<unknown>) | undefined;
+        expect(permissionHandler).toBeTypeOf('function');
+        await permissionHandler!({ id: 'perm-1', approved: false, decision: 'abort' });
+
+        harness.deferPrompt = null;
+        releaseBridge();
+
+        // Next normal turn succeeds — must not emit modelErrorBridged for the aborted Bridge.
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        session.queue.push('continue normally', { permissionMode: 'default' }, 'next');
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(3));
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        session.queue.close();
+        await launchPromise;
     });
 
     it('does not promote ACP process-exit rejection after deliberate abort to modelError', async () => {
