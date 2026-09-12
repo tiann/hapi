@@ -68,6 +68,8 @@ type SessionGroup = {
     hasPinnedSession: boolean
 }
 
+export type SessionSearchMode = 'default' | 'exclude'
+
 const RUNNING_BUCKETS = [
     { key: 'working', labelKey: 'session.item.running', colorClass: 'text-[var(--app-badge-success-text)]', pulse: true },
     { key: 'pending', labelKey: 'session.item.pending', colorClass: 'text-[var(--app-badge-warning-text)]', pulse: true },
@@ -432,6 +434,26 @@ function SearchIcon(props: { className?: string }) {
     )
 }
 
+function ChevronDownIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <path d="m6 9 6 6 6-6" />
+        </svg>
+    )
+}
+
 function XIcon(props: { className?: string }) {
     return (
         <svg
@@ -538,6 +560,17 @@ export function sessionMatchesQuery(session: SessionSummary, query: string, mach
         return searchableParts.some((part) => matchesSearchQuery(part, query))
     }
     return searchableParts.join('\n').toLowerCase().includes(query)
+}
+
+export function sessionMatchesSearchMode(
+    session: SessionSummary,
+    query: string,
+    machineLabel: string,
+    mode: SessionSearchMode = 'default'
+): boolean {
+    if (!query) return true
+    const matches = sessionMatchesQuery(session, query, machineLabel)
+    return mode === 'exclude' ? !matches : matches
 }
 
 
@@ -713,9 +746,12 @@ export function SessionListSearch(props: {
     onDateRangeChange: (start: string, end: string) => void
     expanded: boolean
     onExpandedChange: (expanded: boolean) => void
+    searchMode?: SessionSearchMode
+    onSearchModeChange?: (mode: SessionSearchMode) => void
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
+    const [searchModeOpen, setSearchModeOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const dateButtonRef = useRef<HTMLButtonElement>(null)
@@ -726,6 +762,7 @@ export function SessionListSearch(props: {
             inputRef.current?.focus()
         } else {
             setDatePickerOpen(false)
+            setSearchModeOpen(false)
         }
     }, [props.expanded])
 
@@ -739,7 +776,10 @@ export function SessionListSearch(props: {
                 <button
                     ref={dateButtonRef}
                     type="button"
-                    onClick={() => setDatePickerOpen(open => !open)}
+                    onClick={() => {
+                        setSearchModeOpen(false)
+                        setDatePickerOpen(open => !open)
+                    }}
                     className={cn(
                         'relative shrink-0 transition-colors hover:bg-[var(--app-subtle-bg)]',
                         variant === 'standalone'
@@ -795,7 +835,56 @@ export function SessionListSearch(props: {
         )
     }
 
+    const searchMode = props.searchMode ?? 'default'
+    const canChangeSearchMode = Boolean(props.onSearchModeChange)
     const searchLabel = t('sessions.search.open')
+
+    const renderSearchMode = () => canChangeSearchMode ? (
+        <div className="relative shrink-0">
+            <button
+                type="button"
+                aria-label={t('sessions.search.scope.toggle')}
+                aria-expanded={searchModeOpen}
+                onClick={() => {
+                    setDatePickerOpen(false)
+                    setSearchModeOpen(open => !open)
+                }}
+                className="flex h-full w-auto items-center gap-0.5 border-r border-[var(--app-border)] px-1.5 text-xs leading-none text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
+            >
+                <span className="shrink-0 whitespace-nowrap leading-none">
+                    {t(`sessions.search.scope.${searchMode}`)}
+                </span>
+                <ChevronDownIcon className={cn(
+                    'h-3.5 w-3.5 shrink-0 transition-transform duration-200',
+                    searchModeOpen && 'rotate-180'
+                )} />
+            </button>
+            {searchModeOpen ? (
+                <div className="absolute left-0 top-full z-30 mt-1 flex w-max min-w-full flex-col gap-0.5 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-0.5 shadow-lg">
+                    {(['default', 'exclude'] as const).map(mode => (
+                        <button
+                            key={mode}
+                            type="button"
+                            aria-pressed={searchMode === mode}
+                            onClick={() => {
+                                props.onSearchModeChange?.(mode)
+                                setSearchModeOpen(false)
+                                inputRef.current?.focus()
+                            }}
+                            className={cn(
+                                'flex min-h-8 w-full items-center justify-center whitespace-nowrap rounded-md px-2 py-0.5 text-center text-sm leading-none transition-colors',
+                                searchMode === mode
+                                    ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]'
+                                    : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                            )}
+                        >
+                            {t(`sessions.search.scope.${mode}`)}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    ) : null
 
     if (!props.expanded) {
         const hasTextQuery = props.value.length > 0
@@ -858,38 +947,36 @@ export function SessionListSearch(props: {
                 }
             }}
         >
-            <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[var(--app-hint)]">
-                <SearchIcon className="h-3.5 w-3.5" />
-            </div>
-            <input
-                ref={inputRef}
-                type="search"
-                value={props.value}
-                onChange={(event) => props.onChange(event.target.value)}
-                placeholder={t('sessions.search.placeholder')}
-                aria-label={searchLabel}
-                title={searchLabel}
-                className={cn(
-                    'w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] [text-overflow:ellipsis] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden',
-                    props.value ? 'pr-16' : 'pr-7'
-                )}
-            />
-            {props.value ? (
-                <button
-                    type="button"
-                    onClick={() => {
-                        props.onChange('')
-                        // The clear button unmounts with the query; keep focus off <body>
-                        // so a later outside click still routes blur through the wrapper.
-                        inputRef.current?.focus()
-                    }}
-                    className="absolute inset-y-0 right-9 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
-                    title={t('sessions.search.clear')}
-                >
-                    <XIcon className="h-3.5 w-3.5" />
-                </button>
-            ) : null}
-            <div className="absolute inset-y-0 right-0 flex items-stretch">
+            <div className="relative flex min-w-0 items-stretch rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] transition-colors focus-within:border-[var(--app-link)]">
+                <div className="flex shrink-0 items-center pl-2 text-[var(--app-hint)]">
+                    <SearchIcon className="h-5 w-5" />
+                </div>
+                {renderSearchMode()}
+                <input
+                    ref={inputRef}
+                    type="search"
+                    value={props.value}
+                    onChange={(event) => props.onChange(event.target.value)}
+                    placeholder={t('sessions.search.placeholder')}
+                    aria-label={searchLabel}
+                    title={searchLabel}
+                    className="min-w-0 flex-1 appearance-none bg-transparent px-2 py-1.5 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] [text-overflow:ellipsis] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+                />
+                {props.value ? (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            props.onChange('')
+                            // The clear button unmounts with the query; keep focus off <body>
+                            // so a later outside click still routes blur through the wrapper.
+                            inputRef.current?.focus()
+                        }}
+                        className="flex shrink-0 items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+                        title={t('sessions.search.clear')}
+                    >
+                        <XIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
                 {renderDateFilter('embedded')}
             </div>
         </div>
@@ -1208,6 +1295,7 @@ export function SessionList(props: {
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
+    const [searchMode, setSearchMode] = useState<SessionSearchMode>('default')
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [customStart, setCustomStart] = useState('')
     const [customEnd, setCustomEnd] = useState('')
@@ -1260,14 +1348,15 @@ export function SessionList(props: {
         () => isFiltering
             ? allSessions.filter(session => (
                 sessionMatchesTimeRange(session, timeRange)
-                && sessionMatchesQuery(
+                && sessionMatchesSearchMode(
                     session,
                     normalizedQuery,
-                    resolveMachineLabel(session.metadata?.machineId ?? null)
+                    resolveMachineLabel(session.metadata?.machineId ?? null),
+                    searchMode
                 )
             ))
             : allSessions,
-        [allSessions, isFiltering, normalizedQuery, timeRange?.start, timeRange?.end, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, isFiltering, normalizedQuery, searchMode, timeRange?.start, timeRange?.end, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const allGroups = useMemo(
         () => groupSessionsByDirectory(allSessions),
@@ -1893,6 +1982,8 @@ export function SessionList(props: {
                             }}
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
+                            searchMode={searchMode}
+                            onSearchModeChange={setSearchMode}
                         />
                     ) : null}
                     {!(showSearch && searchExpanded) ? (

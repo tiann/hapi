@@ -19,6 +19,7 @@ import {
     normalizeSearch,
     prepareSidebarSessions,
     sessionMatchesQuery,
+    sessionMatchesSearchMode,
     sessionMatchesTimeRange,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
@@ -419,6 +420,32 @@ describe('session list search helpers', () => {
         expect(sessionMatchesQuery(session, normalizeSearch('session-???'), 'desktop')).toBe(true)
         expect(sessionMatchesQuery(session, normalizeSearch('bot*review'), 'desktop')).toBe(false)
         expect(sessionMatchesQuery(session, normalizeSearch('bot review'), 'desktop')).toBe(true)
+    })
+
+    it('negates the existing matcher in exclude mode and keeps empty queries neutral', () => {
+        const matching = makeSession({
+            id: 'matching-session',
+            metadata: { path: '/work/archive', name: 'Archive task' }
+        })
+        const nonMatching = makeSession({
+            id: 'non-matching-session',
+            metadata: { path: '/work/hapi', name: 'Current task' }
+        })
+
+        expect(sessionMatchesSearchMode(matching, 'archive', 'desktop', 'default')).toBe(true)
+        expect(sessionMatchesSearchMode(matching, 'archive', 'desktop', 'exclude')).toBe(false)
+        expect(sessionMatchesSearchMode(nonMatching, 'archive', 'desktop', 'exclude')).toBe(true)
+        expect(sessionMatchesSearchMode(matching, '', 'desktop', 'exclude')).toBe(true)
+    })
+
+    it('preserves wildcard matching when excluding sessions', () => {
+        const matching = makeSession({
+            id: 'session-123',
+            metadata: { path: '/work/hapi', name: 'Fix Bot Review' }
+        })
+
+        expect(sessionMatchesSearchMode(matching, '*bot*', 'desktop', 'exclude')).toBe(false)
+        expect(sessionMatchesSearchMode(matching, '*missing*', 'desktop', 'exclude')).toBe(true)
     })
 })
 
