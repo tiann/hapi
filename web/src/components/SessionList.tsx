@@ -1389,14 +1389,21 @@ export function SessionList(props: {
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+    const [filterCollapseOverrides, setFilterCollapseOverrides] = useState<Map<string, boolean>>(
+        () => new Map()
+    )
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [activeSectionCollapsed, setActiveSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        if (isFiltering) return false
-        const override = collapseOverrides.get(group.key)
+        const override = isFiltering
+            ? filterCollapseOverrides.get(group.key)
+            : collapseOverrides.get(group.key)
         if (override !== undefined) return override
+        // Keep matching groups open by default while filtering. Explicit
+        // header clicks use a temporary override for the active filter.
+        if (isFiltering) return false
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
@@ -1404,12 +1411,18 @@ export function SessionList(props: {
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
-        setCollapseOverrides(prev => {
+        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+        setOverrides(prev => {
             const next = new Map(prev)
             next.set(groupKey, !isCollapsed)
             return next
         })
     }
+
+    useEffect(() => {
+        if (isFiltering) return
+        setFilterCollapseOverrides(prev => prev.size === 0 ? prev : new Map())
+    }, [isFiltering])
 
     // Per-group reveal cap for paginated session previews. Absent = the configured
     // preview limit; expand/collapse controls move the cap by one preview-sized batch.
@@ -1727,7 +1740,9 @@ export function SessionList(props: {
             // (e.g. it moved to the pinned "in progress" section). Drop the
             // guard so it auto-expands again when it transitions back into a
             // group later.
-            autoExpandedSelectedSessionKeyRef.current = null
+            if (!isFiltering) {
+                autoExpandedSelectedSessionKeyRef.current = null
+            }
             return
         }
 
@@ -1735,8 +1750,9 @@ export function SessionList(props: {
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
-        setCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups])
+        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
+    }, [selectedSessionId, groups, isFiltering])
 
     // Clean up stale collapse overrides
     useEffect(() => {
