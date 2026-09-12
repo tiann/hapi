@@ -867,7 +867,7 @@ describe('useDictation', () => {
         expect(result.current.error).toBe('network down')
     })
 
-    it.each([[false, false], [true, false], [false, true]])('preserves follow-ups after resume/send failure, sameId=%s, targetBefore=%s', async (sameId, targetBefore) => {
+    it.each([[false, false, false], [true, false, false], [false, true, false], [false, false, true]])('preserves follow-ups after resume/send failure, sameId=%s, targetBefore=%s, beforeHydration=%s', async (sameId, targetBefore, beforeHydration) => {
         const stopTrack = vi.fn()
         Object.defineProperty(navigator, 'mediaDevices', {
             configurable: true,
@@ -947,13 +947,20 @@ describe('useDictation', () => {
             saveDraft('session-A', 'source follow-up')
         })
         unmount()
+        const frames: FrameRequestCallback[] = []
+        const frameSpy = beforeHydration ? vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(callback => {
+            frames.push(callback)
+            return frames.length
+        }) : undefined
         const replacement = renderHook(() => {
             const [text, setText] = useState('')
             useComposerDraft('session-A-resumed', text, [], false, setText, async () => {})
             return text
         })
-        await waitFor(() => expect(replacement.result.current).toBe('newer resumed draft'))
+        frameSpy?.mockRestore()
+        if (!beforeHydration) await waitFor(() => expect(replacement.result.current).toBe('newer resumed draft'))
         await act(async () => { rejectSend?.(new Error('network down')) })
+        await act(async () => { frames.forEach(callback => callback(performance.now())) })
         await act(async () => {
             await waitFor(() => expect(getDraft('session-A-resumed')).toBe('newer resumed draft source follow-up initial text voice payload'))
         })

@@ -52,7 +52,7 @@ export function useComposerDraft(
     useEffect(() => {
         if (!sessionId) return
         const composer = {
-            getText: () => composerTextRef.current,
+            getText: () => draftReadyRef.current ? composerTextRef.current : (composerTextRef.current || getDraft(sessionId)),
             setText: (text: string) => {
                 composerTextRef.current = text
                 setTextRef.current(text)
@@ -108,6 +108,7 @@ export function useComposerDraft(
                     restoredAny: true,
                     hasStoredAttachments: false,
                 })
+                composerTextRef.current = draft!
                 setText(draft!)
             }
             draftReadyRef.current = true
