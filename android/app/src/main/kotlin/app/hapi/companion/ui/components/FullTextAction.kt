@@ -3,6 +3,7 @@ package app.hapi.companion.ui.components
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
@@ -11,9 +12,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import app.hapi.companion.R
 import java.io.File
@@ -74,9 +77,12 @@ internal fun FullTextAction(source: String, compact: Boolean = false) {
             else -> R.string.chat_copy_full_content
         })
     if (compact) {
-        IconButton(enabled = !busy, onClick = action) {
-            if (export || copied) Icon(if (export) Icons.Default.Share else Icons.Default.Check, label)
-            else Icon(painterResource(R.drawable.ic_content_copy), label)
+        // Compact artwork, not a smaller touch target. Keep all states the
+        // same size so copying/exporting never changes the code header layout.
+        IconButton(enabled = !busy, onClick = action, modifier = Modifier.size(48.dp)) {
+            val iconModifier = Modifier.size(18.dp)
+            if (export || copied) Icon(if (export) Icons.Default.Share else Icons.Default.Check, label, iconModifier)
+            else Icon(painterResource(R.drawable.ic_content_copy), label, iconModifier)
         }
     } else {
         TextButton(enabled = !busy, onClick = action) { Text(label) }

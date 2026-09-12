@@ -318,6 +318,16 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             await client.request('hapi/stopSession', { sessionId });
             await api(`/sessions/${webId}/archive`, {});
             await eventually(webDetail, value => record(value.session).active === false, 'end independent Web session');
+            const reopened = await api(`/sessions/${webId}/reopen`, {});
+            expect(reopened.sessionId).toBe(webId);
+            const reopenedSession = record((await webDetail()).session);
+            expect(record(reopenedSession.metadata).codexSessionId).toBe(record(record(independent.session).metadata).codexSessionId);
+            runtimePids.add(Number(record(reopenedSession.metadata).hostPid));
+            await api(`/sessions/${webId}/messages`, { text: 'AFTER_ARCHIVE_REOPEN', localId: randomUUID() });
+            await eventually(() => api(`/sessions/${webId}/messages`), value => hasReply(value, 'AFTER_ARCHIVE_REOPEN'), 'Web reply after reopening archived native thread');
+            expect(hasReply(await api(`/sessions/${webId}/messages`), 'HELLO_WEB_CREATED')).toBe(true);
+            await api(`/sessions/${webId}/archive`, {});
+            await eventually(webDetail, value => record(value.session).active === false, 'end reopened Web session');
         } catch (error) {
             await writeFile('/tmp/hapi-shared-e2e-terminal.log', output + '\nRUNNER:\n' + runnerOutput);
             throw error;

@@ -1,13 +1,18 @@
 package app.hapi.companion.feature.home
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import android.net.Uri
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -15,33 +20,29 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
-import app.hapi.companion.feature.sessions.SessionFilterSheet
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.sessions.SessionFilterSheet
 import app.hapi.companion.feature.sessions.SessionListScreen
 import app.hapi.companion.feature.sessions.SessionListViewModel
 
-/**
- * Home = the session list (B-M2b) under a top bar that keeps the hub chores
- * reachable: overflow menu with hub switcher, pair-another and sign-out
- * (the pre-M2b placeholder screen folded into a menu).
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Session list with one hub/settings menu, centered title and a filter action. */
 @Composable
 fun HomeScreen(
     viewModel: SessionListViewModel,
@@ -53,74 +54,32 @@ fun HomeScreen(
     onOpenSession: (sessionId: String) -> Unit,
     /** "+" FAB on the session list → new-session form (B-M3d). */
     onNewSession: (() -> Unit)? = null,
-    /** Overflow menu → settings scaffold (B-M4e). */
+    /** Hub menu → settings scaffold (B-M4e). */
     onOpenSettings: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     var showFilters by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
-    var menuOpen by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
-    var showSwitcher by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
     var showSignOutConfirm by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.sessions_section_sessions), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = { TextButton(onClick = { showSwitcher = true }) { Text(stringResource(R.string.home_hub)) } },
-                actions = {
-                    if (state.hasMachineFilters) {
-                        TextButton(onClick = { showFilters = true }) { Text(stringResource(R.string.sessions_filters)) }
-                    }
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.home_menu))
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        if (onOpenSettings != null) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.home_settings)) },
-                                onClick = {
-                                    menuOpen = false
-                                    onOpenSettings()
-                                },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.home_switch_hub)) },
-                            onClick = {
-                                menuOpen = false
-                                showSwitcher = true
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.home_pair_another)) },
-                            onClick = {
-                                menuOpen = false
-                                onPairAnotherHub()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = stringResource(R.string.home_sign_out),
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                            },
-                            onClick = {
-                                menuOpen = false
-                                showSignOutConfirm = true
-                            },
-                        )
-                    }
-                },
+            HomeTopBar(
+                activeHubUrl = activeHubUrl,
+                pairedHubs = pairedHubs,
+                hasMachineFilters = state.hasMachineFilters,
+                hasActiveFilter = state.activeMachineFilter != null,
+                onOpenFilters = { showFilters = true },
+                onSwitchHub = onSwitchHub,
+                onPairAnotherHub = onPairAnotherHub,
+                onOpenSettings = onOpenSettings,
+                onSignOut = { showSignOutConfirm = true },
             )
         },
     ) { padding ->
         SessionListScreen(
             viewModel = viewModel,
             onOpenSession = onOpenSession,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize().padding(padding),
             onNewSession = onNewSession,
         )
     }
@@ -128,22 +87,6 @@ fun HomeScreen(
     if (showFilters) {
         SessionFilterSheet(state, select = { viewModel.setMachineFilter(it); showFilters = false }, dismiss = { showFilters = false })
     }
-    if (showSwitcher) {
-        HubSwitcherDialog(
-            activeHubUrl = activeHubUrl,
-            pairedHubs = pairedHubs,
-            onSwitchHub = { hub ->
-                showSwitcher = false
-                if (hub != activeHubUrl) onSwitchHub(hub)
-            },
-            onPairAnotherHub = {
-                showSwitcher = false
-                onPairAnotherHub()
-            },
-            onDismiss = { showSwitcher = false },
-        )
-    }
-
     if (showSignOutConfirm) {
         AlertDialog(
             onDismissRequest = { showSignOutConfirm = false },
@@ -156,10 +99,7 @@ fun HomeScreen(
                         onSignOut()
                     },
                 ) {
-                    Text(
-                        text = stringResource(R.string.home_sign_out),
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                    Text(stringResource(R.string.home_sign_out), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
@@ -171,43 +111,76 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HubSwitcherDialog(
+internal fun HomeTopBar(
     activeHubUrl: String,
     pairedHubs: List<String>,
+    hasMachineFilters: Boolean,
+    hasActiveFilter: Boolean,
+    onOpenFilters: () -> Unit,
     onSwitchHub: (String) -> Unit,
     onPairAnotherHub: () -> Unit,
-    onDismiss: () -> Unit,
+    onOpenSettings: (() -> Unit)?,
+    onSignOut: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.home_switch_hub)) },
-        text = {
-            Column {
-                pairedHubs.forEach { hub ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = hub == activeHubUrl, onClick = { onSwitchHub(hub) })
-                        Text(
-                            text = hub,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(start = 4.dp),
+    var menuOpen by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
+    CenterAlignedTopAppBar(
+        title = {
+            Text(stringResource(R.string.sessions_section_sessions), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        navigationIcon = {
+            // Anchor the only hub menu to its own icon, not the whole toolbar.
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp).semantics { stateDescription = activeHubUrl }) {
+                    Icon(painterResource(R.drawable.ic_hubs), stringResource(R.string.home_hub_menu))
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    Text(
+                        stringResource(R.string.home_switch_hub),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                    pairedHubs.forEach { hub ->
+                        DropdownMenuItem(
+                            text = { Text(Uri.parse(hub).authority ?: hub, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                            trailingIcon = { if (hub == activeHubUrl) Icon(Icons.Default.Check, contentDescription = null) },
+                            modifier = Modifier.semantics { selected = hub == activeHubUrl },
+                            onClick = {
+                                menuOpen = false
+                                if (hub != activeHubUrl) onSwitchHub(hub)
+                            },
                         )
                     }
-                }
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                TextButton(onClick = onPairAnotherHub) {
-                    Text(stringResource(R.string.home_pair_another))
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.home_pair_another)) },
+                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        onClick = { menuOpen = false; onPairAnotherHub() },
+                    )
+                    HorizontalDivider()
+                    if (onOpenSettings != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.home_settings)) },
+                            leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                            onClick = { menuOpen = false; onOpenSettings() },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.home_sign_out), color = MaterialTheme.colorScheme.error) },
+                        onClick = { menuOpen = false; onSignOut() },
+                    )
                 }
             }
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.home_cancel))
+        actions = {
+            if (hasMachineFilters) {
+                val filterState = stringResource(if (hasActiveFilter) R.string.sessions_filters_active else R.string.sessions_filter_all)
+                IconButton(onClick = onOpenFilters, modifier = Modifier.size(48.dp).semantics { stateDescription = filterState }) {
+                    BadgedBox(badge = { if (hasActiveFilter) Badge() }) {
+                        Icon(painterResource(R.drawable.ic_filter_list), stringResource(R.string.sessions_filters))
+                    }
+                }
             }
         },
     )

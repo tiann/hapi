@@ -9,11 +9,11 @@ binding (requires Telegram `initData`).
 
 ## Scope
 
-A companion implementing this contract is a **native client to the same hub the PWA talks to**, surfacing notifications and reply / approve actions on a phone or wearable. Hub topology is unchanged - the hub still runs on the operator's dev machine.
+A companion implementing this contract is a **native client to the same hub the PWA talks to**, surfacing notifications and reply / approve actions on a phone or wearable. The hub may run on the operator's development machine or a separate host; agents execute on their CLI/Runner machines.
 
 ---
 
-## Device registration (FCM)
+## Native device registration
 
 ### Register
 
@@ -23,17 +23,24 @@ A companion implementing this contract is a **native client to the same hub the 
 {
   "token": "<fcm-registration-token>",
   "platform": "phone",
-  "deviceId": "<stable-install-id>"
+  "deviceId": "<stable-install-id>",
+  "pushKey": "<base64 of 32 device-generated random bytes>"
 }
 ```
 
-`platform`: `"phone"` | `"wear"` | `"ios"` (iOS registration adds a required `pushKey` field - see [iOS (APNs)](#ios-apns))
+`platform`: `"phone"` | `"wear"` | `"ios"`.
+
+`pushKey`: required for iOS and for Android relay delivery. New Android phone
+clients always provide it. Phone registrations without it remain valid for
+direct FCM; supplied phone keys must decode to exactly 32 bytes. Wear ignores
+this field. The hub canonicalizes and stores phone/iOS keys in the existing
+registry; no schema or database version change is required.
 
 `deviceId`: any string of 1-128 characters chosen by the client (does not have to be a UUID). Must be stable across re-registrations of the same install.
 
 **Response:** `{ "ok": true }`
 
-Upsert on `(namespace, deviceId, platform)` - same device re-registering replaces the FCM token.
+Upsert on `(namespace, deviceId, platform)` - same device re-registering replaces its push token.
 
 ### Unregister
 
@@ -49,13 +56,13 @@ Upsert on `(namespace, deviceId, platform)` - same device re-registering replace
 
 ## Outbound push (hub → device)
 
-Hub sends FCM HTTP v1 whenever a notification event is emitted for a
-namespace with registered native devices and FCM is configured. The native
-companion is treated as the canonical wrist-first surface, so FCM fires
-**unconditionally** (independent of whether a PWA tab happens to be
-foreground / visible via SSE) - that's deliberate, see
-`FcmNotificationChannel.deliver()`. Web Push is suppressed for the same
-namespace to avoid duplicate OS notifications.
+The hub dispatches native notifications independently of PWA visibility.
+Android uses direct FCM or an encrypted relay depending on hub configuration;
+iOS uses APNs or the encrypted relay. A successful send to at least one native
+device sets a per-dispatch gate that suppresses Web Push for that event and
+namespace. Missing registrations, missing relay encryption keys, and failed
+sends do not suppress the fallback. Provider acceptance is not a handset
+receipt.
 
 ### Data payload (all platforms)
 
@@ -72,7 +79,8 @@ namespace to avoid duplicate OS notifications.
 | `contractVersion` | `1` | Present on every message; see [Versioning](#versioning) |
 | `notifySummary` | JSON string | Only on `ready`: parsed `AGENT_NOTIFY_SUMMARY` line from agent text, when present |
 
-Native apps **must** handle `data` for Wear; notification block is for display.
+Direct FCM is data-only. Android relay messages contain the encrypted wrapper
+below; after decryption the same data contract drives rendering and actions.
 
 ### Client actions (native - not hub)
 
@@ -88,11 +96,57 @@ Native apps **must** handle `data` for Wear; notification block is for display.
 
 ---
 
+## Android relay
+
+The official Android app includes the maintainer's Firebase client
+configuration. A current hub without private Firebase credentials sends to
+`https://push.hapi.run`; users only pair and allow notifications. Google Play
+services and FCM network access are still required. Runtime Firebase project
+provisioning and Wear relay delivery are outside this version.
+
+The app persists one `deviceId` and random `pushKey` in a dedicated
+Keystore-encrypted preference file, excluded from backup and device transfer.
+Registration happens only after persistence succeeds. The first upgrade from
+the old DataStore ID registers a new identity; token deduplication removes
+the old row. Token rotation preserves the key and ID. Registration fans out
+to all paired hubs on start, pairing, token rotation and worker retries.
+
+The hub uses the same [encrypted envelope](#encrypted-envelope) as iOS.
+`POST {relayUrl}/v1/push` carries:
+
+```json
+{"platform":"android","token":"<opaque FCM token>","envelope":"<base64>","priority":10}
+```
+
+FCM sends only string-valued `data: {"hapi_v":"1","hapi_e":"<envelope>"}`,
+with Android priority `HIGH` (`NORMAL` for relay priority `5`) and the
+configured `restricted_package_name`. No `notification` or `collapse_key`
+is sent. The existing FCM default TTL is retained. Android decrypts locally,
+then passes the v1 fields to the existing renderer, action workers and
+session-open/suppress-when-open logic. A present encrypted marker with an
+unknown version, missing key, malformed JSON or failed authentication is
+dropped, never interpreted as plaintext. Unwrapped direct-FCM data remains
+supported.
+
+The encrypted envelope is capped at 3200 Base64 bytes. If needed, the hub
+removes `notifySummary`, then falls back to a minimal `HAPI / New activity`
+notification retaining type, session ID, request ID and contract version.
+It never truncates ciphertext or action IDs. If even the minimum exceeds the
+cap, the send fails and the registration is retained.
+
+Relay `410 unregistered` prunes the token. `413`, `429`, `501`, auth/network
+errors and Firebase project mismatch retain it. The relay does not enqueue
+or retry sends. The relay and Google see tokens and delivery metadata but
+cannot read notification content; the private direct-FCM path retains its
+existing plaintext payload.
+
+---
+
 ## iOS (APNs)
 
 iOS is a first-class native companion with the **same notification contract**
-as Android, delivered over APNs instead of FCM - and, unlike FCM, the payload
-is **end-to-end encrypted**: neither Apple nor the optional hapi push relay
+as Android, delivered over APNs instead of FCM. Like Android relay delivery,
+the payload is **end-to-end encrypted**: neither Apple nor the optional hapi push relay
 can read notification content (PUSH SPEC v1).
 
 ### Registration
@@ -134,7 +188,7 @@ AAD      = ASCII "hapi-push-v1"
 ```
 
 Golden test vector (key `0x00..0x1f`, nonce `0x00..0x0b`):
-[`shared/fixtures/push/envelope-v1.json`](../../shared/fixtures/push/envelope-v1.json) -
+[`shared/fixtures/push/envelope-v1.json`](https://github.com/tiann/hapi/blob/main/shared/fixtures/push/envelope-v1.json) -
 the iOS implementation must reproduce it byte-for-byte.
 
 ### APNs request (what the device receives)
@@ -212,26 +266,43 @@ and suppresses the Web Push fallback for the namespace when a send succeeds
 
 ## Environment (hub operator)
 
+| `HAPI_ANDROID_PUSH` | Behavior |
+|---|---|
+| `auto` (default) | Configured `FCM_SERVICE_ACCOUNT_PATH`: direct FCM; otherwise official relay |
+| `relay` | Force the relay, ignoring private Firebase credentials |
+| `fcm` | Require private Firebase credentials, direct phone/Wear delivery |
+| `off` | Disable Android/Wear push |
+
 ```bash
+# Default: no Firebase configuration needed for official Android apps.
+HAPI_ANDROID_PUSH=auto
+HAPI_PUSH_RELAY_URL=https://push.hapi.run
+
+# Private-project builds must match the service account's Firebase project.
+HAPI_ANDROID_PUSH=fcm
 FCM_SERVICE_ACCOUNT_PATH=/path/to/service-account.json
 ```
 
-The Firebase project id comes from the service-account JSON itself. When
-unset, hub skips FCM channel (Web Push / Telegram unchanged). iOS transport
-selection (`HAPI_IOS_PUSH`, `APNS_*`) is documented in
-[iOS (APNs)](#transports-self-host-direct-apns-vs-official-relay).
+The Firebase project ID comes from the service-account JSON. Missing/broken
+explicit credentials or an unknown Android mode disable the channel with a
+diagnostic; they never silently switch private tokens to the official
+project. One hub selects one Android transport/project; mixing builds from
+different Firebase projects is unsupported. iOS transport selection
+(`HAPI_IOS_PUSH`, `APNS_*`) is independent. The push relay does not depend on
+whether the hub's network tunnel (`--relay`) is enabled.
 
 Push configuration follows the hub-wide rule (env > `settings.json` >
 default; an env value is persisted into `~/.hapi/settings.json` on first
 sight, so the variable only has to be passed once). settings.json keys:
-`fcmServiceAccountPath`, `iosPushMode`, `iosPushRelayUrl`, `apnsKeyP8Path`,
-`apnsKeyId`, `apnsTeamId`, `apnsBundleId`, `apnsEnv`. Path values may use
-`~`.
+`androidPushMode`, `fcmServiceAccountPath`, `iosPushMode`, `iosPushRelayUrl`, `apnsKeyP8Path`,
+`apnsKeyId`, `apnsTeamId`, `apnsBundleId`, `apnsEnv`. The historical
+`iosPushRelayUrl` setting supplies the shared URL for both platforms. Path
+values may use `~`.
 
 The native push channel is **opt-in**: operators who don't run a companion
-app see no behavior change. When at least one device is registered for a
-namespace, the existing Web Push channel suppresses its fallback for that
-namespace to avoid double-notifying (one in the native app, one from the
+app see no behavior change. When at least one native send succeeds for a
+notification, Web Push suppresses that notification for the namespace
+to avoid double-notifying (one in the native app, one from the
 PWA service worker). PWA-only operators are unaffected.
 
 ---

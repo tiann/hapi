@@ -5,7 +5,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -26,6 +25,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
@@ -88,19 +88,22 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(colors.codeHeaderBackground)
-                .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                .padding(start = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = (language ?: stringResource(R.string.code_plain_fallback)).uppercase(),
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
+                lineHeight = 16.sp,
                 letterSpacing = 0.8.sp,
                 color = colors.codeHeaderForeground,
                 maxLines = 1,
-                modifier = Modifier.weight(1f, fill = false),
+                overflow = TextOverflow.Ellipsis,
+                // Fill the remainder so short labels cannot pull the action
+                // away from the trailing edge (weight(fill = false) did).
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.weight(1f))
             FullTextAction(code, compact = true)
         }
         val highlighted = rememberHighlightedCode(code, language, colors.isDark)

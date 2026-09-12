@@ -663,6 +663,7 @@ export default {
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.editBusyNotRestored': 'Delivery still unresolved — draft not restored (may still be in flight)',
   'queuedMessages.editCurrentDraftKept': 'Queued message cancelled — current draft and schedule were kept.',
   'queuedMessages.steer': 'Deliver into the running turn now',
   'queuedMessages.steerFailed': 'Steer failed — message stays queued',
