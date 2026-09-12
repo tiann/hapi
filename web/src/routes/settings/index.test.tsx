@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
+import { getVisibleReleaseNotes, RELEASE_NOTES } from '@/lib/releaseNotes'
 import SettingsHubPage from './index'
 import SettingsGeneralPage from './general'
 import SettingsDisplayPage from './display'
@@ -331,11 +332,51 @@ describe('responsive settings pages', () => {
 
     it('renders About metadata on its own route page', () => {
         renderPage(<SettingsAboutPage />)
+        const latestReleaseNote = getVisibleReleaseNotes(__APP_VERSION__, RELEASE_NOTES)[0]
+        const latestReleaseChanges = latestReleaseNote.groups.flatMap((group) => group.changes)
+        const releaseKindLabels = { feature: 'Added', fix: 'Fixed', note: 'Note' } as const
         expect(screen.queryByText('Companion')).not.toBeInTheDocument()
         expect(screen.getByText('App Version')).toBeInTheDocument()
         expect(screen.getByText(String(__APP_VERSION__))).toBeInTheDocument()
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()
         expect(screen.getByRole('link', { name: 'hapi.run' })).toHaveAttribute('rel', 'noopener noreferrer')
+        expect(screen.getByText("What's New")).toBeInTheDocument()
+        expect(screen.getByText(`v${latestReleaseNote.version}`)).toBeInTheDocument()
+        expect(screen.getByText(latestReleaseNote.groups[0].changes[0].text.en)).toBeInTheDocument()
+        const latestReleaseElement = screen.getByRole('link', { name: `Open release page for v${latestReleaseNote.version}` }).closest('details')
+        expect(latestReleaseElement).not.toBeNull()
+        expect(latestReleaseElement?.textContent).toContain(latestReleaseNote.summary.en)
+        expect(within(latestReleaseElement as HTMLElement).getByText('🌟', { exact: true })).toHaveClass('sm:hidden')
+        expect(within(latestReleaseElement as HTMLElement).getByText('⭐', { exact: true })).toHaveClass('hidden', 'sm:inline-block', 'sm:-translate-y-[0.5px]')
+        for (const kind of ['feature', 'fix', 'note'] as const) {
+            expect(within(latestReleaseElement as HTMLElement).queryAllByText(releaseKindLabels[kind], { exact: true })).toHaveLength(latestReleaseChanges.filter((change) => change.kind === kind).length)
+        }
+        expect(within(latestReleaseElement as HTMLElement).getAllByText(releaseKindLabels[latestReleaseChanges[0].kind], { exact: true })[0]).toHaveClass('relative', 'top-px', 'sm:top-[0.5px]')
+        expect(screen.getByRole('link', { name: `Open release page for v${latestReleaseNote.version}` })).toHaveAttribute('href', latestReleaseNote.url)
+        expect(screen.getByRole('link', { name: `Open release page for v${latestReleaseNote.version}` })).toHaveAttribute('rel', 'noopener noreferrer')
+        expect(screen.queryByText('View full release notes')).not.toBeInTheDocument()
+        expect(document.querySelector(`time[datetime="${latestReleaseNote.date}"]`)).toBeInTheDocument()
+    })
+
+    it('localizes release announcements with the selected language', () => {
+        localStorage.setItem('hapi-lang', 'zh-CN')
+        renderPage(<SettingsAboutPage />)
+        const latestReleaseNote = getVisibleReleaseNotes(__APP_VERSION__, RELEASE_NOTES)[0]
+        const latestReleaseChanges = latestReleaseNote.groups.flatMap((group) => group.changes)
+        const releaseKindLabels = { feature: '新增', fix: '修复', note: '说明' } as const
+        expect(screen.getByText('更新公告')).toBeInTheDocument()
+        expect(screen.getByText(latestReleaseNote.groups[0].changes[0].text['zh-CN'])).toBeInTheDocument()
+        const latestReleaseElement = screen.getByRole('link', { name: `打开 v${latestReleaseNote.version} 发行页` }).closest('details')
+        expect(latestReleaseElement).not.toBeNull()
+        expect(latestReleaseElement?.textContent).toContain(latestReleaseNote.summary['zh-CN'])
+        expect(within(latestReleaseElement as HTMLElement).getByText('🌟', { exact: true })).toHaveClass('sm:hidden')
+        expect(within(latestReleaseElement as HTMLElement).getByText('⭐', { exact: true })).toHaveClass('hidden', 'sm:inline-block', 'sm:-translate-y-[0.5px]')
+        for (const kind of ['feature', 'fix', 'note'] as const) {
+            expect(within(latestReleaseElement as HTMLElement).queryAllByText(releaseKindLabels[kind], { exact: true })).toHaveLength(latestReleaseChanges.filter((change) => change.kind === kind).length)
+        }
+        expect(within(latestReleaseElement as HTMLElement).getAllByText(releaseKindLabels[latestReleaseChanges[0].kind], { exact: true })[0]).toHaveClass('relative', 'top-px', 'sm:top-[0.5px]')
+        expect(screen.getByRole('link', { name: `打开 v${latestReleaseNote.version} 发行页` })).toBeInTheDocument()
+        expect(screen.queryByText('查看完整发行说明')).not.toBeInTheDocument()
     })
 
     it('links common voice settings to full-page voices and advanced pages', () => {

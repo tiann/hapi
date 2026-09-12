@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -69,12 +69,21 @@ import SettingsVoicePage from '@/routes/settings/voice'
 import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
 import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
 import SettingsMachinesPage from '@/routes/settings/machines'
-import SettingsAboutPage from '@/routes/settings/about'
 import SettingsStoragePage from '@/routes/settings/storage'
 import SettingsUsagePage from '@/routes/settings/usage'
 import SharePage from '@/routes/share'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
+
+const LazySettingsAboutPage = lazy(() => import('@/routes/settings/about'))
+
+function SettingsAboutRoute() {
+    return (
+        <Suspense fallback={<LoadingState className="m-4" />}>
+            <LazySettingsAboutPage />
+        </Suspense>
+    )
+}
 
 
 function BackIcon(props: { className?: string }) {
@@ -1238,7 +1247,7 @@ const settingsMachinesRoute = createRoute({
 const settingsAboutRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'about',
-    component: SettingsAboutPage,
+    component: SettingsAboutRoute,
 })
 
 const settingsStorageRoute = createRoute({

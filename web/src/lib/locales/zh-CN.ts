@@ -1086,10 +1086,17 @@ export default {
   'settings.machines.error': '重命名失败。',
   'settings.hub.machines.summary': '给设备起自定义名字',
   'settings.about.title': '关于',
-  'settings.about.description': 'HAPI 链接和版本信息。',
+  'settings.about.description': 'HAPI 链接、版本信息和更新公告。',
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
+  'settings.about.releaseNotes.title': '更新公告',
+  'settings.about.releaseNotes.description': '每个 HAPI 版本的发布日期和更新摘要。',
+  'settings.about.releaseNotes.released': '发布日期',
+  'settings.about.releaseNotes.openRelease': '打开 v{version} 发行页',
+  'settings.about.releaseNotes.kind.feature': '新增',
+  'settings.about.releaseNotes.kind.fix': '修复',
+  'settings.about.releaseNotes.kind.note': '说明',
 
   // Browse / Workspace
   'browse.title': '浏览',

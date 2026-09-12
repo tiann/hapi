@@ -44,7 +44,7 @@ See `src/router.tsx` for route definitions.
 - `/settings/machines` - Machine management and runner status.
 - `/settings/storage` - SQLite storage sizes for the hub owner.
 - `/settings/usage` - Cache-aware token usage dashboard for the hub owner.
-- `/settings/about` - Application links and version information.
+- `/settings/about` - Application links, version information, and release notes.
 
 ## Features
 
