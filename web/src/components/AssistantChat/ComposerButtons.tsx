@@ -1,4 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
+import { Children, isValidElement, useCallback, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
+import type { CodexUsage } from '@hapi/protocol/types'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
@@ -6,10 +8,11 @@ import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import { AgentBudgetIndicator } from './AgentBudgetIndicator'
+import { toCodexBudgetState } from './codexBudgetAdapter'
 
 function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
     return <>{props.children}</>
@@ -598,6 +601,11 @@ export function DictationButton(props: {
     )
 }
 
+function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
+    const state = toCodexBudgetState(props.usage)
+    return <AgentBudgetIndicator state={state} popoverTitle="Codex Usage" />
+}
+
 export function ComposerButtons(props: {
     canSend: boolean
     controlsDisabled: boolean
@@ -652,6 +660,7 @@ export function ComposerButtons(props: {
     scratchlistMode?: boolean
     scratchlistCount?: number
     onScratchlistToggle?: () => void
+    codexUsage?: CodexUsage | null
 }) {
     const { t } = useTranslation()
     const { layout } = useComposerToolbarLayout()
@@ -897,25 +906,28 @@ export function ComposerButtons(props: {
                 onVoiceToggle={props.onVoiceToggle}
             />
 
-            <UnifiedButton
-                canSend={props.canSend}
-                voiceStatus={props.voiceStatus}
-                voiceEnabled={props.voiceEnabled}
-                controlsDisabled={props.controlsDisabled}
-                onSend={props.onSend}
-                onVoiceToggle={props.onVoiceToggle}
-                voiceLabel={props.dictationEnabled ? t('composer.dictate') : undefined}
-                /*
-                 * Derived, NOT raw scratchlistMode. Mirror SessionChat's
-                 * shouldRouteToScratchlist: amber + "Send to scratchlist"
-                 * whenever mode is on and there is no pending schedule.
-                 * Attachments route to scratchlist too (hub upload adapter).
-                 */
-                routesToScratchlist={
-                    (props.scratchlistMode ?? false)
-                    && props.pendingSchedule == null
-                }
-            />
+            <div className="flex items-center gap-1">
+                <CodexUsageIndicator usage={props.codexUsage} />
+                <UnifiedButton
+                    canSend={props.canSend}
+                    voiceStatus={props.voiceStatus}
+                    voiceEnabled={props.voiceEnabled}
+                    controlsDisabled={props.controlsDisabled}
+                    onSend={props.onSend}
+                    onVoiceToggle={props.onVoiceToggle}
+                    voiceLabel={props.dictationEnabled ? t('composer.dictate') : undefined}
+                    /*
+                     * Derived, NOT raw scratchlistMode. Mirror SessionChat's
+                     * shouldRouteToScratchlist: amber + "Send to scratchlist"
+                     * whenever mode is on and there is no pending schedule.
+                     * Attachments route to scratchlist too (hub upload adapter).
+                     */
+                    routesToScratchlist={
+                        (props.scratchlistMode ?? false)
+                        && props.pendingSchedule == null
+                    }
+                />
+            </div>
         </div>
     )
 }

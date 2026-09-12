@@ -29,6 +29,8 @@ import {
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary } from '@/types/api'
+import type { CodexUsage } from '@hapi/protocol/types'
+import { composerCodexUsageForGauge } from '@/components/AssistantChat/codexBudgetAdapter'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -300,6 +302,7 @@ export function HappyComposer(props: {
     contextWindow?: number | null
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
+    codexUsage?: CodexUsage | null
     controlledByUser?: boolean
     concurrentClients?: boolean
     agentFlavor?: string | null
@@ -407,6 +410,7 @@ export function HappyComposer(props: {
         contextCacheRead,
         contextWindow,
         contextModel,
+        codexUsage,
         controlledByUser = false,
         concurrentClients = false,
         agentFlavor,
@@ -2369,6 +2373,7 @@ export function HappyComposer(props: {
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}
+                            codexUsage={composerCodexUsageForGauge(agentFlavor, codexUsage, agentState)}
                         />
                     </div>
                 </ComposerPrimitive.Root>

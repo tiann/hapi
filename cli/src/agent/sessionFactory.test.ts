@@ -144,6 +144,15 @@ describe('bootstrapExistingSession', () => {
             ...existingMetadata,
             claudeSessionId: 'claude-thread-1',
             codexSessionId: 'codex-thread-1',
+            codexUsage: {
+                contextWindow: {
+                    usedTokens: 1200,
+                    limitTokens: 128000,
+                    percent: 1,
+                    updatedAt: 456
+                },
+                rateLimits: {}
+            },
             geminiSessionId: 'gemini-thread-1',
             opencodeSessionId: 'opencode-thread-1',
             grokSessionId: 'grok-thread-1',
@@ -190,6 +199,15 @@ describe('bootstrapExistingSession', () => {
         expect(result.metadata).toEqual(expect.objectContaining({
             claudeSessionId: 'claude-thread-1',
             codexSessionId: 'codex-thread-1',
+            codexUsage: {
+                contextWindow: {
+                    usedTokens: 1200,
+                    limitTokens: 128000,
+                    percent: 1,
+                    updatedAt: 456
+                },
+                rateLimits: {}
+            },
             geminiSessionId: 'gemini-thread-1',
             opencodeSessionId: 'opencode-thread-1',
             grokSessionId: 'grok-thread-1',
@@ -223,6 +241,15 @@ describe('bootstrapExistingSession', () => {
         const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
         expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
             codexSessionId: 'codex-thread-1',
+            codexUsage: {
+                contextWindow: {
+                    usedTokens: 1200,
+                    limitTokens: 128000,
+                    percent: 1,
+                    updatedAt: 456
+                },
+                rateLimits: {}
+            },
             grokSessionId: 'grok-thread-1',
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
         }))
@@ -230,6 +257,15 @@ describe('bootstrapExistingSession', () => {
             'hapi-session-1',
             expect.objectContaining({
                 codexSessionId: 'codex-thread-1',
+                codexUsage: {
+                    contextWindow: {
+                        usedTokens: 1200,
+                        limitTokens: 128000,
+                        percent: 1,
+                        updatedAt: 456
+                    },
+                    rateLimits: {}
+                },
                 grokSessionId: 'grok-thread-1',
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })

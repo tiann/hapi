@@ -658,6 +658,38 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('forwards account/rateLimits/updated as scoped token_count', () => {
+        const converter = new AppServerEventConverter();
+
+        const events = converter.handleNotification('account/rateLimits/updated', {
+            rateLimits: {
+                primary: { usedPercent: 40, windowMinutes: 300 },
+                secondary: { usedPercent: 10, windowMinutes: 10080 },
+                credits: { hasCredits: true, unlimited: false, balance: '12' }
+            }
+        });
+        expect(events).toEqual([{
+            type: 'token_count',
+            usage_scope: 'account',
+            info: {
+                rate_limits: {
+                    primary: { usedPercent: 40, windowMinutes: 300 },
+                    secondary: { usedPercent: 10, windowMinutes: 10080 },
+                    credits: { hasCredits: true, unlimited: false, balance: '12' }
+                }
+            }
+        }]);
+
+        const cleared = converter.handleNotification('account/rateLimits/updated', {
+            rate_limits: null
+        });
+        expect(cleared).toEqual([{
+            type: 'token_count',
+            usage_scope: 'account',
+            info: { rate_limits: null }
+        }]);
+    });
+
     it('maps compact notifications with scope', () => {
         const converter = new AppServerEventConverter();
 

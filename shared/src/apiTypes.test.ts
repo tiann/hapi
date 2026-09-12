@@ -5,8 +5,32 @@ import {
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
-    SendMessageRequestSchema
+    SendMessageRequestSchema,
+    SpawnSessionRequestSchema
 } from './apiTypes'
+
+describe('SpawnSessionRequestSchema', () => {
+    it('allows Codex resumeSessionId', () => {
+        expect(SpawnSessionRequestSchema.safeParse({
+            directory: '/tmp/project',
+            agent: 'codex',
+            resumeSessionId: 'thread-1'
+        }).success).toBe(true)
+    })
+
+    it('rejects resumeSessionId for non-Codex agents on the public spawn API', () => {
+        expect(SpawnSessionRequestSchema.safeParse({
+            directory: '/tmp/project',
+            agent: 'claude',
+            resumeSessionId: 'claude-session-1'
+        }).success).toBe(false)
+
+        expect(SpawnSessionRequestSchema.safeParse({
+            directory: '/tmp/project',
+            resumeSessionId: 'thread-1'
+        }).success).toBe(false)
+    })
+})
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
     it('preserves Codex session messages when parsing runner RPC responses', () => {
