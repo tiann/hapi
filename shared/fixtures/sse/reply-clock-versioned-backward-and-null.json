@@ -1,0 +1,78 @@
+{
+    "description": "Reply-clock versions use the session sequence as an ordering gate: a newer version may move the timestamp backward or clear it, while an older version is unchanged.",
+    "expectedPatchResults": [
+        "applied",
+        "unchanged",
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "lastAssistantMessageAt": null,
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 14,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "lastAssistantMessageAt": 1755000000000,
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "reply-clock-versioned-backward-and-null",
+    "patches": [
+        {
+            "lastAssistantMessageAt": 1755000001000,
+            "lastAssistantMessageVersion": 13
+        },
+        {
+            "lastAssistantMessageAt": 1754999999000,
+            "lastAssistantMessageVersion": 12
+        },
+        {
+            "lastAssistantMessageAt": null,
+            "lastAssistantMessageVersion": 14
+        }
+    ]
+}

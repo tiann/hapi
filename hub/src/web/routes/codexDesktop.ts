@@ -2079,6 +2079,12 @@ function importSingleCodexSession(options: {
         const latestMessageCreatedAt = appendedMessages[appendedMessages.length - 1]?.createdAt ?? Date.now()
         if (engine) {
             engine.recordSessionActivity(sessionId, latestMessageCreatedAt)
+            if (created) {
+                // Newly created imports insert transcript rows directly, so
+                // they do not emit per-message events. Refresh the cached
+                // session after the insert so its reply clock matches the DB.
+                engine.handleRealtimeEvent({ type: 'session-updated', sessionId })
+            }
         } else {
             options.store.sessions.touchSessionUpdatedAt(sessionId, latestMessageCreatedAt, options.namespace)
         }

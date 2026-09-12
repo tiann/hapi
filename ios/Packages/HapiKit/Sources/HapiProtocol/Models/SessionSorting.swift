@@ -10,7 +10,8 @@ import Foundation
 /// 4. among sessions with equal `active` **when both are active**:
 ///    `pendingRequestsCount` descending (the reference's `left.active && …`
 ///    guard — inactive ties skip straight to recency);
-/// 5. finally `updatedAt` descending.
+/// 5. finally the latest assistant reply time descending, falling back to
+///    `updatedAt` for sessions with no visible assistant reply.
 ///
 /// Returns true only when `left` must sort strictly before `right`, so it is
 /// a valid strict-weak-ordering predicate for `sorted(by:)`.
@@ -31,7 +32,9 @@ public func sessionSummaryPrecedes(_ left: SessionSummary, _ right: SessionSumma
     if left.active && left.pendingRequestsCount != right.pendingRequestsCount {
         return left.pendingRequestsCount > right.pendingRequestsCount
     }
-    return left.updatedAt > right.updatedAt
+    let leftRecency = left.lastAssistantMessageAt ?? left.updatedAt
+    let rightRecency = right.lastAssistantMessageAt ?? right.updatedAt
+    return leftRecency > rightRecency
 }
 
 /// Sort of a whole list with ``sessionSummaryPrecedes(_:_:)``.

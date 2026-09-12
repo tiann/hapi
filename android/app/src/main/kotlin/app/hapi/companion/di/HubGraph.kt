@@ -75,7 +75,13 @@ class HubGraph(
     /** Per-hub snapshot root (filesDir — survives cache pressure). */
     private val snapshotDir: File = File(File(context.filesDir, "hubs"), dirNameFor(session.hubUrl))
 
-    val sessionStore: SessionStore = SessionStore(session.api, scope, snapshotDir)
+    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir)
+
+    val sessionStore: SessionStore = SessionStore(session.api, scope, snapshotDir).also { store ->
+        store.onLiveReplyDuringBackfill = { sessionId, activityAt ->
+            lastSeenStore.markUnread(sessionId, activityAt)
+        }
+    }
 
     /**
      * Per-session scratchlist cache (B-M4d), refetched when a session patch
@@ -88,8 +94,6 @@ class HubGraph(
     )
 
     val machineStore: MachineStore = MachineStore(session.api, scope, snapshotDir)
-
-    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir)
 
     val messageWindows: MessageWindowStores = MessageWindowStores(
         api = session.api,

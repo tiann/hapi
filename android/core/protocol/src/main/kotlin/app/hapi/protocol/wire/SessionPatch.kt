@@ -44,6 +44,12 @@ data class SessionPatch(
     val activeTurnStartedAt: OptionalField<Long?> = OptionalField.Absent,
     val activeAt: Long? = null,
     val updatedAt: Long? = null,
+    /** Latest visible assistant prose; explicit null clears the reply clock. */
+    val lastAssistantMessageAt: OptionalField<Long?> = OptionalField.Absent,
+    /** Session sequence that observed [lastAssistantMessageAt]. */
+    val lastAssistantMessageVersion: Long? = null,
+    /** False while the legacy transcript reply-clock scan is incomplete. */
+    val assistantReplyClockBackfilled: Boolean? = null,
     val metadata: VersionedValue<SessionMetadata>? = null,
     val agentState: VersionedValue<AgentState>? = null,
     val todos: VersionedValue<List<TodoItem>>? = null,
@@ -63,6 +69,7 @@ data class SessionPatch(
 object SessionPatches {
     private val KNOWN_KEYS = setOf(
         "active", "thinking", "activeTurnStartedAt", "activeAt", "updatedAt",
+        "lastAssistantMessageAt", "lastAssistantMessageVersion", "assistantReplyClockBackfilled",
         "metadata", "agentState", "todos", "teamState",
         "model", "modelReasoningEffort", "effort", "serviceTier",
         "permissionMode", "collaborationMode", "copilotAgentMode",
@@ -95,6 +102,13 @@ object SessionPatches {
                 activeTurnStartedAt = optionalNullableLong(obj, "activeTurnStartedAt") ?: return null,
                 activeAt = obj["activeAt"]?.let { it.longOrNull ?: return null },
                 updatedAt = obj["updatedAt"]?.let { it.longOrNull ?: return null },
+                lastAssistantMessageAt = optionalNullableLong(obj, "lastAssistantMessageAt") ?: return null,
+                lastAssistantMessageVersion = obj["lastAssistantMessageVersion"]?.let {
+                    it.longOrNull ?: return null
+                },
+                assistantReplyClockBackfilled = obj["assistantReplyClockBackfilled"]?.let {
+                    it.boolOrNull ?: return null
+                },
                 metadata = obj["metadata"]?.let { wrapper ->
                     versioned(wrapper) { value ->
                         if (value is JsonNull) null

@@ -11,6 +11,84 @@ function makeSession(store: Store, tag: string) {
     return store.sessions.getOrCreateSession(tag, { path: `/tmp/${tag}` }, null, 'default')
 }
 
+describe('assistant reply timestamp', () => {
+    it('records visible assistant prose but ignores tools and preserves updatedAt', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'assistant-reply-clock')
+        const activityAt = session.updatedAt
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'tool-call', name: 'Edit' } }
+        }, undefined, undefined, 1_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBeNull()
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'answer' } }
+        }, undefined, undefined, 2_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(2_000)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: { type: 'event', data: { type: 'message', message: 'Model changed to codex' } }
+        }, undefined, undefined, 3_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(2_000)
+
+        const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok"}'
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'agy_message', content: footer } }
+        }, undefined, undefined, 4_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(2_000)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'agy_message', content: 'Inside the task-266 log\n[Message] result' }
+            }
+        }, undefined, undefined, 5_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(2_000)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'agy_message', content: `Visible answer\n${footer}` } }
+        }, undefined, undefined, 6_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(6_000)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: 'A string-form Claude reply.' } }
+            }
+        }, undefined, undefined, 7_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(7_000)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    isSidechain: true,
+                    message: { content: [{ type: 'text', text: 'subagent progress' }] }
+                }
+            }
+        }, undefined, undefined, 8_000)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(7_000)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'older answer' } }
+        }, undefined, undefined, 1_500)
+        expect(store.sessions.getSession(session.id)?.lastAssistantMessageAt).toBe(7_000)
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(activityAt)
+        store.close()
+    })
+})
+
 describe('cancelQueuedMessage', () => {
     it('happy path: deletes queued message, returns status=cancelled with localId', () => {
         const store = makeStore()
@@ -236,6 +314,8 @@ describe('position pagination and structural epochs', () => {
         expect(result.moved).toBe(1)
         expect(store.messages.getMessageEpoch(source.id)).toBe(1)
         expect(store.messages.getMessageEpoch(target.id)).toBe(1)
+        expect(store.sessions.getSession(source.id)?.assistantReplyClockBackfilled).toBe(false)
+        expect(store.sessions.getSession(target.id)?.assistantReplyClockBackfilled).toBe(false)
     })
 
     it('clamps future client timestamps to hub receive time', () => {

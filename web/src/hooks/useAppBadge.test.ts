@@ -67,7 +67,7 @@ describe('useAppBadge', () => {
     it('sets the native badge to the number of unread sessions in an installed PWA', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({
             'session-a': 10,
             'session-b': 20,
         }))
@@ -87,7 +87,7 @@ describe('useAppBadge', () => {
     it('clears the native badge after the unread session is seen', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'session-a': 10 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ 'session-a': 10 }))
 
         renderHook(() => useAppBadge({
             enabled: true,
@@ -121,7 +121,7 @@ describe('useAppBadge', () => {
     it('clears the badge when the feature is disabled', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'session-a': 10 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ 'session-a': 10 }))
 
         const { rerender } = renderHook(
             (options: { enabled: boolean }) => useAppBadge({
@@ -142,7 +142,7 @@ describe('useAppBadge', () => {
     it('does not repeat the native update when the unread count is unchanged', async () => {
         setDisplayMode(true)
         const { setAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'session-a': 10 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ 'session-a': 10 }))
 
         const { rerender } = renderHook(
             (sessions: SessionSummary[]) => useAppBadge({

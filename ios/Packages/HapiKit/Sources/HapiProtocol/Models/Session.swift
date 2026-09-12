@@ -13,6 +13,10 @@ public struct Session: Codable, Equatable, Sendable {
     public var seq: Int
     public var createdAt: Int
     public var updatedAt: Int
+    /// Latest visible assistant prose; nil when the session has no reply.
+    public var lastAssistantMessageAt: Int?
+    /// False while the Hub is still backfilling a legacy transcript.
+    public var assistantReplyClockBackfilled: Bool?
     public var pinned: Bool?
     public var globalPinned: Bool?
     public var active: Bool
@@ -48,6 +52,8 @@ public struct Session: Codable, Equatable, Sendable {
         seq: Int,
         createdAt: Int,
         updatedAt: Int,
+        lastAssistantMessageAt: Int? = nil,
+        assistantReplyClockBackfilled: Bool? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         active: Bool,
@@ -77,6 +83,8 @@ public struct Session: Codable, Equatable, Sendable {
         self.seq = seq
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.lastAssistantMessageAt = lastAssistantMessageAt
+        self.assistantReplyClockBackfilled = assistantReplyClockBackfilled
         self.pinned = pinned
         self.globalPinned = globalPinned
         self.active = active
@@ -109,6 +117,8 @@ public struct Session: Codable, Equatable, Sendable {
         seq = try container.decode(Int.self, forKey: .seq)
         createdAt = try container.decode(Int.self, forKey: .createdAt)
         updatedAt = try container.decode(Int.self, forKey: .updatedAt)
+        lastAssistantMessageAt = try container.decodeIfPresent(Int.self, forKey: .lastAssistantMessageAt)
+        assistantReplyClockBackfilled = try container.decodeIfPresent(Bool.self, forKey: .assistantReplyClockBackfilled)
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned)
         globalPinned = try container.decodeIfPresent(Bool.self, forKey: .globalPinned)
         active = try container.decode(Bool.self, forKey: .active)

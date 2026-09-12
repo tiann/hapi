@@ -5,15 +5,15 @@ import { useDocumentVisibility } from './useDocumentVisibility'
 /** Mark the selected session read only while the document is visible. */
 export function useSelectedSessionSeen(
     selectedSessionId: string | null,
-    updatedAt: number | undefined,
+    activityAt: number | undefined,
 ): void {
     const isDocumentVisible = useDocumentVisibility()
 
     useEffect(() => {
-        if (!isDocumentVisible || !selectedSessionId || updatedAt === undefined) {
+        if (!isDocumentVisible || !selectedSessionId || activityAt === undefined) {
             return
         }
 
-        markSessionSeen(selectedSessionId, updatedAt)
-    }, [isDocumentVisible, selectedSessionId, updatedAt])
+        markSessionSeen(selectedSessionId, activityAt)
+    }, [isDocumentVisible, selectedSessionId, activityAt])
 }

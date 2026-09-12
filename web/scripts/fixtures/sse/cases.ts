@@ -212,6 +212,25 @@ export const sseFixtureCases: SseFixtureCase[] = [
         ]
     },
     {
+        name: 'reply-clock-versioned-backward-and-null',
+        description: 'Reply-clock versions use the session sequence as an ordering gate: a newer version may move the timestamp backward or clear it, while an older version is unchanged.',
+        initialSession: baseSession({ lastAssistantMessageAt: T0 }),
+        patches: [
+            {
+                lastAssistantMessageAt: T0 + 1_000,
+                lastAssistantMessageVersion: 13
+            },
+            {
+                lastAssistantMessageAt: T0 - 1_000,
+                lastAssistantMessageVersion: 12
+            },
+            {
+                lastAssistantMessageAt: null,
+                lastAssistantMessageVersion: 14
+            }
+        ]
+    },
+    {
         name: 'flat-fields-last-write-wins',
         description: 'Flat fields (active, thinking, model, modelReasoningEffort, effort, permissionMode) are last-write-wins assignments with no version gate; serviceTier additionally honors an explicit null (key present) as a clear.',
         initialSession: baseSession({ serviceTier: 'standard' }),

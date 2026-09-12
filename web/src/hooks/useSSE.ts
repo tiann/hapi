@@ -24,6 +24,12 @@ import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import { applySessionDetailPatch } from '@/lib/sessionPatch'
+import { markSessionUnread } from '@/lib/sessionLastSeen'
+import {
+    shouldAcceptSessionRecord,
+    shouldAcceptSessionSummaryRecord,
+    sortSessionSummaries
+} from '@/lib/sessionCache'
 
 // Pure patch-application rules live in @/lib/sessionPatch (React-free, shared
 // with the fixture generator); re-exported here so hook consumers and existing
@@ -75,6 +81,18 @@ export function canApplyVersionedSummaryPatch(
     return detailPresent
 }
 
+/**
+ * Full session records carry the store sequence, which is also the version
+ * of the reply clock observed in that record. Both SSE connections can
+ * deliver the same event out of order, so an older record must not replace a
+ * newer rewind/backfill result.
+ */
+export {
+    shouldAcceptSessionRecord,
+    shouldAcceptSessionSummaryRecord,
+    sortSessionSummaries
+} from '@/lib/sessionCache'
+
 type VisibilityState = 'visible' | 'hidden'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -101,22 +119,6 @@ const RECONNECT_SLOW_AFTER_ATTEMPTS = 8
 const RECONNECT_SLOW_MAX_DELAY_MS = 300_000
 const INVALIDATION_BATCH_MS = 16
 
-function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
-    if (Boolean(left.globalPinned) !== Boolean(right.globalPinned)) {
-        return left.globalPinned ? -1 : 1
-    }
-    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
-        return left.pinned ? -1 : 1
-    }
-    if (left.active !== right.active) {
-        return left.active ? -1 : 1
-    }
-    if (left.active && left.pendingRequestsCount !== right.pendingRequestsCount) {
-        return right.pendingRequestsCount - left.pendingRequestsCount
-    }
-    return right.updatedAt - left.updatedAt
-}
-
 function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
 }
@@ -127,8 +129,9 @@ function isSessionRecord(value: unknown): value is Session {
  * The CLI keep-alive makes the hub re-broadcast a full session patch about
  * every 10s per active session even when nothing changed, and `activeAt` is
  * the sole field that moves. No component reads `activeAt` - the list shows
- * `updatedAt` and sorts on active/pendingRequestsCount/updatedAt - so storing
- * it costs a new object identity and a full list re-render for nothing.
+ * the latest assistant reply clock (falling back to `updatedAt`) and sorts on
+ * active/pendingRequestsCount/reply time - so storing it costs a new object
+ * identity and a full list re-render for nothing.
  */
 export function sameSessionSummaryMetadata(
     current: SessionSummary['metadata'],
@@ -158,6 +161,8 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
     return current.active === next.active
         && current.thinking === next.thinking
         && current.updatedAt === next.updatedAt
+        && current.lastAssistantMessageAt === next.lastAssistantMessageAt
+        && current.assistantReplyClockBackfilled === next.assistantReplyClockBackfilled
         && current.backgroundTaskCount === next.backgroundTaskCount
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort
@@ -477,7 +482,11 @@ export function useSSE(options: {
             scheduleInvalidationFlush()
         }
 
-        const upsertSessionSummary = (session: Session) => {
+        const upsertSessionSummary = (session: Session): boolean => {
+            let accepted = false
+            const detailVersion = queryClient.getQueryData<SessionResponse>(
+                queryKeys.session(session.id)
+            )?.session.seq ?? 0
             queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
                 if (!previous) {
                     return previous
@@ -485,6 +494,11 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                const watermark = Math.max(existing?.lastAssistantMessageVersion ?? 0, detailVersion)
+                if (session.seq < watermark) {
+                    return previous
+                }
+                accepted = true
                 const summary = {
                     ...toSessionSummary(session),
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
@@ -499,6 +513,7 @@ export function useSSE(options: {
                 nextSessions.sort(sortSessionSummaries)
                 return { ...previous, sessions: nextSessions }
             })
+            return accepted
         }
 
         const patchSessionSummary = (sessionId: string, patch: SessionPatch): boolean => {
@@ -519,6 +534,10 @@ export function useSSE(options: {
                     return previous
                 }
 
+                const replyVersion = patch.lastAssistantMessageVersion
+                const canApplyReplyClock = replyVersion === undefined
+                    || replyVersion >= (current.lastAssistantMessageVersion ?? 0)
+
                 const nextSummary: SessionSummary = {
                     ...current,
                     active: patch.active ?? current.active,
@@ -529,6 +548,19 @@ export function useSSE(options: {
                     updatedAt: patch.updatedAt !== undefined
                         ? Math.max(current.updatedAt, patch.updatedAt)
                         : current.updatedAt,
+                    lastAssistantMessageAt: patch.lastAssistantMessageAt !== undefined && canApplyReplyClock
+                        ? replyVersion !== undefined
+                            ? patch.lastAssistantMessageAt
+                            : patch.lastAssistantMessageAt === null
+                                ? current.lastAssistantMessageAt
+                                : Math.max(current.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY, patch.lastAssistantMessageAt)
+                        : current.lastAssistantMessageAt,
+                    lastAssistantMessageVersion: replyVersion !== undefined
+                        ? Math.max(current.lastAssistantMessageVersion ?? 0, replyVersion)
+                        : current.lastAssistantMessageVersion,
+                    assistantReplyClockBackfilled: patch.assistantReplyClockBackfilled !== undefined && canApplyReplyClock
+                        ? patch.assistantReplyClockBackfilled
+                        : current.assistantReplyClockBackfilled,
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
@@ -563,7 +595,8 @@ export function useSSE(options: {
                 // session, and `activeAt` is the only one that actually moves.
                 // Nothing renders `activeAt`, so writing a new object for it just
                 // hands React Query a fresh reference and re-renders the list.
-                if (isRenderIrrelevantPatch(current, nextSummary)) {
+                const replyVersionChanged = nextSummary.lastAssistantMessageVersion !== current.lastAssistantMessageVersion
+                if (isRenderIrrelevantPatch(current, nextSummary) && !replyVersionChanged) {
                     return previous
                 }
                 nextSessions[index] = nextSummary
@@ -641,6 +674,54 @@ export function useSSE(options: {
                 }
                 return { ...previous, machines: nextMachines }
             })
+        }
+
+        const preserveLiveReplyUnreadDuringBackfill = (sessionId: string, patch: SessionPatch): void => {
+            if (
+                patch.assistantReplyClockBackfilled !== undefined
+                || patch.lastAssistantMessageAt === undefined
+                || patch.lastAssistantMessageAt === null
+            ) {
+                return
+            }
+
+            const currentSummary = queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)
+                ?.sessions.find((session) => session.id === sessionId)
+            const currentDetail = queryClient.getQueryData<SessionResponse>(queryKeys.session(sessionId))?.session
+            if (currentSummary === undefined && currentDetail === undefined) {
+                // The first live reply can arrive before the initial list or
+                // detail hydration. Preserve it so a later incomplete
+                // baseline cannot seed that reply as already seen.
+                markSessionUnread(sessionId, patch.lastAssistantMessageAt)
+                return
+            }
+            if (
+                currentSummary?.assistantReplyClockBackfilled !== false
+                && currentDetail?.assistantReplyClockBackfilled !== false
+            ) {
+                return
+            }
+
+            const currentReplyAt = Math.max(
+                currentSummary?.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY,
+                currentDetail?.lastAssistantMessageAt ?? Number.NEGATIVE_INFINITY
+            )
+            const currentReplyVersion = Math.max(
+                currentSummary?.lastAssistantMessageVersion ?? 0,
+                currentDetail?.seq ?? 0
+            )
+            if (
+                patch.lastAssistantMessageVersion !== undefined
+                && patch.lastAssistantMessageVersion < currentReplyVersion
+            ) {
+                return
+            }
+            if (patch.lastAssistantMessageAt > currentReplyAt) {
+                // The later completion patch must preserve this lower
+                // watermark; otherwise it would seed the live reply itself
+                // and silently swallow the unread transition.
+                markSessionUnread(sessionId, patch.lastAssistantMessageAt)
+            }
         }
 
         const handleSyncEvent = (event: SyncEvent) => {
@@ -737,11 +818,18 @@ export function useSSE(options: {
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
-                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
-                    upsertSessionSummary(event.data)
+                    const currentDetail = queryClient.getQueryData<SessionResponse>(queryKeys.session(event.sessionId))?.session
+                    if (shouldAcceptSessionRecord(currentDetail, event.data)) {
+                        queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
+                    }
+                    const summaryAccepted = upsertSessionSummary(event.data)
+                    if (!summaryAccepted) {
+                        queueSessionListInvalidation()
+                    }
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        preserveLiveReplyUnreadDuringBackfill(event.sessionId, patch)
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
