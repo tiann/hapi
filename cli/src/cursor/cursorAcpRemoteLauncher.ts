@@ -743,6 +743,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
 
+            // Consume the Bridge replay gate durably BEFORE session/prompt.
+            // SIGTERM / runnerLifecycle archive skips handleAbort, so an
+            // in-memory-only gate would reopen still-bridgeable after tools ran.
+            if (this.bridgingForEventId !== null) {
+                const consumed = await this.persistBridgeReplayGateBeforeDispatch(
+                    this.bridgingForEventId
+                );
+                if (!consumed) {
+                    this.bridgingForEventId = null;
+                    this.bridgingSource = null;
+                    continue;
+                }
+            }
+
             const specialCommand = parseCursorSpecialCommand(batch.message);
             if (specialCommand.type === 'pass-through') {
                 messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
@@ -1439,6 +1453,33 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
         this.pendingBridgeEventId = null;
         this.pendingBridgeSource = null;
+    }
+
+    /**
+     * Stamp bridgeable:false + flush before the Bridge prompt is sent.
+     * Returns false when the error is missing/mismatched or flush fails —
+     * caller must drop attribution and skip dispatch (fail closed).
+     */
+    private async persistBridgeReplayGateBeforeDispatch(eventId: string): Promise<boolean> {
+        const err = this.lastRecordedModelError;
+        if (!err || err.eventId !== eventId) {
+            return false;
+        }
+        if (err.bridgeable !== false) {
+            this.lastRecordedModelError = { ...err, bridgeable: false };
+            this.session.client.updateMetadata((metadata) => {
+                const current = metadata.lastModelError;
+                if (!current || current.eventId !== eventId) {
+                    return metadata;
+                }
+                return {
+                    ...metadata,
+                    lastModelError: { ...current, bridgeable: false }
+                };
+            });
+        }
+        const flushed = await this.session.client.flushMetadata();
+        return flushed;
     }
 
     /**

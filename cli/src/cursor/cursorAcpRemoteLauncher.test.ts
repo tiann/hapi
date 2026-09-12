@@ -2821,6 +2821,221 @@ describe('cursorAcpRemoteLauncher', () => {
         await launchPromise;
     });
 
+    it('persists bridgeable:false before dispatching a Bridge prompt', async () => {
+        // Cold-review Major 2026-09-12: SIGTERM mid-Bridge skips handleAbort; without a
+        // durable gate before send, reopen hydrates a still-bridgeable error and
+        // replays after tools already ran.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            flushMetadata: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+        const flushOrder: string[] = [];
+        client.flushMetadata.mockImplementation(async () => {
+            const err = metadata.lastModelError as { bridgeable?: boolean } | undefined;
+            flushOrder.push(err?.bridgeable === false ? 'flush-after-gate' : 'flush-other');
+            return true;
+        });
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = metadata.lastModelError as {
+            eventId?: string
+            kind?: string
+            rawSnippet?: string
+            lastUserMessage?: string
+            priorAssistantClaimsDone?: boolean
+            bridgeable?: boolean
+        };
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        const flushesBeforeBridge = flushOrder.length;
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        expect((metadata.lastModelError as { bridgeable?: boolean })?.bridgeable).toBe(false);
+        expect(flushOrder.slice(flushesBeforeBridge)).toContain('flush-after-gate');
+
+        // SIGTERM-shaped exit: cancel without success write. Durable gate remains.
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        harness.deferPrompt = null;
+        releaseBridge();
+        session.queue.close();
+        await launchPromise;
+
+        const session2 = makeSession('acp-session', { keepQueueOpen: true });
+        const park2 = { release: null as (() => void) | null };
+        let wait2 = 0;
+        const originalWait2 = session2.queue.waitForMessagesAndGetAsString.bind(session2.queue);
+        session2.queue.waitForMessagesAndGetAsString = async (signal) => {
+            wait2 += 1;
+            if (wait2 === 1 && park2.release === null) {
+                await new Promise<void>((resolve) => {
+                    park2.release = resolve;
+                });
+            }
+            return originalWait2(signal);
+        };
+        const client2 = session2.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            getMetadata: ReturnType<typeof vi.fn>
+        };
+        client2.getMetadata.mockImplementation(() => metadata);
+        const launch2 = cursorAcpRemoteLauncher(session2);
+        await vi.waitFor(() => expect(park2.release).not.toBeNull());
+
+        expect((metadata.lastModelError as { bridgeable?: boolean })?.bridgeable).toBe(false);
+        const bridge2 = client2.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridge2!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: false,
+            bridgeable: true
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        session2.queue.close();
+        park2.release?.();
+        await launch2;
+    });
+
+    it('does not dispatch Bridge when the durable replay-gate flush fails', async () => {
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            flushMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        client.flushMetadata.mockResolvedValue(false);
+        nextWait.release?.();
+        await vi.waitFor(() => expect(client.flushMetadata).toHaveBeenCalled());
+        await new Promise((r) => setTimeout(r, 30));
+
+        expect(harness.promptCalls).toBe(1);
+        expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
+
+        session.queue.close();
+        await launchPromise;
+    });
+
     it('does not promote ACP process-exit rejection after deliberate abort to modelError', async () => {
         harness.deferPrompt = new Promise<void>((resolve) => {
             harness.releasePrompt = resolve;
