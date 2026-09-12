@@ -109,6 +109,9 @@ export class KimiRemoteLauncher extends RemoteLauncherBase {
         session.onSessionFound(acpSessionId);
         session.setRemoteEffortApplier((effort) => this.applyEffort(effort));
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListSessionReasoningEffortOptions, async () => {
+            if (this.shouldExit || this.backend !== backend) {
+                return { success: false, error: 'Remote session is not ready' };
+            }
             const selectedModel = session.getModel() ?? null;
             const desiredModel = selectedModel ?? resolveKimiRuntimeConfig().model;
             if (desiredModel === this.currentBackendModel) {

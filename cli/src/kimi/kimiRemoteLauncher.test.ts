@@ -135,6 +135,11 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
             { permissionMode: 'default', model: 'kimi-new', effort: 'high' },
             { permissionMode: 'default', model: 'kimi-new', effort: 'low' }
         )
+        harness.onPrompt = async () => {
+            await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({
+                success: true, model: 'kimi-new', options: [{ value: 'low', name: 'Low' }]
+            })
+        }
 
         await expect(kimiRemoteLauncher(session as never, { model: 'kimi-k2' })).resolves.toBe('exit')
 
@@ -142,9 +147,7 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         expect(harness.setConfigOptionCalls).not.toContainEqual(['kimi-session-1', 'thought_level', 'high'])
         expect(session.setEffort).toHaveBeenCalledWith('low')
         await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({
-            success: true,
-            model: 'kimi-new',
-            options: [{ value: 'low', name: 'Low' }]
+            success: false, error: 'Remote session is not ready'
         })
     })
 
@@ -170,22 +173,25 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
                 success: true, model: null, options: harness.thoughtLevelOption.options
             })
             checks += 1
+            selectedModel = 'kimi-pending'
+            await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({ model: null })
         }
         await kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
         expect(checks).toBe(2)
-        selectedModel = 'kimi-pending'
-        await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({ model: null })
+        await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({ success: false })
     })
 
     it('reports the default HAPI model selection for a concrete backend default', async () => {
         const defaultMode: KimiMode = { permissionMode: 'default' }
         const session = createSession(defaultMode, defaultMode)
+        harness.onPrompt = async () => {
+            await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({ success: true, model: null })
+        }
 
         await expect(kimiRemoteLauncher(session as never, {})).resolves.toBe('exit')
 
         await expect(session.rpcHandlers.get('listSessionReasoningEffortOptions')?.()).resolves.toMatchObject({
-            success: true,
-            model: null
+            success: false
         })
     })
 

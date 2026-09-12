@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CopilotSession } from './session';
 import { CopilotRemoteLauncher } from './copilotRemoteLauncher';
 import type { AgentMessage } from '@/agent/types';
+import * as bridge from '@/codex/utils/buildHapiMcpBridge';
+import * as copilotBackend from './utils/copilotBackend';
 
 type LauncherInternals = {
     backend: {
@@ -56,6 +58,44 @@ function createLauncher(
 }
 
 describe('CopilotRemoteLauncher.applyAgentMode', () => {
+    it('rejects discovery after its backend is retired or the launcher exits', async () => {
+        const { launcher, internals, session } = createLauncher(vi.fn());
+        const backend = {
+            initialize: vi.fn(async () => {}),
+            newSession: vi.fn(async () => 'copilot-session'),
+            onStderrError: vi.fn(),
+            setSessionInfoUpdateListener: vi.fn(),
+            getThoughtLevelConfigOption: vi.fn(() => ({ options: [{ value: 'low' }], currentValue: 'low' })),
+        };
+        let discover: (() => Promise<unknown>) | undefined;
+        const registered = new Error('discovery registered');
+        Object.assign(session, {
+            getAgentMode: () => 'interactive',
+            onSessionFound: vi.fn(),
+            setRemoteAgentModeApplier: vi.fn(),
+            setRemoteEffortApplier: vi.fn(),
+            client: { rpcHandlerManager: { registerHandler: (_method: string, handler: () => Promise<unknown>) => {
+                discover = handler;
+                throw registered;
+            } } },
+        });
+        const bridgeSpy = vi.spyOn(bridge, 'buildHapiMcpBridge').mockResolvedValue({ server: { stop: vi.fn() }, mcpServers: {} } as never);
+        const backendSpy = vi.spyOn(copilotBackend, 'createCopilotBackend').mockReturnValue(backend as never);
+        try {
+            const lifecycle = launcher as unknown as { runMainLoop: () => Promise<void>; shouldExit: boolean };
+            await expect(lifecycle.runMainLoop()).rejects.toBe(registered);
+            await expect(discover?.()).resolves.toMatchObject({ success: true });
+            internals.backend = null;
+            await expect(discover?.()).resolves.toMatchObject({ success: false });
+            internals.backend = backend as never;
+            lifecycle.shouldExit = true;
+            await expect(discover?.()).resolves.toMatchObject({ success: false });
+            expect(backend.getThoughtLevelConfigOption).toHaveBeenCalledTimes(1);
+        } finally {
+            bridgeSpy.mockRestore();
+            backendSpy.mockRestore();
+        }
+    });
     it('reconciles equivalent selections but keeps the applied tag during a real model switch', () => {
         const { internals, session } = createLauncher(vi.fn());
         internals.currentBackendModel = 'gpt-5.6';

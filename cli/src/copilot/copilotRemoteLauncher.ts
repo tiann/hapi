@@ -120,6 +120,9 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         session.setRemoteAgentModeApplier((agentMode) => this.applyAgentMode(agentMode));
         session.setRemoteEffortApplier((effort) => this.applyEffort(effort));
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListSessionReasoningEffortOptions, async () => {
+            if (this.shouldExit || this.backend !== backend) {
+                return { success: false, error: 'Remote session is not ready' };
+            }
             this.reconcileAppliedModelSelection();
             const option = backend.getThoughtLevelConfigOption(acpSessionId);
             return {
