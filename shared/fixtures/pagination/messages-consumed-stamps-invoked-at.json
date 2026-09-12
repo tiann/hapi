@@ -40,7 +40,7 @@
         {
             "expectedRequests": [
                 {
-                    "limit": 200
+                    "limit": 20
                 }
             ],
             "op": "sync-tail",

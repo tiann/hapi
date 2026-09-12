@@ -81,6 +81,69 @@ struct MessageWindowControllerTests {
 
     // MARK: - Tail sync
 
+    @Test func coldSyncRequestsTheInitialPageSize() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(sessionId: "s", provider: provider)
+
+        let sync = Task { await controller.syncTail() }
+        await provider.waitForRequests(1)
+
+        let requests = await provider.requests
+        guard case .latest(let limit) = requests[0] else {
+            Issue.record("cold sync should request the latest page, got \(requests[0])")
+            return
+        }
+        #expect(limit == MessageWindowConstants.initialPageSize)
+
+        await provider.release(latestPage([agentRow(id: "a-1", seq: 1, at: 1000)], epoch: 0))
+        await sync.value
+    }
+
+    @Test func resetAndCachedCursorSyncsKeepTheFullPageSize() async {
+        let provider = GatedMessagesProvider()
+
+        var resetState = MessageWindowState(sessionId: "reset")
+        resetState.requiresLatestReset = true
+        let resetController = MessageWindowController(
+            sessionId: "reset",
+            provider: provider,
+            initialState: resetState
+        )
+        let resetSync = Task { await resetController.syncTail() }
+        await provider.waitForRequests(1)
+        let resetRequests = await provider.requests
+        guard case .latest(let resetLimit) = resetRequests[0] else {
+            Issue.record("reset sync should request the latest page, got \(resetRequests[0])")
+            return
+        }
+        #expect(resetLimit == MessageWindowConstants.pageSize)
+        await provider.release(latestPage([agentRow(id: "reset-1", seq: 1, at: 1000)], epoch: 1))
+        await resetSync.value
+
+        var cachedState = MessageWindowState(sessionId: "cached")
+        cachedState.messages = [WindowMessage(wire: agentRow(id: "cached-1", seq: 1, at: 1000))]
+        cachedState.hasMore = true
+        cachedState.epoch = 1
+        cachedState.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        cachedState.newestPosition = MessagePosition(at: 1000, seq: 1)
+        cachedState.preferLatestOnActivation = true
+        let cachedController = MessageWindowController(
+            sessionId: "cached",
+            provider: provider,
+            initialState: cachedState
+        )
+        let cachedSync = Task { await cachedController.syncTail() }
+        await provider.waitForRequests(2)
+        let cachedRequests = await provider.requests
+        guard case .latest(let cachedLimit) = cachedRequests[1] else {
+            Issue.record("cached re-entry should request the latest page, got \(cachedRequests[1])")
+            return
+        }
+        #expect(cachedLimit == MessageWindowConstants.pageSize)
+        await provider.release(latestPage([agentRow(id: "cached-2", seq: 2, at: 2000)], epoch: 1))
+        await cachedSync.value
+    }
+
     @Test func cancellingHistoryDoesNotPublishAnOfflineWarning() async {
         let provider = GatedMessagesProvider()
         var initial = MessageWindowState(sessionId: "history")
