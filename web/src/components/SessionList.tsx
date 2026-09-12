@@ -48,6 +48,7 @@ import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineFilterMenu } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
+import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
@@ -1790,6 +1791,7 @@ export function SessionList(props: {
     // pull-to-load-older pattern in HappyThread; desktop has no overscroll
     // bounce to make a wheel pull feel right, so it stays on live updates.
     const scrollContainerRef = useRef<HTMLDivElement>(null)
+    useTransientScrollbar(scrollContainerRef, 'left')
     const [pullState, setPullState] = useState<PullToRefreshState>('idle')
     const pullStateRef = useRef<PullToRefreshState>('idle')
     const [isRefreshing, setIsRefreshing] = useState(false)
@@ -1988,7 +1990,7 @@ export function SessionList(props: {
                     </span>
                 </div>
             ) : null}
-            <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left min-h-0 flex-1">
+            <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
