@@ -70,9 +70,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     for (const msg of incoming) {
         const existing = byId.get(msg.id)
         if (existing) {
-            // Preserve client-only signals the incoming (server) copy can't carry:
-            // a late ack timestamp, the live 'steered' marker (not persisted), and
-            // force-dismiss of an indeterminate queued row (#1839).
+            // Preserve ACK fields and client-only force-dismiss state across late server snapshots.
             const preserved: Partial<DecryptedMessage> = {}
             if (existing.invokedAt != null && msg.invokedAt == null) {
                 preserved.invokedAt = existing.invokedAt
@@ -157,9 +155,8 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                         update.invokedAt = optimisticInvokedAt
                     }
                 }
-                // The 'steered' marker is live-only (the hub never persists it), so
-                // carry it from the optimistic row onto the replacing server echo —
-                // otherwise the ↳ Steered badge vanishes the moment the echo lands.
+                // An echo captured before acceptance can lack the persisted marker;
+                // retain the newer ACK so the Steered badge does not vanish.
                 if (optimisticSteeredByLocalId.has(msg.localId) && !msg.steered) {
                     update.steered = true
                 }

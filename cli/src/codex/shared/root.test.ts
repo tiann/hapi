@@ -69,6 +69,16 @@ async function fixture() {
 }
 
 describe('shared steering availability', () => {
+    it('mirrors root native names without overwriting manual names or accepting child titles', async () => {
+        const f = await fixture();
+        f.root.session.updateMetadata(metadata => ({ ...metadata, name: 'Manual title' }));
+        f.native.notify('thread/name/updated', { threadId: 'thread', threadName: 'Native title' });
+        await vi.waitFor(() => expect(f.root.session.getMetadata()?.summary?.text).toBe('Native title'));
+        f.native.notify('thread/name/updated', { threadId: 'child', threadName: 'Child title' });
+        await f.root.close(false);
+        expect(f.root.session.getMetadata()?.name).toBe('Manual title');
+        expect(f.root.session.getMetadata()?.summary?.text).toBe('Native title');
+    });
     it('keeps idle sessions online without polling usage or publishing agent-state updates', async () => {
         const f = await fixture();
         const requests = vi.spyOn(f.root.client, 'request');

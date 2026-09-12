@@ -63,6 +63,7 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
+    stopSession?: (sessionId: string) => Promise<{ alreadyStopped: boolean }>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
@@ -146,6 +147,7 @@ function createApp(session: Session, opts?: {
             status: { onDisk: true, store: 'acp' as const }
         })),
         archiveSession: archiveSessionMock,
+        stopSession: opts?.stopSession ?? (async () => ({ alreadyStopped: false })),
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
         getSessionExport: opts?.getSessionExport ?? (() => ({
@@ -1016,7 +1018,7 @@ describe('sessions routes', () => {
         expect(response.status).toBe(400)
     })
 
-    it('rejects OpenCode plan mode changes for local sessions', async () => {
+    it('rejects OpenCode plan mode changes', async () => {
         const session = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' },
             agentState: {
@@ -1033,30 +1035,11 @@ describe('sessions routes', () => {
             body: JSON.stringify({ mode: 'plan' })
         })
 
-        expect(response.status).toBe(409)
+        expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'OpenCode plan mode is only supported for remote sessions'
+            error: 'Invalid permission mode for session flavor'
         })
         expect(applySessionConfigCalls).toEqual([])
-    })
-
-    it('applies OpenCode plan mode changes for remote sessions', async () => {
-        const session = createSession({
-            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' }
-        })
-        const { app, applySessionConfigCalls } = createApp(session)
-
-        const response = await app.request('/api/sessions/session-1/permission-mode', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ mode: 'plan' })
-        })
-
-        expect(response.status).toBe(200)
-        expect(await response.json()).toEqual({ ok: true })
-        expect(applySessionConfigCalls).toEqual([
-            ['session-1', { permissionMode: 'plan' }]
-        ])
     })
 
     it('applies permission mode changes for inactive sessions', async () => {
@@ -1436,7 +1419,7 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ error: 'Session not found' })
         })
 
-        it('returns 409 for an inactive non-archived row whose lifecycle is not running', async () => {
+        it('archives an inactive non-archived row (idempotent cleanup)', async () => {
             let called = false
             const session = createSession({ active: false })
             const { app } = createApp(session, {
@@ -1445,9 +1428,9 @@ describe('sessions routes', () => {
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
 
-            expect(response.status).toBe(409)
-            expect(await response.json()).toEqual({ error: 'Session is inactive' })
-            expect(called).toBe(false)
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(called).toBe(true)
         })
 
         it('returns 2xx for an inactive split-brain row still marked lifecycleState=running', async () => {
@@ -1470,6 +1453,45 @@ describe('sessions routes', () => {
             expect(response.status).toBe(200)
             expect(await response.json()).toEqual({ ok: true })
             expect(calls).toEqual(['session-1'])
+        })
+    })
+
+    describe('POST /sessions/:id/stop', () => {
+        it.each([true, false])('rejects non-archiving stop for shared Codex before RPC (active: %s)', async (active) => {
+            let called = false
+            const session = createSession({ active, metadata: { path: '/tmp', host: 'test', flavor: 'codex',
+                startedBy: 'runner', capabilities: { concurrentClients: true } } })
+            const { app } = createApp(session, {
+                stopSession: async () => { called = true; return { alreadyStopped: false } }
+            })
+            const response = await app.request('/api/sessions/session-1/stop', { method: 'POST' })
+            expect(response.status).toBe(409)
+            expect(called).toBe(false)
+            expect(await response.json()).toEqual({ error: 'Non-archiving stop is unavailable for shared Codex; use abort or archive explicitly' })
+        })
+        it('stops an active process without archiving', async () => {
+            const calls: string[] = []
+            const { app } = createApp(createSession({ active: true }), {
+                stopSession: async (sessionId: string) => {
+                    calls.push(sessionId)
+                    return { alreadyStopped: false }
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/stop', { method: 'POST' })
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true, alreadyStopped: false })
+            expect(calls).toEqual(['session-1'])
+        })
+
+        it('is idempotent for an inactive process', async () => {
+            const { app } = createApp(createSession({ active: false }), {
+                stopSession: async () => ({ alreadyStopped: true })
+            })
+
+            const response = await app.request('/api/sessions/session-1/stop', { method: 'POST' })
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true, alreadyStopped: true })
         })
     })
 

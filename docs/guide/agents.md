@@ -15,10 +15,10 @@ agent's integration; their supported syntax varies by agent.
 | Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
 | Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
-| Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
+| Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `bypassPermissions` | ✓ |
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
-| OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
+| OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh-acp-demo` or configured server) | — | ✓ | Managed by DSH ACP composition | — |
 | Antigravity (agy) | `hapi agy` | Headless print mode (per-turn `agy -p` + NDJSON) | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
@@ -203,11 +203,10 @@ Sessions created from a HAPI runner start in remote mode automatically. Terminal
 
 ### Permission modes
 
-Grok exposes four permission modes:
+Grok exposes three permission modes:
 
 - `default` — tool requests are shown in HAPI for approval or denial.
 - `auto` — Grok's own Auto mode: HAPI forwards Grok's `/auto` command to the session. Auto depends on account and CLI-build availability — if Grok does not advertise the `/auto` command, HAPI falls back to `default` and posts a notice in the session.
-- `plan` — HAPI asks Grok to plan only and rejects tool execution requests.
 - `bypassPermissions` — tool requests are automatically approved for the session (`--yolo` shortcut).
 
 Use `bypassPermissions` only in a trusted workspace.
@@ -230,7 +229,7 @@ When the Grok CLI build advertises them, HAPI uses Grok's ACP extension methods 
 
 The Create page discovers Grok's ACP model catalog and the reasoning-effort choices advertised for each model. Remote sessions can switch both model and effort between turns; HAPI applies them through ACP `session/set_model` and `session/set_mode`. From the terminal, pick them at launch with `--model <model>` and `--effort <level>`.
 
-HAPI also exposes Grok's common slash commands, discovers skills from `.grok/skills`, `~/.grok/skills`, and shared `.agents/skills`, and asks Grok to set a concise HAPI session title after the first normal prompt.
+HAPI also exposes Grok's common slash commands and discovers skills from `.grok/skills`, `~/.grok/skills`, and shared `.agents/skills`.
 
 ### Current limitations
 

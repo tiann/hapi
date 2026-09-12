@@ -108,7 +108,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
 - `PATCH /api/sessions/:id` - Rename session.
-- `DELETE /api/sessions/:id` - Delete inactive session.
+- `DELETE /api/sessions/:id` - Delete an inactive session after confirming runner process exit; failed confirmation preserves the record.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.
 - `GET /api/sessions/:id/skills` - List skills.
 - `POST /api/sessions/:id/permission-mode` - Set permission mode.

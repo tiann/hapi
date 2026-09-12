@@ -75,26 +75,9 @@ export function resolveOpencodeSlashCommand(
     }
 
     if (command === 'plan') {
-        const lowerRest = rest.toLowerCase();
-        if (lowerRest === 'off' || lowerRest === 'default' || lowerRest === 'exit' || lowerRest === 'disable') {
-            return {
-                kind: 'handled',
-                message: 'OpenCode plan mode disabled',
-                updates: { permissionMode: 'default' }
-            };
-        }
-        if (rest) {
-            return {
-                kind: 'replace',
-                text: rest,
-                message: 'OpenCode plan mode enabled',
-                updates: { permissionMode: 'plan' }
-            };
-        }
         return {
             kind: 'handled',
-            message: 'OpenCode plan mode enabled',
-            updates: { permissionMode: 'plan' }
+            message: 'OpenCode plan mode is unavailable because the runtime has no native plan mode.'
         };
     }
 
@@ -199,8 +182,6 @@ export function resolveOpencodeSlashCommand(
                 '',
                 '- `/help` — show this list',
                 '- `/status` — show current OpenCode session config',
-                '- `/plan [prompt]` — enable plan mode, optionally send prompt',
-                '- `/plan off` — return to default permission mode',
                 '- `/default` — return to default permission mode',
                 '- `/init [extra]` — generate or refresh AGENTS.md for this project',
                 '- `/compact` — compact (summarize) the OpenCode session context (remote sessions only)',

@@ -54,7 +54,7 @@ function renderThread(onViewModeChange = vi.fn(), unseenCount = 0) {
         <QueryClientProvider client={queryClient}>
             <I18nProvider>
                 <HappyThread
-                    api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                    api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }) } as unknown as ApiClient}
                     session={{ metadata: {} } as Session}
                     sessionId="mobile-scroll-session"
                     metadata={null}

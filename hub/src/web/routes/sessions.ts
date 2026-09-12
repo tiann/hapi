@@ -363,6 +363,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
+    app.post('/sessions/:id/stop', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) return sessionResult
+
+        const metadata = sessionResult.session.metadata
+        if (metadata?.flavor === 'codex' && metadata.capabilities?.concurrentClients) {
+            return c.json({ error: 'Non-archiving stop is unavailable for shared Codex; use abort or archive explicitly' }, 409)
+        }
+        const result = await engine.stopSession(sessionResult.sessionId)
+        return c.json({ ok: true, ...result })
+    })
+
     app.post('/sessions/:id/fork', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -432,12 +447,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
     })
 
     app.post('/sessions/:id/archive', async (c) => {
-        // tiann/hapi#916: relax the blanket `requireActive: true` guard so
-        // the endpoint is idempotent for already-archived rows AND can clean
-        // up split-brain rows after a hub-restart cascade (inactive in cache
-        // but metadata.lifecycleState still 'running'). Normal inactive rows
-        // that are not archived (completed stubs, UI Delete/Reopen targets)
-        // keep the old 409 contract.
+        // Exact-id lifecycle cleanup is idempotent for active, inactive, and
+        // already-archived rows.
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
             return engine
@@ -451,10 +462,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const lifecycleState = sessionResult.session.metadata?.lifecycleState
         if (!sessionResult.session.active && lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
-        }
-
-        if (!sessionResult.session.active && lifecycleState !== 'running') {
-            return c.json({ error: 'Session is inactive' }, 409)
         }
 
         await engine.archiveSession(sessionResult.sessionId)

@@ -3,11 +3,9 @@ import { logger } from "@/ui/logger";
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
 import { appendMcpConfigArg } from "./utils/mcpConfig";
-import { getSystemPrompt } from "./utils/systemPrompt";
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithTerminalGuard } from "@/utils/spawnWithTerminalGuard";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
-import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import type { SessionModel } from "@/api/types";
 
@@ -72,8 +70,6 @@ export async function claudeLocal(opts: {
         // Resume existing session
         args.push('--resume', startFrom);
     }
-
-    args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(getSystemPrompt()));
 
     const cleanupMcpConfig = appendMcpConfigArg(args, opts.mcpServers, {
         baseDir: projectDir

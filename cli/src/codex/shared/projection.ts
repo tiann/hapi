@@ -58,6 +58,9 @@ export class SharedCodexProjection {
                 await this.committed(id);
                 const text = inputText(item.content);
                 if (text) this.session.sendUserMessage(text, undefined, id);
+                if (firstInTurn && firstInTurn !== id) {
+                    this.session.emitMessagesConsumed([id], { steered: true });
+                }
                 this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
@@ -67,6 +70,12 @@ export class SharedCodexProjection {
             this.send({ type: 'agent-run-update', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`,
                 status: method === 'turn/started' ? 'running' : record(p.turn).status === 'completed' ? 'completed' : 'failed'
             }, `lifecycle:${turnId}:${method}`);
+        }
+        if (!this.parentThreadId && method === 'turn/completed' && turnId) {
+            const status = record(p.turn).status;
+            if (status === 'completed' || status === 'interrupted' || status === 'failed') {
+                this.send({ type: 'turn_complete', stopReason: status === 'completed' ? 'success' : status === 'interrupted' ? 'cancelled' : 'error' }, `turn:${turnId}:complete`);
+            }
         }
         const events = this.converter.handleNotification(method, params);
         for (const event of events) {
@@ -131,6 +140,9 @@ export class SharedCodexProjection {
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
                     await this.notification('item/completed', params);
                 }
+            }
+            if (turn.status === 'completed' || turn.status === 'interrupted' || turn.status === 'failed') {
+                await this.notification('turn/completed', { threadId: this.threadId, turn });
             }
         }
     }

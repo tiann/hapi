@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable';
 import { parseCodexCliOverrides, stripCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
-import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 export const SharedLaunchSchema = z.object({
@@ -134,7 +133,6 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
             ...(autoReview ? { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' } : {}),
             ...(permission ? { approvalPolicy: permission.approvalPolicy, approvalsReviewer: 'user', sandbox: permission.sandbox } : {}),
             config: { ...config, ...(options.modelReasoningEffort ? { model_reasoning_effort: options.modelReasoningEffort } : {}) },
-            developerInstructions: getCodexSystemPrompt()
         }
     };
 }

@@ -5,7 +5,8 @@ import {
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
-    SendMessageRequestSchema
+    SendMessageRequestSchema,
+    SpawnSessionWithRemitRequestSchema
 } from './apiTypes'
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
@@ -143,5 +144,23 @@ describe('SendMessageRequestSchema deliveryMode', () => {
             expect(parsed.error.issues.some((issue) => issue.path[0] === 'deliveryMode')).toBe(true)
             expect(parsed.error.issues.some((issue) => issue.message.includes('cannot use steer'))).toBe(true)
         }
+    })
+})
+
+describe('SpawnSessionWithRemitRequestSchema', () => {
+    it('preserves remit boundary whitespace while rejecting whitespace-only messages', () => {
+        const message = '  indented remit\n'
+        const parsed = SpawnSessionWithRemitRequestSchema.parse({
+            directory: '/tmp/project',
+            message,
+            remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+        })
+
+        expect(parsed.message).toBe(message)
+        expect(SpawnSessionWithRemitRequestSchema.safeParse({
+            directory: '/tmp/project',
+            message: ' \n\t',
+            remitId: '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
+        }).success).toBe(false)
     })
 })

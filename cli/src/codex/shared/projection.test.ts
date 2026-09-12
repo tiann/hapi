@@ -3,6 +3,40 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import { SharedCodexProjection, inputText } from './projection';
 
 describe('shared history projection', () => {
+    it('marks native follow-up inputs in the same turn as steers, including replay', async () => {
+        const consumed = vi.fn();
+        const session = { getMetadata: () => ({}), updateMetadata() {}, sendUserMessage: vi.fn(),
+            sendAgentMessage() {}, emitMessagesConsumed: consumed } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        const input = (id: string) => ({ id, clientId: id, type: 'userMessage', content: [{ type: 'inputText', text: id }] });
+        const history = { turns: [
+            { id: 'turn', status: 'completed', items: [input('remit'), input('native-steer')] },
+            { id: 'next', status: 'completed', items: [input('next-remit')] }
+        ] };
+        await projection.history(history);
+        expect(consumed).toHaveBeenCalledWith(['native-steer'], { steered: true });
+        expect(consumed.mock.calls.every(([ids]) => ids[0] === 'native-steer')).toBe(true);
+        consumed.mockClear();
+        projection.reset();
+        await projection.history(history);
+        expect(consumed).toHaveBeenCalledWith(['native-steer'], { steered: true });
+        expect(consumed.mock.calls.every(([ids]) => ids[0] === 'native-steer')).toBe(true);
+    });
+    it.each([['completed', 'success'], ['interrupted', 'cancelled'], ['failed', 'error']])('reports %s root outcomes once after replayed output', async (status, stopReason) => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        const turn = { id: 'turn', status, items: [{ id: 'answer', type: 'agentMessage', text: 'result' }] };
+        await projection.history({ turns: [turn] });
+        await projection.notification('turn/completed', { threadId: 'thread', turn });
+        const outcomes = send.mock.calls.filter(([body]) => body.type === 'turn_complete');
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0][0]).toMatchObject({ stopReason });
+        expect(send.mock.calls[0][0]).toMatchObject({ type: 'message', message: 'result' });
+        const child = new SharedCodexProjection(session, 'child', async () => {}, 'thread');
+        await child.notification('turn/completed', { threadId: 'child', turn });
+        expect(send.mock.calls.filter(([body]) => body.type === 'turn_complete')).toHaveLength(1);
+    });
     it.each([undefined, 'root'])('emits canonical error flags for tools (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
@@ -47,7 +81,8 @@ describe('shared history projection', () => {
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         const snapshot = { turns: [{ id: 'turn', status: 'completed', items: [{ id: 'item', type: 'agentMessage', text: 'complete' }] }] };
         await projection.history(snapshot); projection.reset(); await projection.history(snapshot);
-        expect(send).toHaveBeenCalledTimes(2); expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
+        expect(send).toHaveBeenCalledTimes(4);
+        expect(send.mock.calls.slice(0, 2)).toEqual(send.mock.calls.slice(2));
     });
     it('does not settle an active snapshot under the final message id', async () => {
         const send = vi.fn();

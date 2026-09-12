@@ -83,6 +83,7 @@ const harness = vi.hoisted(() => ({
     emitParentUsageEvents: false,
     emitParentGoalDuplicateEvents: false,
     emitChildNestedAgentTool: false,
+    emitNativeTitleChanges: false,
     emitParentTitleChange: false,
     emitParentSpawnFailureWithoutAgentId: false,
     emitParentSpawnStartWithoutEnd: false,
@@ -273,6 +274,10 @@ vi.mock('./codexAppServerClient', () => {
             const threadId = params?.threadId ?? 'thread-unknown';
             harness.startTurnThreadIds.push(threadId);
             harness.startTurnMessages.push(params?.input?.[0]?.text ?? params?.message ?? params?.userMessage ?? '');
+            if (harness.emitNativeTitleChanges) {
+                this.notificationHandler?.('thread/name/updated', { threadId, threadName: 'Native title' });
+                this.notificationHandler?.('thread/name/updated', { threadId: 'child-thread', threadName: 'Child title' });
+            }
             const turnId = `turn-${harness.startTurnThreadIds.length}`;
             const started = { turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/started', params: started });
@@ -1184,6 +1189,7 @@ function createSessionStub(
     };
 
     const session = {
+        titles: { refresh: vi.fn(), sync: vi.fn(), generate: vi.fn() },
         path: '/tmp/hapi-update',
         logPath: '/tmp/hapi-update/test.log',
         client,
@@ -1479,6 +1485,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitParentUsageEvents = false;
         harness.emitParentGoalDuplicateEvents = false;
         harness.emitChildNestedAgentTool = false;
+        harness.emitNativeTitleChanges = false;
         harness.emitParentTitleChange = false;
         harness.emitParentSpawnFailureWithoutAgentId = false;
         harness.emitParentSpawnStartWithoutEnd = false;
@@ -1636,8 +1643,8 @@ describe('codexRemoteLauncher', () => {
         const { session } = createSessionStub();
 
         await expect(codexRemoteLauncher(session as never)).resolves.toBe('exit');
-        expect(harness.startThreadParams[0]?.config).not.toHaveProperty('model_context_window');
-        expect(harness.startThreadParams[0]?.config).not.toHaveProperty('model_auto_compact_token_limit');
+        expect(harness.startThreadParams).toHaveLength(1);
+        expect(harness.startThreadParams[0]?.config).toBeUndefined();
     });
 
     it('uses the native skill catalog for completion and structured turn input', async () => {
@@ -2155,12 +2162,15 @@ describe('codexRemoteLauncher', () => {
         }));
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(session.thinking).toBe(false);
+        expect(codexMessages.filter(message => (message as { type?: string }).type === 'turn_complete')).toEqual([{
+            type: 'turn_complete', stopReason: 'success'
+        }]);
     });
 
     it('ignores a stale same-thread failure after retry has started', async () => {
         harness.remainingThreadSystemErrors = 1;
         harness.emitStaleTaskFailedAfterRetry = true;
-        const { session, sessionEvents } = createSessionStub(['first message']);
+        const { session, sessionEvents, codexMessages } = createSessionStub(['first message']);
 
         const exitReason = await codexRemoteLauncher(session as never);
 
@@ -2168,6 +2178,9 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(session.thinking).toBe(false);
+        expect(codexMessages.filter(message => (message as { type?: string }).type === 'turn_complete')).toEqual([{
+            type: 'turn_complete', stopReason: 'success'
+        }]);
     });
 
     it('ignores a stale thread-status failure after retry has started', async () => {
@@ -2185,7 +2198,7 @@ describe('codexRemoteLauncher', () => {
     it('ignores a first-turn completion while the second retry is running', async () => {
         harness.remainingThreadSystemErrors = 2;
         harness.emitFirstTurnTaskCompleteAfterSecondRetry = true;
-        const { session, sessionEvents } = createSessionStub(['first message']);
+        const { session, sessionEvents, codexMessages } = createSessionStub(['first message']);
 
         const exitReason = await codexRemoteLauncher(session as never);
 
@@ -2193,6 +2206,9 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1', 'thread-1']);
         expect(sessionEvents.filter((event) => event.type === 'ready')).toHaveLength(1);
         expect(session.thinking).toBe(false);
+        expect(codexMessages.filter(message => (message as { type?: string }).type === 'turn_complete')).toEqual([{
+            type: 'turn_complete', stopReason: 'success'
+        }]);
     });
 
     it('still retries a generic systemError when an empty failed turn completion confirms it', async () => {
@@ -3305,6 +3321,14 @@ describe('codexRemoteLauncher', () => {
             activityKind: 'failed',
             error: 'spawn_agent did not return an agent id before the Codex session ended'
         }));
+    });
+
+    it('routes native title notifications and triggers naming after a completed task', async () => {
+        harness.emitNativeTitleChanges = true;
+        const { session } = createSessionStub(['Name this task']);
+        await codexRemoteLauncher(session as never);
+        expect(session.titles.sync).toHaveBeenCalledWith('thread-1', 'Native title');
+        expect(session.titles.generate).toHaveBeenCalledWith('thread-1', 'Name this task', expect.any(String));
     });
 
     it('applies parent-thread hapi change_title after disabling MCP-side title writes', async () => {

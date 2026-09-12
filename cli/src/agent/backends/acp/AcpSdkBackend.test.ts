@@ -52,6 +52,37 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('drains partial output and emits a terminal failure when the prompt RPC rejects', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 1;
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const internal = backend as unknown as {
+            transport: { sendRequest: () => Promise<never> };
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        const failure = new Error('prompt rejected');
+        internal.transport = {
+            sendRequest: async () => {
+                internal.handleSessionUpdate({
+                    sessionId: 'session-1',
+                    update: {
+                        sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                        content: { type: 'text', text: 'partial answer' }
+                    }
+                });
+                throw failure;
+            }
+        };
+        const messages: AgentMessage[] = [];
+        await expect(backend.prompt('session-1', [{ type: 'text', text: 'hello' }], message => messages.push(message)))
+            .rejects.toBe(failure);
+        expect(messages).toMatchObject([
+            { type: 'text', text: 'partial answer' },
+            { type: 'turn_complete', stopReason: 'error' }
+        ]);
+    });
+
     it('forwards ACP session_info_update titles without requiring an active prompt', () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const updates: Array<{ sessionId: string | null; title: string | null }> = [];

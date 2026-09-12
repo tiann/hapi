@@ -59,6 +59,7 @@ function createSession(clientOverrides: Record<string, unknown> = {}) {
         emitMessagesConsumed: vi.fn(),
         emitSessionReady: vi.fn(),
         sendSessionEvent: vi.fn(),
+        sendAgentMessage: vi.fn(),
         updateMetadata: vi.fn(),
         keepAlive: vi.fn(),
         rpcHandlerManager: { registerHandler: vi.fn() },
@@ -144,6 +145,8 @@ describe('AgyHeadlessDriver', () => {
         queue.close();
         session.stopKeepAlive();
         await launchPromise;
+
+        expect(client.sendAgentMessage).toHaveBeenCalledWith({ type: 'turn_complete', stopReason: 'success' });
 
         // Delivery confirmation from the user_input step.
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
@@ -337,6 +340,7 @@ describe('AgyHeadlessDriver', () => {
         queue.close();
         session.stopKeepAlive();
         await launchPromise;
+        expect(client.sendAgentMessage).toHaveBeenCalledWith({ type: 'turn_complete', stopReason: 'error' });
 
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
         expect(client.sendSessionEvent).toHaveBeenCalledWith(
@@ -524,6 +528,7 @@ describe('AgyHeadlessDriver', () => {
         queue.close();
         session.stopKeepAlive();
         await launchPromise;
+        expect(client.sendAgentMessage).toHaveBeenCalledWith({ type: 'turn_complete', stopReason: 'error' });
 
         // Both pending steps delivered, in order; delivery acked (prose proves
         // acceptance); the crash surfaced as an error.
@@ -543,9 +548,9 @@ describe('AgyHeadlessDriver', () => {
         // still reach the user (the envelope's response is the final answer).
         const stream = [
             '{"event":"init","conversation_id":"c-ro","init":{}}',
-            '{"event":"step_update","step_update":{"conversation_id":"c-ro","step_index":0,"state":"DONE","step_type":"user_input"}}',
             '{"event":"result","result":{"conversation_id":"c-ro","status":"SUCCESS","response":"the final answer","duration_seconds":0.1}}',
         ];
+        const sendTranscript = vi.spyOn(client, 'sendAgySessionMessage');
         const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
 
         queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
@@ -554,6 +559,8 @@ describe('AgyHeadlessDriver', () => {
         queue.close();
         session.stopKeepAlive();
         await launchPromise;
+        expect(client.emitMessagesConsumed.mock.invocationCallOrder[0])
+            .toBeLessThan(sendTranscript.mock.invocationCallOrder[0]!);
 
         const plannerEntries = sent
             .map((args) => (args as unknown[])[0] as { type?: string; content?: string } | undefined)

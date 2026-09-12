@@ -6,6 +6,7 @@ import { PiTransport } from './piTransport';
 import { PiConversationHistory } from './conversationHistory';
 import type { PiThinkingLevel } from './types';
 import { PiAgentEventSchema } from './schemas';
+import { convertPiEvent } from './piEventConverter';
 
 // Mock logger
 vi.mock('@/ui/logger', () => ({
@@ -1132,7 +1133,7 @@ describe('Pi lifecycle timeline', () => {
 });
 
 describe('Pi prompt-settlement boundaries', () => {
-    it('does not release the local FIFO between tool-loop turns; only agent_end settles a prompt', () => {
+    it.each(['stop', 'error', 'aborted'])('settles the entire tool loop with its final outcome: %s', (stopReason) => {
         let listener: ((event: Record<string, unknown>) => void) | null = null;
         const transport = {
             onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
@@ -1140,13 +1141,16 @@ describe('Pi prompt-settlement boundaries', () => {
         } as unknown as PiTransport;
         const onAgentSettled = vi.fn();
         const stateSession = createMockSession();
+        vi.spyOn(stateSession, 'sendAgentMessage');
         wireTransportEvents(transport, stateSession, [], { onAgentSettled });
 
         listener!({ type: 'agent_start' });
         listener!({ type: 'turn_start' });
-        listener!({ type: 'turn_end', message: {} });
+        vi.mocked(convertPiEvent).mockReturnValueOnce([{ type: 'turn_complete', stopReason: 'toolUse' }]);
+        listener!({ type: 'turn_end', message: { stopReason: 'toolUse' } });
         listener!({ type: 'turn_start' });
-        listener!({ type: 'turn_end', message: {} });
+        vi.mocked(convertPiEvent).mockReturnValueOnce([{ type: 'turn_complete', stopReason }]);
+        listener!({ type: 'turn_end', message: { stopReason } });
         expect(stateSession.piIsStreaming).toBe(true);
         expect(onAgentSettled).not.toHaveBeenCalled();
 
@@ -1158,10 +1162,12 @@ describe('Pi prompt-settlement boundaries', () => {
         expect(stateSession.piIsStreaming).toBe(true);
         expect(onAgentSettled).not.toHaveBeenCalled();
 
+        expect(stateSession.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'turn_complete' }));
         listener!({ type: 'compaction_start', reason: 'threshold' });
         listener!({ type: 'agent_settled' });
         expect(stateSession.piIsStreaming).toBe(false);
         expect(onAgentSettled).toHaveBeenCalledTimes(1);
+        expect(stateSession.sendAgentMessage).toHaveBeenCalledWith({ type: 'turn_complete', stopReason });
     });
 });
 

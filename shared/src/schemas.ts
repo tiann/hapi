@@ -34,6 +34,19 @@ export const OpencodeClearOperationSchema = z.object({
 })
 export type OpencodeClearOperation = z.infer<typeof OpencodeClearOperationSchema>
 
+export const SpawnRemitOperationSchema = z.object({
+    remitId: z.string().uuid(),
+    requestHash: z.string().length(64),
+    machineId: z.string(),
+    state: z.enum(['pending', 'cleanup-needed', 'failed', 'completed']),
+    updatedAt: z.number(),
+    code: z.string().optional(),
+    error: z.string().optional(),
+    cleanedUp: z.boolean().optional(),
+    orphanSessionId: z.string().optional()
+})
+export type SpawnRemitOperation = z.infer<typeof SpawnRemitOperationSchema>
+
 const SessionCapabilitiesSchema = z.object({
     concurrentClients: z.boolean().optional(),
     terminal: z.boolean().optional(),
@@ -121,12 +134,16 @@ export const MetadataSchema = z.object({
     supersededBySessionId: z.string().optional(),
     // Durable in-progress state for runner-backed OpenCode /clear.
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
+    // Hub-owned idempotency state for atomic runner spawn + remit delivery.
+    spawnRemitOperation: SpawnRemitOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
     preferredCopilotAgentMode: CopilotAgentModeSchema.optional(),
     flavor: z.string().nullish(),
     // Launch mode, surfaced so the web can show the agent-terminal toggle only
     // for PTY sessions (a 'remote'/SDK session has no agent PTY to view).
     startingMode: z.enum(['local', 'remote', 'pty']).nullish(),
+    sessionType: z.enum(['simple', 'worktree']).optional(),
+    worktreeName: z.string().optional(),
     capabilities: SessionCapabilitiesSchema.optional(),
     conversationHistoryPoints: z.record(z.string(), z.literal(true)).optional(),
     // Native locators for historical fork/rewind (e.g. Grok prompt indexes).
@@ -307,7 +324,7 @@ export const DecryptedMessageSchema = z.object({
     // The agent was sent the steer but its final outcome could not be proven.
     // The row stays uninvoked and requires an explicit user resolution.
     deliveryState: z.literal('indeterminate').optional(),
-    // Live signal via messages-consumed (steered:true); not persisted by the hub.
+    // Persisted only after the CLI confirms acceptance into an active turn.
     steered: z.boolean().optional()
 })
 

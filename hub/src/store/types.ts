@@ -51,6 +51,7 @@ export type StoredMessage = {
     scheduledAt: number | null
     /** Omitted for ordinary queued/delivered rows; set when steer outcome is unknown. */
     deliveryState?: MessageDeliveryState
+    steered?: boolean
 }
 
 export type StoredUser = {

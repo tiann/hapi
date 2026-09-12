@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'bun:test'
 import type { Metadata } from '@hapi/protocol/types'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
 import type { RpcGateway } from './rpcGateway'
 
-function fixture() {
+function fixture(capabilities: string[] = [MACHINE_CAPABILITIES.SessionControlSkill]) {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    engine.getOrCreateMachine('machine', { host: 'test', platform: 'linux', happyCliVersion: 'test', capabilities }, null, 'default')
     const metadata: Metadata = { path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
         capabilities: { concurrentClients: true, conversationHistory: { forkCurrent: true, forkAtMessage: true } } }
     const create = (name: string, more: Partial<Metadata> = {}) => {
@@ -20,6 +22,17 @@ function fixture() {
 }
 
 describe('shared Codex hub binding', () => {
+    it('rejects a fork before the RPC when the runner cannot deliver the control skill', async () => {
+        const { engine, create, rpc } = fixture([])
+        let called = false
+        rpc.forkConversation = async () => { called = true; return { nativeSessionId: 'unexpected' } }
+        try {
+            expect(await engine.forkConversation(create('source').id, 'default')).toEqual({
+                type: 'error', message: 'Fork requires an upgraded runner with session-control skill delivery'
+            })
+            expect(called).toBe(false)
+        } finally { engine.stop() }
+    })
     it('uses the already-bound fork child without spawning a second engine', async () => {
         const { engine, create, rpc } = fixture()
         try {

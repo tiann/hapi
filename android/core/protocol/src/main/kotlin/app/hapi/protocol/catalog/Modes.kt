@@ -63,11 +63,11 @@ object PermissionModes {
     /** `GROK_PERMISSION_MODES`. */
     val GROK = listOf(
         PermissionMode.Default, PermissionMode.Auto,
-        PermissionMode.Plan, PermissionMode.BypassPermissions,
+        PermissionMode.BypassPermissions,
     )
 
     /** `OPENCODE_PERMISSION_MODES`. */
-    val OPENCODE = listOf(PermissionMode.Default, PermissionMode.Plan, PermissionMode.Yolo)
+    val OPENCODE = listOf(PermissionMode.Default, PermissionMode.Yolo)
 
     /** `CURSOR_PERMISSION_MODES`. */
     val CURSOR = listOf(

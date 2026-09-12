@@ -234,19 +234,21 @@ struct MessageWindowControllerTests {
         let first = Task { await controller.syncTail() }
         await provider.waitForRequests(1)
 
-        let second = Task { await controller.syncTail() }
-        // Settle: same-priority actor jobs run FIFO in practice, so two
-        // round-trips put `second` past its join decision before we release.
-        _ = await controller.state
-        _ = await controller.state
+        func joinBeforeRelease(on controller: isolated MessageWindowController) async {
+            // This task inherits the controller's isolation, so it cannot
+            // release the response until syncTail joins and suspends.
+            let release = Task {
+                #expect(controller.state.isSyncingTail)
+                await provider.release(latestPage([agentRow(id: "a-1", seq: 1, at: 1000)], epoch: 0))
+                // Let a broken single-flight implementation fail, not hang.
+                await provider.release(afterPage([], epoch: 0, nextAfter: (at: 1000, seq: 1), hasMore: false))
+            }
+            await controller.syncTail()
+            await release.value
+        }
 
-        // Safety net so a mis-scheduled `second` fails fast instead of
-        // hanging: an after-page is buffered for the run it would start.
-        await provider.release(latestPage([agentRow(id: "a-1", seq: 1, at: 1000)], epoch: 0))
-        await provider.release(afterPage([], epoch: 0, nextAfter: (at: 1000, seq: 1), hasMore: false))
-
+        await joinBeforeRelease(on: controller)
         await first.value
-        await second.value
 
         let requests = await provider.requests
         #expect(requests.count == 1, "second caller should have joined the in-flight run")
