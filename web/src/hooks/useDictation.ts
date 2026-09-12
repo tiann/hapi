@@ -15,6 +15,24 @@ export function appendTranscript(text: string, transcript: string): string {
     return `${text}${/\s$/.test(text) ? '' : ' '}${addition}`
 }
 
+export function transferVoiceDraftAfterSend(
+    sourceSessionId: string,
+    targetSessionId: string,
+    draftAtStart: string,
+    onResolved?: (sessionId: string) => void,
+): Promise<void> {
+    return transferComposerDraftThenNavigate(sourceSessionId, targetSessionId, () => {
+        getLiveComposerDraft(targetSessionId)?.setText(getDraft(targetSessionId))
+        onResolved?.(targetSessionId)
+    }, [], { textOverride: (sampledSource) => {
+        const sourceDraft = getLiveComposerDraft(sourceSessionId)?.getText() ?? sampledSource
+        const followUp = sourceDraft === draftAtStart ? '' : sourceDraft
+        return targetSessionId === sourceSessionId
+            ? followUp
+            : appendTranscript(getLiveComposerDraft(targetSessionId)?.getText() ?? getDraft(targetSessionId), followUp)
+    } })
+}
+
 function recordingExtension(mimeType: string): string {
     if (mimeType.includes('mp4')) return 'm4a'
     if (mimeType.includes('ogg')) return 'ogg'
@@ -279,17 +297,11 @@ export function useDictation(config: {
                                     }
                                     await sendMsg(targetSessionId, finalMessage, pendingSend.deliveryMode)
                                     if (resumed) {
-                                        await transferComposerDraftThenNavigate(
+                                        await transferVoiceDraftAfterSend(
                                             pendingSend.sessionId,
                                             targetSessionId,
-                                            () => pendingSend.options.onSessionResolved?.(targetSessionId),
-                                            [],
-                                            { textOverride: (sourceDraft) => {
-                                                const followUp = sourceDraft === pendingSend.draftAtStart ? '' : sourceDraft
-                                                return targetSessionId === pendingSend.sessionId
-                                                    ? followUp
-                                                    : appendTranscript(getDraft(targetSessionId), followUp)
-                                            } },
+                                            pendingSend.draftAtStart,
+                                            pendingSend.options.onSessionResolved,
                                         )
                                     }
                                     if (draftUnchanged(pendingSend.sessionId, pendingSend.draftAtStart)) {

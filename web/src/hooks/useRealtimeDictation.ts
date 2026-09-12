@@ -8,9 +8,8 @@ import {
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { saveDraft, clearDraft, getDraft } from '@/lib/composer-drafts'
-import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import type { ConversationStatus } from '@/realtime/types'
-import { appendTranscript, recoverFailedVoiceSend, type DictationPendingSendOptions } from './useDictation'
+import { appendTranscript, recoverFailedVoiceSend, transferVoiceDraftAfterSend, type DictationPendingSendOptions } from './useDictation'
 import {
     startBrowserLocalTranscription,
     startDeepgramRealtimeTranscription,
@@ -88,17 +87,11 @@ export function useRealtimeDictation(config: {
                     }
                     await sendMsg(targetSessionId, finalMessage, pendingSend.deliveryMode)
                     if (resumed) {
-                        await transferComposerDraftThenNavigate(
+                        await transferVoiceDraftAfterSend(
                             pendingSend.sessionId,
                             targetSessionId,
-                            () => pendingSend.options.onSessionResolved?.(targetSessionId),
-                            [],
-                            { textOverride: (sourceDraft) => {
-                                const followUp = sourceDraft === pendingSend.draftAtStart ? '' : sourceDraft
-                                return targetSessionId === pendingSend.sessionId
-                                    ? followUp
-                                    : appendTranscript(getDraft(targetSessionId), followUp)
-                            } },
+                            pendingSend.draftAtStart,
+                            pendingSend.options.onSessionResolved,
                         )
                     }
                     const cur = getDraft(pendingSend.sessionId)

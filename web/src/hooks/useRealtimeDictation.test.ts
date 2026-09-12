@@ -108,11 +108,21 @@ describe('useRealtimeDictation', () => {
             saveDraft('session-A', sourceDraft)
             saveDraft('session-A-resumed', 'destination draft')
         })
+        const replacement = renderHook(() => {
+            const [text, setText] = useState('')
+            useComposerDraft('session-A-resumed', text, [], false, setText, async () => {})
+            return { text, setText }
+        })
+        await waitFor(() => expect(replacement.result.current.text).toBe('destination draft'))
+        act(() => replacement.result.current.setText('live destination'))
         await act(async () => { resolveSend?.() })
         await waitFor(() => expect(onSessionResolved).toHaveBeenCalled())
         expect(resolveSessionId).toHaveBeenCalledWith('session-A')
         expect(onSessionResolved).toHaveBeenCalledWith('session-A-resumed')
-        expect(getDraft('session-A-resumed')).toBe(['destination draft', sourceDraft].filter(Boolean).join(' '))
+        const expected = ['live destination', sourceDraft].filter(Boolean).join(' ')
+        await waitFor(() => expect(replacement.result.current.text).toBe(expected))
+        replacement.unmount()
+        expect(getDraft('session-A-resumed')).toBe(expected)
     })
 
     it('recovers a post-resume send failure under the resumed session id', async () => {
