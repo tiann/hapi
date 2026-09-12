@@ -616,7 +616,8 @@ function mergeIntoWindow(
             kept = merged
             dropped = []
         } else {
-            const trimmed = trimPreservingQueued(merged, totalCap, 'prepend')
+            const protectedRegularCount = previous.messages.filter(message => !isCodexAgentRunMessage(message)).length
+            const trimmed = trimPreservingQueued(merged, Math.max(totalCap, protectedRegularCount), 'prepend')
             kept = trimmed.kept
             dropped = trimmed.dropped
             droppedNewest = dropped.length > 0

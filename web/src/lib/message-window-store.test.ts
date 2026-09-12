@@ -1484,6 +1484,11 @@ describe('history view and older pagination', () => {
         // Releasing the boundary (leaving history and returning to the tail)
         // compacts the window to the newest tail again.
         setMessageViewMode(id, 'history')
+        ingestIncomingMessages(id, [makeAgentMessage({ id: 'm-1301', seq: 1301, at: 1301 })])
+        state = getMessageWindowState(id)
+        expect(state.messages).toHaveLength(1_300)
+        expect(state.messages.some(message => message.id === 'm-900')).toBe(true)
+        expect(state.messages.at(-1)!.seq).toBe(1_300)
         setMessageViewMode(id, 'tail')
         state = getMessageWindowState(id)
         expect(state.messages).toHaveLength(VISIBLE_WINDOW_SIZE)

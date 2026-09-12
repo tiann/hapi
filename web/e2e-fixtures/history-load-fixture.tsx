@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -229,7 +229,6 @@ const fakeApi = {
     }
 } as unknown as ApiClient
 
-const outline = fixtureParams.has('outline')
 
 const fakeSession = {
     id: SESSION_ID,
@@ -243,6 +242,7 @@ const noopSend = () => {}
 const noopAbort = async () => {}
 
 function FixtureThread() {
+    const [outline, setOutline] = useState(() => fixtureParams.has('outline'))
     const {
         messages,
         warning,
@@ -321,7 +321,7 @@ function FixtureThread() {
                     forceScrollToken={0}
                     outlineOpen={outline}
                     outlineItems={outlineItems}
-                    onOutlineOpenChange={() => {}}
+                    onOutlineOpenChange={setOutline}
                 />
             </div>
         </AssistantRuntimeProvider>
