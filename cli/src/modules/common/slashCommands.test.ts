@@ -197,11 +197,16 @@ describe('listSlashCommands', () => {
             'plan',
             'default',
             'init',
+            'compact',
+            'clear',
         ]))
-        // Anything covered by composer buttons, plus aliases and unsupported
-        // placeholders, must stay out of the autocomplete menu — the resolver
-        // still accepts them when typed manually.
-        for (const hidden of ['model', 'reasoning', 'effort', 'permissions', 'permission', 'clear', 'compact']) {
+        // model/reasoning/effort/permissions have dedicated composer buttons and
+        // permission is an alias of permissions, so they stay out of the
+        // autocomplete menu (the resolver still accepts them when typed
+        // manually). compact/clear have no composer button and are now fully
+        // supported (native compaction via the OpenCode REST bridge), so they
+        // are surfaced here.
+        for (const hidden of ['model', 'reasoning', 'effort', 'permissions', 'permission']) {
             expect(names).not.toContain(hidden)
         }
     })
