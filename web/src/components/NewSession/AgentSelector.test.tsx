@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol'
+import type { AgentAvailabilityEntry } from '@hapi/protocol'
 
 vi.mock('@/lib/use-translation', () => ({
     useTranslation: () => ({ t: (key: string) => key }),
@@ -9,7 +10,11 @@ vi.mock('@/lib/use-translation', () => ({
 import { AgentSelector } from './AgentSelector'
 import type { AgentType } from './types'
 
-function renderedAgentValues(agents: readonly AgentType[] = CREATABLE_AGENT_FLAVORS): string[] {
+function availableEntries(): AgentAvailabilityEntry[] {
+    return CREATABLE_AGENT_FLAVORS.map((agent) => ({ agent, available: true }))
+}
+
+function renderedAgentValues(agents: readonly AgentAvailabilityEntry[] = availableEntries()): string[] {
     const { container } = render(
         <AgentSelector
             agent={'claude' as AgentType}
@@ -31,7 +36,25 @@ describe('AgentSelector', () => {
         expect(renderedAgentValues()).toEqual([...CREATABLE_AGENT_FLAVORS])
     })
 
-    it('renders only Agents reported available by the machine', () => {
-        expect(renderedAgentValues(['claude', 'codex'])).toEqual(['claude', 'codex'])
+    it('renders unavailable Agents as disabled with their reason', () => {
+        render(
+            <AgentSelector
+                agent={'claude' as AgentType}
+                agents={[
+                    { agent: 'claude', available: true },
+                    { agent: 'codex', available: false, reason: 'invalid_configuration' },
+                ]}
+                isDisabled={false}
+                onAgentChange={() => {}}
+            />
+        )
+
+        expect(screen.getByDisplayValue('codex')).toBeDisabled()
+        expect(screen.getByTitle('newSession.agentUnavailableReason.invalidConfiguration')).toBeInTheDocument()
+    })
+
+    it('renders only the entries supplied by the machine availability state', () => {
+        expect(renderedAgentValues(availableEntries().filter(({ agent }) => agent === 'claude' || agent === 'codex')))
+            .toEqual(['claude', 'codex'])
     })
 })

@@ -10,6 +10,7 @@ import SettingsAboutPage from './about'
 import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
+import { SHOW_UNAVAILABLE_AGENTS_STORAGE_KEY } from '@/hooks/useShowUnavailableAgents'
 
 const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled } = vi.hoisted(() => ({
     context: { token: '' },
@@ -312,6 +313,18 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('radio', { name: 'Extended' })).toBeInTheDocument()
         expect(description.parentElement?.parentElement).toBe(choices.parentElement)
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('renders and persists the unavailable-Agent display preference', () => {
+        renderPage(<SettingsDisplayPage />)
+
+        const toggle = screen.getByRole('checkbox', { name: 'Show unavailable Agents' })
+        expect(toggle).not.toBeChecked()
+
+        fireEvent.click(toggle)
+
+        expect(toggle).toBeChecked()
+        expect(localStorage.getItem(SHOW_UNAVAILABLE_AGENTS_STORAGE_KEY)).toBe('true')
     })
 
     it('keeps chat enum choices inline', () => {

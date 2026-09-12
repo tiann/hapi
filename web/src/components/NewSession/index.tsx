@@ -1,9 +1,11 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
-import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol'
+import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
+import { useShowUnavailableAgents } from '@/hooks/useShowUnavailableAgents'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
@@ -97,6 +99,7 @@ export function NewSession(props: {
     const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
     const { sessions, refetch: refetchSessions } = useSessions(props.api)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
+    const { showUnavailableAgents } = useShowUnavailableAgents()
 
     const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
     const [directory, setDirectory] = useState(props.initialDirectory ?? '')
@@ -291,11 +294,25 @@ export function NewSession(props: {
         api: props.api,
         machineId,
     })
+    const agentOptions = useMemo<AgentAvailabilityEntry[]>(() => {
+        if (!machineId || agentAvailability.isLoading || agentAvailability.error) return []
+
+        const availabilityByAgent = new Map(
+            agentAvailability.agents.map((entry) => [entry.agent, entry])
+        )
+        return CREATABLE_AGENT_FLAVORS
+            .map((agentFlavor) => availabilityByAgent.get(agentFlavor) ?? {
+                agent: agentFlavor,
+                available: false,
+                reason: 'not_found' as const,
+            })
+            .filter((entry) => showUnavailableAgents || entry.available)
+    }, [agentAvailability.agents, agentAvailability.error, agentAvailability.isLoading, machineId, showUnavailableAgents])
     const availableAgents = useMemo(
-        () => agentAvailability.agents
-            .filter((entry) => entry.available && entry.agent !== 'gemini')
+        () => agentOptions
+            .filter((entry) => entry.available)
             .map((entry) => entry.agent as AgentType),
-        [agentAvailability.agents]
+        [agentOptions]
     )
     const selectedAgentAvailable = availableAgents.includes(agent)
 
@@ -1758,7 +1775,7 @@ export function NewSession(props: {
             />
             <AgentSelector
                 agent={agent}
-                agents={availableAgents}
+                agents={agentOptions}
                 isDisabled={isFormDisabled || agentAvailability.isLoading || Boolean(agentAvailability.error)}
                 onAgentChange={handleAgentChange}
             />
