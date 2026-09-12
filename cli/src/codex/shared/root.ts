@@ -21,6 +21,8 @@ import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
+import { LunaReserve, LUNA_RESERVE_MODEL } from './lunaReserve';
+import type { CodexModelsResponse } from '@hapi/protocol/apiTypes';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
@@ -41,6 +43,9 @@ const SettingsSchema = z.object({
 export class SharedCodexRoot {
     readonly client: CodexAppServerClient;
     readonly session: ApiSessionClient;
+    private readonly reserve: LunaReserve;
+    private modelRead?: Promise<CodexModelsResponse>;
+    private configWork: Promise<unknown> = Promise.resolve();
     bridge!: HapiMcpBridge;
     threadId = '';
     private permissions!: SharedCodexPermissions;
@@ -72,6 +77,7 @@ export class SharedCodexRoot {
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
+        this.reserve = new LunaReserve(this.client);
         this.client.setNotificationHandler((method, params) => {
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
@@ -167,7 +173,12 @@ export class SharedCodexRoot {
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
-        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id));
+        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id), undefined, async () => {
+            const usage = this.settingsNative.modelProvider && this.settingsNative.modelProvider !== 'openai'
+                ? null : await this.reserve.usage(this.settings.model);
+            return usage?.reserveAvailable && this.settings.model !== LUNA_RESERVE_MODEL
+                ? 'Luna Reserve is available in the model menu.' : '';
+        });
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
@@ -323,8 +334,30 @@ export class SharedCodexRoot {
             }
         } finally { this.reconnecting = false; this.publishSteering(); }
     }
-    async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+    applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+        const pending = this.configWork.catch(() => {}).then(() => this.applySettingsNow(raw)).catch(error => {
+            if (record(raw).model === LUNA_RESERVE_MODEL) this.notice(`Reserve selection was not confirmed: ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+        });
+        this.configWork = pending;
+        return pending;
+    }
+    private async applySettingsNow(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+        if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         const config = SettingsSchema.parse(raw);
+        if (config.model === LUNA_RESERVE_MODEL && this.settings.model !== LUNA_RESERVE_MODEL) {
+            const revision = this.settingsRevision;
+            // A selection must revalidate entitlement; never reuse the model picker's read.
+            if (this.modelRead) await this.modelRead;
+            const available = await this.listModels();
+            if (this.stopping || this.closed || revision !== this.settingsRevision) throw new Error('Session settings changed; reopen the model menu before switching');
+            const model = available.models?.find(model => model.id === LUNA_RESERVE_MODEL);
+            if (!available.usage?.reserveAvailable || !model) throw new Error('Luna Reserve is not available for this session');
+            const effort = config.modelReasoningEffort ?? this.settings.modelReasoningEffort;
+            config.modelReasoningEffort = effort && model.supportedReasoningEfforts?.includes(effort) ? effort : model.defaultReasoningEffort;
+            if (!model.serviceTiers?.includes('priority')) config.serviceTier = 'standard';
+            config.collaborationMode ??= this.settings.collaborationMode ?? 'default';
+        }
         if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, or yolo');
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
@@ -371,6 +404,27 @@ export class SharedCodexRoot {
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
         if (options.collaborationMode) await this.applySettings({ collaborationMode: options.collaborationMode });
     }
+    listModels(): Promise<CodexModelsResponse> {
+        return this.modelRead ??= (async () => {
+            const revision = this.settingsRevision;
+            const usage = this.settingsNative.modelProvider && this.settingsNative.modelProvider !== 'openai'
+                ? null : await this.reserve.usage(this.settings.model);
+            const models = []; let cursor: string | undefined;
+            do {
+                const page = await this.client.listModels({ includeHidden: true, cursor });
+                for (const entry of page.data ?? []) {
+                    const isReserve = (entry.model ?? entry.id) === LUNA_RESERVE_MODEL;
+                    if (isReserve ? !(usage?.reserveAvailable || this.settings.model === LUNA_RESERVE_MODEL) : entry.hidden === true) continue;
+                    const model = normalizeCodexModel(isReserve ? { ...entry, id: LUNA_RESERVE_MODEL, displayName: 'Luna Reserve', isDefault: false } : entry);
+                    if (model) models.push(model);
+                }
+                cursor = page.nextCursor ?? undefined;
+            } while (cursor);
+            // Do not offer eligibility calculated for a model that a concurrent frontend replaced.
+            if (revision !== this.settingsRevision) return { success: true, models: models.filter(model => model.id !== LUNA_RESERVE_MODEL), usage: null };
+            return { success: true, models, usage };
+        })().finally(() => { this.modelRead = undefined; });
+    }
     private registerControls(): void {
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
@@ -379,14 +433,7 @@ export class SharedCodexRoot {
                 try { return await pending; } finally { this.controls.delete(pending); }
             });
         } };
-        rpc.registerHandler(RPC_METHODS.ListCodexModels, async raw => {
-            const models = []; let cursor: string | undefined;
-            do {
-                const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor });
-                models.push(...(response.data ?? []).map(normalizeCodexModel).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
-            } while (cursor);
-            return { success: true, models };
-        });
+        rpc.registerHandler(RPC_METHODS.ListCodexModels, () => this.listModels());
         rpc.registerHandler(RPC_METHODS.Switch, async () => { throw new Error('control_mode_not_applicable'); });
         rpc.registerHandler(RPC_METHODS.HandoffLocal, async () => { throw new Error('control_mode_not_applicable'); });
         rpc.registerHandler(RPC_METHODS.Abort, async () => {

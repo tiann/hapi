@@ -8,6 +8,12 @@ import { SharedCodexRoot, type RootHost } from './root';
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
+        usage: unknown = { accountId: 'account', ordinaryUsageAllowed: true, rateLimits: { limitId: 'codex' } };
+        async listModels() { return { data: [
+            { id: 'mock', model: 'mock', displayName: 'Mock', isDefault: true },
+            { id: 'gpt-reserve', model: 'gpt-reserve', hidden: true, defaultReasoningEffort: 'medium',
+                supportedReasoningEfforts: [{ reasoningEffort: 'medium' }, { reasoningEffort: 'high' }] }
+        ] }; }
         thread = { id: 'thread', turns: [] as Array<{ id: string; status: string; items: unknown[] }> };
         notify?: (method: string, params: unknown) => void;
         abandoned?: () => void;
@@ -19,6 +25,8 @@ vi.mock('../codexAppServerClient', () => ({
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
         async request(method: string) {
+            if (method === 'account/rateLimits/read') return this.usage;
+            if (method === 'thread/settings/update') return {};
             if (method === 'thread/read' || method === 'thread/resume') return { model: 'mock', thread: this.thread };
             if (method === 'thread/list' || method === 'thread/queue/list') return { data: [] };
             throw new Error(`Unexpected request: ${method}`);
@@ -60,6 +68,7 @@ async function fixture() {
     await root.prepare();
     await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
     const native = root.client as unknown as {
+        usage: unknown;
         initialized: boolean;
         thread: { id: string; turns: Array<{ id: string; status: string; items: unknown[] }> };
         notify(method: string, params: unknown): void;
@@ -114,5 +123,76 @@ describe('shared steering availability', () => {
         f.native.thread.turns = [{ id: 'busy', status: 'completed', items: [] }];
         f.reconnect();
         await vi.waitFor(() => expect(f.state().steeringActive).toBe(false));
+    });
+});
+
+describe('manual Luna Reserve', () => {
+    const eligible = {
+        accountId: 'account', ordinaryUsageAllowed: false,
+        rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } },
+        rateLimitUpsell: { banner_type: 'luna_reserve', blocked_model_slug: 'mock' },
+        rateLimitsByLimitId: { reserve_bucket: { limitName: 'gpt-reserve', secondary: { usedPercent: 73 } } }
+    };
+
+    it('offers Reserve only when authorized; reads never change settings, turns, or agent state', async () => {
+        const f = await fixture();
+        const requests = vi.spyOn(f.root.client, 'request');
+        const updates = f.updateState.mock.calls.length;
+        expect((await f.root.listModels()).models?.map(model => model.id)).toEqual(['mock']);
+        f.native.usage = eligible;
+        const result = await f.root.listModels();
+        expect(result.models?.map(model => model.id)).toEqual(['mock', 'gpt-reserve']);
+        expect(result.usage).toMatchObject({ reserveAvailable: true, reserve: null });
+        expect(requests.mock.calls.every(([method]) => method === 'account/rateLimits/read')).toBe(true);
+        expect(f.updateState).toHaveBeenCalledTimes(updates);
+        f.native.usage = { ...eligible, ordinaryUsageAllowed: true };
+        await expect(f.root.applySettings({ model: 'gpt-reserve' })).rejects.toThrow('not available');
+        expect(requests.mock.calls.every(([method]) => method === 'account/rateLimits/read')).toBe(true);
+    });
+
+    it('waits for native confirmation, retains Reserve after recovery, and never replays input', async () => {
+        const f = await fixture();
+        f.native.usage = eligible;
+        const requests = vi.spyOn(f.root.client, 'request');
+        let settled = false;
+        const switching = f.root.applySettings({ model: 'gpt-reserve' }).then(value => { settled = true; return value; });
+        await vi.waitFor(() => expect(requests).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({ model: 'gpt-reserve' })));
+        expect(settled).toBe(false);
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: {
+            model: 'gpt-reserve', effort: 'medium', serviceTier: null,
+            collaborationMode: { mode: 'default', settings: { model: 'gpt-reserve', reasoning_effort: 'medium', developer_instructions: null } }
+        } });
+        expect((await switching).applied.model).toBe('gpt-reserve');
+        expect((await f.root.listModels()).usage?.reserve?.secondary?.remainingPercent).toBe(27);
+        f.native.usage = { ...eligible, ordinaryUsageAllowed: true, rateLimitUpsell: null };
+        expect((await f.root.listModels()).models?.map(model => model.id)).toContain('gpt-reserve');
+        expect(requests.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
+        expect(requests.mock.calls.some(([method]) => method.startsWith('turn/') || method.startsWith('thread/queue/'))).toBe(false);
+    });
+
+    it('does not publish rejected settings or let stale eligibility override a native model change', async () => {
+        const f = await fixture();
+        f.native.usage = eligible;
+        const original = f.root.client.request.bind(f.root.client);
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/settings/update') throw new Error('Settings rejected');
+            return original(method, params);
+        });
+        await expect(f.root.applySettings({ model: 'gpt-reserve' })).rejects.toThrow('Settings rejected');
+        expect((await f.root.applySettings({})).applied.model).toBe('mock');
+        const listing = f.root.listModels();
+        f.root.acceptSettings({ model: 'other' });
+        expect((await listing).usage).toBeNull();
+        expect((await f.root.applySettings({})).applied.model).toBe('other');
+    });
+
+    it('never offers ChatGPT Reserve to a custom-provider thread', async () => {
+        const f = await fixture();
+        f.native.usage = eligible;
+        f.root.acceptSettings({ model: 'mock', modelProvider: 'custom' });
+        const requests = vi.spyOn(f.root.client, 'request');
+        expect((await f.root.listModels()).models?.map(model => model.id)).toEqual(['mock']);
+        expect(requests).not.toHaveBeenCalled();
+        await expect(f.root.applySettings({ model: 'gpt-reserve' })).rejects.toThrow('not available');
     });
 });

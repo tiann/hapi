@@ -763,7 +763,21 @@ export type CodexModelSummary = {
 export type CodexModelsResponse = {
     success: boolean
     models?: CodexModelSummary[]
+    /** Session-scoped account usage. Read-only; never session activity. */
+    usage?: CodexAccountUsage | null
     error?: string
+}
+
+export type CodexUsageWindow = {
+    remainingPercent: number | null
+    windowDurationMins: number | null
+    resetsAt: number | null
+}
+
+export type CodexAccountUsage = {
+    ordinary: { primary: CodexUsageWindow | null; secondary: CodexUsageWindow | null }
+    reserve: { primary: CodexUsageWindow | null; secondary: CodexUsageWindow | null } | null
+    reserveAvailable: boolean
 }
 
 export type ListCodexModelsResponse = CodexModelsResponse

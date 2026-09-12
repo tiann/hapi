@@ -78,6 +78,23 @@ executions use the existing Runner; additional terminals only detach on exit.
 unavailable. See [Codex shared sessions](../docs/guide/codex-shared-sessions.md)
 for queue semantics, environment isolation, recovery, supported flags and tests.
 
+### Manually select Luna Reserve
+
+In a shared Codex session, the existing Web model menu offers **☾ Luna Reserve**
+only when the current backend authorizes it after ordinary usage is exhausted.
+Selecting it changes that thread to `gpt-reserve`; the native settings notification
+confirms the change. HAPI never automatically enters or leaves Reserve and never
+resubmits a failed turn when switching. Reasoning remains adjustable, and the
+Usage popover shows ordinary and active Reserve allowances separately.
+
+The option is session-scoped, absent from New Session defaults, and unavailable
+on servers without the required usage protocol or accounts without entitlement.
+Usage is read on discovery/menu opening, reconnect, and turn completion/errors;
+there is no idle quota timer or usage-driven session activity update. Open the
+model menu to refresh availability, then select a regular model to leave Reserve.
+An attached official TUI retains its own native behavior; HAPI reflects accepted
+settings from all frontends.
+
 ### Answer local Claude prompts from HAPI
 
 In a local Claude session started by `hapi claude`, main-session `AskUserQuestion`

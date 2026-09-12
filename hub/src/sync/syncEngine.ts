@@ -1945,6 +1945,7 @@ export class SyncEngine {
     ): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
         if (!session?.active) {
+            if (config.model === 'gpt-reserve') throw new Error('Luna Reserve requires an active Codex session to verify availability')
             // For inactive sessions, update the in-memory cache directly without
             // an RPC call — the CLI is not running yet. The updated value will be
             // passed to the spawned process when the session is resumed.

@@ -20,7 +20,8 @@ export class SharedCodexProjection {
     private readonly turns = new Map<string, string>();
     private readonly turnModels = new Map<string, string>();
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
+        private readonly quotaHint?: () => Promise<string>) {
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
@@ -103,6 +104,11 @@ export class SharedCodexProjection {
                 if (image) this.send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
             } else if (event.type === 'task_failed') {
                 this.send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
+                const hintKey = `reserve-hint:${turnId ?? key}`;
+                if (event.codex_error_info === 'usageLimitExceeded' && this.quotaHint && !this.emitted.has(hintKey)) {
+                    const hint = await this.quotaHint();
+                    if (hint) this.send({ type: 'message', message: hint }, hintKey);
+                }
             }
         }
         if (item.type === 'collabAgentToolCall') {
