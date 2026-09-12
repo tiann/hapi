@@ -122,9 +122,12 @@ public enum NewSessionLogic {
         codexFamilyPermissionAgents.contains(flavor)
     }
 
-    /// Flavors whose permission control is the native-mode select.
+    /// Flavors whose permission control is the native-mode select. claude
+    /// and grok do not share the codex-family mode set, but they render
+    /// through the same native select (web `usesNativePermissionSelect`,
+    /// `web/src/lib/codexFamilyPermissionAgents.ts`).
     public static func usesNativePermissionSelect(_ flavor: AgentFlavor) -> Bool {
-        flavor == .grok || usesCodexFamilyPermissionModes(flavor)
+        flavor == .claude || flavor == .grok || usesCodexFamilyPermissionModes(flavor)
     }
 
     /// `resolveHapiYoloPermissionMode` (`shared/src/agentConfig.ts`) — the
@@ -134,7 +137,7 @@ public enum NewSessionLogic {
         case .claude, .grok: return .bypassPermissions
         case .agy: return .alwaysProceed
         case .codex, .copilot, .cursor, .gemini, .kimi, .opencode: return .yolo
-        case .pi, .other: return nil
+        case .dsh, .pi, .other: return nil
         }
     }
 
@@ -144,21 +147,25 @@ public enum NewSessionLogic {
     /// port of the web `handleCreate` mapping:
     /// - `model`/`effort` only for flavors whose picker exists in this v1
     ///   (claude static list, codex machine catalog; others send no model);
-    /// - `yolo` for non-grok/non-codex-family flavors — **including `false`**;
-    /// - `permissionMode` for grok + codex-family — including `'default'`;
+    /// - `yolo` only for flavors still on the YOLO toggle (not
+    ///   `usesNativePermissionSelect`) — **including `false`**;
+    /// - `permissionMode` for every `usesNativePermissionSelect` flavor —
+    ///   including `'default'`;
     /// - `sessionType` always; `worktreeName` only for worktree and non-blank;
     /// - `serviceTier` only while the codex fast tier is visible (then also
     ///   `'standard'`); `collaborationMode` only when not `'default'`;
     /// - `copilotAgentMode` always for copilot;
     /// - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
     ///   remote; pty is deferred, matching the web create form).
+    ///
+    /// Unlike web, iOS has no persistent YOLO preference to migrate: the
+    /// toggle only lives in the in-memory form / a draft that is deleted on
+    /// success, so there is nothing to bridge into `permissionMode` here.
     public static func buildSpawnRequest(
         form: NewSessionForm,
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
-        let codexFamily = usesCodexFamilyPermissionModes(agent)
-        let isGrok = agent == .grok
         // v1 model pickers: claude (static presets) and codex (machine
         // catalog). Other flavors' discovery endpoints are TODO(M4+), so
         // their model is never sent.
@@ -174,8 +181,8 @@ public enum NewSessionLogic {
             modelReasoningEffort: (agent == .codex && form.modelReasoningEffort != "default")
                 ? form.modelReasoningEffort
                 : nil,
-            yolo: (isGrok || codexFamily) ? nil : form.yolo,
-            permissionMode: (isGrok || codexFamily) ? form.permissionMode : nil,
+            yolo: (agent == .dsh || usesNativePermissionSelect(agent)) ? nil : form.yolo,
+            permissionMode: usesNativePermissionSelect(agent) ? form.permissionMode : nil,
             sessionType: form.sessionType,
             worktreeName: (form.sessionType == .worktree && !trimmedWorktreeName.isEmpty)
                 ? trimmedWorktreeName
@@ -197,10 +204,13 @@ public enum NewSessionLogic {
         public let parent: String
         /// Typed tail the entries are prefix-filtered by (case-insensitive).
         public let prefix: String
+        /// Separator used by the typed path; suggestions preserve it.
+        public let separator: String
 
-        public init(parent: String, prefix: String) {
+        public init(parent: String, prefix: String, separator: String = "/") {
             self.parent = parent
             self.prefix = prefix
+            self.separator = separator
         }
     }
 
@@ -212,11 +222,38 @@ public enum NewSessionLogic {
     /// prefix; `/` → list `/`; relative text → nil (no request).
     public static func parentQuery(for input: String) -> ParentQuery? {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.hasPrefix("/") else { return nil }
-        guard let lastSlash = text.lastIndex(of: "/") else { return nil }
-        let parent = lastSlash == text.startIndex ? "/" : String(text[..<lastSlash])
-        let prefix = String(text[text.index(after: lastSlash)...])
-        return ParentQuery(parent: parent, prefix: prefix)
+        let characters = Array(text)
+        let isPosix = characters.first == "/"
+        let isDrive = characters.count >= 3
+            && characters[0].isLetter
+            && characters[1] == ":"
+            && isPathSeparator(characters[2])
+        let isUNC = characters.count >= 2
+            && ((characters[0] == "\\" && characters[1] == "\\")
+                || (characters[0] == "/" && characters[1] == "/"))
+        guard isPosix || isDrive || isUNC,
+              let separatorIndex = characters.lastIndex(where: isPathSeparator)
+        else {
+            return nil
+        }
+
+        let separator = String(characters[separatorIndex])
+        let rawParent = String(characters[..<separatorIndex])
+        let parent: String
+        if separatorIndex == 0 {
+            parent = separator
+        } else if isDrivePrefix(rawParent) {
+            parent = rawParent + separator
+        } else if rawParent.isEmpty, isUNC {
+            parent = separator + separator
+        } else {
+            parent = rawParent
+        }
+        return ParentQuery(
+            parent: parent,
+            prefix: String(characters.dropFirst(separatorIndex + 1)),
+            separator: separator
+        )
     }
 
     /// Joins a listed entry back into a full suggestion path, then filters
@@ -226,13 +263,24 @@ public enum NewSessionLogic {
         entries: [MachineDirectoryEntry],
         limit: Int = 8
     ) -> [String] {
-        let base = query.parent == "/" ? "/" : "\(query.parent)/"
+        let base = query.parent.hasSuffix("/") || query.parent.hasSuffix("\\")
+            ? query.parent
+            : query.parent + query.separator
         let loweredPrefix = query.prefix.lowercased()
         return entries
             .filter { $0.type == .directory }
             .filter { loweredPrefix.isEmpty || $0.name.lowercased().hasPrefix(loweredPrefix) }
             .prefix(limit)
             .map { "\(base)\($0.name)" }
+    }
+
+    private static func isPathSeparator(_ character: Character) -> Bool {
+        character == "/" || character == "\\"
+    }
+
+    private static func isDrivePrefix(_ value: String) -> Bool {
+        let characters = Array(value)
+        return characters.count == 2 && characters[0].isLetter && characters[1] == ":"
     }
 
     // MARK: - Recent paths
@@ -338,7 +386,7 @@ public enum NewSessionLogic {
             sessionType: draft.sessionType,
             worktreeName: draft.worktreeName
         )
-        if !base.agent.permissionModes.contains(base.permissionMode) {
+        if !base.agent.launchPermissionModes.contains(base.permissionMode) {
             base.permissionMode = .default
         }
         return base

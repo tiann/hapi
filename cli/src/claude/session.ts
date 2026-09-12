@@ -1,3 +1,4 @@
+import { LocalPermissionBridge } from './utils/localPermissionBridge';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
@@ -18,8 +19,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
     readonly hookSettingsPath: string;
-    /** Settings for the interactive TUI: also forwards permission-mode-carrying hooks. */
+    /** Interactive TUI hooks: mode tracking and native-dialog permission bridge. */
     readonly localHookSettingsPath: string;
+    readonly localPermissionBridge: LocalPermissionBridge;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
@@ -72,6 +74,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.allowedTools = opts.allowedTools;
         this.hookSettingsPath = opts.hookSettingsPath;
         this.localHookSettingsPath = opts.localHookSettingsPath ?? opts.hookSettingsPath;
+        this.localPermissionBridge = new LocalPermissionBridge(opts.client);
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;

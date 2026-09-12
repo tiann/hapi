@@ -20,7 +20,7 @@ export const APNS_JWT_MAX_AGE_MS = 45 * 60 * 1000
  * Header: `{ alg: "ES256", kid: <keyId> }`; claims: `{ iss: <teamId>, iat }`.
  */
 export class ApnsJwtProvider {
-    private cached: { token: string; issuedAtMs: number } | null = null
+    private cached: { token: Promise<string>; issuedAtMs: number } | null = null
 
     constructor(
         /** PKCS8 PEM contents of the .p8 APNs auth key. */
@@ -33,14 +33,27 @@ export class ApnsJwtProvider {
         if (this.cached && nowMs - this.cached.issuedAtMs < APNS_JWT_MAX_AGE_MS) {
             return this.cached.token
         }
+        // Share the signing work across concurrent device fan-out, including
+        // on startup and when the previous JWT needs refreshing.
+        const token = this.signToken(nowMs)
+        this.cached = { token, issuedAtMs: nowMs }
+        try {
+            return await token
+        } catch (error) {
+            if (this.cached?.token === token) {
+                this.cached = null
+            }
+            throw error
+        }
+    }
+
+    private async signToken(nowMs: number): Promise<string> {
         const key = await jose.importPKCS8(this.keyP8, 'ES256')
-        const token = await new jose.SignJWT({})
+        return new jose.SignJWT({})
             .setProtectedHeader({ alg: 'ES256', kid: this.keyId })
             .setIssuer(this.teamId)
             .setIssuedAt(Math.floor(nowMs / 1000))
             .sign(key)
-        this.cached = { token, issuedAtMs: nowMs }
-        return token
     }
 }
 

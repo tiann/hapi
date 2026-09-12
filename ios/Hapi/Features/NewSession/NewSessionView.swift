@@ -43,6 +43,12 @@ struct NewSessionView: View {
                 model.machinesChanged()
             }
         }
+        .sheet(isPresented: directoryBrowserPresented) {
+            RemoteDirectoryBrowserView(
+                model: model.directoryBrowser,
+                onSelect: model.selectBrowsedDirectory
+            )
+        }
     }
 
     // MARK: - Machine
@@ -90,13 +96,23 @@ struct NewSessionView: View {
 
     private var directorySection: some View {
         Section {
-            TextField(
-                "/path/to/project",
-                text: Binding(get: { model.form.directory }, set: { model.setDirectory($0) })
-            )
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            .font(.system(.callout, design: .monospaced))
+            HStack(spacing: 8) {
+                TextField(
+                    "/path/to/project",
+                    text: Binding(get: { model.form.directory }, set: { model.setDirectory($0) })
+                )
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .font(.system(.callout, design: .monospaced))
+
+                Button {
+                    model.openDirectoryBrowser()
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Browse")
+            }
 
             // Server-side autocomplete (list-directory on the parent path).
             ForEach(model.suggestions, id: \.self) { suggestion in
@@ -136,6 +152,17 @@ struct NewSessionView: View {
             }
         }
         .disabled(model.isSpawning)
+    }
+
+    private var directoryBrowserPresented: Binding<Bool> {
+        Binding(
+            get: { model.directoryBrowser.isPresented },
+            set: { presented in
+                if !presented {
+                    model.directoryBrowser.close()
+                }
+            }
+        )
     }
 
     // MARK: - Session type
@@ -204,8 +231,32 @@ struct NewSessionView: View {
                     }
                 }
             }
+            .disabled(
+                model.isSpawning
+                    || model.agentAvailabilityLoading
+                    || model.agentAvailabilityError != nil
+            )
+            if model.agentAvailabilityLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking installed Agents…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let error = model.agentAvailabilityError {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Button("Retry") {
+                        model.retryAgentAvailability()
+                    }
+                    .font(.footnote)
+                }
+            }
         }
-        .disabled(model.isSpawning)
     }
 
     private var agentBinding: Binding<String> {

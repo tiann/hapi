@@ -6,6 +6,7 @@ import app.hapi.protocol.window.MessagePosition
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageViewMode
 import app.hapi.protocol.window.MessageWindowLogic
+import app.hapi.protocol.window.HISTORY_WINDOW_SIZE
 import app.hapi.protocol.window.MessageWindowState
 import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.PAGE_SIZE
@@ -18,6 +19,10 @@ import app.hapi.protocol.wire.SyncEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
@@ -62,9 +67,11 @@ class MessageWindowStore(
     private val scope: CoroutineScope,
     private val snapshots: WindowSnapshots? = null,
     initialState: MessageWindowState? = null,
+    private val historyRetentionLimit: Int = HISTORY_WINDOW_SIZE,
 ) {
     private val stateMutex = Mutex()
-    private val _state = MutableStateFlow(initialState ?: MessageWindowLogic.createState(sessionId))
+    private val _state = MutableStateFlow((initialState ?: MessageWindowLogic.createState(sessionId))
+        .copy(historyRetentionLimit = historyRetentionLimit))
 
     /** The full window state (UI projects what it needs; see [uiState]). */
     val state: StateFlow<MessageWindowState> = _state.asStateFlow()
@@ -113,7 +120,17 @@ class MessageWindowStore(
      * trailing run is requested and awaited, so the caller returns only after
      * a sync that STARTED at or after this call.
      */
-    suspend fun syncTail(ensureAfterCurrent: Boolean = false) {
+    suspend fun syncTail(ensureAfterCurrent: Boolean = false, allowingHistoryReset: Boolean = false) {
+        if (allowingHistoryReset) {
+            val (epoch, pending) = synchronized(controllerLock) { controllerEpoch to running?.job }
+            pending?.join()
+            val job = synchronized(controllerLock) {
+                if (epoch != controllerEpoch) return
+                startTailSyncLocked(allowingHistoryReset = true)
+            }
+            job.join()
+            return
+        }
         val decision: SyncDecision = synchronized(controllerLock) {
             val current = running
             when {
@@ -138,14 +155,14 @@ class MessageWindowStore(
         }
     }
 
-    private fun startTailSyncLocked(): Deferred<Unit> {
+    private fun startTailSyncLocked(allowingHistoryReset: Boolean = false): Deferred<Unit> {
         val epoch = controllerEpoch
         val run = TailRun(prefersLatest = _state.value.preferLatestOnActivation)
         // UNDISPATCHED mirrors the web: `runTailSync` executes to its first true
         // suspension (normally the api call) before `startTailSync` returns, so
         // `beginTailSync`'s generation bump lands synchronously and an in-flight
         // run it replaces cannot commit another page in between.
-        run.job = scope.async(start = CoroutineStart.UNDISPATCHED) { runTailSync() }
+        run.job = scope.async(start = CoroutineStart.UNDISPATCHED) { runTailSync(allowingHistoryReset) }
         running = run
         run.job.invokeOnCompletion {
             synchronized(controllerLock) {
@@ -176,7 +193,7 @@ class MessageWindowStore(
     private fun isCurrentTailSync(generation: Long): Boolean =
         _state.value.syncGeneration == generation
 
-    private suspend fun runTailSync() {
+    private suspend fun runTailSync(allowingHistoryReset: Boolean) {
         val generation = update { MessageWindowLogic.beginTailSync(it) }.syncGeneration
         try {
             val initial = _state.value
@@ -193,6 +210,12 @@ class MessageWindowStore(
                 if (!isCurrentTailSync(generation)) return
                 update { previous ->
                     if (previous.syncGeneration != generation) return@update previous
+                    // Even truncated history must validate the server epoch:
+                    // a replay gap may have hidden messages-invalidated.
+                    // Preserve its reading anchor only after that validation.
+                    if (!allowingHistoryReset && previous.viewMode == MessageViewMode.History &&
+                        previous.requiresLatestReset && previous.epoch != null &&
+                        !response.page.reset && response.page.epoch == previous.epoch) return@update previous
                     MessageWindowLogic.applyLatestResponse(
                         previous,
                         response.windowMessages(),
@@ -289,18 +312,27 @@ class MessageWindowStore(
      * synchronous updater) — it must not call back into this store.
      */
     suspend fun fetchOlder(onBeforeApply: ((Long) -> Boolean)? = null): OlderLoadOutcome {
-        val initial = _state.value
-        when (val precheck = MessageWindowLogic.olderLoadPrecheck(initial)) {
+        // Reserve atomically: concurrent consumers must not both pass the
+        // precheck before either publishes isLoadingMore.
+        val (initial, precheck) = stateMutex.withLock {
+            val initial = _state.value
+            val check = MessageWindowLogic.olderLoadPrecheck(initial)
+            if (check is MessageWindowLogic.OlderPrecheck.Proceed) {
+                _state.value = MessageWindowLogic.beginOlderLoad(initial, initial.olderGeneration + 1)
+            }
+            initial to check
+        }
+        when (precheck) {
             is MessageWindowLogic.OlderPrecheck.Stop -> return OlderLoadOutcome.Stopped(precheck.reason)
             is MessageWindowLogic.OlderPrecheck.Proceed -> {
                 val before = precheck.before
                 val generation = initial.olderGeneration + 1
-                update { MessageWindowLogic.beginOlderLoad(it, generation) }
                 return try {
                     val response = api.getMessages(
                         sessionId,
                         MessagesQuery.Before(beforeAt = before.at, beforeSeq = before.seq, limit = PAGE_SIZE),
                     )
+                    currentCoroutineContext().ensureActive()
                     if (_state.value.olderGeneration != generation) {
                         return OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.Invalidated)
                     }
@@ -309,6 +341,16 @@ class MessageWindowStore(
                         update { MessageWindowLogic.applyOlderEpochMismatch(it, generation) }
                         syncTail(ensureAfterCurrent = true)
                         return OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.EpochReset)
+                    }
+
+                    if (response.page.hasMore) {
+                        val at = response.page.nextBeforeAt
+                        val seq = response.page.nextBeforeSeq
+                        if (at == null || seq == null || MessagePosition(at, seq) >= before) {
+                            update { MessageWindowLogic.failOlderLoad(it, generation,
+                                "Message history cursor did not advance") }
+                            return OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.CursorDidNotAdvance)
+                        }
                     }
 
                     var historyVersion = 0L
@@ -336,6 +378,11 @@ class MessageWindowStore(
                         addedRenderableCount = addedRenderableCount,
                     )
                 } catch (cancellation: CancellationException) {
+                    withContext(NonCancellable) {
+                        update {
+                            if (it.olderGeneration == generation) MessageWindowLogic.cancelOlderLoad(it) else it
+                        }
+                    }
                     throw cancellation
                 } catch (error: Throwable) {
                     if (_state.value.olderGeneration != generation) {
@@ -569,7 +616,7 @@ class MessageWindowStore(
 
     private suspend fun update(transform: (MessageWindowState) -> MessageWindowState): MessageWindowState =
         stateMutex.withLock {
-            val next = transform(_state.value)
+            val next = transform(_state.value).copy(historyRetentionLimit = historyRetentionLimit)
             _state.value = next
             next
         }

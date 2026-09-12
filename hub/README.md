@@ -87,7 +87,7 @@ See `src/web/routes/` for all endpoints.
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions.
+- `GET /api/sessions` - List all sessions. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Switch session to remote mode.
@@ -116,7 +116,9 @@ See `src/web/routes/` for all endpoints.
 ### Machines (`src/web/routes/machines.ts`)
 
 - `GET /api/machines` - List online machines.
+- `GET /api/machines/:id/agent-availability` - List installed/configured Agents.
 - `POST /api/machines/:id/spawn` - Spawn new session on machine.
+- `POST /api/machines/:id/list-directory` - Browse runner-scoped directories.
 - `POST /api/machines/:id/paths/exists` - Check if path exists.
 
 ### Usage (`src/web/routes/usage.ts`)

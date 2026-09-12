@@ -4,7 +4,7 @@
 #
 # The relay has a single runtime dependency (jose), so a fresh install from
 # the package manifest is deliberate - no workspace lockfile gymnastics.
-FROM oven/bun:1-slim
+FROM oven/bun:1.4.0-slim
 
 WORKDIR /app
 

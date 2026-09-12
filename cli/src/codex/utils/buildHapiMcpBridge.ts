@@ -9,6 +9,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import type { CodexMcpServerConfig } from './codexMcpServers';
 
 /**
  * MCP server entry configuration.
@@ -19,7 +20,7 @@ export interface McpServerToolConfig {
     approval_mode?: McpToolApprovalMode;
 }
 
-export interface McpServerEntry {
+export interface McpServerEntry extends CodexMcpServerConfig {
     command: string;
     args: string[];
     tools?: Record<string, McpServerToolConfig>;
@@ -44,6 +45,7 @@ export interface HapiMcpBridge {
 }
 
 export interface HapiMcpBridgeOptions {
+    exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
     skillLookup?: {
@@ -75,7 +77,7 @@ export async function buildHapiMcpBridge(
         }
     }
     // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
-    exportHapiSessionEnv(client.sessionId);
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(client.sessionId);
 
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,

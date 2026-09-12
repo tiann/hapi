@@ -16,8 +16,8 @@
         "jose": "^6.1.3"
     },
     "devDependencies": {
-        "@types/node": ">=25",
-        "bun-types": "^1.3.14",
+        "@types/node": "26.3.0",
+        "bun-types": "1.4.0",
         "typescript": "^5"
     }
 }

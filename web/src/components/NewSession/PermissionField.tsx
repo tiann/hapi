@@ -1,12 +1,12 @@
 import {
     getAgentConfigDescriptor,
     getPermissionModeLabel,
-    getPermissionModeOptionsForFlavor,
+    getLaunchPermissionModesForFlavor,
     resolveHapiYoloPermissionMode,
     type PermissionMode
 } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
-import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { usesNativePermissionSelect } from '@/lib/codexFamilyPermissionAgents'
 import type { AgentType } from './types'
 import { SelectControl } from '@/components/ui/select-control'
 import { YoloToggle } from './YoloToggle'
@@ -28,9 +28,11 @@ export type PermissionFieldProps = {
  *
  * - `status` fields (Pi) surface a managed note instead of a control so the
  *   HAPI YOLO policy is never silently ignored for agents that cannot apply it.
- * - `select` fields render the agent's native permission modes.
- * - Flavors whose create surface still carries the persistent HAPI YOLO
- *   preference render the YOLO toggle with the native mode it maps to.
+ * - `select` fields render the agent's native permission modes. Claude and
+ *   grok get this native select at create time even though neither shares
+ *   the codex-family mode set (see usesNativePermissionSelect).
+ * - Remaining flavors whose create surface still carries the persistent HAPI
+ *   YOLO preference render the YOLO toggle with the native mode it maps to.
  */
 export function PermissionField(props: PermissionFieldProps) {
     const { t } = useTranslation()
@@ -58,8 +60,8 @@ export function PermissionField(props: PermissionFieldProps) {
         )
     }
 
-    if (field.kind === 'select' && (props.agent === 'grok' || usesCodexFamilyPermissionModes(props.agent))) {
-        const options = getPermissionModeOptionsForFlavor(props.agent)
+    if (field.kind === 'select' && usesNativePermissionSelect(props.agent)) {
+        const options = getLaunchPermissionModesForFlavor(props.agent)
         return (
             <div className="flex flex-col gap-1.5 px-3 py-3">
                 <label className="text-xs font-medium text-[var(--app-hint)]">
@@ -71,12 +73,12 @@ export function PermissionField(props: PermissionFieldProps) {
                     disabled={props.isDisabled}
                     className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
                 >
-                    {options.map((option) => {
-                        const unavailable = option.mode === 'auto'
+                    {options.map((mode) => {
+                        const unavailable = mode === 'auto'
                             && props.autoPermissionModeSupported === false
                         return (
-                            <option key={option.mode} value={option.mode} disabled={unavailable}>
-                                {option.label}{unavailable ? ` (${t('newSession.grokAutoUnavailable')})` : ''}
+                            <option key={mode} value={mode} disabled={unavailable}>
+                                {getPermissionModeLabel(mode)}{unavailable ? ` (${t('newSession.grokAutoUnavailable')})` : ''}
                             </option>
                         )
                     })}

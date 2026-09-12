@@ -1,4 +1,9 @@
 import { isObject } from '@hapi/protocol';
+import type { PermissionRequest } from './types';
+
+export function deriveToolInput(request: PermissionRequest): unknown {
+    return request.rawInput !== undefined ? request.rawInput : request.rawOutput ?? null;
+}
 
 type ToolNameSource = 'title' | 'raw_input_name' | 'raw_input_tool' | 'kind' | 'default';
 

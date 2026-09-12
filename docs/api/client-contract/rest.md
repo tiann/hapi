@@ -47,6 +47,7 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
+| `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
 | `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/502/503 |
 | `GET /api/sessions/:id/slash-commands` | — | `SlashCommandsResponse` `{success, commands?, error?}` |
 | `GET /api/sessions/:id/skills` | — | `SkillsResponse`-shaped `{success, ...}` |
@@ -76,6 +77,11 @@ The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the reque
 
 Source: `hub/src/web/routes/permissions.ts`. Pending requests are **not messages**: they live in `session.agentState.requests` (keyed by request id) and move to `agentState.completedRequests` when resolved — schemas `AgentStateRequestSchema` / `AgentStateCompletedRequestSchema` in `shared/src/schemas.ts`.
 
+Shared Codex completed requests may have `status: 'resolved'`: native completion
+is known, but the winner/answer is not. Render a neutral status, not Approved or
+an inferred selection. A successful approve HTTP response only submitted a
+candidate. `canceled` can instead mean withdrawal after a transport disconnect.
+
 | Method & path | Request | Response |
 |---|---|---|
 | `POST /api/sessions/:id/permissions/:requestId/approve` | `{mode?, allowTools?: string[], decision?, answers?}` | `{ok: true}` |
@@ -99,13 +105,24 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |
 | `POST /api/sessions/:id/copilot-agent-mode` | `{mode}` | copilot (remote-only) |
 
+`metadata.capabilities.concurrentClients === true`: ignore the legacy
+`agentState.controlledByUser` input/settings gate. Shared keepalives have no
+ownership mode. `/switch` returns HTTP 409 with
+`code: 'control_mode_not_applicable'`; do not offer takeover. The remote-only
+Codex configuration restrictions above do not apply to these sessions.
+
+Shared `/clear` has no global `supersededBySessionId` change; clients other than
+the caller stay on the original thread. Fork may return an already-bound shared
+child; the hub must not spawn a second engine. Use advertised history
+capabilities: shared Codex currently supports fork, not in-place rewind.
+
 All respond `{ok: true}`; apply-failures return 409 with a message. Model/effort **catalogs** (RPC-wrapped; all return `{success, ...} \| {success: false, error}`):
 
 | Method & path | Notes |
 |---|---|
 | `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/pi-models` | Active session of the matching flavor; 400 otherwise |
 | `GET /api/sessions/:id/opencode-reasoning-effort-options`, `/grok-reasoning-effort-options` | Same pattern |
-| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers) |
+| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
 | `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=` | `cwd` query required (400 without) |
 
 ### Machines & spawning
@@ -116,12 +133,21 @@ Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `
 |---|---|---|
 | `GET /api/machines` | — | `{machines: Machine[]}` (online machines in the caller's namespace) |
 | `PATCH /api/machines/:id` | `{displayName}` (trimmed; ≤ 64 chars; empty clears back to hostname) | `{ok: true}` |
-| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message}` (agy accepts only `remote`) |
+| `GET /api/machines/:id/agent-availability` | — | `{agents: {agent, available, reason?: 'not_found'\|'invalid_configuration'}[]}`; 409 `runner_upgrade_required` on old runners |
+| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy accepts only `remote`) |
 | `POST /api/machines/:id/list-directory` | `{path, includeHidden?}` | `{success, entries?: (DirectoryEntry & {isGitRepo?})[], error?}` |
-| `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>}` |
+| `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>, outsideWorkspaceRoots?: string[]}` |
 | `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code: 'machine_not_found' \| 'machine_offline'` |
 
-Note the spawn response is discriminated on `type`, not HTTP status — a failed spawn is still HTTP 200.
+Note the spawn response is discriminated on `type`, not HTTP status — a failed
+spawn is still HTTP 200. Stable spawn failure codes are
+`agent_unavailable`, `runner_upgrade_required`, and
+`outside_workspace_roots`. Clients should fetch Agent availability when the
+machine is selected and use that result to drive the form. The runner performs
+the authoritative availability check as part of spawning, covering changes
+after the form-level query without requiring a duplicate client RPC.
+Availability checks executables and static runner configuration only; it does
+not execute the Agent or verify account/login state.
 
 ### Git & files (RPC-wrapped)
 

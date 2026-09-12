@@ -148,6 +148,26 @@ describe('startHappyServer skill_lookup', () => {
         }))
     })
 
+    it('preserves the source extension when display_media title omits one', async () => {
+        const path = join(sandboxDir, 'plan-a.zip')
+        await writeFile(path, Buffer.from([0x50, 0x4b, 0x03, 0x04]))
+        const mcp = await connect(false)
+
+        const result = await mcp.callTool({
+            name: 'display_media',
+            arguments: { path, title: 'Cursor Plan A Markdown 导出' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(false)
+        expect(result.content?.[0]?.text).toContain('Displayed media: Cursor Plan A Markdown 导出.zip')
+        expect(sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'generated-image',
+            fileName: 'Cursor Plan A Markdown 导出.zip',
+            mimeType: 'application/octet-stream',
+            source: { ingress: 'mcp', toolName: 'display_media' }
+        }))
+    })
+
     it('does not expose change_title when native ACP titles are enabled', async () => {
         const sessionClient = {
             updateMetadata: vi.fn(),

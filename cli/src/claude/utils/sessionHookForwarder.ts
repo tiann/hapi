@@ -1,4 +1,5 @@
 import { request } from 'node:http';
+import { LocalPermissionDecisionSchema } from './localPermissionProtocol';
 
 export const SESSION_HOOK_FORWARD_TIMEOUT_MS = 1_000;
 
@@ -40,35 +41,16 @@ export function detectHookEventName(body: Buffer | string): string | null {
     return null;
 }
 
-/**
- * Wrap a permission decision in the JSON shape claude's PreToolUse hook reads
- * from stdout. `permissionDecision` is always allow/deny — never `ask` (which
- * would make claude fall back to its own TUI prompt and stall the CLI).
- */
-export function buildPreToolUseStdout(decision: PreToolUseDecision): string {
-    const hookSpecificOutput: Record<string, unknown> = {
-        hookEventName: 'PreToolUse',
-        permissionDecision: decision.permissionDecision
-    };
-    if (decision.reason) {
-        hookSpecificOutput.permissionDecisionReason = decision.reason;
-    }
-    if (decision.updatedInput) {
-        hookSpecificOutput.updatedInput = decision.updatedInput;
-    }
-    return JSON.stringify({ hookSpecificOutput });
-}
-
 function postHook(
     port: number,
     token: string,
     path: string,
     body: Buffer,
-    // Optional request timeout. Only the fire-and-forget SessionStart forward
-    // sets this (so a dead hub can't stall startup); the PreToolUse bridge must
+    // Optional request timeout. Lifecycle observers set this so a dead bridge
+    // cannot stall the local process; the PermissionRequest bridge must
     // NOT time out here — it waits on the web approval modal, whose own hook-side
-    // timeout is 3600s (generateHookSettings). Applying the 1s cap here would
-    // deny every approval the user doesn't answer within one second.
+    // timeout is 3600s (localPermissionProtocol). Applying the 1s cap here would
+    // withdraw every remote approval the user doesn't answer within one second.
     timeoutMs?: number
 ): Promise<{ statusCode?: number; body: string; error: boolean }> {
     return new Promise((resolve) => {
@@ -365,36 +347,27 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
             return;
         }
 
-        // PTY-mode permission bridge: a PreToolUse hook must wait for the web
-        // decision and echo it on stdout (allow/deny). Everything else (chiefly
-        // SessionStart) keeps the original fire-and-forget behavior.
-        if (detectHookEventName(body) === 'PreToolUse') {
-            const response = await postHook(port, token, '/hook/pre-tool-use', body);
-
-            // Fail closed: if the bridge is unreachable or replies oddly, deny the
-            // tool rather than silently letting it run. Always exit 0 with valid
-            // stdout so claude honors the decision instead of treating the hook as
-            // failed (which would fall back to its own TUI prompt).
-            let decision: PreToolUseDecision = {
-                permissionDecision: 'deny',
-                reason: 'Permission bridge unavailable.'
-            };
+        if (detectHookEventName(body) === 'PermissionRequest') {
+            const response = await postHook(port, token, '/hook/permission-request', body);
+            // The local dialog is the fallback. A missing/expired bridge must
+            // neither auto-approve nor reject a tool on the user's behalf.
             if (!response.error && response.statusCode === 200) {
                 try {
-                    const parsed = JSON.parse(response.body);
-                    if (parsed?.permissionDecision === 'allow' || parsed?.permissionDecision === 'deny') {
-                        decision = parsed as PreToolUseDecision;
+                    const parsed = LocalPermissionDecisionSchema.safeParse(JSON.parse(response.body));
+                    if (parsed.success) {
+                        process.stdout.write(JSON.stringify({
+                            hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: parsed.data }
+                        }));
                     }
-                } catch (parseError) {
-                    logError('Failed to parse pre-tool-use decision', parseError);
+                } catch (error) {
+                    logError('Invalid local permission decision', error);
                 }
-            } else if (response.statusCode && response.statusCode >= 400) {
-                logError(`Pre-tool-use hook responded with status ${response.statusCode}`);
             }
-
-            process.stdout.write(buildPreToolUseStdout(decision));
             return;
         }
+
+        // PreToolUse is observation-only for Claude. In particular, mode
+        // tracking must not emit an `allow` that bypasses the native prompt.
 
         const response = await postHook(port, token, '/hook/session-start', body, SESSION_HOOK_FORWARD_TIMEOUT_MS);
         if (response.error || (response.statusCode && response.statusCode >= 400)) {

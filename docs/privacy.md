@@ -5,45 +5,74 @@ aside: false
 
 # Privacy Policy
 
-**Effective date: August 19, 2026** · Applies to the HAPI mobile companion apps (Android and iOS) and the self-hosted HAPI hub.
+**Effective date: September 9, 2026** · Applies to the HAPI mobile companion apps (Android and iOS) and the self-hosted HAPI hub.
 
 ::: tip The short version
-HAPI is self-hosted software. The apps talk only to the hub server **you** run. We — the HAPI developers — operate no servers that receive your conversations, your code, or your personal data. The apps contain no analytics, no advertising, and no tracking SDKs, and there is no account with us to create.
+HAPI is self-hosted software. Your app connects to a hub **you** operate; the HAPI project does not run a central account or application backend that receives your conversations or source code. Optional features can send data to services you or the app enable — notably the HAPI push relay, Firebase Cloud Messaging, Apple Push Notification service, voice-transcription providers, and the coding-agent/model providers configured on your machine. The HAPI push relay processes device and connection metadata to deliver encrypted notifications, prevent abuse, and diagnose delivery failures. HAPI contains no advertising or tracking SDKs and no product analytics.
 :::
 
-## What the app stores on your device
+In this policy, “we” means the maintainers and publisher of the HAPI project. The person or organization operating a hub controls the data stored on that hub and the external services configured for it.
 
-- The address of your hub and the access credentials you pair with (kept in the app's private storage).
-- App preferences (theme, language, notification choices).
-- Cached session content fetched from your hub, so the app works offline.
+## Data stored on your device
 
-Uninstalling the app removes all of this from the device. Your sessions themselves live on your own hub server, under your control.
+- Paired hub addresses and access credentials. Credentials are kept in platform-protected app storage.
+- Preferences and app state, such as theme, language, notification choices, drafts, recent paths, and a random device identifier used for push registration.
+- Cached hub data, including session/message snapshots and generated images, for performance and limited offline display.
+- Files, photos, and audio you explicitly select or record while preparing an attachment or dictation request. Camera and dictation scratch files use temporary cache storage and are normally deleted after ingestion or cancellation; selected content is transmitted only when you invoke the corresponding send, save, or transcription action.
 
-## Where your data travels
+The mobile operating system and app-store software may separately create device backups or diagnostics according to your device settings and their own policies.
 
-Session content, files, and commands move directly between the app and your hub over the connection you configure. No copy is sent to us or to any third party by the app itself.
+## How data is used and where it travels
+
+The app uses your data to authenticate to your hub, display and update sessions, send commands and attachments, perform notification actions, and provide features you request. Core app traffic travels between the app and your self-hosted hub. The Android app accepts only HTTPS hub URLs and disables cleartext network traffic.
+
+Your hub, coding agents, plugins, and command-line tools may send prompts, source code, files, audio, or other content to services you configure, such as AI model or transcription providers. Those services process data under their own terms and privacy policies. HAPI does not choose or control your self-hosted configuration.
 
 ## Push notifications
 
-**Android:** notifications are delivered through Google's Firebase Cloud Messaging (FCM). Your hub sends the notification (session title, status text) to FCM, which routes it to your device; Google processes this traffic per its own privacy policy. The FCM device token is stored only by your hub. Builds compiled without a Firebase configuration send nothing to Google and simply have no push.
+**Android:** notifications use Google Firebase Cloud Messaging (FCM). When push is enabled, Firebase creates and manages a device token; the app registers that token and a random app device identifier with each paired hub. Your hub sends notification content and routing metadata — for example a session identifier, title, status, and action type — through FCM. HAPI does not end-to-end encrypt the Android notification payload, so Google processes this data under [Firebase's privacy terms](https://firebase.google.com/support/privacy). Builds without Firebase configuration do not register for or receive FCM push.
 
-**iOS:** notifications are end-to-end encrypted. Your hub encrypts the content with a key that exists only on your device and your hub; Apple's push service — and the optional HAPI relay, if you use it instead of your own APNs credentials — carry ciphertext and routing metadata only, and cannot read the notification. Self-hosters can bypass the relay entirely with their own Apple developer credentials.
+**iOS:** notifications are end-to-end encrypted. Your hub encrypts the content with a key that exists only on your device and your hub; Apple's push service and the HAPI push relay carry ciphertext and routing metadata only, and cannot read the notification content. Self-hosters using a separately signed app build with matching APNs credentials can bypass the relay; a different developer account's credentials alone cannot send notifications to the official App Store build.
+
+### HAPI iOS push relay
+
+The default hub configuration uses the official relay at `https://push.hapi.run` for iOS push delivery. Encryption protects notification content, **not all metadata**:
+
+- **Data received:** an APNs device token, the encrypted notification envelope, and optional delivery settings such as priority and a notification-grouping identifier. The relay can observe request timing, envelope size, and the source IP of the connecting hub or proxy; that IP is not necessarily the phone's IP.
+- **Uses:** forwarding notifications to Apple, limiting abusive requests, and diagnosing delivery failures. This information is not used for advertising, cross-app tracking, marketing, or product analytics.
+- **Rate-limit state:** device tokens and source IPs are kept in bounded process-memory maps with counters and refill times. There is no fixed expiration timer: entries may remain until capacity-based eviction or process restart. These maps are not written to a database by the relay.
+- **Operational logs:** the relay writes a stable, truncated SHA-256 hash of the device token and a delivery, error, or rate-limit outcome to its log output. Hashing avoids logging the usable token, but still allows events for a device to be correlated; it is not a claim of complete anonymity. The relay does not deliberately log notification envelopes, decrypted content, or raw device tokens.
+- **Hosting logs:** container logging and any reverse proxy may retain operational or connection logs according to their deployment configuration. The relay source code does not impose a retention period or automatically delete those external logs. Its lack of a database does not mean that the hosting environment retains no data.
+
+Only the device and its paired hub hold the notification decryption key. Your hub stores its device registration, including the random app device identifier, APNs token, and encryption key; the random app device identifier and encryption key are not included in the relay push request. Apple receives the device token, encrypted envelope, and delivery settings needed to route the notification.
 
 ## Camera
 
-Used only to scan the pairing QR code, processed on the device. No images are stored or transmitted, and pairing works without the camera via manual entry.
+Camera access is used to scan pairing QR codes and, when you choose it, to take a photo attachment. QR frames are processed on the device and are not retained or uploaded by HAPI. A captured photo is held temporarily and is sent to your hub only if you submit it as an attachment. Pairing is also available through manual entry.
 
 ## Microphone
 
-Used only for voice dictation in the message composer, and only while you hold the dictation button. Speech recognition is performed by your device's system speech service (for example, the platform speech recognizer), which may process audio according to its provider's policy. HAPI does not record, store, or transmit the audio itself; only the resulting text is placed in the composer.
+Microphone access is used only when you start voice dictation. The app records a temporary audio file until you stop or cancel. On transcription, the audio is sent to your hub, which forwards it to the transcription provider configured by the hub operator (for example OpenAI, ElevenLabs, Deepgram, Groq, or an OpenAI-compatible/local service). The provider's policy applies to that processing. The app deletes its temporary recording after reading it; the returned text is placed in the composer.
 
-## What we collect
+## What the HAPI project collects
 
-Nothing. The apps have no telemetry, crash reporting, analytics, or advertising SDKs. If you install from an app store, the store operator (Google or Apple) may collect install and crash statistics under its own policies, independently of us.
+The HAPI project does not receive product-analytics events, advertising identifiers, conversations, source code, or hub access credentials through a central HAPI backend. The official iOS push relay does process the device and operational metadata described above; APNs device tokens are different from advertising identifiers. The apps contain no advertising, tracking, product-analytics, or third-party crash-reporting SDKs. If you contact us by email or GitHub, we receive the information you voluntarily include in that communication.
 
-## Data deletion
+Google Play, the Apple App Store, operating-system vendors, Firebase, and other services you enable may collect installation, device, diagnostic, notification, or service-usage data independently under their own policies.
 
-Unpair a hub or uninstall the app to remove everything held on the device. Data on your hub is yours to delete at any time — it is your server.
+## Retention and deletion
+
+Unpairing a hub removes that hub's credentials from the app and attempts to unregister push delivery; cached content may remain until the operating system clears the cache, you clear the app's storage, or you uninstall the app. Uninstalling removes app-controlled local data, subject to any operating-system backup you enabled.
+
+Data stored on a hub remains under the hub operator's control and retention settings. Delete it from the hub, its underlying storage, and any configured provider as appropriate. HAPI has no central user account to delete.
+
+For iOS relay data, stopping delivery does not erase earlier operational logs. Hub operators can disable iOS push with `HAPI_IOS_PUSH=off`; unpairing also attempts to remove that hub's device registration. Rate-limit entries are removed through the eviction/restart behavior described above, not by an app-side account-deletion action. External log deletion and rotation are controlled separately by the hosting operator.
+
+To ask about the official relay's deployed log retention or request deletion of relay-related personal data, email [twsxtd@gmail.com](mailto:twsxtd@gmail.com). We will determine what records we can identify and the applicable deletion or retention requirements. We cannot identify a device from an email address alone and do not promise that all records can be located or that data on independently operated hubs or providers can be deleted by HAPI. Do not post device tokens, hub access credentials, or encryption keys in public issues or include them in an initial email; contact us privately to establish a safe way to handle your request.
+
+## Security
+
+The Android app requires HTTPS for hub connections. Mobile credentials use platform-protected app storage, and normal operating-system app sandboxing limits access by other apps. No transmission or storage system is perfectly secure; hub operators are responsible for securing their hub, TLS endpoint, host machine, backups, credentials, and configured third-party services.
 
 ## Children
 

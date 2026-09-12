@@ -11,9 +11,11 @@ import {
     getMessageWindowState,
     getQueuedReconcileCandidateLocalIds,
     ingestIncomingMessages,
+    invalidateMessageWindow,
     markMessagesConsumed,
     reconcileQueuedLocalIds,
     removeOptimisticMessage,
+    rewindMessageWindow,
     setMessageViewMode,
     syncTailMessages,
     updateMessageStatus,
@@ -88,6 +90,23 @@ function makeHiddenAgentMessage(props: { id: string; seq: number; at: number }):
         },
         createdAt: props.at,
         invokedAt: props.at
+    } as DecryptedMessage
+}
+
+function makeReasoningMessage(id: string, streamId: string, seq: number, at: number, live = true): DecryptedMessage {
+    return {
+        id,
+        seq,
+        localId: null,
+        content: {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'reasoning', message: id, id: streamId, ...(live ? { live: true } : {}) }
+            }
+        },
+        createdAt: at,
+        invokedAt: at
     } as DecryptedMessage
 }
 
@@ -230,6 +249,96 @@ afterEach(() => {
 })
 
 describe('message tail synchronization', () => {
+    it('removes the rewound suffix immediately and applies duplicate invalidations once', async () => {
+        const id = sessionId('rewind-suffix')
+        const prefix = makeAgentMessage({ id: 'prefix', seq: 1, at: 1_000 })
+        const target = makeUserMessage({
+            id: 'target',
+            seq: 2,
+            localId: 'target-local-id',
+            createdAt: 2_000,
+            invokedAt: 2_000
+        })
+        const suffix = makeAgentMessage({ id: 'suffix', seq: 3, at: 3_000 })
+        const getMessages = vi.fn(async () => latestResponse([prefix, target, suffix], { epoch: 1 }))
+
+        await syncTailMessages(createApi(getMessages), id)
+        rewindMessageWindow(id, 'target-local-id')
+        rewindMessageWindow(id, 'target-local-id')
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['prefix'])
+        expect(getMessageWindowState(id).isSyncingTail).toBe(true)
+    })
+
+    it('clears the window when the rewind boundary is outside the loaded page', async () => {
+        const id = sessionId('rewind-boundary-not-loaded')
+        const current = makeAgentMessage({ id: 'current', seq: 40, at: 40_000 })
+        const getMessages = vi.fn(async () => latestResponse([current], { epoch: 1 }))
+
+        await syncTailMessages(createApi(getMessages), id)
+        rewindMessageWindow(id, 'boundary-not-loaded')
+
+        expect(getMessageWindowState(id).messages).toEqual([])
+    })
+
+    it('deduplicates delayed rewind events across consecutive boundaries', async () => {
+        const id = sessionId('rewind-delayed-event')
+        const prefix = makeAgentMessage({ id: 'prefix', seq: 1, at: 1_000 })
+        const firstBoundary = makeUserMessage({
+            id: 'first-boundary',
+            seq: 2,
+            localId: 'first-boundary-local-id',
+            createdAt: 2_000,
+            invokedAt: 2_000
+        })
+        const secondBoundary = makeUserMessage({
+            id: 'second-boundary',
+            seq: 3,
+            localId: 'second-boundary-local-id',
+            createdAt: 3_000,
+            invokedAt: 3_000
+        })
+        const suffix = makeAgentMessage({ id: 'suffix', seq: 4, at: 4_000 })
+        const getMessages = vi.fn(async () => latestResponse(
+            [prefix, firstBoundary, secondBoundary, suffix],
+            { epoch: 1 }
+        ))
+
+        await syncTailMessages(createApi(getMessages), id)
+        rewindMessageWindow(id, 'second-boundary-local-id')
+        rewindMessageWindow(id, 'first-boundary-local-id')
+        rewindMessageWindow(id, 'second-boundary-local-id')
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['prefix'])
+    })
+
+    it('retains the current window while a latest reset is in flight', async () => {
+        const id = sessionId('invalidation-preserves-window')
+        const current = makeAgentMessage({ id: 'current', seq: 10, at: 10_000 })
+        const latest = makeAgentMessage({ id: 'latest', seq: 20, at: 20_000 })
+        const response = deferred<MessagesResponse>()
+        const getMessages = vi.fn()
+            .mockResolvedValueOnce(latestResponse([current], { epoch: 1 }))
+            .mockImplementationOnce(async () => await response.promise)
+        const api = createApi(getMessages)
+
+        await syncTailMessages(api, id)
+        invalidateMessageWindow(id)
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['current'])
+        expect(getMessageWindowState(id).isSyncingTail).toBe(true)
+
+        const syncing = syncTailMessages(api, id)
+        await vi.waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2))
+        expect(getMessages.mock.calls[1]?.[1]).toEqual({ limit: 200 })
+
+        response.resolve(latestResponse([latest], { epoch: 2 }))
+        await syncing
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
+        expect(getMessageWindowState(id).isSyncingTail).toBe(false)
+    })
+
     it('renders a persisted window immediately, then requests the latest tail on re-entry', async () => {
         const id = sessionId('reentry')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
@@ -2075,5 +2184,89 @@ describe('V2 persistence boundary', () => {
 
         expect(getMessageWindowState(id).messages[0]?.status).toBe('queued')
         expect(getQueuedReconcileCandidateLocalIds(id)).toEqual(['local-1'])
+    })
+})
+
+
+describe('reasoning snapshot compaction', () => {
+    it('keeps only the newest snapshot of each stream', () => {
+        const id = sessionId('reasoning-compaction')
+        const snapshots = Array.from({ length: 5 }, (_, index) =>
+            makeReasoningMessage(`snap-${index}`, 'stream-1', index + 1, index + 1)
+        )
+        const others = [
+            makeUserMessage({ id: 'user-1', seq: 10, invokedAt: 10, createdAt: 10 }),
+            makeUserMessage({ id: 'user-2', seq: 11, invokedAt: 11, createdAt: 11 })
+        ]
+        ingestIncomingMessages(id, [...snapshots, ...others])
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id))
+            .toEqual(['snap-4', 'user-1', 'user-2'])
+    })
+
+    it('keeps the newest snapshot of every stream independently', () => {
+        const id = sessionId('reasoning-multi-stream')
+        ingestIncomingMessages(id, [
+            makeReasoningMessage('a-1', 'stream-a', 1, 1),
+            makeReasoningMessage('a-2', 'stream-a', 2, 2),
+            makeReasoningMessage('b-1', 'stream-b', 3, 3),
+            makeReasoningMessage('b-2', 'stream-b', 4, 4)
+        ])
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['a-2', 'b-2'])
+    })
+
+    it('leaves messages without a reasoning stream untouched', () => {
+        const id = sessionId('reasoning-unrelated')
+        const messages = [
+            makeUserMessage({ id: 'user-1', seq: 1, invokedAt: 1, createdAt: 1 }),
+            makeAgentRunMessage('run-1', 2, 2),
+            makeAgentRunMessage('run-2', 3, 3)
+        ]
+        ingestIncomingMessages(id, messages)
+
+        expect(getMessageWindowState(id).messages).toHaveLength(3)
+    })
+
+    it('spends the window budget on conversation rather than duplicate snapshots', () => {
+        const id = sessionId('reasoning-window-budget')
+        // A session already carrying a flood of stored snapshots: without
+        // compaction they consume the whole window and the conversation that
+        // surrounds them falls out of it.
+        const flood = Array.from({ length: VISIBLE_WINDOW_SIZE }, (_, index) =>
+            makeReasoningMessage(`flood-${index}`, 'stream-1', index + 1, index + 1)
+        )
+        const conversation = Array.from({ length: 50 }, (_, index) =>
+            makeUserMessage({
+                id: `talk-${index}`,
+                seq: VISIBLE_WINDOW_SIZE + index + 1,
+                invokedAt: VISIBLE_WINDOW_SIZE + index + 1,
+                createdAt: VISIBLE_WINDOW_SIZE + index + 1
+            })
+        )
+        ingestIncomingMessages(id, [...flood, ...conversation])
+
+        const kept = getMessageWindowState(id).messages
+        for (const message of conversation) {
+            expect(kept.some((candidate) => candidate.id === message.id)).toBe(true)
+        }
+        expect(kept.filter((message) => message.id.startsWith('flood-'))).toHaveLength(1)
+    })
+
+    // The seq bounds are a view over what the window currently holds; the
+    // cursor that drives older-page requests is the server's own
+    // `nextBefore*`, which compaction never touches. Pinning the bounds keeps
+    // that distinction honest if the two are ever conflated.
+    it('derives its seq bounds from the surviving rows', () => {
+        const id = sessionId('reasoning-bounds')
+        ingestIncomingMessages(id, [
+            makeReasoningMessage('snap-1', 'stream-1', 1, 1),
+            makeReasoningMessage('snap-2', 'stream-1', 2, 2),
+            makeUserMessage({ id: 'user-1', seq: 3, invokedAt: 3, createdAt: 3 })
+        ])
+
+        const state = getMessageWindowState(id)
+        expect(state.oldestSeq).toBe(2)
+        expect(state.newestSeq).toBe(3)
     })
 })

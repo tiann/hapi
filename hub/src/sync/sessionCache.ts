@@ -176,6 +176,7 @@ export class SessionCache {
         })()
 
         const session: Session = {
+            hasConversationContent: this.store.messages.hasConversationContent(sessionId),
             id: stored.id,
             namespace: stored.namespace,
             seq: stored.seq,
@@ -215,6 +216,15 @@ export class SessionCache {
         this.sessions.set(sessionId, session)
         this.publisher.emit({ type: existing ? 'session-updated' : 'session-added', sessionId, data: session })
         return session
+    }
+
+    refreshConversationContent(sessionId: string): void {
+        const session = this.sessions.get(sessionId)
+        const hasContent = this.store.messages.hasConversationContent(sessionId)
+        if (session && session.hasConversationContent !== hasContent) {
+            session.hasConversationContent = hasContent
+            this.publisher.emit({ type: 'session-updated', sessionId, data: { ...session } })
+        }
     }
 
     reloadAll(): void {

@@ -1,22 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
-    <title id="title">HAPI PWA maskable handoff icon</title>
+    <title id="title">HAPI PWA maskable optical icon</title>
     <rect width="512" height="512" fill="#FFF8F8" />
-    <g transform="translate(40.96 40.96) scale(.84)" fill="#F25562">
-        <rect x="72" y="240" width="24" height="12" rx="6" />
-        <rect x="416" y="240" width="24" height="12" rx="6" />
-        <path fill-rule="evenodd" d="M50 227H66A12 12 0 0 1 78 239V253A12 12 0 0 1 66 265H50A12 12 0 0 1 38 253V239A12 12 0 0 1 50 227ZM62 235L47 246L62 257H69L55 246L69 235Z" />
-        <path transform="translate(512 0) scale(-1 1)" fill-rule="evenodd" d="M50 227H66A12 12 0 0 1 78 239V253A12 12 0 0 1 66 265H50A12 12 0 0 1 38 253V239A12 12 0 0 1 50 227ZM62 235L47 246L62 257H69L55 246L69 235Z" />
-    </g>
     <g transform="translate(30.72 30.72) scale(.88)" fill="#F25562">
-        <path fill-rule="evenodd" d="M160 84H352A82 82 0 0 1 434 166V338A82 82 0 0 1 352 420H160A82 82 0 0 1 78 338V166A82 82 0 0 1 160 84ZM160 116H352A50 50 0 0 1 402 166V338A50 50 0 0 1 352 388H160A50 50 0 0 1 110 338V166A50 50 0 0 1 160 116Z" />
-        <circle cx="190" cy="226" r="27" />
-        <circle cx="322" cy="226" r="27" />
-        <path d="M153 306Q256 402 359 306L337 306Q256 362 175 306Z" />
-        <circle cx="164" cy="306" r="11" />
-        <circle cx="348" cy="306" r="11" />
-    </g>
-    <g transform="translate(30.72 30.72) scale(.88)" fill="#FFF8F8">
-        <circle cx="182" cy="218" r="7" />
-        <circle cx="314" cy="218" r="7" />
+        <rect x="67" y="240" width="47" height="16" rx="8" />
+        <rect x="398" y="240" width="47" height="16" rx="8" />
+        <path fill-rule="evenodd" d="M41 224H61A14 14 0 0 1 75 238V258A14 14 0 0 1 61 272H41A14 14 0 0 1 27 258V238A14 14 0 0 1 41 224ZM58 235L39 248L58 261H66L48 248L66 235Z" />
+        <path transform="translate(512 0) scale(-1 1)" fill-rule="evenodd" d="M41 224H61A14 14 0 0 1 75 238V258A14 14 0 0 1 61 272H41A14 14 0 0 1 27 258V238A14 14 0 0 1 41 224ZM58 235L39 248L58 261H66L48 248L66 235Z" />
+        <path fill-rule="evenodd" d="M160 84H352A86 86 0 0 1 438 170V338A86 86 0 0 1 352 424H160A86 86 0 0 1 74 338V170A86 86 0 0 1 160 84ZM160 122H352A48 48 0 0 1 400 170V338A48 48 0 0 1 352 386H160A48 48 0 0 1 112 338V170A48 48 0 0 1 160 122Z" />
+        <circle cx="190" cy="228" r="29" />
+        <circle cx="322" cy="228" r="29" />
+        <path d="M142 308Q256 414 370 308L342 308Q256 368 170 308Z" />
+        <circle cx="156" cy="308" r="14" />
+        <circle cx="356" cy="308" r="14" />
     </g>
 </svg>

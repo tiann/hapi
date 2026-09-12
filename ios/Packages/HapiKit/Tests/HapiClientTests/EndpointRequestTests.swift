@@ -137,7 +137,55 @@ struct EndpointRequestTests {
 
         await harness.performer.enqueue(json: "{\"type\":\"error\",\"message\":\"no runner\"}")
         let failed = try await harness.client.spawnSession(machineId: "m1", SpawnRequest(directory: "/x"))
-        #expect(failed == .error(message: "no runner"))
+        #expect(failed == .error(message: "no runner", code: nil, agent: nil))
+
+        await harness.performer.enqueue(
+            json: "{\"type\":\"error\",\"message\":\"Codex is not installed\","
+                + "\"code\":\"agent_unavailable\",\"agent\":\"codex\"}"
+        )
+        let unavailable = try await harness.client.spawnSession(
+            machineId: "m1",
+            SpawnRequest(directory: "/x", agent: .codex)
+        )
+        #expect(
+            unavailable == .error(
+                message: "Codex is not installed",
+                code: "agent_unavailable",
+                agent: .codex
+            )
+        )
+    }
+
+    @Test func machineAvailabilityAndPathBoundaryResponses() async throws {
+        let harness = try makeHarness(jwt: freshJWT())
+        await harness.performer.enqueue(
+            json: "{\"agents\":[{\"agent\":\"claude\",\"available\":false,"
+                + "\"reason\":\"not_found\"},{\"agent\":\"codex\",\"available\":true}]}"
+        )
+        let availability = try await harness.client.machineAgentAvailability(machineId: "m 1")
+        #expect(availability.agents.map(\.agent) == [.claude, .codex])
+        #expect(!availability.agents[0].available)
+        #expect(availability.agents[0].reason == "not_found")
+        let availabilityRequest = await harness.performer.requests.first
+        #expect(
+            availabilityRequest?.url?.absoluteString
+                == "\(testHubURLString)/api/machines/m%201/agent-availability"
+        )
+        #expect(availabilityRequest?.httpMethod == "GET")
+
+        await harness.performer.enqueue(
+            json: "{\"exists\":{\"/workspace\":true,\"/outside\":false},"
+                + "\"outsideWorkspaceRoots\":[\"/outside\"]}"
+        )
+        let paths = try await harness.client.machinePathsExist(
+            machineId: "m1",
+            paths: ["/workspace", "/outside"]
+        )
+        #expect(paths.exists["/workspace"] == true)
+        #expect(paths.outsideWorkspaceRoots == ["/outside"])
+        let pathRequest = await harness.performer.requests.last
+        #expect(pathRequest?.url?.absoluteString == "\(testHubURLString)/api/machines/m1/paths/exists")
+        #expect(bodyString(pathRequest) == "{\"paths\":[\"/workspace\",\"/outside\"]}")
     }
 
     @Test func machineCodexModelsRequestAndRpcTargetMissing() async throws {

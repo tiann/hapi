@@ -81,6 +81,152 @@ struct MessageWindowControllerTests {
 
     // MARK: - Tail sync
 
+    @Test func cancellingHistoryDoesNotPublishAnOfflineWarning() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.hasMore = true
+        initial.epoch = 1
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let task = Task { await controller.fetchOlder() }
+        await provider.waitForRequests(1)
+        task.cancel()
+        await provider.failPending(CancellationError())
+        guard case .stopped(.invalidated) = await task.value else {
+            Issue.record("Cancellation must not appear as a failed network request")
+            return
+        }
+        let state = await controller.state
+        #expect(!state.isLoadingMore)
+        #expect(state.warning == nil)
+        #expect(state.hasMore)
+    }
+
+    @Test func nativeHistoryRetainsThePrependBudgetAcrossSSEAndReset() async throws {
+        var initial = MessageWindowState(sessionId: "history")
+        initial.messages = (1...800).map { WindowMessage(wire: agentRow(id: "a-\($0)", seq: $0, at: $0 * 1000)) }
+        initial.epoch = 1
+        initial.viewMode = .history
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(sessionId: "history", provider: provider,
+                                                 initialState: initial, historyRetentionLimit: 800)
+        await controller.ingestSSEMessages([WindowMessage(wire: agentRow(id: "new", seq: 801, at: 801000))])
+        let history = await controller.state
+        #expect(history.messages.count == 800)
+        #expect(history.messages.first?.id == "a-1")
+        #expect(history.requiresLatestReset)
+        await provider.release(latestPage([agentRow(id: "new", seq: 801, at: 801000)], epoch: 1))
+        try await controller.reconcileQueuedState()
+        let afterReconnect = await controller.state
+        #expect(await provider.requests == [.latest(limit: 200)])
+        #expect(afterReconnect.messages == history.messages)
+        #expect(afterReconnect.oldestPosition == history.oldestPosition)
+        #expect(afterReconnect.newestPosition == history.newestPosition)
+        #expect(afterReconnect.hasMore == history.hasMore)
+        #expect(afterReconnect.historyVersion == history.historyVersion)
+        #expect(afterReconnect.syncGeneration == history.syncGeneration + 1)
+        #expect(afterReconnect.requiresLatestReset)
+        #expect(!afterReconnect.isSyncingTail)
+        await controller.setViewMode(.tail)
+        let tail = await controller.state
+        #expect(tail.messages.count == 400)
+        #expect(tail.epoch == nil)
+        await controller.clear()
+        let cleared = await controller.state
+        #expect(cleared.historyRetentionLimit == 800)
+    }
+
+    @Test(arguments: [false, true])
+    func gapRecoveryReplacesTruncatedHistoryOnEpochChangeOrExplicitReset(reset: Bool) async throws {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.messages = [WindowMessage(wire: agentRow(id: "obsolete", seq: 1, at: 1000))]
+        initial.epoch = 1
+        initial.viewMode = .history
+        initial.requiresLatestReset = true
+        initial.hasMore = true
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        initial.newestPosition = initial.oldestPosition
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let epoch = reset ? 1 : 2
+        // Empty authoritative latest also covers deleted history.
+        await provider.release(latestPage([], epoch: epoch, reset: reset))
+        try await controller.reconcileQueuedState()
+        #expect(await provider.requests.count == 1)
+        let state = await controller.state
+        #expect(state.epoch == epoch)
+        #expect(state.messages.isEmpty)
+        #expect(!state.requiresLatestReset)
+        #expect(!state.hasMore)
+    }
+
+    @Test func gapRecoveryDrainsAFreshEpochCheckDuringTruncatedHistorySync() async throws {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.messages = [WindowMessage(wire: agentRow(id: "obsolete", seq: 1, at: 1000))]
+        initial.epoch = 1
+        initial.viewMode = .history
+        initial.requiresLatestReset = true
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let first = Task { await controller.syncTail() }
+        await provider.waitForRequests(1)
+        let recovery = Task { try await controller.reconcileQueuedState() }
+        // Let recovery join the parked run before releasing its old snapshot.
+        try await Task.sleep(for: .milliseconds(20))
+        await provider.release(latestPage([], epoch: 1))
+        await first.value
+        await provider.waitForRequests(2)
+        #expect(await provider.requests == [.latest(limit: 200), .latest(limit: 200)])
+        #expect(await controller.state.messages.map(\.id) == ["obsolete"])
+        await provider.release(latestPage([agentRow(id: "replacement", seq: 2, at: 2000)], epoch: 2))
+        try await recovery.value
+        #expect(await controller.state.epoch == 2)
+        #expect(await controller.state.messages.map(\.id) == ["replacement"])
+    }
+
+    @Test func stalledOlderCursorDoesNotApplyOrPretendHistoryIsExhausted() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.hasMore = true
+        initial.epoch = 1
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        await provider.release(MessagesResponse(messages: [], page: MessagesPage(
+            direction: .before, limit: 200, epoch: 1, reset: false,
+            nextBeforeSeq: 1, nextBeforeAt: 1000, nextAfterSeq: nil, nextAfterAt: nil,
+            snapshotHeadSeq: nil, snapshotHeadAt: nil, hasMore: true
+        )))
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let outcome = await controller.fetchOlder()
+        guard case .stopped(.cursorDidNotAdvance) = outcome else { Issue.record("Expected a stalled cursor"); return }
+        let state = await controller.state
+        #expect(state.hasMore)
+        #expect(!state.isLoadingMore)
+        #expect(state.historyVersion == 0)
+    }
+
+    @Test func readerReversalVetoesAnInflightPrepend() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.hasMore = true
+        initial.epoch = 1
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let gate = ChatHistoryRequestGate()
+        let request = Task { await controller.fetchOlder(onBeforeApply: { _ in gate.allowsApply }) }
+        await provider.waitForRequests(1)
+        gate.invalidate()
+        await provider.release(MessagesResponse(messages: [agentRow(id: "older", seq: 0, at: 0)], page: MessagesPage(
+            direction: .before, limit: 200, epoch: 1, reset: false,
+            nextBeforeSeq: 0, nextBeforeAt: 0, nextAfterSeq: nil, nextAfterAt: nil,
+            snapshotHeadSeq: nil, snapshotHeadAt: nil, hasMore: false
+        )))
+        let outcome = await request.value
+        guard case .stopped(.invalidated) = outcome else { Issue.record("Stale page was applied"); return }
+        let state = await controller.state
+        #expect(state.messages.isEmpty)
+        #expect(state.historyVersion == 0)
+    }
+
     @Test func concurrentSyncTailCallsCoalesceIntoASingleRun() async {
         let provider = GatedMessagesProvider()
         let controller = MessageWindowController(sessionId: "s", provider: provider)
@@ -332,6 +478,10 @@ actor GatedMessagesProvider: MessagesProviding {
         } else {
             pending.removeFirst().resume(returning: response)
         }
+    }
+
+    func failPending(_ error: any Error) {
+        pending.removeFirst().resume(throwing: error)
     }
 
     /// Suspends until at least `threshold` requests have been issued.

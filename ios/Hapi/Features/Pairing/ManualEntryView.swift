@@ -1,16 +1,18 @@
+import HapiClient
 import HapiProtocol
 import SwiftUI
 
 /// Manual pairing path for hubs without `--relay` (nothing to scan): type or
 /// paste the hub URL and the access token the hub prints at startup, then
-/// continue into the shared confirm step.
+/// pair directly with inline progress and error states.
 struct ManualEntryView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
     @State private var hubUrl = ""
     @State private var accessToken = ""
-    @State private var pending: PendingPairing?
+    @State private var attempt = PairingAttempt()
 
-    private var canContinue: Bool {
+    private var canPair: Bool {
         !hubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -24,6 +26,7 @@ struct ManualEntryView: View {
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(attempt.isPairing)
                 } header: {
                     Text("Hub URL")
                 } footer: {
@@ -35,18 +38,35 @@ struct ManualEntryView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .monospaced()
+                        .disabled(attempt.isPairing)
                 } header: {
                     Text("Access token")
                 } footer: {
                     Text("Printed by the hub at startup, and shown in the web app under Settings → Companion Pairing. Pasting a full pairing link into either field also works.")
                 }
 
-                Section {
-                    Button("Continue") {
-                        continueToConfirm()
+                if let failure = attempt.failure {
+                    Section {
+                        PairingErrorView(failure: failure)
                     }
-                    .frame(maxWidth: .infinity)
-                    .disabled(!canContinue && parsePastedLink() == nil)
+                }
+
+                Section {
+                    Button {
+                        pairNow()
+                    } label: {
+                        if attempt.isPairing {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Pairing…")
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            Text(attempt.failure == nil ? String(localized: "Pair") : String(localized: "Try Again"))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled((!canPair && parsePastedLink() == nil) || attempt.isPairing)
                 }
             }
             .navigationTitle("Enter Hub Details")
@@ -58,9 +78,7 @@ struct ManualEntryView: View {
                     }
                 }
             }
-            .navigationDestination(item: $pending) { pending in
-                PairingConfirmView(pending: pending)
-            }
+            .interactiveDismissDisabled(attempt.isPairing)
         }
     }
 
@@ -70,25 +88,21 @@ struct ManualEntryView: View {
         BindLink.parse(hubUrl) ?? BindLink.parse(accessToken)
     }
 
-    private func continueToConfirm() {
+    private func pairNow() {
         if let link = parsePastedLink() {
-            pending = PendingPairing(
-                hubUrl: link.hubUrl,
-                accessToken: link.accessToken,
-                source: .manual
-            )
+            attempt.pair(model, hubUrl: link.hubUrl, accessToken: link.accessToken)
             return
         }
         var address = hubUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         // Typing the scheme on a phone is annoying; local hubs serve plain
-        // HTTP, and the confirm step shows the resulting URL before pairing.
+        // HTTP.
         if !address.isEmpty, !address.contains("://") {
             address = "http://\(address)"
         }
-        pending = PendingPairing(
+        attempt.pair(
+            model,
             hubUrl: address,
-            accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
-            source: .manual
+            accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 }

@@ -1,7 +1,7 @@
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types';
 import type { CopilotPermissionMode } from '@hapi/protocol/types';
-import { deriveToolName } from '@/agent/utils';
+import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { logger } from '@/ui/logger';
 import {
     BasePermissionHandler,
@@ -25,13 +25,6 @@ const READ_ONLY_TOOL_NAMES = new Set([
     'search',
     'list files'
 ]);
-
-function deriveToolInput(request: PermissionRequest): unknown {
-    if (request.rawInput !== undefined) {
-        return request.rawInput;
-    }
-    return request.rawOutput;
-}
 
 function pickOptionId(
     request: PermissionRequest,

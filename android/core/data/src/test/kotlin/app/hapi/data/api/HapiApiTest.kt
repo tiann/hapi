@@ -2,7 +2,6 @@ package app.hapi.data.api
 
 import app.hapi.data.HubSession
 import app.hapi.data.auth.HubCredentials
-import app.hapi.data.auth.HubUrls
 import app.hapi.data.auth.InMemoryCredentialStore
 import app.hapi.data.fakeJwt
 import app.hapi.protocol.wire.ApprovePermissionRequest
@@ -26,6 +25,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okio.Buffer
@@ -41,10 +41,10 @@ class HapiApiTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        val hubUrl = HubUrls.normalize(server.url("/").toString())!!
+        val hubUrl = server.url("/").toString().removeSuffix("/")
         val store = InMemoryCredentialStore()
         store.set(HubCredentials(hubUrl = hubUrl, accessToken = "token", jwt = jwt))
-        session = HubSession(hubUrl, store)
+        session = HubSession(server.url("/"), store)
     }
 
     @AfterTest
@@ -58,6 +58,16 @@ class HapiApiTest {
         .setBody(body)
 
     private fun lastRequestBody() = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+
+    @Test
+    fun `production clients reject cleartext hub urls`() {
+        assertFailsWith<IllegalArgumentException> {
+            HapiApi("http://hub.example", OkHttpClient())
+        }
+        assertFailsWith<IllegalArgumentException> {
+            HubSession("http://hub.example", InMemoryCredentialStore())
+        }
+    }
 
     // ------------------------------------------------------------ ApiError --
 

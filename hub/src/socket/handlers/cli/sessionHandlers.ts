@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
-import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -103,6 +103,25 @@ export type SessionHandlersDeps = {
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
     const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
 
+    socket.on('native-queue-message', data => {
+        const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
+        if (!parsed.success) return
+        const { sid, localId, text } = parsed.data
+        const access = resolveSessionAccess(sid)
+        if (!access.ok) { emitAccessError('session', sid, access.reason); return }
+        const metadata = access.value.metadata as Metadata | null
+        if (!metadata?.capabilities?.concurrentClients) return
+        if (text === null) {
+            const prior = store.messages.lookupQueuedMessage(sid, localId)
+            if ('resolvedId' in prior && store.messages.deleteQueuedMessageById(sid, localId)) {
+                onWebappEvent?.({ type: 'message-cancelled', sessionId: sid, messageId: prior.resolvedId, localId })
+            }
+        } else {
+            const message = store.messages.syncNativeQueuedMessage(sid, localId, text)
+            onWebappEvent?.({ type: 'message-received', sessionId: sid, message })
+        }
+    })
+
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
         if (!parsed.success) {
@@ -134,6 +153,19 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+
+        // A reasoning stream arrives as a series of growing snapshots under one
+        // stable id, so a stream should cost one row rather than one per
+        // interval. Retire the earlier snapshots only once their replacement is
+        // stored: these are separate transactions, and clearing first would let
+        // a crash in between take the whole stream. Only rows marked live are
+        // eligible, so the settled message that closes a stream survives and
+        // also sweeps up its own leftovers.
+        const reasoningStreamId = getReasoningStreamId(content)
+        if (reasoningStreamId) {
+            store.messages.deleteLiveReasoningSnapshots(sid, reasoningStreamId, msg.id)
+        }
+
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
         }
@@ -492,7 +524,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // rows after the CLI exits — there is no longer an ack path, so they would
         // stay queued forever.  The 5-second tick in syncEngine.expireInactive
         // emits scheduled rows when they mature, regardless of session end.
-        if (data.reason !== 'cleared') {
+        // Shared Codex execution exit is suspension, not consumption. Its native
+        // queue ledger proves which messages can be replayed on ordinary resume.
+        // Never stamp pending/uncertain input as executed, including on archive.
+        const sharedCodex = (sessionAccess.value.metadata as Metadata | null)?.capabilities?.concurrentClients
+        if (data.reason !== 'cleared' && !sharedCodex) {
             try {
                 onSweepImmediateQueued?.(data.sid, Date.now())
             } catch (err) {

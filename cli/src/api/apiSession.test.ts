@@ -447,6 +447,26 @@ describe('ApiSessionClient agy transcript messages', () => {
 })
 
 describe('ApiSessionClient incoming user messages', () => {
+    it.each([true, false])('replays explicitly marked native queue input only for shared sessions (%s)', shared => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({
+            metadata: { path: '/tmp', host: 'test', capabilities: { concurrentClients: shared } }
+        }))
+        const socket = socketHarness.sockets[0]
+        const received = vi.fn()
+        client.onUserMessage(received)
+        const message = { id: 'native-queued', seq: 10, localId: 'native-client-id', content: {
+            role: 'user', content: { type: 'text', text: 'queued before exit' },
+            meta: { sentFrom: 'cli', isNativeQueuedMessage: true }
+        } }
+        socket.trigger('update', { body: { t: 'new-message', message } })
+        socket.trigger('update', { body: { t: 'new-message', message } })
+        expect(received).toHaveBeenCalledTimes(shared ? 1 : 0)
+        if (shared) expect(received).toHaveBeenCalledWith(expect.objectContaining({
+            content: { type: 'text', text: 'queued before exit' }
+        }), 'native-client-id')
+        client.close()
+    })
     it('ignores CLI-originated transcript messages while advancing the incoming cursor', () => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))

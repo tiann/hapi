@@ -13,7 +13,7 @@ public struct ComposerState: Equatable, Sendable {
     /// A send (or its inactive-session resume) is in flight — spinner on the
     /// send button.
     public let isSending: Bool
-    /// A turn is active: long-press send offers Steer, and Abort is shown.
+    /// A turn is active: long-press send offers Steer; an empty draft shows Stop.
     public let canSteer: Bool
 
     public init(text: String, isSending: Bool, canSteer: Bool) {
@@ -276,9 +276,11 @@ public func buildSessionConfigState(
     return SessionConfigState(
         flavor: flavor,
         active: detail?.active ?? summary?.active ?? false,
-        controlledByUser: detail?.agentState?.controlledByUser == true,
+        controlledByUser: detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true,
         permissionMode: detail?.permissionMode,
-        permissionModes: permissionModeOptions(forFlavor: flavor),
+        permissionModes: permissionModeOptions(forFlavor: flavor).filter {
+            detail?.metadata?.capabilities?.concurrentClients != true || $0.mode.rawValue != "safe-yolo"
+        },
         model: model,
         modelOptions: modelOptions,
         modelOptionsLoading: modelOptionsLoading,

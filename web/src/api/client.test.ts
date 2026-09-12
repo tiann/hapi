@@ -57,6 +57,25 @@ describe('ApiClient error mapping', () => {
         }
     })
 
+    it('preserves the structured ambiguous-boundary code for Rewind fallbacks', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: 'Rewind is unavailable for this Codex history',
+                    code: 'ambiguous_native_boundary_fork_safe',
+                    hydrateFailed: false
+                }),
+                { status: 409, statusText: 'Conflict' }
+            )
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.rewindConversation('session-1', 'local-1')).rejects.toMatchObject({
+            status: 409,
+            code: 'ambiguous_native_boundary_fork_safe'
+        })
+    })
+
     it('passes the 422 missing-metadata body through unchanged so the UI can show the missing fields', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(
@@ -78,6 +97,32 @@ describe('ApiClient error mapping', () => {
             expect(apiError.status).toBe(422)
             expect(apiError.body).toContain('cursorSessionId')
         }
+    })
+
+    it('returns export warnings and sends explicit confirmation for large exports', async () => {
+        const warning = {
+            type: 'warning',
+            count: 20_001,
+            limit: 20_000,
+            estimatedBytes: 12_345_678
+        }
+        const payload = {
+            schemaVersion: 2,
+            exportedAt: 1_762_000_000_000,
+            session: { id: 'session-1' },
+            messages: [],
+            scratchlist: []
+        }
+        fetchMock
+            .mockResolvedValueOnce(new Response(JSON.stringify(warning), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await expect(api.getSessionExport('session-1')).resolves.toEqual(warning)
+        await expect(api.getSessionExport('session-1', { force: true })).resolves.toEqual(payload)
+
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session-1/export')
+        expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/session-1/export?force=true')
     })
 
     it('loads the Cursor chat store status for the selected session', async () => {
@@ -125,6 +170,20 @@ describe('ApiClient error mapping', () => {
             capabilities: { titleSuggestion: true }
         })
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
+    })
+
+    it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(
+            new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })
+        ))
+
+        const api = new ApiClient('test-token')
+        await api.getMachineAgyModels('machine-1')
+        await api.getMachineAgyModels('machine-1', { refresh: true })
+
+        expect(fetchMock.mock.calls[0][0]).toContain('/api/machines/machine-1/agy-models')
+        expect(fetchMock.mock.calls[0][0]).not.toContain('refresh')
+        expect(fetchMock.mock.calls[1][0]).toContain('/api/machines/machine-1/agy-models?refresh=true')
     })
 
     it('lists and imports Pi sessions through the selected machine', async () => {

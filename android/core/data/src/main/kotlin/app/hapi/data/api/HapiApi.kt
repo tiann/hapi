@@ -1,6 +1,7 @@
 package app.hapi.data.api
 
 import app.hapi.data.auth.HubUrls
+import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
@@ -110,17 +111,33 @@ class ScratchlistAttachmentFile(
  * `{success: false}` — callers must check the envelope
  * (`docs/api/client-contract/errors.md#rpc-wrapped-endpoints`).
  */
-class HapiApi(
-    hubUrl: String,
+class HapiApi internal constructor(
+    baseUrl: HttpUrl,
     private val client: OkHttpClient,
     private val imageClient: OkHttpClient = client,
     private val authClient: OkHttpClient = client,
 ) : ChatSessionApi {
-    /** Normalized hub origin this instance talks to. */
-    val hubUrl: String = HubUrls.normalize(hubUrl)
-        ?: throw IllegalArgumentException("Invalid hub URL: $hubUrl")
+    /** Public production entry point: cleartext hub origins are rejected. */
+    constructor(
+        hubUrl: String,
+        client: OkHttpClient,
+        imageClient: OkHttpClient = client,
+        authClient: OkHttpClient = client,
+    ) : this(
+        baseUrl = requireHttpsBaseUrl(hubUrl),
+        client = client,
+        imageClient = imageClient,
+        authClient = authClient,
+    )
 
-    private val baseUrl: HttpUrl = this.hubUrl.toHttpUrl()
+    private val baseUrl: HttpUrl = baseUrl.newBuilder()
+        .encodedPath("/")
+        .query(null)
+        .fragment(null)
+        .build()
+
+    /** Normalized hub origin this instance talks to. */
+    val hubUrl: String = baseUrl.toString().removeSuffix("/")
 
     // ---------------------------------------------------------------- core --
 
@@ -262,6 +279,10 @@ class HapiApi(
             url("api", "sessions", sessionId, "messages", "queued-state").build(),
             QueuedStateRequest(localIds).toJsonBody(),
         )
+
+    /** `POST /api/sessions/:id/clear` — shared sessions; returns an independent root. */
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse =
+        request("POST", url("api", "sessions", sessionId, "clear").build(), EMPTY_JSON)
 
     /** `POST /api/sessions/:id/abort` — active sessions only. */
     override suspend fun abortSession(sessionId: String) {
@@ -470,6 +491,10 @@ class HapiApi(
      */
     suspend fun spawnSession(machineId: String, spawn: SpawnSessionRequest): SpawnResponse =
         request("POST", url("api", "machines", machineId, "spawn").build(), spawn.toJsonBody())
+
+    /** Installed/static-configured Agents reported by the selected runner. */
+    suspend fun getMachineAgentAvailability(machineId: String): AgentAvailabilityResponse =
+        request("GET", url("api", "machines", machineId, "agent-availability").build())
 
     /** `POST /api/machines/:id/list-directory` (RPC-wrapped: check `success`). */
     suspend fun listMachineDirectory(
@@ -772,6 +797,10 @@ class HapiApi(
     }
 
     private companion object {
+        fun requireHttpsBaseUrl(raw: String): HttpUrl = HubUrls.normalize(raw)
+            ?.toHttpUrl()
+            ?: throw IllegalArgumentException("Invalid HTTPS hub URL: $raw")
+
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
 
         /** Reusable `{}` body for POSTs whose zod schema is an empty object. */
