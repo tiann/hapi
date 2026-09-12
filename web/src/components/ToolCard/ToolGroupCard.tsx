@@ -292,11 +292,17 @@ export function ToolGroupCard(props: {
     const summaryBadgeText = props.block.presentationMode === 'codex-exploration'
         ? null
         : subtitle ?? t('toolGroup.toolCount', { n: props.block.tools.length })
+    const mobileSummaryBadgeText = summaryBadgeText
+        ? t('toolGroup.mobileToolCount', { n: props.block.tools.length })
+        : null
     const fileCount = props.block.summary.fileTargets.length
 
     return (
         <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-group-bg)] shadow-none">
-            <CardHeader className={cn('space-y-0 p-3', subtitle ? 'pb-2' : null)}>
+            <CardHeader
+                className={cn('space-y-0 px-3 pt-2', subtitle ? 'pb-2' : 'pb-3')}
+                data-testid="tool-group-card-header"
+            >
                 <button
                     type="button"
                     onClick={() => setOpen((value) => !value)}
@@ -328,10 +334,18 @@ export function ToolGroupCard(props: {
                                 </span>
                             ) : null}
                             {summaryBadgeText ? (
-                                <SummaryBadge
-                                    className="bg-[var(--app-subtle-bg)] text-xs font-normal text-[var(--app-hint)]"
-                                    text={summaryBadgeText}
-                                />
+                                <>
+                                    <SummaryBadge
+                                        className="hidden bg-[var(--app-subtle-bg)] text-xs font-normal text-[var(--app-hint)] sm:inline-flex"
+                                        text={summaryBadgeText}
+                                    />
+                                    {mobileSummaryBadgeText ? (
+                                        <SummaryBadge
+                                            className="inline-flex bg-[var(--app-subtle-bg)] text-xs font-normal text-[var(--app-hint)] sm:hidden"
+                                            text={mobileSummaryBadgeText}
+                                        />
+                                    ) : null}
+                                </>
                             ) : null}
                             {props.block.summary.runningCount > 0 ? (
                                 <SummaryBadge

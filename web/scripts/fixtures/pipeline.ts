@@ -17,7 +17,11 @@ export function runFixturePipeline(input: FixtureInput): FixtureExpected {
         .filter((message): message is NormalizedMessage => message !== null)
     const reduced = reduceChatBlocks(normalized, input.agentState)
     const visibleBlocks = buildVisibleChatBlocks(reduced.blocks, {
-        hasMoreMessages: input.options.hasMoreMessages
+        hasMoreMessages: input.options.hasMoreMessages,
+        // Golden fixtures describe the stable cross-client grouped protocol
+        // projection. Web-only classified/Codex exploration presentation is
+        // selected by the UI and must not rewrite native fixture semantics.
+        groupingMode: 'grouped'
     })
     return {
         blocks: reduced.blocks.map(projectChatBlock),
