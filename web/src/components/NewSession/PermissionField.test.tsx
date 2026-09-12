@@ -20,6 +20,11 @@ function renderField(props: Partial<Parameters<typeof PermissionField>[0]> = {})
 }
 
 describe('PermissionField', () => {
+    it('offers only native shared permission modes for Codex', () => {
+        renderField({ agent: 'codex' })
+        expect(screen.getAllByRole('option').map(option => (option as HTMLOptionElement).value))
+            .toEqual(['default', 'read-only', 'yolo'])
+    })
     it('renders native permission modes for codex-family agents', () => {
         const onChange = vi.fn()
         renderField({ agent: 'copilot', nativeValue: 'default', onNativeChange: onChange })
@@ -40,8 +45,17 @@ describe('PermissionField', () => {
         expect(screen.getByText(/did not enable Auto permissions/i)).toBeInTheDocument()
     })
 
+    it('renders Claude permission modes as a native select', () => {
+        const onChange = vi.fn()
+        renderField({ agent: 'claude', nativeValue: 'default', onNativeChange: onChange })
+        expect(screen.getByRole('combobox')).toBeTruthy()
+        expect(screen.getByRole('option', { name: 'Plan Mode' })).toBeTruthy()
+        fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
+        expect(onChange).toHaveBeenCalledWith('plan')
+    })
+
     it('renders the YOLO toggle with its native mapping for toggle flavors', () => {
-        renderField({ agent: 'claude' })
+        renderField({ agent: 'cursor' })
         expect(screen.getByRole('checkbox')).toBeTruthy()
         expect(screen.getByText(/applies native Yolo mode/i)).toBeInTheDocument()
     })

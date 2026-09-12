@@ -57,6 +57,25 @@ describe('ApiClient error mapping', () => {
         }
     })
 
+    it('preserves the structured ambiguous-boundary code for Rewind fallbacks', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: 'Rewind is unavailable for this Codex history',
+                    code: 'ambiguous_native_boundary_fork_safe',
+                    hydrateFailed: false
+                }),
+                { status: 409, statusText: 'Conflict' }
+            )
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.rewindConversation('session-1', 'local-1')).rejects.toMatchObject({
+            status: 409,
+            code: 'ambiguous_native_boundary_fork_safe'
+        })
+    })
+
     it('passes the 422 missing-metadata body through unchanged so the UI can show the missing fields', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(
@@ -151,6 +170,20 @@ describe('ApiClient error mapping', () => {
             capabilities: { titleSuggestion: true }
         })
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
+    })
+
+    it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(
+            new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })
+        ))
+
+        const api = new ApiClient('test-token')
+        await api.getMachineAgyModels('machine-1')
+        await api.getMachineAgyModels('machine-1', { refresh: true })
+
+        expect(fetchMock.mock.calls[0][0]).toContain('/api/machines/machine-1/agy-models')
+        expect(fetchMock.mock.calls[0][0]).not.toContain('refresh')
+        expect(fetchMock.mock.calls[1][0]).toContain('/api/machines/machine-1/agy-models?refresh=true')
     })
 
     it('lists and imports Pi sessions through the selected machine', async () => {

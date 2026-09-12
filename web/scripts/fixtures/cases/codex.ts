@@ -7,9 +7,33 @@ import { T0, wireMessage } from './support'
  * stream snapshots keyed by data.id.
  */
 export const codexCases: FixtureCase[] = [
+    ...(['ExitPlanMode', 'exit_plan_mode'] as const).map((name, index): FixtureCase => {
+        const plan = '# 实施计划\n\n1. Inspect **input.plan**\n2. Render Markdown\n\n```swift\nlet ready = true\n```\n'
+        const callId = `codex-proposed-plan:plan-${index}`
+        const pending = index === 1
+        const data = [
+            { type: 'tool-call', name: 'Read', callId: 'read-before', input: { file_path: '/repo/README.md' } },
+            { type: 'tool-call-result', callId: 'read-before', output: 'Readme' },
+            { type: 'tool-call', name, callId, input: { plan }, id: `plan-${index}` },
+            ...(!pending ? [{ type: 'tool-call-result', callId, output: null, id: `plan-${index}:result` }] : []),
+            { type: 'tool-call', name: 'Read', callId: 'read-after', input: { file_path: '/repo/package.json' } },
+            { type: 'tool-call-result', callId: 'read-after', output: '{}' }
+        ]
+        return {
+            name: pending ? 'codex-plan-proposal-pending' : 'codex-plan-proposal-completed',
+            description: 'Proposal Markdown lives in input.plan. Keep it standalone between ordinary tools; null output completes a proposal without inventing approval. The lowercase alias also accepts a pending permission.',
+            messages: data.map((entry, seq) => wireMessage({
+                id: `proposal-${index}-${seq}`, seq: seq + 1, createdAt: T0 + seq * 1000,
+                content: { role: 'agent', content: { type: 'codex', data: entry } }
+            })),
+            ...(pending ? { agentState: { requests: {
+                'plan-approval': { tool: name, toolCallId: callId, arguments: { plan }, createdAt: T0 + 2000 }
+            } } } : {})
+        }
+    }),
     {
         name: 'codex-message-stream-snapshot',
-        description: 'Codex family: two message payloads sharing a stream id (data.id) are cumulative snapshots. Expects a single agent-text block keyed by the first message, carrying the final snapshot text.',
+        description: 'Codex family: two message payloads sharing a stream id (data.id) are cumulative snapshots. Expects a single agent-text block keyed by that stable stream id, carrying the final snapshot text.',
         messages: [
             wireMessage({
                 id: 'msg-codex-051',
@@ -47,7 +71,7 @@ export const codexCases: FixtureCase[] = [
     },
     {
         name: 'codex-reasoning',
-        description: 'Codex family: reasoning payload becomes an agent-reasoning block (stream id kept internal — not part of the projection).',
+        description: 'Codex family: reasoning payload becomes an agent-reasoning block keyed by its stream id (data.id).',
         messages: [
             wireMessage({
                 id: 'msg-codex-061',
@@ -61,6 +85,76 @@ export const codexCases: FixtureCase[] = [
                             type: 'reasoning',
                             id: 'rs_0af3d219',
                             message: '**Weighing pagination approaches**\n\nThe epoch guard only fires when the server resets, so the client must drop its window on mismatch.'
+                        }
+                    }
+                }
+            })
+        ]
+    },
+    {
+        name: 'codex-blank-stream-ids',
+        description: 'Codex family: blank (empty or whitespace-only) data.id values are not stream identities (shared/src/messages.ts trims before accepting) — each payload keeps its own row-derived block id instead of collapsing onto a shared blank identity.',
+        messages: [
+            wireMessage({
+                id: 'msg-codex-065',
+                seq: 1,
+                createdAt: T0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'reasoning',
+                            id: '',
+                            message: 'blank id one'
+                        }
+                    }
+                }
+            }),
+            wireMessage({
+                id: 'msg-codex-066',
+                seq: 2,
+                createdAt: T0 + 100,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'reasoning',
+                            id: '   ',
+                            message: 'blank id two'
+                        }
+                    }
+                }
+            }),
+            wireMessage({
+                id: 'msg-codex-067',
+                seq: 3,
+                createdAt: T0 + 200,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'message',
+                            id: '',
+                            message: 'blank id text one'
+                        }
+                    }
+                }
+            }),
+            wireMessage({
+                id: 'msg-codex-068',
+                seq: 4,
+                createdAt: T0 + 300,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'message',
+                            id: '   ',
+                            message: 'blank id text two'
                         }
                     }
                 }

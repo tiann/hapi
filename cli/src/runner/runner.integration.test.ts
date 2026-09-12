@@ -259,6 +259,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
   it('should track both runner-spawned and terminal sessions', async () => {
     // Spawn a real hapi process that looks like it was started from terminal
     const terminalHappyProcess = spawnHappyCLI([
+      'claude',
       '--hapi-starting-mode', 'remote',
       '--started-by', 'terminal'
     ], {
@@ -544,6 +545,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
    */
   it('regression: registered detached child is reaped even when the test body never reaches its own cleanup', async () => {
     const child = spawnHappyCLI([
+      'claude',
       '--hapi-starting-mode', 'remote',
       '--started-by', 'terminal'
     ], {

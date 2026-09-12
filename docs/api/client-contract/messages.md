@@ -225,13 +225,13 @@ Clients must render truncated strings as-is (recognizing the `…[hapi: truncate
 
 ## Permission requests are NOT messages
 
-Pending tool approvals never appear in the message stream. They live on the session object (`shared/src/schemas.ts:167-203`):
+Pending tool approvals never appear in the message stream. They live on the session object (`shared/src/schemas.ts`):
 
 ```ts
 session.agentState = {
-  requests?:          Record<requestId, { tool: string, arguments: unknown, createdAt?: number | null }>
+  requests?:          Record<requestId, { tool: string, toolCallId?: string, arguments: unknown, createdAt?: number | null }>
   completedRequests?: Record<requestId, {
-    tool, arguments, createdAt?, completedAt?,
+    tool, toolCallId?: string, arguments, createdAt?, completedAt?,
     status: 'canceled' | 'denied' | 'approved',
     reason?, mode?, allowTools?: string[],
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
@@ -242,6 +242,18 @@ session.agentState = {
 ```
 
 `agentState` updates arrive as a versioned SSE patch — apply it under the version gate described in [sse.md](./sse.md#versioned-patch-algorithm). Render pending `requests` as approval cards interleaved with the chat (the web reducer keys them to the matching `tool_use` when one exists); on resolution the entry moves to `completedRequests`, whose `status`/`answers` back-fill the tool card's permission state. Decide via `POST /api/sessions/:id/permissions/:requestId/approve` (`{mode?, allowTools?, decision?, answers?}`) or `…/deny` (`{decision?}`) — see [rest.md](./rest.md). Session-list badges come precomputed on `SessionSummary.pendingRequestsCount` / `pendingRequests` (≤ 5 entries).
+
+Correlate a permission with the transcript using **`entry.toolCallId ?? requestId`**,
+but always submit approval/denial using **`requestId`**. Claude local-mode requests
+use independent, one-shot reply IDs so stale responses cannot answer a later
+request. The same identity rule applies to synthesized cards and completed
+requests. A new pending reply takes precedence over an old completion for that
+tool; a completion for the same reply ID takes precedence over its pending entry.
+
+In local mode, submitting a web answer removes the actionable pending entry;
+it need not immediately create a completion. Only Claude's native result confirms
+which answer won the terminal/web race. Remote-wait expiration also removes the
+pending entry without approving or denying the native prompt.
 
 ---
 

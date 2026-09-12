@@ -58,6 +58,10 @@ Many endpoints do not answer from hub state — the hub relays the request over 
 
 Practical rule: treat `success: false`, 503 `rpc_target_missing`, and 503 `no_machine_online` as the same user-facing condition — "the computer running this session is not reachable" — with the raw `error` string available in a details view.
 
+One route qualifies that rule. `GET /api/machines/:id/agy-models` keeps serving the last catalog the machine got out of `agy models` while the CLI re-checks in the background, so it can answer `success: true` **and** carry an `error`: the list is usable, and `error` says why it may be stale (typically the machine's agy sign-in has lapsed). Render it beside the catalog rather than instead of it, and offer `?refresh=true` as the way to ask again — a plain repeat is answered from the same cache.
+
+When that background re-check lands a different listing, the machine says so over the existing event stream rather than making clients ask: `machine-agy-models-updated` (see [SSE](./sse.md)) carries the `machineId` and nothing else. Refetch that machine's route on it — the answer comes from the machine's cache, so it costs no `agy` run and produces no further event. It is emitted whenever the re-check changes what this route would answer — a different listing, **or** a sign-in warning that appeared or cleared — and not when it changes neither, so a failed re-check that raises a warning does announce. The machine's very first listing is never announced: whoever triggered it is already awaiting it. Requests during that window are answered from the machine's cache and do not launch agy.
+
 ## Retry guidance
 
 | Class | Retry? |

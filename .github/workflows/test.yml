@@ -13,7 +13,7 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun typecheck
             - run: bunx playwright install --with-deps chromium
-            - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts
+            - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts session-list-scroll.spec.ts
             - run: bun run test
 
     # Serial runner-integration suite: starts real detached runner/session
@@ -26,3 +26,11 @@ jobs:
             - uses: oven-sh/setup-bun@v2
             - run: bun install --frozen-lockfile
             - run: bun run test:cli:integration
+
+    windows-codex-mcp:
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+            - run: bun install --frozen-lockfile
+            - run: bun run --cwd cli test -- src/codex/utils/codexMcpProxy.test.ts

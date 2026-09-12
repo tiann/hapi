@@ -61,6 +61,21 @@ export function CheckIcon(props: IconProps) {
     )
 }
 
+export function MarkAllReadIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="m3 5 2 2 4-4" />
+            <path d="M13 5h8" />
+            <path d="m3 12 2 2 4-4" />
+            <path d="M13 12h8" />
+            <path d="m3 19 2 2 4-4" />
+            <path d="M13 19h8" />
+        </>,
+        props,
+        2
+    )
+}
+
 export function InfoIcon(props: IconProps) {
     return createIcon(
         <>

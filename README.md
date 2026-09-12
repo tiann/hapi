@@ -7,6 +7,7 @@ Run official Claude Code / Codex / Cursor Agent / Grok Build / OpenCode / Kimi /
 ## Features
 
 - **Seamless Handoff** - Work locally, switch to remote when needed, switch back anytime. No context loss, no session restart.
+- **Shared Codex Sessions** - Terminal and Web/phone use the same Codex engine simultaneously; normal terminal/Runner lifecycle, with resume after exit. Requires Codex 0.154.0+. [Lifecycle and limits](docs/guide/codex-shared-sessions.md).
 - **Native First** - HAPI wraps your AI agent instead of replacing it. Same terminal, same experience, same muscle memory.
 - **AFK Without Stopping** - Step away from your desk? Approve AI requests from your phone with one tap.
 - **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, Kimi, Copilot, Antigravity, Pi, DeepSeek Harness—different agents, one unified workflow.
@@ -22,10 +23,14 @@ https://github.com/user-attachments/assets/38230353-94c6-4dbe-9c29-b2a2cc457546
 
 ```bash
 npx @twsxtd/hapi hub --relay     # start hub with E2E encrypted relay
-npx @twsxtd/hapi                 # run claude code
+npx @twsxtd/hapi                 # choose an agent and start a session
 ```
 
 `hapi server` remains supported as an alias.
+
+Use `hapi <agent> [options]` to start an agent directly, for example `hapi claude`
+or `hapi codex`. Scripts must specify the agent explicitly. `hapi --help` shows
+HAPI's commands and supported agents.
 
 The terminal will display a URL and QR code. Scan the QR code with your phone or open the URL to access.
 

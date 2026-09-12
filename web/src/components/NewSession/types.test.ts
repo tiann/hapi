@@ -1,6 +1,6 @@
 import { CLAUDE_MODEL_PRESETS, getClaudeModelLabel } from '@hapi/protocol'
 import { describe, expect, it } from 'vitest'
-import { CLAUDE_EFFORT_OPTIONS, GROK_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
+import { CLAUDE_EFFORT_OPTIONS, GROK_EFFORT_OPTIONS, MODEL_OPTIONS, isOpencodeReasoningEffortValid } from './types'
 
 describe('Claude model options', () => {
     it('derives options from shared Claude model presets', () => {
@@ -42,5 +42,23 @@ describe('Grok effort options', () => {
             { value: 'medium', label: 'Medium' },
             { value: 'high', label: 'High' },
         ])
+    })
+})
+
+describe('isOpencodeReasoningEffortValid', () => {
+    it('accepts default always', () => {
+        expect(isOpencodeReasoningEffortValid('default', ['low'])).toBe(true)
+        expect(isOpencodeReasoningEffortValid('default', null)).toBe(true)
+    })
+
+    it('validates against dynamic variants when loaded', () => {
+        expect(isOpencodeReasoningEffortValid('low', ['low', 'high', 'max'])).toBe(true)
+        expect(isOpencodeReasoningEffortValid('medium', ['low', 'high', 'max'])).toBe(false)
+    })
+
+    it('falls back to the static opencode list (xhigh excluded) when catalog is unavailable', () => {
+        expect(isOpencodeReasoningEffortValid('medium', null)).toBe(true)
+        expect(isOpencodeReasoningEffortValid('xhigh', null)).toBe(false)
+        expect(isOpencodeReasoningEffortValid('max', null)).toBe(true)
     })
 })

@@ -11,6 +11,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - Machine list and remote session spawn.
 - File browser and git status/diff views.
 - PWA install prompt and offline banner.
+- Optional unread-session count on the Windows taskbar when installed as an Edge/Chrome PWA (toggleable in Display settings; off by default).
 
 ## Runtime behavior
 
@@ -18,6 +19,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - When opened in a normal browser, you can log in with `CLI_API_TOKEN:<namespace>` (or `CLI_API_TOKEN` for the default namespace).
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
+- Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded.
 
 ## Routes
 

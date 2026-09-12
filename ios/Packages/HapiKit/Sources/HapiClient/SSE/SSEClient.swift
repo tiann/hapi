@@ -469,18 +469,14 @@ public actor SSEClient {
     private func observePath(_ observer: any NetworkPathObserving) async {
         // The first element is the baseline emitted on subscription, not a
         // change — see NetworkPathObserving.
-        var isBaseline = true
-        for await _ in observer.pathUpdates() {
+        var previous: NetworkPathUpdate?
+        for await path in observer.pathUpdates() {
             if Task.isCancelled { return }
-            if isBaseline {
-                isBaseline = false
-                continue
-            }
-            // A path change while connected: the socket is almost certainly
-            // bound to a route that no longer exists. Treat it as a transport
-            // error; the attempt counter was reset on open, so the reconnect
-            // is immediate.
-            if !stopped, !suspended, transportOpen {
+            let routeChanged = previous.map { path.requiresReconnect(from: $0) } ?? false
+            previous = path
+            // Only a changed route can invalidate the socket. Repeated or
+            // metadata-only notifications leave a healthy stream alone.
+            if routeChanged, !stopped, !suspended, transportOpen {
                 currentAttemptTask?.cancel()
             }
         }

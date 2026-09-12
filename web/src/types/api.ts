@@ -42,6 +42,7 @@ export type {
     OpencodeModelSummary,
     SessionReasoningEffortOption,
     SessionReasoningEffortResponse,
+    OpencodeModelVariantsResponse,
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,
