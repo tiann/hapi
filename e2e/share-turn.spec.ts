@@ -151,6 +151,7 @@ test('matches configured session-header metadata in the share preview', async ({
     await page.addInitScript(() => localStorage.setItem('hapi-session-header-metadata', JSON.stringify({
         showLabels: false,
         agent: false,
+        agentIcon: false,
         model: false,
         reasoning: false,
         fastMode: false,
@@ -171,6 +172,28 @@ test('matches configured session-header metadata in the share preview', async ({
     await expect(dialog.getByText('fixture-host', { exact: false })).toHaveCount(0)
     await expect(dialog.getByText('gpt-5.6-sol', { exact: true })).toHaveCount(0)
     await expect(dialog.getByText('feat/share-turn-polish', { exact: false })).toHaveCount(0)
+})
+
+test('keeps the Agent icon independent from Agent text in the share preview', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('hapi-session-header-metadata', JSON.stringify({
+        showLabels: false,
+        agent: false,
+        agentIcon: true,
+        model: false,
+        reasoning: false,
+        fastMode: false,
+        machine: false,
+        lastActive: false,
+        createdAt: false,
+        updatedAt: false,
+        worktree: false,
+    })))
+    await page.goto('/e2e-fixtures/share-turn-fixture.html')
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByTestId('share-turn-agent-icon')).toHaveCount(1)
+    await expect(dialog.getByText('codex', { exact: true })).toHaveCount(0)
 })
 
 test('keeps code and image controls interactive in preview', async ({ page }, testInfo) => {
