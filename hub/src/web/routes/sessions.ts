@@ -128,6 +128,17 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ sessions })
     })
 
+    app.get('/sessions/scratchlist-status', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        return c.json({
+            sessionIds: engine.getScratchlistSessionIdsByNamespace(c.get('namespace'))
+        })
+    })
+
     app.get('/sessions/:id/export', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

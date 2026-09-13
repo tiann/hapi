@@ -98,6 +98,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 ### Sessions (`src/web/routes/sessions.ts`)
 
 - `GET /api/sessions` - List all sessions. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag.
+- `GET /api/sessions/scratchlist-status` - List session IDs with scratchlist entries in the caller namespace.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.

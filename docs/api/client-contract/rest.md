@@ -29,6 +29,7 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 |---|---|---|
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
+| `GET /api/sessions/scratchlist-status` | — | `{sessionIds: string[]}` — session IDs in the caller's namespace with at least one scratchlist entry |
 
 Default list order: globalPinned → pinned → active → pending-request count → `updatedAt` desc; `order=updatedAt` gives pure recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
 

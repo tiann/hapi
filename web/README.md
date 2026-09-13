@@ -54,6 +54,9 @@ See `src/router.tsx` for route definitions.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
+- Agent flavor label (claude/codex/gemini).
+- Model mode display.
+- Transient filters for unread sessions and sessions with scratchlist entries.
 - Agent name and model display.
 
 ### Chat interface (`src/components/SessionChat.tsx`)
@@ -66,6 +69,7 @@ See `src/router.tsx` for route definitions.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
   - Add/delete/reorder entries; promote to composer (copy) or queue (send).
+  - Persists in the Hub and syncs across clients; `localStorage` is an offline cache and migration source.
   - Entries and attachments saved on the hub and synced across devices.
   - Reordering affects only the current view and resets when entries refresh.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.

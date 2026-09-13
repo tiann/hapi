@@ -172,6 +172,16 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
     })
 
+    it('loads the batch scratchlist session status', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ sessionIds: ['session-a', 'session-c'] }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.getScratchlistSessionIds()).resolves.toEqual(['session-a', 'session-c'])
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/scratchlist-status')
+    })
+
     it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
         fetchMock.mockImplementation(() => Promise.resolve(
             new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })
