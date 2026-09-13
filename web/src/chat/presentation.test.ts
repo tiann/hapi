@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { getEventPresentation, formatMessageTimestamp, formatOutlineTimestamp, formatResetTime } from './presentation'
+import { getEventPresentation, formatDuration, formatMessageTimestamp, formatOutlineTimestamp, formatResetTime } from './presentation'
+
+describe('formatDuration', () => {
+    it('keeps sub-minute durations at one decimal place', () => {
+        expect(formatDuration(59_900)).toBe('59.9s')
+    })
+
+    it('omits zero seconds for an exact minute', () => {
+        expect(formatDuration(60_000)).toBe('1m')
+    })
+
+    it('keeps non-zero minute and second components', () => {
+        expect(formatDuration(537_000)).toBe('8m 57s')
+    })
+
+    it('rounds fractional seconds across minute and hour boundaries', () => {
+        expect(formatDuration(119_500)).toBe('2m')
+        expect(formatDuration(3_599_500)).toBe('1h')
+        expect(formatDuration(3_601_000)).toBe('1h 1s')
+    })
+
+    it('uses hours and omits zero trailing components', () => {
+        expect(formatDuration(3_600_000)).toBe('1h')
+        expect(formatDuration(3_661_000)).toBe('1h 1m 1s')
+    })
+})
 
 describe('formatOutlineTimestamp', () => {
     it('shows only the time for same-day messages', () => {

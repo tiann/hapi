@@ -246,6 +246,7 @@ export function NewSession(props: {
         setOpencodeSelectedModel(
             draft.agent === 'opencode' && draft.model !== 'auto' ? draft.model : null
         )
+        agyModelPickedByUserRef.current = false
         setAgySelectedModel(
             draft.agent === 'agy' && draft.model !== 'auto' ? draft.model : null
         )
@@ -310,6 +311,12 @@ export function NewSession(props: {
         enabled: agent === 'codex' && Boolean(machineId)
     })
     const [agySelectedModel, setAgySelectedModel] = useState<string | null>(null)
+    // Whether the AGY model on screen is one the user picked here, as opposed to
+    // one restored from a draft or a saved preference. A restored model that the
+    // machine does not advertise is dropped (it may never have been runnable on
+    // this machine); one the user just picked is kept, because the catalog can
+    // change under an open form while they are looking at it.
+    const agyModelPickedByUserRef = useRef(false)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -760,6 +767,7 @@ export function NewSession(props: {
         // (null → no --model → agy uses its own default); we intentionally do NOT
         // auto-pick the first model, so the user's explicit "Default" choice
         // sticks instead of snapping to the first option.
+        agyModelPickedByUserRef.current = false
         setAgySelectedModel(null)
     }, [agent, machineId])
 
@@ -769,6 +777,7 @@ export function NewSession(props: {
             || agyModelsState.isLoading
             || agyModelsState.error
             || agySelectedModel === null
+            || agyModelPickedByUserRef.current
         ) {
             return
         }
@@ -864,6 +873,7 @@ export function NewSession(props: {
         setOpencodeSelectedModel(
             agent === 'opencode' && preferred.model !== 'auto' ? preferred.model : null
         )
+        agyModelPickedByUserRef.current = false
         setAgySelectedModel(
             agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
         )
@@ -1803,9 +1813,14 @@ export function NewSession(props: {
                     machineId={machineId}
                     isLoading={agyModelsState.isLoading}
                     error={agyModelsState.error}
+                    warning={agyModelsState.warning}
+                    isFetching={agyModelsState.isFetching}
                     availableModels={agyModelsState.availableModels}
                     selectedModel={agySelectedModel}
-                    onModelChange={setAgySelectedModel}
+                    onModelChange={(modelId) => {
+                        agyModelPickedByUserRef.current = modelId !== null
+                        setAgySelectedModel(modelId)
+                    }}
                     onRetry={agyModelsState.refetch}
                 />
             ) : agent === 'opencode' ? (

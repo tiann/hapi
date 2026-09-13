@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test'
 import { randomBytes } from 'node:crypto'
 
 import { Store } from '../store'
-import { canonicalJson, decryptEnvelope } from './envelope'
+import { canonicalJson, decryptEnvelope } from '../push-native/envelope'
 import { IosPushService, buildCollapseId, type IosPushNotificationPayload } from './iosPushService'
-import type { IosPushRequest, IosPushSendOutcome, IosPushTransport } from './transport'
+import type { EncryptedPushRequest, NativePushSendOutcome, EncryptedPushTransport } from '../push-native/transport'
 
 function makePayload(overrides: Partial<IosPushNotificationPayload> = {}): IosPushNotificationPayload {
     return {
@@ -20,13 +20,13 @@ function makePayload(overrides: Partial<IosPushNotificationPayload> = {}): IosPu
     }
 }
 
-type ScriptedTransport = IosPushTransport & { requests: IosPushRequest[] }
+type ScriptedTransport = EncryptedPushTransport & { requests: EncryptedPushRequest[] }
 
-function makeTransport(outcomeFor: (request: IosPushRequest) => IosPushSendOutcome): ScriptedTransport {
-    const requests: IosPushRequest[] = []
+function makeTransport(outcomeFor: (request: EncryptedPushRequest) => NativePushSendOutcome): ScriptedTransport {
+    const requests: EncryptedPushRequest[] = []
     return {
         requests,
-        async send(request: IosPushRequest) {
+        async send(request: EncryptedPushRequest) {
             requests.push(request)
             return outcomeFor(request)
         }
@@ -149,7 +149,7 @@ describe('IosPushService.sendToNamespace', () => {
     it('treats a transport throw as transient failure (device kept)', async () => {
         const store = new Store(':memory:')
         registerIosDevice(store, 'default', 'tok-1', 'iphone-1')
-        const transport: IosPushTransport = {
+        const transport: EncryptedPushTransport = {
             async send() {
                 throw new Error('boom')
             }

@@ -124,12 +124,14 @@ public func parseAskUserQuestions(_ input: JSONValue?, cursorDialect: Bool) -> [
 
 public struct RequestUserInputQuestion: Equatable, Sendable {
     public let id: String
+    public let header: String?
     public let question: String
     public let required: Bool
     public let multiple: Bool
     public let options: [AskOption]
     public let placeholder: String?
     public let prefill: String?
+    public let inputType: String?
 
     public init(
         id: String,
@@ -138,15 +140,19 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
         multiple: Bool,
         options: [AskOption],
         placeholder: String?,
-        prefill: String?
+        prefill: String?,
+        inputType: String? = nil,
+        header: String? = nil
     ) {
         self.id = id
+        self.header = header
         self.question = question
         self.required = required
         self.multiple = multiple
         self.options = options
         self.placeholder = placeholder
         self.prefill = prefill
+        self.inputType = inputType
     }
 }
 
@@ -182,7 +188,9 @@ public func parseRequestUserInputQuestions(_ input: JSONValue?) -> [RequestUserI
             multiple: object["multiple"]?.boolValue == true,
             options: options,
             placeholder: object["placeholder"]?.stringValue,
-            prefill: object["prefill"]?.stringValue
+            prefill: object["prefill"]?.stringValue,
+            inputType: object["inputType"]?.stringValue == "editor" ? "editor" : nil,
+            header: trimmedString(object["header"]).flatMap { $0.isEmpty ? nil : $0 }
         ))
     }
     return questions

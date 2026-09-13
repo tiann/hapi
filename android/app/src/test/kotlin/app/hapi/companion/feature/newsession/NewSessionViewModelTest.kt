@@ -206,7 +206,7 @@ class SpawnBodyTest {
                     agent = "codex",
                     model = "gpt-5.2-codex",
                     modelReasoningEffort = "high",
-                    permissionMode = "safe-yolo",
+                    permissionMode = "read-only",
                     yolo = true, // must NOT leak into the body for codex-family
                     sessionType = SESSION_TYPE_WORKTREE,
                     worktreeName = "  feature-x  ",
@@ -226,7 +226,7 @@ class SpawnBodyTest {
         assertEquals("codex", body["agent"]!!.jsonPrimitive.content)
         assertEquals("gpt-5.2-codex", body["model"]!!.jsonPrimitive.content)
         assertEquals("high", body["modelReasoningEffort"]!!.jsonPrimitive.content)
-        assertEquals("safe-yolo", body["permissionMode"]!!.jsonPrimitive.content)
+        assertEquals("read-only", body["permissionMode"]!!.jsonPrimitive.content)
         assertEquals("worktree", body["sessionType"]!!.jsonPrimitive.content)
         assertEquals("feature-x", body["worktreeName"]!!.jsonPrimitive.content)
         assertEquals("fast", body["serviceTier"]!!.jsonPrimitive.content)
@@ -401,10 +401,12 @@ class NewSessionLogicTest {
         )
         assertEquals("default", badMode.permissionMode)
 
-        val goodMode = NewSessionLogic.sanitizeDraft(
+        val staleMode = NewSessionLogic.sanitizeDraft(
             NewSessionForm(agent = "codex", permissionMode = "safe-yolo"),
         )
-        assertEquals("safe-yolo", goodMode.permissionMode)
+        assertEquals("default", staleMode.permissionMode)
+        assertEquals(listOf("default", "read-only", "yolo"), app.hapi.protocol.catalog.PermissionModes.forLaunch("codex").map { it.wireId })
+        assertEquals("safe-yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "kimi", permissionMode = "safe-yolo")).permissionMode)
     }
 }
 

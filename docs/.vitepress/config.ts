@@ -14,7 +14,7 @@ export default defineConfig({
 
     nav: [
       { text: 'Quick Start', link: '/guide/quick-start' },
-      { text: 'App', link: 'https://app.hapi.run', target: '_blank' }
+      { text: 'Web App', link: 'https://app.hapi.run', target: '_blank' }
     ],
 
     sidebar: [
@@ -23,6 +23,7 @@ export default defineConfig({
         items: [
           { text: 'Quick Start', link: '/guide/quick-start' },
           { text: 'Installation', link: '/guide/installation' },
+          { text: 'Native Apps', link: '/guide/native-apps' },
           { text: 'PWA', link: '/guide/pwa' }
         ]
       },
@@ -38,7 +39,8 @@ export default defineConfig({
       {
         text: 'Agents',
         items: [
-          { text: 'Agents', link: '/guide/agents' }
+          { text: 'Agents', link: '/guide/agents' },
+          { text: 'Codex Usage & Limits', link: '/guide/codex-shared-sessions' }
         ]
       },
       {

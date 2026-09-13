@@ -19,7 +19,7 @@ struct GeneratedImageBlockView: View {
         Group {
             if media == nil || failed {
                 placeholder
-            } else if let image {
+            } else if let image = image ?? media?.cachedImage(for: block.imageId) {
                 Button {
                     viewerOpen = true
                 } label: {

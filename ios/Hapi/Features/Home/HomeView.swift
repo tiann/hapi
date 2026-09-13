@@ -3,17 +3,24 @@ import SwiftUI
 
 /// Post-pairing home: the session list for the active hub, with the hub
 /// switcher (switch / add / settings / sign out), the "+" new-session sheet
-/// (A-M3c), the Settings sheet (A-M4e), and the live global-SSE connection
-/// dot in the toolbar. Tapping a row pushes the chat (M2f); a successful
+/// (A-M3c), the Settings sheet (A-M4e), and a unified session-filter menu.
+/// Degraded connections appear below navigation, not among its actions.
+/// Tapping a row pushes the chat (M2f); a successful
 /// spawn dismisses the sheet and pushes the new chat the same way.
 struct HomeView: View {
     let session: HubSession
 
     @Environment(AppModel.self) private var model
+    @State private var listModel: SessionListModel
     @State private var confirmSignOut = false
     @State private var showNewSession = false
     @State private var showSettings = false
     @State private var path: [String] = []
+
+    init(session: HubSession) {
+        self.session = session
+        _listModel = State(initialValue: SessionListModel(session: session))
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -22,7 +29,11 @@ struct HomeView: View {
                 if let failedHub = model.authFailureNotice {
                     authFailureBanner(failedHub: failedHub)
                 }
-                SessionListView(session: session) { sessionId in
+                SessionConnectionNotice(
+                    state: session.connectionState,
+                    showsCachedSessions: listModel.isOffline && listModel.hasLoaded
+                )
+                SessionListView(model: listModel) { sessionId in
                     path.append(sessionId)
                 }
             }
@@ -39,21 +50,25 @@ struct HomeView: View {
                 // A replaced path element must rebuild the screen's @State.
                 .id(sessionId)
             }
-            .navigationTitle(HubDisplay.host(session.hubUrl))
+            .navigationTitle("Sessions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    connectionIndicator
+                    hubMenu
+                }
+                if listModel.showsFilterMenu {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        SessionFilterMenu(model: listModel)
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showNewSession = true
                     } label: {
                         Label("New Session", systemImage: "plus")
+                            .frame(minWidth: 44, minHeight: 44)
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    hubMenu
+                    .accessibilityIdentifier("home.new-session")
                 }
             }
             .confirmationDialog(
@@ -93,50 +108,6 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Connection state
-
-    /// Shown only while the stream is NOT healthy: a steady "Live" chip was
-    /// pure noise and read as a mystery non-button (device feedback). In the
-    /// degraded states the dot + label explain themselves.
-    private var connectionDegraded: Bool {
-        if case .connected = session.connectionState { return false }
-        return true
-    }
-
-    @ViewBuilder
-    private var connectionIndicator: some View {
-        if connectionDegraded {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(connectionColor)
-                    .frame(width: 8, height: 8)
-                Text(connectionLabel)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Connection: \(connectionLabel)")
-        }
-    }
-
-    private var connectionColor: Color {
-        switch session.connectionState {
-        case .connected: .green
-        case .connecting, .backoff: .orange
-        case .idle, .suspended: .gray
-        }
-    }
-
-    private var connectionLabel: String {
-        switch session.connectionState {
-        case .connected: String(localized: "Live")
-        case .connecting: String(localized: "Connecting…")
-        case .backoff: String(localized: "Reconnecting…")
-        case .suspended: String(localized: "Paused")
-        case .idle: String(localized: "Offline")
-        }
-    }
-
     // MARK: - Hub switcher
 
     private var hubMenu: some View {
@@ -172,7 +143,10 @@ struct HomeView: View {
             }
         } label: {
             Label("Hubs", systemImage: "server.rack")
+                .frame(minWidth: 44, minHeight: 44)
         }
+        .accessibilityValue(HubDisplay.host(session.hubUrl))
+        .accessibilityIdentifier("home.hubs")
     }
 
     private func authFailureBanner(failedHub: String) -> some View {
@@ -194,5 +168,36 @@ struct HomeView: View {
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+/// One status line; a failed list refresh takes precedence over SSE status.
+struct SessionConnectionNotice: View {
+    let state: SSEConnectionState
+    let showsCachedSessions: Bool
+
+    var message: String? {
+        if showsCachedSessions { return String(localized: "Offline — showing cached sessions") }
+        switch state {
+        case .connected: return nil
+        case .connecting: return String(localized: "Connecting…")
+        case .backoff: return String(localized: "Reconnecting…")
+        case .suspended: return String(localized: "Paused")
+        case .idle: return String(localized: "Offline")
+        }
+    }
+
+    var body: some View {
+        if let message {
+            Label(message, systemImage: "wifi.exclamationmark")
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(.orange.opacity(0.15))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("home.connection-notice")
+        }
     }
 }

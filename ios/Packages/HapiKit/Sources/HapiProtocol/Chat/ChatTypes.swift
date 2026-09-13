@@ -253,6 +253,7 @@ public enum ToolPermissionStatus: String, Equatable, Sendable {
     case pending
     case approved
     case denied
+    case resolved
     case canceled
 }
 

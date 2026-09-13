@@ -61,6 +61,11 @@ ios/**/.swiftpm/
 **/*.xcresult
 **/DerivedData/
 
+# App Store configuration, metadata, and screenshots (local only)
+/.asc/
+/metadata/
+/screenshots/
+
 # Android (android/)
 android/**/build/
 android/.gradle/

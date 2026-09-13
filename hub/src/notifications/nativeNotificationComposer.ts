@@ -4,6 +4,7 @@ import { getAgentName, getSessionName } from './sessionInfo'
 import { formatToolArgumentsCompact, formatToolArgumentsDetailed } from './toolArgs'
 import { extractAssistantPlainText, extractNotifySummary, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Store } from '../store'
+import { composeInputRequestNotification, getFirstPendingRequest } from './inputRequest'
 
 export const NATIVE_CONTRACT_VERSION = '1'
 
@@ -19,7 +20,7 @@ const READY_BODY_GLANCE_LIMIT = 280
  * Platform-neutral native notification content: the exact FCM data-contract
  * fields (contract version 1) before they are wrapped for a concrete
  * transport. FcmNotificationChannel maps this onto the FCM data payload;
- * IosPushNotificationChannel canonicalizes + encrypts it into the E2E
+ * Android relay and IosPushNotificationChannel encrypt it into the E2E
  * envelope (PUSH SPEC v1). Keeping one composer guarantees Android and iOS
  * operators read the same words for the same event.
  */
@@ -27,7 +28,7 @@ export type ComposedNativeNotification = {
     title: string
     body: string
     tag?: string
-    type: 'ready' | 'permission-request' | 'task-notification'
+    type: 'ready' | 'permission-request' | 'input-request' | 'task-notification'
     sessionId: string
     sessionName: string
     url: string
@@ -41,11 +42,13 @@ export class NativeNotificationComposer {
     constructor(private readonly store?: Store) {}
 
     composePermissionRequest(session: Session): ComposedNativeNotification {
+        const pending = getFirstPendingRequest(session)
+        const inputNotification = composeInputRequestNotification(session, pending)
+        if (inputNotification) return inputNotification
+
         const name = getSessionName(session)
         const agentName = getAgentName(session)
-        const requests = session.agentState?.requests ?? null
-        const requestEntries = requests ? Object.entries(requests) : []
-        const [requestId, request] = requestEntries[0] ?? [undefined, null]
+        const { requestId, request } = pending ?? {}
 
         // Glance line: keep brutally short so the wrist-collapsed
         // notification still shows the first ~40 chars without truncation.

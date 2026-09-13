@@ -227,7 +227,7 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
 }
 
 export function isSidebarEmptySessionStub(session: SessionSummary): boolean {
-    if (session.active) return false
+    if (session.active || session.hasConversationContent) return false
     const meta = session.metadata
     if (!meta) return true
     if (meta.agentSessionId?.trim()) return false

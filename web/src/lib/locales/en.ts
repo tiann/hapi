@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex Usage',
-  'codexUsage.ordinary': 'Ordinary usage',
-  'codexUsage.unknown': 'Unknown',
-  'codexUsage.remaining': '{percent}% remaining',
-  'codexUsage.window': '{minutes} min window',
-  'codexUsage.resets': 'Resets {time}',
-
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',
@@ -372,10 +365,11 @@ export default {
   'newSession.model.loadFailed': 'Failed to load models',
   'newSession.model.selectVariant': 'Select variant',
   'newSession.model.cursorUnavailable': 'No Cursor models yet. Start a Cursor session once, or use Auto.',
-  'newSession.agyModel.checkingAuth': 'Checking Antigravity authentication…',
+  'newSession.agyModel.fetchingModels': 'Fetching available models…',
   'newSession.agyModel.authRequired': 'Authentication required',
   'newSession.agyModel.authHint': 'Please run `agy` in a terminal to sign in with Google.',
   'newSession.agyModel.retry': 'Retry',
+  'newSession.agyModel.notListed': 'no longer listed',
   'newSession.agyModel.noModels': 'No Antigravity models available',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',
@@ -518,6 +512,12 @@ export default {
   'files.sort.smallest': 'Smallest first',
   'files.sort.largest': 'Largest first',
 
+  // File context menu
+  'file.menu.title': 'File actions',
+  'file.menu.copyPath': 'Copy path',
+  'file.menu.copyAbsolutePath': 'Copy absolute path',
+  'file.menu.addToComposer': 'Add to composer',
+
   // File page
   'file.page.fallbackName': 'File',
   'file.page.unknownPath': 'Unknown path',
@@ -562,6 +562,8 @@ export default {
   'tool.rejected': 'Rejected',
   'tool.cancel': 'Cancel',
   'tool.exitPlan': 'Exit Plan Mode',
+  'tool.plan.implement': 'Implement plan',
+  'tool.plan.continue': 'Continue planning',
   'tool.patch': 'Patch',
   'tool.input': 'Input',
   'tool.trace': 'Trace',
@@ -589,6 +591,7 @@ export default {
   'tool.question': 'Question',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
+  'tool.resolved': 'Resolved in Codex',
   'tool.canceled': 'Canceled',
   'tool.approvedForSession': 'Approved For Session',
   'tool.aborted': 'Aborted',
@@ -662,6 +665,7 @@ export default {
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.editBusyNotRestored': 'Delivery still unresolved — draft not restored (may still be in flight)',
   'queuedMessages.editCurrentDraftKept': 'Queued message cancelled — current draft and schedule were kept.',
   'queuedMessages.steer': 'Deliver into the running turn now',
   'queuedMessages.steerFailed': 'Steer failed — message stays queued',
@@ -754,6 +758,7 @@ export default {
   'toast.ready.title': 'Ready for input',
   'toast.ready.body': '{agent} is waiting in {session}',
   'toast.permission.title': 'Permission Request',
+  'toast.input.title': '{agent} needs your input',
   'toast.task.completed': 'Task completed',
   'toast.task.failed': 'Task failed',
 
@@ -812,7 +817,7 @@ export default {
   'settings.usage.sessions': '{count} sessions with usage',
   'settings.general.description': 'Language, companion pairing, and general application preferences.',
   'settings.general.sessionSummary.title': 'Session status summaries',
-  'settings.general.sessionSummary.description': 'Choose whether supported agents emit a machine-readable status summary and whether it appears in chat.',
+  'settings.general.sessionSummary.description': 'Choose whether supported agents emit status summaries and whether they appear in chat.',
   'settings.general.sessionSummaryContract': 'Emit status summaries',
   'settings.general.sessionSummaryContract.desc': 'Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)',
   'settings.general.sessionSummaryInChat': 'Show status summaries in chat',

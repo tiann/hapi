@@ -37,8 +37,8 @@ private actor FakeDictationApi: DictationTranscribing {
         providersResult = result
     }
 
-    func setProvidersFailure(_ message: String) {
-        providersFailure = TestError(message: message)
+    func setProvidersFailure(_ message: String?) {
+        providersFailure = message.map { TestError(message: $0) }
     }
 
     func setTranscribeFailure(_ message: String) {
@@ -139,6 +139,80 @@ private func eventually(
 @Suite("DictationController")
 @MainActor
 struct DictationControllerTests {
+
+    @Test func preflightEnablesDictationWithoutRecordingAndReusesProvider() async {
+        let harness = DictationHarness()
+        #expect(!harness.controller.isAvailable)
+
+        await harness.controller.refreshAvailability()
+
+        #expect(harness.controller.isAvailable)
+        #expect(harness.controller.state == .idle)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.events.isEmpty)
+
+        harness.controller.toggle()
+        #expect(await eventually {
+            harness.controller.state == .recording(startedAtMs: 42_000)
+        })
+        await harness.controller.refreshAvailability()
+        #expect(harness.controller.isAvailable)
+        #expect(await harness.api.providersCalls == 1)
+        harness.controller.cancel()
+    }
+
+    @Test func preflightHidesEmptyAndRealtimeOnlyProvidersSilently() async {
+        let harness = DictationHarness()
+        for providers in [[], [
+            TranscriptionProviderInfo(id: "browser-local", label: "Browser", modes: ["realtime"]),
+        ]] {
+            await harness.api.setProviders(TranscriptionProvidersResponse(providers: providers))
+            await harness.controller.refreshAvailability()
+            #expect(!harness.controller.isAvailable)
+        }
+        #expect(harness.controller.state == .idle)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.events.isEmpty)
+    }
+
+    @Test func preflightFailureHidesButtonSilentlyAndCanRetry() async {
+        let harness = DictationHarness()
+        await harness.controller.refreshAvailability()
+        #expect(harness.controller.isAvailable)
+
+        await harness.api.setProvidersFailure("hub unreachable")
+        await harness.controller.refreshAvailability()
+        #expect(!harness.controller.isAvailable)
+        #expect(harness.events.isEmpty)
+        #expect(harness.recorder.startCalls == 0)
+
+        await harness.api.setProvidersFailure(nil)
+        await harness.controller.refreshAvailability()
+        #expect(harness.controller.isAvailable)
+    }
+
+    @Test func preflightReflectsProviderConfigurationChanges() async {
+        let harness = DictationHarness()
+        await harness.controller.refreshAvailability()
+        #expect(harness.controller.isAvailable)
+
+        await harness.api.setProviders(TranscriptionProvidersResponse(providers: []))
+        await harness.controller.refreshAvailability()
+        #expect(!harness.controller.isAvailable)
+
+        await harness.api.setProviders(TranscriptionProvidersResponse(providers: [
+            TranscriptionProviderInfo(id: "groq", label: "Groq", modes: ["standard"]),
+        ]))
+        await harness.controller.refreshAvailability()
+        #expect(harness.controller.isAvailable)
+        harness.controller.toggle()
+        #expect(await eventually {
+            harness.controller.state == .recording(startedAtMs: 42_000)
+        })
+        harness.controller.toggle()
+        #expect(await eventually { harness.controller.state == .idle })
+        #expect(await harness.api.transcribeCalls.first?.provider == "groq")
+    }
 
     @Test func recordThenStopUploadsTheTakeAndEmitsTheTranscript() async throws {
         let harness = DictationHarness()

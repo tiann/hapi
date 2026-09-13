@@ -581,6 +581,16 @@ export class ApiClient {
         })
     }
 
+    async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/clear`, { method: 'POST' })
+    }
+
+    async implementCodexPlan(sessionId: string, planId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/codex/plan/implement`, {
+            method: 'POST', body: JSON.stringify({ planId })
+        })
+    }
+
     async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
@@ -858,9 +868,14 @@ export class ApiClient {
         })
     }
 
-    async getMachineAgyModels(machineId: string): Promise<AgyModelsResponse> {
+    async getMachineAgyModels(
+        machineId: string,
+        options?: { refresh?: boolean }
+    ): Promise<AgyModelsResponse> {
+        // Without `refresh` the machine may answer from its cached catalog.
+        const query = options?.refresh ? '?refresh=true' : ''
         return await this.request<AgyModelsResponse>(
-            `/api/machines/${encodeURIComponent(machineId)}/agy-models`
+            `/api/machines/${encodeURIComponent(machineId)}/agy-models${query}`
         )
     }
 

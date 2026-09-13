@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import { FileIcon } from '@/components/FileIcon'
 import { useSessionDirectory } from '@/hooks/queries/useSessionDirectory'
+import { useFileMenuTrigger } from '@/hooks/useFileMenuTrigger'
+import type { AnchoredMenuPoint } from '@/hooks/useAnchoredMenu'
 import { formatDirectoryError } from '@/lib/files-i18n'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
@@ -89,6 +91,53 @@ function DirectoryErrorRow(props: { depth: number; message: string }) {
     )
 }
 
+type FileMenuRequestHandler = (path: string, point: AnchoredMenuPoint) => void
+
+function DirectoryFileRow(props: {
+    fileName: string
+    metadata: string | null
+    indent: number
+    isDownloading: boolean
+    downloadDisabled: boolean
+    onOpen: () => void
+    onDownload: () => void
+    onOpenMenu?: (point: AnchoredMenuPoint) => void
+}) {
+    const { t } = useTranslation()
+    const rowHandlers = useFileMenuTrigger({
+        onOpen: props.onOpen,
+        onOpenMenu: props.onOpenMenu,
+    })
+
+    return (
+        <div
+            className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors"
+            style={{ paddingLeft: props.indent }}
+        >
+            <span className="h-4 w-4" />
+            <FileIcon fileName={props.fileName} size={22} />
+            <button
+                type="button"
+                {...rowHandlers}
+                className="min-w-0 flex-1 text-left"
+            >
+                <div className="truncate font-medium">{props.fileName}</div>
+                {props.metadata ? <div className="truncate text-xs text-[var(--app-hint)]">{props.metadata}</div> : null}
+            </button>
+            <button
+                type="button"
+                onClick={props.onDownload}
+                disabled={props.downloadDisabled}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-50"
+                title={t('files.directories.download')}
+                aria-label={t('files.directories.downloadNamed', { name: props.fileName })}
+            >
+                <DownloadIcon className={`h-4 w-4 ${props.isDownloading ? 'animate-pulse' : ''}`} />
+            </button>
+        </div>
+    )
+}
+
 function DirectoryNode(props: {
     api: ApiClient | null
     sessionId: string
@@ -96,6 +145,7 @@ function DirectoryNode(props: {
     label: string
     depth: number
     onOpenFile: (path: string) => void
+    onRequestFileMenu?: FileMenuRequestHandler
     expanded: Set<string>
     onToggle: (path: string) => void
     sort: DirectorySort
@@ -173,6 +223,7 @@ function DirectoryNode(props: {
                                     label={entry.name}
                                     depth={childDepth}
                                     onOpenFile={props.onOpenFile}
+                                    onRequestFileMenu={props.onRequestFileMenu}
                                     expanded={props.expanded}
                                     onToggle={props.onToggle}
                                     sort={props.sort}
@@ -185,28 +236,19 @@ function DirectoryNode(props: {
                             const metadata = formatFileMetadata(entry.size, entry.modified, locale)
                             const isDownloading = downloadingPath === filePath
                             return (
-                                <div
+                                <DirectoryFileRow
                                     key={filePath}
-                                    className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors"
-                                    style={{ paddingLeft: childIndent }}
-                                >
-                                    <span className="h-4 w-4" />
-                                    <FileIcon fileName={entry.name} size={22} />
-                                    <button type="button" onClick={() => props.onOpenFile(filePath)} className="min-w-0 flex-1 text-left">
-                                        <div className="truncate font-medium">{entry.name}</div>
-                                        {metadata ? <div className="truncate text-xs text-[var(--app-hint)]">{metadata}</div> : null}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => void handleDownload(filePath, entry.name)}
-                                        disabled={Boolean(downloadingPath)}
-                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-50"
-                                        title={t('files.directories.download')}
-                                        aria-label={t('files.directories.downloadNamed', { name: entry.name })}
-                                    >
-                                        <DownloadIcon className={`h-4 w-4 ${isDownloading ? 'animate-pulse' : ''}`} />
-                                    </button>
-                                </div>
+                                    fileName={entry.name}
+                                    metadata={metadata}
+                                    indent={childIndent}
+                                    isDownloading={isDownloading}
+                                    downloadDisabled={Boolean(downloadingPath)}
+                                    onOpen={() => props.onOpenFile(filePath)}
+                                    onDownload={() => void handleDownload(filePath, entry.name)}
+                                    onOpenMenu={props.onRequestFileMenu
+                                        ? (point) => props.onRequestFileMenu!(filePath, point)
+                                        : undefined}
+                                />
                             )
                         })}
 
@@ -253,6 +295,7 @@ export function DirectoryTree(props: {
     sessionId: string
     rootLabel: string
     onOpenFile: (path: string) => void
+    onRequestFileMenu?: FileMenuRequestHandler
     sort: DirectorySort
 }) {
     const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(props.sessionId))
@@ -282,6 +325,7 @@ export function DirectoryTree(props: {
                 label={props.rootLabel}
                 depth={0}
                 onOpenFile={props.onOpenFile}
+                onRequestFileMenu={props.onRequestFileMenu}
                 expanded={expanded}
                 onToggle={handleToggle}
                 sort={props.sort}

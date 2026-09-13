@@ -210,7 +210,7 @@ private func mcpTitle(_ toolName: String) -> String {
 
 func toolCardPresentation(_ tool: ChatToolCall, basePath: String?) -> ToolCardPresentation {
     let input = tool.input
-    let name = tool.name
+    let name = toolPresentationName(tool.name)
     let description = tool.description
 
     if name.hasPrefix("mcp__") {

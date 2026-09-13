@@ -63,6 +63,11 @@ extension APIClient {
         )
     }
 
+    /// Create a new shared root; only the caller follows the returned ID.
+    public func clearConversation(id: String) async throws -> ResumeSessionResponse {
+        try await request(.post, "/api/sessions/\(encodePathComponent(id))/clear", body: EmptyRequestBody())
+    }
+
     /// `POST /api/sessions/:id/abort` (active sessions only).
     public func abortSession(id: String) async throws {
         try await requestVoid(

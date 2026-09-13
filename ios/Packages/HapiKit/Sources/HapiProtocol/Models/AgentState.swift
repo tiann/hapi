@@ -8,13 +8,16 @@ import Foundation
 /// `POST /api/sessions/:id/permissions/:requestId/approve|deny`.
 public struct AgentStateRequest: Codable, Equatable, Sendable {
     public var tool: String
+    /// Correlates a native tool call; approval still uses the request dictionary key.
+    public var toolCallId: String?
     /// Free-form tool arguments (`z.unknown()` on the wire).
     public var arguments: JSONValue?
     /// Epoch ms when the request was raised; older CLIs omit it.
     public var createdAt: Int?
 
-    public init(tool: String, arguments: JSONValue? = nil, createdAt: Int? = nil) {
+    public init(tool: String, arguments: JSONValue? = nil, createdAt: Int? = nil, toolCallId: String? = nil) {
         self.tool = tool
+        self.toolCallId = toolCallId
         self.arguments = arguments
         self.createdAt = createdAt
     }
@@ -26,6 +29,7 @@ public struct AgentStateRequest: Codable, Equatable, Sendable {
 /// Mirrors `AgentStateCompletedRequestSchema` (`shared/src/schemas.ts`).
 public struct AgentStateCompletedRequest: Codable, Equatable, Sendable {
     public enum Status: String, Codable, Sendable {
+        case resolved
         case canceled
         case denied
         case approved
@@ -39,6 +43,8 @@ public struct AgentStateCompletedRequest: Codable, Equatable, Sendable {
     }
 
     public var tool: String
+    /// Correlates a native tool call; approval still uses the request dictionary key.
+    public var toolCallId: String?
     public var arguments: JSONValue?
     public var createdAt: Int?
     public var completedAt: Int?
@@ -63,9 +69,11 @@ public struct AgentStateCompletedRequest: Codable, Equatable, Sendable {
         mode: String? = nil,
         decision: Decision? = nil,
         allowTools: [String]? = nil,
-        answers: JSONValue? = nil
+        answers: JSONValue? = nil,
+        toolCallId: String? = nil
     ) {
         self.tool = tool
+        self.toolCallId = toolCallId
         self.arguments = arguments
         self.createdAt = createdAt
         self.completedAt = completedAt

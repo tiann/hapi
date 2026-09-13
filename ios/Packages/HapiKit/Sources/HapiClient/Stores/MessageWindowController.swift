@@ -62,6 +62,7 @@ public actor MessageWindowController {
     public let sessionId: String
     private let provider: any MessagesProviding
     private let snapshots: WindowSnapshotStore?
+    private let historyRetentionLimit: Int
 
     private var stateValue: MessageWindowState
     private var observers: [UUID: AsyncStream<MessageWindowState>.Continuation] = [:]
@@ -72,12 +73,15 @@ public actor MessageWindowController {
         sessionId: String,
         provider: any MessagesProviding,
         snapshots: WindowSnapshotStore? = nil,
-        initialState: MessageWindowState? = nil
+        initialState: MessageWindowState? = nil,
+        historyRetentionLimit: Int = MessageWindowConstants.historyWindowSize
     ) {
         self.sessionId = sessionId
         self.provider = provider
         self.snapshots = snapshots
+        self.historyRetentionLimit = historyRetentionLimit
         self.stateValue = initialState ?? MessageWindowLogic.createState(sessionId: sessionId)
+        self.stateValue.historyRetentionLimit = historyRetentionLimit
     }
 
     /// The full window state (UI projects what it needs; see
@@ -107,7 +111,8 @@ public actor MessageWindowController {
         _ transform: (MessageWindowState) -> MessageWindowState
     ) -> MessageWindowState {
         let previous = stateValue
-        let next = transform(previous)
+        var next = transform(previous)
+        next.historyRetentionLimit = historyRetentionLimit
         stateValue = next
         if next != previous {
             for continuation in observers.values {
@@ -132,7 +137,14 @@ public actor MessageWindowController {
     /// `ensureAfterCurrent` the call drains: if a run is already in flight, a
     /// trailing run is requested and awaited, so the caller returns only
     /// after a sync that STARTED at or after this call.
-    public func syncTail(ensureAfterCurrent: Bool = false) async {
+    public func syncTail(ensureAfterCurrent: Bool = false, allowingHistoryReset: Bool = false) async {
+        if allowingHistoryReset {
+            let epoch = controllerEpoch
+            if let runningTask { await runningTask.value }
+            guard epoch == controllerEpoch, !Task.isCancelled else { return }
+            await startTailSync(allowingHistoryReset: true).value
+            return
+        }
         guard let running = runningTask, let runningId = runningRunId else {
             await startTailSync().value
             return
@@ -154,7 +166,11 @@ public actor MessageWindowController {
         await drainTailSync(observedRunId: runningId, observed: running)
     }
 
-    private func startTailSync() -> Task<Void, Never> {
+    private var defersHistoryReset: Bool {
+        stateValue.viewMode == .history && stateValue.requiresLatestReset && stateValue.epoch != nil
+    }
+
+    private func startTailSync(allowingHistoryReset: Bool = false) -> Task<Void, Never> {
         runSerial += 1
         let runId = runSerial
         let epoch = controllerEpoch
@@ -169,7 +185,7 @@ public actor MessageWindowController {
         let generation = stateValue.syncGeneration
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.runTailSync(generation: generation)
+            await self.runTailSync(generation: generation, allowingHistoryReset: allowingHistoryReset)
             // Completion bookkeeping is the run's LAST actor-isolated act, so
             // anyone resuming from `await task.value` observes the trailing
             // handoff already done (web: `finish` runs via .then before
@@ -214,7 +230,7 @@ public actor MessageWindowController {
 
     /// Body of one tail sync (web `runTailSync`, minus `beginTailSync`,
     /// which ``startTailSync()`` already executed synchronously).
-    private func runTailSync(generation: Int) async {
+    private func runTailSync(generation: Int, allowingHistoryReset: Bool) async {
         do {
             let initial = stateValue
             let initialCursor = initial.newestPosition
@@ -231,6 +247,14 @@ public actor MessageWindowController {
                     query: .latest(limit: MessageWindowConstants.pageSize)
                 )
                 guard isCurrentTailSync(generation) else { return }
+                // A replay gap may have hidden messages-invalidated. Keep a
+                // truncated reading window only after checking the server's
+                // epoch, never by skipping the request (or its trailing run).
+                if !allowingHistoryReset, defersHistoryReset,
+                   !response.page.reset, response.page.epoch == stateValue.epoch {
+                    finishTailSync(generation: generation, warning: nil)
+                    return
+                }
                 update { previous in
                     guard previous.syncGeneration == generation else { return previous }
                     var next = MessageWindowLogic.applyLatestResponse(
@@ -360,6 +384,10 @@ public actor MessageWindowController {
                 guard stateValue.olderGeneration == generation else {
                     return .stopped(.invalidated)
                 }
+                guard !Task.isCancelled else {
+                    update { MessageWindowLogic.cancelOlderLoad($0) }
+                    return .stopped(.invalidated)
+                }
 
                 if let epoch = initial.epoch, response.page.epoch != epoch {
                     update { MessageWindowLogic.applyOlderEpochMismatch($0, generation: generation) }
@@ -367,6 +395,15 @@ public actor MessageWindowController {
                     return .stopped(.epochReset)
                 }
 
+                if response.page.hasMore {
+                    let at = response.page.nextBeforeAt
+                    let seq = response.page.nextBeforeSeq
+                    guard let at, let seq, MessagePosition(at: at, seq: seq) < before else {
+                        update { MessageWindowLogic.failOlderLoad($0, generation: generation,
+                            warning: "Message history cursor did not advance") }
+                        return .stopped(.cursorDidNotAdvance)
+                    }
+                }
                 var historyVersion = 0
                 var addedRenderableCount = 0
                 var applyRejected = false
@@ -401,6 +438,10 @@ public actor MessageWindowController {
                 )
             } catch {
                 guard stateValue.olderGeneration == generation else {
+                    return .stopped(.invalidated)
+                }
+                if Task.isCancelled || error is CancellationError {
+                    update { MessageWindowLogic.cancelOlderLoad($0) }
                     return .stopped(.invalidated)
                 }
                 update {

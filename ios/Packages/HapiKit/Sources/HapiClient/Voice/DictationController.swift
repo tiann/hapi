@@ -79,9 +79,10 @@ public enum DictationEvent: Equatable, Sendable {
 }
 
 /// Press-to-toggle dictation (A-M3f, transcribed from the Android B-M3ce
-/// `DictationController`): the first ``toggle()`` discovers a provider
-/// (`GET /providers`, first entry supporting `standard`; memoized) and starts
-/// the recorder; the second stops it and posts the audio to
+/// `DictationController`): ``refreshAvailability()`` discovers a provider on
+/// chat entry (`GET /providers`, first entry supporting `standard`). The first
+/// ``toggle()`` reuses it (or discovers one) and starts the recorder; the second
+/// stops it and posts the audio to
 /// `POST /api/voice/transcription`, emitting ``DictationEvent/transcribed(_:)``
 /// with the hub's text. ``cancel()`` abandons the take without uploading.
 ///
@@ -96,6 +97,9 @@ public enum DictationEvent: Equatable, Sendable {
 public final class DictationController {
     public private(set) var state: DictationState = .idle
 
+    /// Hidden until the hub confirms a standard-capable provider.
+    public var isAvailable: Bool { cachedProviderId != nil }
+
     /// One-shot outcomes; set by the owning screen model.
     @ObservationIgnored public var onEvent: (@MainActor (DictationEvent) -> Void)?
 
@@ -103,8 +107,7 @@ public final class DictationController {
     private let recorder: any DictationRecorder
     private let now: () -> Int
 
-    /// First successful discovery wins for the session (web keeps a provider
-    /// setting; v1 has none).
+    /// Reused across takes; refreshed when the composer appears.
     private var cachedProviderId: String?
     @ObservationIgnored private var operationRunning = false
 
@@ -116,6 +119,17 @@ public final class DictationController {
         self.api = api
         self.recorder = recorder
         self.now = now
+    }
+
+    /// Silent preflight; no microphone access or notices on chat entry.
+    public func refreshAvailability() async {
+        guard state == .idle, !operationRunning else { return }
+        operationRunning = true
+        defer { operationRunning = false }
+        cachedProviderId = nil
+        let provider = await resolveProvider(reportErrors: false)
+        guard !Task.isCancelled else { return }
+        cachedProviderId = provider
     }
 
     /// Mic button press: Idle → record, Recording → stop + transcribe.
@@ -160,9 +174,9 @@ public final class DictationController {
         }
     }
 
-    /// The memoized or freshly discovered provider id, or nil after emitting
-    /// the failure event.
-    private func resolveProvider() async -> String? {
+    /// The memoized or freshly discovered provider id; preflight suppresses
+    /// failure events.
+    private func resolveProvider(reportErrors: Bool = true) async -> String? {
         if let cachedProviderId {
             return cachedProviderId
         }
@@ -170,14 +184,16 @@ public final class DictationController {
         do {
             providers = try await api.transcriptionProviders().providers
         } catch {
-            emit(.error(Self.errorMessage(error, fallback: "Could not reach the hub")))
+            if reportErrors {
+                emit(.error(Self.errorMessage(error, fallback: "Could not reach the hub")))
+            }
             return nil
         }
         // First provider supporting standard (uploaded-file) transcription —
         // the hub lists them in its own preference order. `browser-local`
         // (realtime-only) never qualifies.
         guard let chosen = providers.first(where: { $0.modes.contains("standard") }) else {
-            emit(.noProvider)
+            if reportErrors { emit(.noProvider) }
             return nil
         }
         return chosen.id

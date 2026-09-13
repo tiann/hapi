@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     applyGlobalSelectAll,
+    buildAgyComposerModelOptions,
     applyModelChangeWithReasoningRollback,
     buildGoalStateMessages,
     isScratchlistHotkeyBlockedTarget,
@@ -563,5 +564,21 @@ describe('buildGoalStateMessages', () => {
 
         expect(buildGoalStateMessages([futureQueued, matureQueued, invokedScheduled]).map((message) => message.id))
             .toEqual(['invoked'])
+    })
+})
+
+describe('buildAgyComposerModelOptions', () => {
+    it('maps the machine catalog into composer options and keeps the id when agy sent no label', () => {
+        expect(buildAgyComposerModelOptions([
+            { modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+            { modelId: 'gemini-9.9-experimental' }
+        ])).toEqual([
+            { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+            { value: 'gemini-9.9-experimental', label: 'gemini-9.9-experimental' }
+        ])
+    })
+
+    it('signals "no catalog yet" rather than an empty picker while the machine is still answering', () => {
+        expect(buildAgyComposerModelOptions([])).toBeUndefined()
     })
 })

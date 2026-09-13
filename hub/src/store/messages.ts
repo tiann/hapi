@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import { z } from 'zod'
 
 import { getLiveReasoningStreamId } from '@hapi/protocol/messages'
 
@@ -174,6 +175,22 @@ export function addMessage(
         const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
         return toStoredMessage(row)
+    })()
+}
+
+/** Shared engines own pending native text. Never overwrite an invoked row. */
+export function syncNativeQueuedMessage(db: Database, sessionId: string, localId: string, text: string): StoredMessage {
+    return db.transaction(() => {
+        const initial = { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'cli', isNativeQueuedMessage: true } }
+        const message = addMessage(db, sessionId, initial, localId)
+        if (message.invokedAt !== null) return message
+        // Native text edits must not erase Web attachments or origin metadata.
+        const prior = z.object({ role: z.literal('user'), content: z.object({ type: z.literal('text') }).passthrough() }).passthrough().safeParse(message.content)
+        const content = prior.success ? { ...prior.data, content: { ...prior.data.content, text } } : initial
+        const encoded = encodeMessageContent(truncateOversizedMessageContent(content))
+        db.prepare('UPDATE messages SET content = ? WHERE session_id = ? AND local_id = ? AND invoked_at IS NULL')
+            .run(encoded, sessionId, localId)
+        return { ...message, content }
     })()
 }
 

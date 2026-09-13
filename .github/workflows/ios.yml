@@ -36,5 +36,15 @@ jobs:
             - uses: actions/checkout@v4
             - name: Show toolchain versions
               run: xcodebuild -version
+            - name: Check manual localization catalog
+              env:
+                  PYTHONDONTWRITEBYTECODE: '1'
+              run: |
+                  python3 ios/scripts/localizations.py --check
+                  python3 -m unittest discover -s ios/scripts/tests -p 'test_localizations.py'
             - name: Build Hapi app for iOS Simulator
               run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+            - name: Transcript layout regression tests
+              run: ios/scripts/test-transcript.sh
+            - name: Verify localization catalog was not rewritten
+              run: git diff --exit-code -- ios/Hapi/Resources/Localizable.xcstrings

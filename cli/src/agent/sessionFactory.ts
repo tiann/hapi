@@ -21,6 +21,9 @@ export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from 
 export type SessionStartedBy = 'runner' | 'terminal'
 
 export type SessionBootstrapOptions = {
+    reportStarted?: boolean
+    /** Multi-session workers inject session identity into each child, never process.env. */
+    exportSessionEnv?: boolean
     flavor: string
     startedBy?: SessionStartedBy
     workingDirectory?: string
@@ -231,9 +234,9 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
 
     const session = api.sessionSyncClient(sessionInfo)
 
-    exportHapiSessionEnv(sessionInfo.id)
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 
-    await reportSessionStarted(sessionInfo.id, metadata)
+    if (options.reportStarted !== false) await reportSessionStarted(sessionInfo.id, metadata)
 
     return {
         api,
@@ -316,7 +319,7 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
             // Export only after the hub row exists. Exporting the provisional id at
             // bootstrap lets agents inherit HAPI_SESSION_ID before GET /api/sessions/:id
             // can resolve (and before hapiMcpUrl is persisted) — #1119 / PR #1121 Major.
-            exportHapiSessionEnv(materialized.id)
+            if (options.exportSessionEnv !== false) exportHapiSessionEnv(materialized.id)
             void reportSessionStarted(materialized.id, snapshot.metadata ?? metadata)
         }
     })
@@ -333,6 +336,8 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
 }
 
 export async function bootstrapExistingSession(options: {
+    reportStarted?: boolean
+    exportSessionEnv?: boolean
     sessionId: string
     flavor: string
     startedBy?: SessionStartedBy
@@ -373,9 +378,9 @@ export async function bootstrapExistingSession(options: {
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
 
-    exportHapiSessionEnv(sessionInfo.id)
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 
-    await reportSessionStarted(sessionInfo.id, metadata)
+    if (options.reportStarted !== false) await reportSessionStarted(sessionInfo.id, metadata)
 
     return {
         api,

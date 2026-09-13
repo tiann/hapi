@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import * as jose from 'jose'
+import { createPrivateKey } from 'node:crypto'
+import { z } from 'zod'
 
 export type ServiceAccount = {
     client_email: string
@@ -14,9 +16,14 @@ let cachedToken: { accessToken: string; expiresAtMs: number } | null = null
 
 export function loadServiceAccount(path: string): ServiceAccount {
     const raw = readFileSync(path, 'utf8')
-    const parsed = JSON.parse(raw) as ServiceAccount
-    if (!parsed.client_email || !parsed.private_key) {
-        throw new Error('FCM service account JSON missing client_email or private_key')
+    const parsed = z.object({
+        client_email: z.string().trim().min(1),
+        private_key: z.string().min(1),
+        project_id: z.string().trim().min(1).optional()
+    }).parse(JSON.parse(raw) as unknown)
+    const key = createPrivateKey(parsed.private_key)
+    if (key.asymmetricKeyType !== 'rsa') {
+        throw new Error('FCM service account requires an RSA private key')
     }
     return parsed
 }

@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex 用量',
-  'codexUsage.ordinary': '常规用量',
-  'codexUsage.unknown': '未知',
-  'codexUsage.remaining': '剩余 {percent}%',
-  'codexUsage.window': '{minutes} 分钟窗口',
-  'codexUsage.resets': '重置时间 {time}',
-
   // Loading states
   'loading': '加载中…',
   'authorizing': '认证中…',
@@ -517,6 +510,12 @@ export default {
   'files.sort.smallest': '最小优先',
   'files.sort.largest': '最大优先',
 
+  // 文件右键菜单
+  'file.menu.title': '文件操作',
+  'file.menu.copyPath': '复制路径',
+  'file.menu.copyAbsolutePath': '复制绝对路径',
+  'file.menu.addToComposer': '添加到对话框',
+
   // File page
   'file.page.fallbackName': '文件',
   'file.page.unknownPath': '未知路径',
@@ -561,6 +560,8 @@ export default {
   'tool.rejected': '已拒绝',
   'tool.cancel': '取消',
   'tool.exitPlan': '退出计划模式',
+  'tool.plan.implement': '执行计划',
+  'tool.plan.continue': '继续规划',
   'tool.patch': '补丁',
   'tool.input': '输入',
   'tool.trace': '追踪',
@@ -588,6 +589,7 @@ export default {
   'tool.question': '问题',
   'tool.selectOption': '请至少选择一个选项或输入答案。',
   'tool.waitingForApproval': '等待审批…',
+  'tool.resolved': '已在 Codex 中处理',
   'tool.canceled': '已取消',
   'tool.approvedForSession': '本会话已批准',
   'tool.aborted': '已中止',
@@ -661,6 +663,7 @@ export default {
   'composer.scheduleErrorTooFar': '最多只能定时 7 天。',
   'queuedMessages.scheduledFor': '定时发送: {time}',
   'queuedMessages.editAlreadyInvoked': '消息已发送，无法编辑',
+  'queuedMessages.editBusyNotRestored': '发送结果仍未确认，未恢复草稿（消息可能仍在发送中）',
   'queuedMessages.editCurrentDraftKept': '队列消息已取消，已保留当前草稿和定时设置。',
   'queuedMessages.steer': '立即插入当前回合',
   'queuedMessages.steerFailed': '插入失败，消息仍在队列中',
@@ -753,6 +756,7 @@ export default {
   'toast.ready.title': '等待输入',
   'toast.ready.body': '{agent} 正在 {session} 等待你的输入',
   'toast.permission.title': '权限请求',
+  'toast.input.title': '{agent} 需要你回答',
   'toast.task.completed': '任务完成',
   'toast.task.failed': '任务失败',
 
@@ -811,7 +815,7 @@ export default {
   'settings.usage.sessions': '{count} 个会话有用量记录',
   'settings.general.description': '语言、伴侣应用配对和通用应用偏好。',
   'settings.general.sessionSummary.title': '会话状态摘要',
-  'settings.general.sessionSummary.description': '选择是否让受支持的智能体输出机器可读的状态摘要，以及是否在聊天中显示。',
+  'settings.general.sessionSummary.description': '选择是否让受支持的智能体输出状态摘要，以及是否在聊天中显示。',
   'settings.general.sessionSummaryContract': '输出状态摘要',
   'settings.general.sessionSummaryContract.desc': '默认关闭。开启后会要求受支持的智能体在每轮结束时追加 AGENT_NOTIFY_SUMMARY 行，供通知和后台工作记录使用，对新开/恢复的会话生效。(已支持：Claude、Codex、OpenCode、远程 Grok；暂不支持：本地 Grok、Cursor)',
   'settings.general.sessionSummaryInChat': '在聊天中显示状态摘要',

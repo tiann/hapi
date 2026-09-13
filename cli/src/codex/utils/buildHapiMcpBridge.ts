@@ -45,6 +45,7 @@ export interface HapiMcpBridge {
 }
 
 export interface HapiMcpBridgeOptions {
+    exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
     skillLookup?: {
@@ -76,7 +77,7 @@ export async function buildHapiMcpBridge(
         }
     }
     // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
-    exportHapiSessionEnv(client.sessionId);
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(client.sessionId);
 
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,

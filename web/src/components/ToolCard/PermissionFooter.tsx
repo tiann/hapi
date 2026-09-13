@@ -37,6 +37,7 @@ function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
 }
 
 function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, codex: boolean, t: (key: string) => string): string {
+    if (permission.status === 'resolved') return t('tool.resolved')
     if (permission.status === 'pending') return t('tool.waitingForApproval')
     if (permission.status === 'canceled') return permission.reason ? `${t('tool.canceled')}: ${permission.reason}` : t('tool.canceled')
 
@@ -202,6 +203,8 @@ export function PermissionFooter(props: {
         await run(() => props.api.denyPermission(props.sessionId, permission.id, { decision: 'abort' }), 'success')
         setLoading(null)
     }
+
+    if (permission.status === 'resolved') return <div className="mt-2 text-xs text-[var(--app-hint)]">{t('tool.resolved')}</div>
 
     if (!isPending) {
         // Keep the thread minimal: approval is already reflected by tool state/icon.

@@ -280,6 +280,10 @@ class HapiApi internal constructor(
             QueuedStateRequest(localIds).toJsonBody(),
         )
 
+    /** `POST /api/sessions/:id/clear` — shared sessions; returns an independent root. */
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse =
+        request("POST", url("api", "sessions", sessionId, "clear").build(), EMPTY_JSON)
+
     /** `POST /api/sessions/:id/abort` — active sessions only. */
     override suspend fun abortSession(sessionId: String) {
         request<Unit>("POST", url("api", "sessions", sessionId, "abort").build(), EMPTY_JSON)
@@ -740,11 +744,11 @@ class HapiApi internal constructor(
     // ------------------------------------------------------------- devices --
 
     /** `POST /api/devices/register` (upsert) — FCM contract (`native-companion-contract.md`). */
-    suspend fun registerDevice(token: String, deviceId: String, platform: String = "phone") {
+    suspend fun registerDevice(token: String, deviceId: String, pushKey: String, platform: String = "phone") {
         request<Unit>(
             "POST",
             url("api", "devices", "register").build(),
-            RegisterDeviceRequest(token = token, platform = platform, deviceId = deviceId).toJsonBody(),
+            RegisterDeviceRequest(token = token, platform = platform, deviceId = deviceId, pushKey = pushKey).toJsonBody(),
         )
     }
 

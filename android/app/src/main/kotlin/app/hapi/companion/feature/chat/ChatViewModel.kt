@@ -1,9 +1,14 @@
 package app.hapi.companion.feature.chat
 
+import androidx.annotation.MainThread
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
+import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
+import app.hapi.companion.ui.markdown.MarkdownRenderCache
+import app.hapi.protocol.chat.AgentTextBlock
+import app.hapi.protocol.chat.AgentReasoningBlock
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
 import app.hapi.data.api.ApiError
@@ -16,6 +21,7 @@ import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.MessageWindowStore
 import app.hapi.data.store.MessageWindowStores
+import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.data.store.ScratchlistCreateResult
 import app.hapi.data.store.SessionDetailStore
 import app.hapi.data.store.SessionScratchlist
@@ -26,6 +32,7 @@ import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.ToolGroupBlock
+import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
 import app.hapi.protocol.chat.buildVisibleChatBlocks
@@ -34,6 +41,8 @@ import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.chat.reduceChatBlocks
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageWindowState
+import app.hapi.protocol.window.MessageViewMode
+import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.WindowMessage
 import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.wire.AgentState
@@ -50,6 +59,7 @@ import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -78,6 +88,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -127,8 +140,12 @@ data class ChatUiState(
     val loadFailed: Boolean,
     /** Tail sync warning — the connection/staleness banner. */
     val warning: String?,
-    /** Bumps on tail-side content changes; drives the new-messages pill. */
+    /** Bumps on tail-side content changes. */
     val tailRevision: Long,
+    val historyVersion: Long = 0,
+    val messagesVersion: Long = 0,
+    val requiresLatestReset: Boolean = false,
+    val processSteps: Map<String, Int> = emptyMap(),
 )
 
 /** Composer bar state (M3a). */
@@ -316,7 +333,15 @@ class ChatViewModel(
     private val now: () -> Long = System::currentTimeMillis,
     /** Web `makeClientSideId('local')` twin; injectable for deterministic tests. */
     private val localIdGenerator: () -> String = { "local-${UUID.randomUUID()}" },
+    /** Serialized UI event loop; JVM tests inject their UI dispatcher. */
+    uiDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) {
+    // The holder's scope is a Default worker scope, NOT the coordinator's
+    // executor. Share its lifetime, but serialize all history/lifecycle state
+    // with Compose callbacks. Use queued Main (not Main.immediate), so a
+    // synchronous completion cannot clear a job before its handle is assigned.
+    private val uiScope = CoroutineScope(scope.coroutineContext + uiDispatcher)
+    private val workerContext = scope.coroutineContext.minusKey(Job)
     private val router = SyncEventRouter(syncTargets)
     private val subscriptionKey = SseSubscriptionKey.Session(sessionId)
 
@@ -327,6 +352,48 @@ class ChatViewModel(
     private var initJob: Job? = null
     private var seenJob: Job? = null
     private var olderJob: Job? = null
+    private var jumpJob: Job? = null
+    private val mutableHistoryPaging = MutableStateFlow(ChatHistoryPagingState())
+    val historyPaging: StateFlow<ChatHistoryPagingState> = mutableHistoryPaging.asStateFlow()
+    private val mutableJumpToken = MutableStateFlow(0L)
+    val jumpToken: StateFlow<Long> = mutableJumpToken.asStateFlow()
+    private val mutableJumpingLatest = MutableStateFlow(false)
+    val jumpingLatest: StateFlow<Boolean> = mutableJumpingLatest.asStateFlow()
+    private var historyObserver: Job? = null
+    private var historyRetryJob: Job? = null
+    private var historyCancellation: Job? = null
+    private var windowModeJob: Job? = null
+    private var historyGate: AtomicBoolean? = null
+    private var historyDemand = false
+    private var readerFollowsTail = true
+    private var transcriptVisible = true
+    internal val inspection = ChatInspectionState()
+    private val transcriptProjection = TranscriptProjection()
+    val reconnecting: StateFlow<Boolean> = sseEngine.reconnecting(subscriptionKey)
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    @MainThread
+    internal fun setTranscriptVisible(visible: Boolean) {
+        transcriptVisible = visible
+        if (!visible) {
+            historyDemand = false
+            cancelHistory()
+        }
+    }
+
+    @MainThread
+    internal fun beginInspection() {
+        jumpJob?.cancel()
+        jumpJob = null
+        mutableJumpingLatest.value = false
+        readingViewportChanged(followsTail = false, needsOlder = false)
+        setTranscriptVisible(false)
+    }
+    private var historyPumpScheduled = false
+    private var lastHistoryLayout: Pair<Long, Boolean>? = null
+    private var lastHistoryEpoch: Long? = null
+    private var started = false
+    private var everStarted = false
     private var draftJob: Job? = null
 
     // ------------------------------------------------------------ M3 state --
@@ -370,6 +437,8 @@ class ChatViewModel(
     // Pipeline memo state — touched only inside the single uiState map stage.
     private val normalizeCache = HashMap<String, NormalizeCacheEntry>()
     private var previousGroups: List<ToolGroupBlock> = emptyList()
+    internal val markdownCache = MarkdownRenderCache()
+    private var previousMarkdownSources = emptySet<String>()
 
     private class NormalizeCacheEntry(val source: WindowMessage, val normalized: NormalizedMessage?)
 
@@ -470,14 +539,36 @@ class ChatViewModel(
 
     // ------------------------------------------------------------ lifecycle --
 
-    /** Idempotent; call from the screen's composition, paired with [stop]. */
+    /** Idempotent; the conversation host starts this, the holder calls [stop] on exit. */
+    @MainThread
     fun start() {
-        if (initJob?.isActive == true || sseJob?.isActive == true) return
+        if (started) return
+        val preservingHistory = everStarted && (!readerFollowsTail || windowStore.value?.state?.value?.requiresLatestReset == true)
+        started = true
+        everStarted = true
 
-        initJob = scope.launch {
-            val store = messageWindows.open(sessionId)
-            store.activate()
+        initJob = uiScope.launch {
+            val store = withContext(workerContext) {
+                messageWindows.open(sessionId).also {
+                    if (preservingHistory) it.setViewMode(MessageViewMode.History) else it.activate()
+                }
+            }
             windowStore.value = store
+            historyObserver?.cancel()
+            historyObserver = uiScope.launch {
+                store.state.collect { window ->
+                    mutableHistoryPaging.value = mutableHistoryPaging.value.refreshAvailability(window.hasMore)
+                    val epoch = window.epoch
+                    if (epoch != null) {
+                        if (lastHistoryEpoch != null && lastHistoryEpoch != epoch) {
+                            cancelHistory()
+                            mutableJumpToken.value += 1
+                        }
+                        lastHistoryEpoch = epoch
+                    }
+                    scheduleHistoryPump()
+                }
+            }
 
             // Subscribe only after the window exists: every routed message
             // event / gap resync then finds a peekable window, and the
@@ -489,14 +580,15 @@ class ChatViewModel(
                     .collect { router.route(subscriptionKey, it) }
             }
 
-            launch {
+            launch(workerContext) {
+                if (preservingHistory) return@launch
                 runCatching { store.syncTail() }
                 // Now that sends exist, verify optimistic queued rows against
                 // the hub on every chat open (web queued-state reconciliation).
                 runCatching { store.reconcileQueuedState() }
             }
-            launch { restoreDraft() }
-            loadDetail()
+            launch(workerContext) { restoreDraft() }
+            withContext(workerContext) { loadDetail() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
@@ -517,12 +609,19 @@ class ChatViewModel(
     }
 
     /** Tears the session pipe down (engine keeps the resume cursor). */
+    @MainThread
     fun stop() {
+        started = false
+        historyObserver?.cancel()
+        historyObserver = null
         sseJob?.cancel()
         sseJob = null
         initJob?.cancel()
         seenJob?.cancel()
-        olderJob?.cancel()
+        cancelHistory()
+        jumpJob?.cancel()
+        jumpJob = null
+        mutableJumpingLatest.value = false
         flushPendingDraft()
         sseEngine.unsubscribe(subscriptionKey)
         sessionStore.releaseDetail(sessionId)
@@ -548,18 +647,151 @@ class ChatViewModel(
 
     /** Initial-load error state → try again (detail + tail). */
     fun retry() {
+        sseEngine.requestReconnect(subscriptionKey)
         scope.launch {
             loadDetail()
             windowStore.value?.let { store -> runCatching { store.syncTail(ensureAfterCurrent = true) } }
         }
     }
 
-    /** Top-edge reached: one older page (no-ops while one is in flight). */
+    /** Explicit retry/continue. Ordinary paging is driven by viewport coverage. */
+    @MainThread
     fun loadOlder() {
+        mutableHistoryPaging.value = mutableHistoryPaging.value.resume()
+        historyDemand = true
+        scheduleHistoryPump()
+    }
+
+    @MainThread
+    fun readingViewportChanged(followsTail: Boolean, needsOlder: Boolean) {
+        if (!transcriptVisible) return
+        val changed = readerFollowsTail != followsTail
+        readerFollowsTail = followsTail
+        historyDemand = needsOlder
+        val store = windowStore.value
+        if (changed && !mutableJumpingLatest.value && store != null) {
+            if (followsTail && store.state.value.requiresLatestReset) { jumpToLatest(); return }
+            val previous = windowModeJob
+            windowModeJob = uiScope.launch {
+                previous?.join()
+                withContext(workerContext) {
+                    store.setViewMode(if (followsTail) MessageViewMode.Tail else MessageViewMode.History)
+                }
+            }
+        }
+        if (!needsOlder && (olderJob != null || mutableHistoryPaging.value.phase == ChatHistoryPagingState.Phase.Retrying)) {
+            cancelHistory()
+        }
+        scheduleHistoryPump()
+    }
+
+    @MainThread
+    fun historyLaidOut(version: Long, madeProgress: Boolean) {
+        val old = lastHistoryLayout
+        lastHistoryLayout = version to (madeProgress || (old?.first == version && old.second))
+        acknowledgeHistoryLayout()
+    }
+
+    private fun acknowledgeHistoryLayout() {
+        val layout = lastHistoryLayout ?: return
+        val old = mutableHistoryPaging.value
+        val next = old.laidOut(layout.first, layout.second)
+        mutableHistoryPaging.value = next
+        if (next != old) scheduleHistoryPump()
+    }
+
+    private fun scheduleHistoryPump() {
+        if (historyPumpScheduled) return
+        historyPumpScheduled = true
+        uiScope.launch {
+            yield()
+            historyPumpScheduled = false
+            pumpHistory()
+        }
+    }
+
+    private fun pumpHistory() {
         val store = windowStore.value ?: return
-        if (olderJob?.isActive == true) return
-        olderJob = scope.launch {
-            runCatching { store.fetchOlder() }
+        val window = store.state.value
+        if (!started || !transcriptVisible || mutableJumpingLatest.value || !historyDemand || !window.hasMore ||
+            window.isSyncingTail || window.isLoadingMore || olderJob != null ||
+            mutableHistoryPaging.value.phase != ChatHistoryPagingState.Phase.Idle) return
+        val request = mutableHistoryPaging.value.begin()
+        mutableHistoryPaging.value = request
+        val gate = AtomicBoolean(true)
+        historyGate = gate
+        val cancellation = historyCancellation
+        val modeChange = windowModeJob
+        olderJob = uiScope.launch {
+            cancellation?.join()
+            modeChange?.join()
+            if (!gate.get()) return@launch
+            val outcome = withContext(workerContext) { store.fetchOlder(onBeforeApply = { gate.get() }) }
+            if (mutableHistoryPaging.value.generation != request.generation) return@launch
+            olderJob = null
+            historyGate = null
+            mutableHistoryPaging.value = mutableHistoryPaging.value.received(outcome, request.generation)
+            acknowledgeHistoryLayout()
+            // Tail sync may have completed while olderJob blocked observer
+            // pumps. An invalidated page has no layout callback to wake us.
+            if (outcome == OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.Invalidated) ||
+                outcome == OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.EpochReset)) {
+                scheduleHistoryPump()
+            }
+            mutableHistoryPaging.value.retryDelayMillis?.let { milliseconds ->
+                historyRetryJob = uiScope.launch {
+                    delay(milliseconds)
+                    mutableHistoryPaging.value = mutableHistoryPaging.value.retryElapsed(request.generation)
+                    scheduleHistoryPump()
+                }
+            }
+        }
+    }
+
+    private fun cancelHistory() {
+        historyGate?.set(false)
+        historyGate = null
+        olderJob?.cancel()
+        olderJob = null
+        historyRetryJob?.cancel()
+        historyRetryJob = null
+        mutableHistoryPaging.value = mutableHistoryPaging.value.cancel()
+        lastHistoryLayout = null
+        windowStore.value?.let { store ->
+            val previous = historyCancellation
+            historyCancellation = uiScope.launch {
+                previous?.join()
+                withContext(workerContext) { store.cancelOlderLoad() }
+            }
+        }
+    }
+
+    @MainThread
+    fun jumpToLatest() {
+        if (!started || mutableJumpingLatest.value) return
+        val store = windowStore.value ?: return
+        cancelHistory()
+        historyDemand = false
+        mutableJumpingLatest.value = true
+        val cancellation = historyCancellation
+        val modeChange = windowModeJob
+        jumpJob = uiScope.launch {
+            cancellation?.join()
+            modeChange?.join()
+            if (store.state.value.requiresLatestReset) {
+                withContext(workerContext) { store.syncTail(ensureAfterCurrent = true, allowingHistoryReset = true) }
+            }
+            if (!started) return@launch
+            if (store.state.value.requiresLatestReset) {
+                mutableJumpingLatest.value = false
+                jumpJob = null
+                return@launch
+            }
+            withContext(workerContext) { store.setViewMode(MessageViewMode.Tail) }
+            mutableJumpingLatest.value = false
+            jumpJob = null
+            readerFollowsTail = true
+            mutableJumpToken.value += 1
         }
     }
 
@@ -682,16 +914,33 @@ class ChatViewModel(
         if (text.isEmpty() && attachmentMetadata == null) return
         composerText.value = ""
         draftJob?.cancel()
+        sendInFlight.value = true
         scope.launch {
-            drafts?.let { runCatching { it.clear(sessionId) } }
-            performSend(
-                text = text,
-                localId = localIdGenerator(),
-                createdAt = now(),
-                deliveryMode = if (steer) "steer" else "queue",
-                attachments = attachmentMetadata,
-                isRetry = false,
-            )
+            try {
+                drafts?.let { runCatching { it.clear(sessionId) } }
+                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                    sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
+                    sendInFlight.value = true
+                    try {
+                        val result = api.clearConversation(sessionId)
+                        _events.tryEmit(ChatEvent.SessionSuperseded(result.sessionId))
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (error: Exception) {
+                        composerText.value = text
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(error.message)))
+                    } finally { sendInFlight.value = false }
+                    return@launch
+                }
+                performSend(
+                    text = text,
+                    localId = localIdGenerator(),
+                    createdAt = now(),
+                    deliveryMode = if (steer) "steer" else "queue",
+                    attachments = attachmentMetadata,
+                    isRetry = false,
+                )
+            } finally { sendInFlight.value = false }
         }
     }
 
@@ -1320,9 +1569,11 @@ class ChatViewModel(
         return SessionConfigUi(
             flavor = flavor,
             active = detail?.active ?: summary?.active ?: false,
-            controlledByUser = detail?.agentState?.controlledByUser == true,
+            controlledByUser = detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true,
             permissionMode = detail?.permissionMode,
-            permissionModes = PermissionModes.forFlavor(flavor),
+            permissionModes = PermissionModes.forFlavor(flavor).filter {
+                detail?.metadata?.capabilities?.concurrentClients != true || it != PermissionMode.SafeYolo
+            },
             model = model,
             modelOptions = modelOptions,
             modelOptionsLoading = modelOptionsLoading,
@@ -1444,6 +1695,18 @@ class ChatViewModel(
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
         )
         previousGroups = visibleBlocks.filterIsInstance<ToolGroupBlock>()
+        inspection.update(visibleBlocks, window.epoch)
+        val sources = visibleBlocks.mapNotNull { block ->
+            when (block) {
+                is AgentTextBlock -> block.text
+                is AgentReasoningBlock -> block.text
+                is ToolCallBlock -> planProposalMarkdown(block.tool)
+                else -> null
+            }
+        }.toSet()
+        // buildUiState runs on pipelineDispatcher, before these rows reach UI.
+        markdownCache.prepare(sources - previousMarkdownSources)
+        previousMarkdownSources = sources
 
         prunePermissionOverrides(agentState, inputs.permissionOverrides)
 
@@ -1456,7 +1719,9 @@ class ChatViewModel(
             header = buildHeader(inputs),
             flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
-            blocks = visibleBlocks,
+            blocks = transcriptProjection.project(visibleBlocks),
+            processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
+                .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,
             hasMore = window.hasMore,
             isLoadingOlder = window.isLoadingMore,
@@ -1466,6 +1731,9 @@ class ChatViewModel(
                 (window.warning != null || inputs.detailLoadFailed),
             warning = window.warning,
             tailRevision = window.tailRevision,
+            historyVersion = window.historyVersion,
+            messagesVersion = window.messagesVersion,
+            requiresLatestReset = window.requiresLatestReset,
         )
     }
 
@@ -1548,4 +1816,3 @@ class ChatViewModel(
                 } == true
     }
 }
-

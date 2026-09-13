@@ -97,6 +97,10 @@ object PermissionModes {
     /** `isPermissionModeAllowedForFlavor`. */
     fun isAllowedForFlavor(mode: PermissionMode, flavor: String?): Boolean =
         mode in forFlavor(flavor)
+
+    /** New Codex sessions use the shared runtime, without HAPI Safe Yolo. */
+    fun forLaunch(flavor: String?): List<PermissionMode> =
+        forFlavor(flavor).filter { flavor != "codex" || it != PermissionMode.SafeYolo }
 }
 
 /** `CODEX_COLLABORATION_MODES` + labels. */

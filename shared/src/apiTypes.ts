@@ -558,6 +558,18 @@ export type ForkConversationResponse = {
     sessionId: string
 }
 
+export const ImplementCodexPlanRequestSchema = z.object({
+    planId: z.string().min(1)
+})
+
+export type ImplementCodexPlanRequest = z.infer<typeof ImplementCodexPlanRequestSchema>
+
+export type ImplementCodexPlanResult = { ok: true } | {
+    ok: false
+    code: 'stale_plan' | 'unavailable' | 'indeterminate' | 'failed'
+    error: string
+}
+
 export const RewindConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1)
 })
@@ -571,6 +583,8 @@ export type RewindConversationResponse = {
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
     nativeSessionId: string
+    /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
+    sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
     codexForkRequest?: {

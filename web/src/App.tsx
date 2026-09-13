@@ -16,10 +16,12 @@ import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
+import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
+import { translateInputRequestTitle } from '@/lib/input-request-toast'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
 import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib/appSseSubscriptions'
@@ -277,7 +279,8 @@ function AppInner() {
             // freshness window on `useSession`, a previously-viewed session that
             // received updates during the SSE gap would otherwise serve stale
             // cached data on remount.  See tiann/hapi#884.
-            queryClient.invalidateQueries({ queryKey: ['session'] })
+            queryClient.invalidateQueries({ queryKey: ['session'] }),
+            refreshAllAgyCatalogs(queryClient)
         ]
         const refreshMessages = (selectedSessionId && api)
             ? syncTailMessages(api, selectedSessionId)
@@ -333,6 +336,10 @@ function AppInner() {
     const translateIncomingToast = useCallback((title: string, body: string): { title: string; body: string } => {
         const normalizedTitle = title.trim()
         const normalizedBody = body.trim()
+        const inputTitle = translateInputRequestTitle(normalizedTitle, t)
+        if (inputTitle) {
+            return { title: inputTitle, body: normalizedBody }
+        }
 
         if (normalizedTitle === 'Ready for input') {
             const waitingMatch = normalizedBody.match(/^(.+)\s+is waiting in\s+(.+)$/i)

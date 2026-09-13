@@ -4,6 +4,7 @@
 
     <!-- Everything the app does rides HTTPS to the paired hub. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- FCM push (B-M4a): OS notifications for permission requests / ready /
          task events. Requested at runtime (API 33+) once a hub is paired;
@@ -38,6 +39,8 @@
     <application
         android:name=".HapiApp"
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:localeConfig="@xml/locales_config"

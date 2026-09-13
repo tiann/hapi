@@ -70,6 +70,10 @@ struct PairingFlowView: View {
                         .controlSize(.large)
                     }
                     .padding(.horizontal, 24)
+
+                    PrivacyPolicyLink()
+                        .font(.subheadline)
+                        .padding(.bottom, 24)
                 }
                 .frame(maxWidth: 480)
                 .frame(maxWidth: .infinity)

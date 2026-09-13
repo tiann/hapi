@@ -25,6 +25,7 @@ export interface Settings {
     corsOrigins?: string[]
     // Push delivery (FCM + iOS/APNs) — persisted from env like the rest of
     // this section; interpreted by fcmConfig.ts / iosPushConfig.ts.
+    androidPushMode?: string
     fcmServiceAccountPath?: string
     iosPushMode?: string
     iosPushRelayUrl?: string

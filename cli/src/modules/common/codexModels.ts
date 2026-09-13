@@ -59,7 +59,7 @@ function normalizeServiceTiers(value: unknown): string[] | undefined {
     return tokens.size > 0 ? [...tokens] : undefined;
 }
 
-function normalizeModel(entry: unknown): CodexModelSummary | null {
+export function normalizeCodexModel(entry: unknown): CodexModelSummary | null {
     if (!entry || typeof entry !== 'object') {
         return null;
     }
@@ -143,7 +143,7 @@ async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<Co
 
         const response = await client.listModels({ includeHidden });
         return Array.isArray(response.data)
-            ? response.data.map(normalizeModel).filter((model): model is CodexModelSummary => model !== null)
+            ? response.data.map(normalizeCodexModel).filter((model): model is CodexModelSummary => model !== null)
             : [];
     } catch (error) {
         throw new Error(getErrorMessage(error, 'Failed to list Codex models'));

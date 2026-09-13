@@ -39,6 +39,7 @@ function createSessionStub() {
     let metadata: Metadata = { path: '/tmp/test', host: 'localhost' }
     return {
         session: {
+            localPermissionBridge: { start: vi.fn(), stop: vi.fn(), onTranscript: vi.fn() },
             sessionId: 'test-session',
             path: '/tmp/test',
             startedBy: 'terminal' as const,
@@ -90,6 +91,8 @@ describe('claudeLocalLauncher message filtering', () => {
         await claudeLocalLauncher(session as never)
 
         expect(harness.launches[0]).toMatchObject({ model: 'claude-opus-4-1' })
+        expect(session.localPermissionBridge.start).toHaveBeenCalledWith('test-session')
+        expect(session.localPermissionBridge.stop).toHaveBeenCalled()
     })
 
     it('converts Claude Code ai-title metadata into a HAPI title', async () => {
@@ -185,6 +188,7 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(sentMessages).toHaveLength(0)
+        expect(session.localPermissionBridge.onTranscript).toHaveBeenCalledWith(expect.objectContaining({ isMeta: true }))
     })
 
     it('filters out isCompactSummary messages', async () => {

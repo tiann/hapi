@@ -109,6 +109,7 @@ data class RequestUserInputQuestion(
     val options: List<AskOption>,
     val placeholder: String?,
     val prefill: String?,
+    val inputType: String? = null,
 )
 
 /** `parseRequestUserInputInput` (the URL-confirmation flow is web-only). */
@@ -142,6 +143,7 @@ fun parseRequestUserInputQuestions(input: JsonElement?): List<RequestUserInputQu
             options = options,
             placeholder = obj["placeholder"].stringOrNull,
             prefill = obj["prefill"].stringOrNull,
+            inputType = obj["inputType"].stringOrNull?.takeIf { it == "editor" },
         )
     }
     return questions

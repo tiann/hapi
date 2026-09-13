@@ -2,6 +2,7 @@ package app.hapi.data.store
 
 import app.hapi.data.api.MessagesApi
 import app.hapi.protocol.window.MessageWindowLogic
+import app.hapi.protocol.window.HISTORY_WINDOW_SIZE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,6 +19,7 @@ class MessageWindowStores(
     private val api: MessagesApi,
     private val scope: CoroutineScope,
     private val snapshots: WindowSnapshots? = null,
+    private val historyRetentionLimit: Int = HISTORY_WINDOW_SIZE,
 ) {
     private val mutex = Mutex()
     private val stores = HashMap<String, MessageWindowStore>()
@@ -35,6 +37,7 @@ class MessageWindowStores(
                     scope = scope,
                     snapshots = snapshots,
                     initialState = hydrated,
+                    historyRetentionLimit = historyRetentionLimit,
                 )
             }
         }

@@ -63,13 +63,16 @@ public struct ConversationHistoryCapabilities: Codable, Equatable, Sendable {
 
 /// Per-session capability flags advertised by the CLI.
 public struct SessionCapabilities: Codable, Equatable, Sendable {
+    public var concurrentClients: Bool?
     public var terminal: Bool?
     public var conversationHistory: ConversationHistoryCapabilities?
 
     public init(
         terminal: Bool? = nil,
+        concurrentClients: Bool? = nil,
         conversationHistory: ConversationHistoryCapabilities? = nil
     ) {
+        self.concurrentClients = concurrentClients
         self.terminal = terminal
         self.conversationHistory = conversationHistory
     }

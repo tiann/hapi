@@ -157,6 +157,8 @@ fun SettingsScreen(
                     },
                     onClick = if (hubInfo is HubInfoState.Failed) viewModel::retryHubInfo else null,
                 )
+                SettingsDivider()
+                app.hapi.companion.ui.components.PrivacyPolicyLink()
             }
         }
     }

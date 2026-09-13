@@ -61,6 +61,7 @@ struct RootView: View {
         } message: {
             Text(model.infoNotice ?? "")
         }
+        .hapiTypography()
         .hapiTheme(themePrefs.mode.hapiTheme(systemColorScheme: colorScheme))
         // Explicit modes force the presentation's chrome to match their
         // palette; `.system` passes nil so the OS scheme flows through.

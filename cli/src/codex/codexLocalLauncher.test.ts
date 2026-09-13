@@ -210,6 +210,74 @@ describe('codexLocalLauncher', () => {
         }
     });
 
+    it('notifies once for a live completion after forwarding the final answer, without replay alerts', async () => {
+        const transcriptPath = await writeTranscriptMeta('ready.jsonl', 'ready-session');
+        const event = (payload: Record<string, unknown>) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
+        await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'old' }));
+        const { session, sessionEvents, agentMessages } = createSessionStub('default', undefined, tempDir, null, true);
+        const sendReady = vi.spyOn(session, 'sendSessionEvent');
+        let release!: () => void;
+        harness.runBarrier = new Promise<void>((resolve) => { release = resolve; });
+        const running = codexLocalLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.sessionHookHandlers).toHaveLength(1));
+            harness.sessionHookHandlers[0]('ready-session', { transcript_path: transcriptPath });
+            await wait(300);
+            expect(sessionEvents).not.toContainEqual({ type: 'ready' });
+            sendReady.mockImplementation((message) => {
+                if (message.type === 'ready') {
+                    expect(agentMessages).toContainEqual(expect.objectContaining({ message: 'finished answer' }));
+                }
+                sessionEvents.push(message);
+            });
+            await appendFile(transcriptPath,
+                event({ type: 'task_started', turn_id: 'live' })
+                + event({ type: 'agent_message', message: 'finished answer', phase: 'final_answer' })
+                + event({ type: 'task_complete', turn_id: 'live' }));
+            await vi.waitFor(() => expect(sessionEvents.filter(e => e.type === 'ready')).toHaveLength(1), { timeout: 3000 });
+            await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'live' }) + event({ type: 'task_complete', turn_id: 'old' }));
+            await wait(300);
+            expect(sessionEvents.filter(e => e.type === 'ready')).toHaveLength(1);
+        } finally {
+            release();
+            await running;
+        }
+    });
+
+    it.each(['next-turn', 'queued', 'aborted', 'failed', 'shutdown'] as const)(
+        'does not notify while %s prevents an idle completion', async (scenario) => {
+            const transcriptPath = await writeTranscriptMeta('suppressed.jsonl', 'ready-session');
+            const event = (payload: Record<string, unknown>) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
+            const { session, sessionEvents } = createSessionStub('default', undefined, tempDir);
+            if (scenario === 'queued') vi.spyOn(session.queue, 'size').mockReturnValue(1);
+            let release!: () => void;
+            harness.runBarrier = new Promise<void>((resolve) => { release = resolve; });
+            const running = codexLocalLauncher(session as never);
+            try {
+                await vi.waitFor(() => expect(harness.sessionHookHandlers).toHaveLength(1));
+                harness.sessionHookHandlers[0]('ready-session', { transcript_path: transcriptPath });
+                await wait(300);
+                const completion = scenario === 'aborted' ? 'turn_aborted' : scenario === 'failed' ? 'task_failed' : 'task_complete';
+                await appendFile(transcriptPath,
+                    event({ type: completion, turn_id: 'first' })
+                    + (scenario === 'next-turn' ? event({ type: 'task_started', turn_id: 'second' }) : ''));
+                if (scenario === 'shutdown') {
+                    release();
+                    await running;
+                }
+                await wait(300);
+                expect(sessionEvents).not.toContainEqual({ type: 'ready' });
+                if (scenario === 'next-turn') {
+                    await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'second' }));
+                    await vi.waitFor(() => expect(sessionEvents).toContainEqual({ type: 'ready' }), { timeout: 3000 });
+                }
+            } finally {
+                release();
+                await running;
+            }
+        }
+    );
+
     it('rebuilds approval and sandbox args from yolo mode', async () => {
         const { session } = createSessionStub('yolo', [
             '--sandbox',

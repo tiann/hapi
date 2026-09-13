@@ -53,7 +53,7 @@ struct NewSessionSpawnBodyTests {
                 agent: .codex,
                 model: "gpt-5.2-codex",
                 modelReasoningEffort: "high",
-                permissionMode: .safeYolo,
+                permissionMode: .readOnly,
                 yolo: true,
                 sessionType: .worktree,
                 worktreeName: "  feature-x  ",
@@ -65,7 +65,7 @@ struct NewSessionSpawnBodyTests {
         #expect(body == """
         {"agent":"codex","collaborationMode":"plan","directory":"/repo",\
         "model":"gpt-5.2-codex","modelReasoningEffort":"high",\
-        "permissionMode":"safe-yolo","serviceTier":"fast",\
+        "permissionMode":"read-only","serviceTier":"fast",\
         "sessionType":"worktree","worktreeName":"feature-x"}
         """)
     }
@@ -269,10 +269,12 @@ struct NewSessionLogicTests {
         )
         #expect(badMode.permissionMode == .default)
 
-        let goodMode = NewSessionLogic.sanitizeDraft(
+        let staleMode = NewSessionLogic.sanitizeDraft(
             NewSessionForm(agent: .codex, permissionMode: .safeYolo)
         )
-        #expect(goodMode.permissionMode == .safeYolo)
+        #expect(staleMode.permissionMode == .default)
+        #expect(AgentFlavor.codex.launchPermissionModes == [.default, .readOnly, .yolo])
+        #expect(NewSessionLogic.sanitizeDraft(NewSessionForm(agent: .kimi, permissionMode: .safeYolo)).permissionMode == .safeYolo)
     }
 
     @Test func draftDecodingToleratesMissingKeysAndRoundTrips() throws {

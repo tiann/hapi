@@ -254,6 +254,7 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Show status summaries in chat' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
+        expect(screen.getByText('选择是否让受支持的智能体输出状态摘要，以及是否在聊天中显示。')).toBeInTheDocument()
     })
 
     it('explains and keeps summary generation separate from chat display', async () => {
@@ -265,7 +266,7 @@ describe('responsive settings pages', () => {
         renderPage(<SettingsGeneralPage />)
 
         expect(await screen.findByRole('heading', { name: 'Session status summaries' })).toBeInTheDocument()
-        expect(screen.getByText('Choose whether supported agents emit a machine-readable status summary and whether it appears in chat.')).toBeInTheDocument()
+        expect(screen.getByText('Choose whether supported agents emit status summaries and whether they appear in chat.')).toBeInTheDocument()
         expect(await screen.findByRole('checkbox', { name: 'Emit status summaries' })).toBeInTheDocument()
         expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)')).toBeInTheDocument()
         expect(screen.queryByRole('heading', { name: 'Chat display', level: 3 })).not.toBeInTheDocument()

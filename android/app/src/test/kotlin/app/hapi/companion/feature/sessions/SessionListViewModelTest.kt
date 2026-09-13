@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 
 // ------------------------------------------------------------------ fakes --
 
@@ -168,6 +169,42 @@ private fun TestScope.buildViewModel(
 // ------------------------------------------------------------------ tests --
 
 class SessionListViewModelTest {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `vanished filter stays cleared when sessions return and is isolated per home`() = runTest {
+        val (viewModel, sessions, machines) = buildViewModel()
+        sessions.set(summary("one", machineId = "m1"), summary("two", machineId = "m2"))
+        viewModel.uiState.first { it.rows.size == 2 }
+        viewModel.setMachineFilter("m1")
+        viewModel.uiState.first { it.activeMachineFilter == "m1" }
+        val (otherHome) = buildViewModel(sessions, machines)
+        assertNull(otherHome.uiState.first { it.rows.size == 2 }.activeMachineFilter)
+        sessions.set(summary("two", machineId = "m2"))
+        viewModel.uiState.first { it.rows.size == 1 && it.activeMachineFilter == null }
+        runCurrent()
+        sessions.set(summary("one", machineId = "m1"), summary("two", machineId = "m2"))
+        assertNull(viewModel.uiState.first { it.rows.size == 2 }.activeMachineFilter)
+    }
+
+    @Test
+    fun `machine choices stay name ordered across count changes and include historical unknowns`() = runTest {
+        val (viewModel, sessions, machines) = buildViewModel()
+        machines.backing.value = listOf(
+            machine("z", "z", "Zulu"), machine("a", "a", " Devbox "), machine("b", "b", "devbox"),
+        )
+        sessions.set(
+            summary("z1", machineId = "z"), summary("a1", machineId = "a"), summary("b1", machineId = "b"),
+            summary("old", machineId = "retired", active = false), summary("unknown"),
+        )
+        val first = viewModel.uiState.first { it.rows.size == 5 }.machineFilters
+        assertEquals(listOf("a", "b", "z", "retired", UNKNOWN_MACHINE_ID), first.map { it.id })
+        assertEquals(listOf("Devbox · a", "devbox · b"), first.take(2).map { it.label })
+        assertTrue(first.first { it.id == "retired" }.unnamed)
+        sessions.set(*sessions.backing.value.toTypedArray(), summary("z2", machineId = "z"), summary("z3", machineId = "z"))
+        val updated = viewModel.uiState.first { it.rows.size == 7 }.machineFilters
+        assertEquals(first.map { it.id }, updated.map { it.id })
+        assertEquals(3, updated.first { it.id == "z" }.sessionCount)
+    }
 
     @Test
     fun `uiState maps rows with titles meta and unread`() = runTest {
@@ -194,8 +231,10 @@ class SessionListViewModelTest {
         // Meta = `project · machine`: last two path segments, then the
         // machine label (displayName wins; unlisted machines shorten the id;
         // shown because several machines are known and no filter is active).
-        assertEquals("repo/app · Devbox", byId.getValue("s1").meta)
-        assertEquals("repo/app · offline-", byId.getValue("s2").meta)
+        assertEquals("repo/app", byId.getValue("s1").meta)
+        assertEquals("Devbox", byId.getValue("s1").machine?.label)
+        assertEquals("repo/app", byId.getValue("s2").meta)
+        assertTrue(byId.getValue("s2").machine!!.unnamed)
         assertEquals("repo/tail-name", byId.getValue("s3").meta)
 
         // No baseline seeded (no successful refresh yet) → activity is unread.
@@ -212,12 +251,12 @@ class SessionListViewModelTest {
         )
 
         var state = viewModel.uiState.first { it.rows.size == 3 }
-        assertTrue(state.showMachineFilterBar)
+        assertTrue(state.hasMachineFilters)
         assertEquals(listOf("m1", "m2"), state.machineFilters.map { it.id })
         assertEquals(listOf(2, 1), state.machineFilters.map { it.sessionCount })
 
         // Unfiltered multi-machine view carries the machine in the meta line…
-        assertEquals("repo/app · m1", state.rows.first { it.id == "s1" }.meta)
+        assertEquals("m1", state.rows.first { it.id == "s1" }.machine?.id)
 
         viewModel.setMachineFilter("m1")
         state = viewModel.uiState.first { it.activeMachineFilter == "m1" }
@@ -238,7 +277,7 @@ class SessionListViewModelTest {
         sessions.set(summary("s1", machineId = "m1"), summary("s2", machineId = "m1"))
         viewModel.setMachineFilter("m9")
         val state = viewModel.uiState.first { it.rows.size == 2 }
-        assertFalse(state.showMachineFilterBar)
+        assertFalse(state.hasMachineFilters)
         assertNull(state.activeMachineFilter)
         // A single machine is not worth naming on every row.
         assertEquals(listOf("repo/app", "repo/app"), state.rows.map { it.meta })

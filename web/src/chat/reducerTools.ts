@@ -13,7 +13,7 @@ export function getPermissions(agentState: AgentState | null | undefined): Map<s
     const completed = agentState?.completedRequests ?? null
     if (completed) {
         for (const [id, entry] of Object.entries(completed)) {
-            map.set(id, {
+            map.set(entry.toolCallId ?? id, {
                 toolName: entry.tool,
                 input: entry.arguments,
                 permission: {
@@ -34,8 +34,8 @@ export function getPermissions(agentState: AgentState | null | undefined): Map<s
     const requests = agentState?.requests ?? null
     if (requests) {
         for (const [id, request] of Object.entries(requests)) {
-            if (map.has(id)) continue
-            map.set(id, {
+            if (completed?.[id]) continue
+            map.set(request.toolCallId ?? id, {
                 toolName: request.tool,
                 input: request.arguments,
                 permission: {
