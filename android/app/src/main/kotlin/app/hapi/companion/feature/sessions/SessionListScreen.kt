@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -36,6 +34,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -145,12 +144,12 @@ fun SessionListScreen(
             if (state.isOffline) {
                 OfflineBanner()
             }
-            if (state.showMachineFilterBar) {
-                MachineFilterRow(
-                    filters = state.machineFilters,
-                    activeFilter = state.activeMachineFilter,
-                    onSelect = viewModel::setMachineFilter,
-                )
+            state.machineFilters.find { it.id == state.activeMachineFilter }?.let { filter ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.sessions_filter_summary, machineFilterLabel(filter)),
+                        style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { viewModel.setMachineFilter(null) }) { Text(stringResource(R.string.sessions_clear_filter)) }
+                }
             }
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
@@ -361,7 +360,7 @@ private fun SessionRow(
 // when it disambiguates) — the row just renders it.
 @Composable
 private fun MetaLine(row: SessionRowUi) {
-    val meta = row.meta ?: return
+    val meta = listOfNotNull(row.meta, row.machine?.let { machineFilterLabel(it) }).joinToString(" · ").takeIf { it.isNotEmpty() } ?: return
     Text(
         text = meta,
         // bodySmall, not labelSmall: as the row's only secondary line the
@@ -448,36 +447,6 @@ private fun UnreadDot() {
 }
 
 // --------------------------------------------------------------- chrome --
-
-@Composable
-private fun MachineFilterRow(
-    filters: List<MachineFilterUi>,
-    activeFilter: String?,
-    onSelect: (String?) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        FilterChip(
-            selected = activeFilter == null,
-            onClick = { onSelect(null) },
-            label = { Text(stringResource(R.string.sessions_filter_all)) },
-        )
-        filters.forEach { filter ->
-            val label = filter.label.ifBlank { stringResource(R.string.sessions_filter_unknown_machine) }
-            FilterChip(
-                selected = activeFilter == filter.id,
-                onClick = { onSelect(if (activeFilter == filter.id) null else filter.id) },
-                label = { Text("$label · ${filter.sessionCount}") },
-            )
-        }
-    }
-}
 
 @Composable
 private fun OfflineBanner() {

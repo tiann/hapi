@@ -1,7 +1,7 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 
-import { CodexAppServerClient } from './codexAppServerClient';
+import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -11,11 +11,22 @@ import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
+import type { QueueReservation } from '@/utils/MessageQueue2';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
-import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
+import {
+    buildThreadStartParams,
+    buildTurnStartParams,
+    type CodexContextManagementConfig
+} from './utils/appServerConfig';
+import {
+    extractCodexMcpServers,
+    mergeCodexMcpServers,
+    type CodexMcpServersConfig
+} from './utils/codexMcpServers';
+import { prepareCodexMcpServers } from './utils/codexMcpProxy';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
@@ -212,6 +223,14 @@ function stripAnsi(value: string): string {
     return value.replace(/\u001b\[[0-9;]*m/g, '');
 }
 
+export function isCurrentSteerHandler(
+    currentEpoch: number,
+    handlerEpoch: number,
+    shouldExit: boolean
+): boolean {
+    return currentEpoch === handlerEpoch && !shouldExit;
+}
+
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
     private readonly appServerClient: CodexAppServerClient;
@@ -219,7 +238,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private reasoningProcessor: ReasoningProcessor | null = null;
     private diffProcessor: DiffProcessor | null = null;
     private happyServer: HappyServer | null = null;
+    private mcpProxyCleanup: (() => Promise<void>) | null = null;
     private abortController: AbortController = new AbortController();
+    /** Invalidates queued-message steer handlers after abort or cleanup. */
+    private steerEpoch = 0;
+    private abortInProgress = false;
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
     private readonly activeChildTurns = new Map<string, string>();
@@ -276,13 +299,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        this.abortInProgress = true;
+        this.steerEpoch++;
         logger.debug('[Codex] Abort requested - stopping current task');
         try {
             await this.interruptActiveTurns('abort');
             this.currentTurnId = null;
 
             this.abortController.abort();
-            this.session.queue.reset();
+            // A dispatched steer may still reconcile after Abort; preserve its
+            // reservation so a positive thread/read result can acknowledge it.
+            this.session.queue.reset({ preserveDispatchingReservations: true });
             this.permissionHandler?.reset();
             this.reasoningProcessor?.abort();
             this.diffProcessor?.reset();
@@ -291,6 +318,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             logger.debug('[Codex] Error during abort:', error);
         } finally {
             this.abortController = new AbortController();
+            this.abortInProgress = false;
         }
     }
 
@@ -671,6 +699,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let scheduleReadyAfterTurn: (() => void) | null = null;
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
+        const setTurnInFlight = (value: boolean) => {
+            turnInFlight = value;
+            session.client.updateAgentState((state) => ({ ...state, steeringActive: value }));
+        };
+        setTurnInFlight(false);
         let usageModel: string | null = null;
         let allowAnonymousTerminalEvent = false;
         let invalidThreadId: string | null = null;
@@ -1875,6 +1908,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             waiter();
         };
 
+        appServerClient.setTransportAbandonedHandler(() => {
+            // The old process is gone; its foreground turn cannot deliver more
+            // notifications. Let the loop recover on a fresh app-server.
+            setTurnInFlight(false);
+            this.conversationHistory.setBusy(false);
+            if (session.thinking) session.onThinkingChange(false);
+            recoveryInFlight = false;
+            activeMessage = null;
+            this.currentTurnId = null;
+            wakeLoop();
+        });
+
         const waitForTurnOrRecovery = (signal: AbortSignal): Promise<void> => new Promise((resolve) => {
             if (!turnInFlight && !recoveryInFlight) {
                 resolve();
@@ -1892,6 +1937,316 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             loopWakeWaiter = finish;
             signal.addEventListener('abort', finish, { once: true });
         });
+
+        // Steers whose transport outcome is indeterminate (disconnect / protocol
+        // failure after dispatch). Reconciled independently of the main loop by
+        // a self-rescheduling timer: accepted → commit + consumed; still
+        // unreadable or no matching client id → retry later (absence of a
+        // durable client id is NOT proof of rejection).
+        const pendingSteerReconciliations = new Map<string, {
+            threadId: string;
+            taken: QueueReservation<EnhancedMode>;
+            batch: QueuedMessage;
+            expiresAt: number;
+        }>();
+        let steerReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+        let steerReconcileInProgress = false;
+        let shuttingDown = false;
+
+        const settleReconcileEntry = (localId: string, entry: { taken: QueueReservation<EnhancedMode>; batch: QueuedMessage }): void => {
+            // An explicit retry/cancel may have superseded this poll while its
+            // readThread request was in flight.
+            if (pendingSteerReconciliations.get(localId) !== entry) return;
+            // The hub already knows this row is indeterminate. Only a positive
+            // thread/read match may stamp it delivered.
+            const committed = session.queue.commitReservation(entry.taken);
+            pendingSteerReconciliations.delete(localId);
+            if (!committed) return;
+            messageBuffer.addMessage(entry.batch.message, 'user');
+            session.client.emitMessagesConsumed([localId], { steered: true });
+        };
+
+        const markReconcileEntryIndeterminate = (localId: string, entry: { taken: QueueReservation<EnhancedMode>; batch: QueuedMessage }): void => {
+            // Keep the reservation out of the automatic queue, but leave an
+            // explicit retry/cancel path. The hub persists the same state so a
+            // runner restart cannot replay an unproven steer.
+            session.queue.markReservationIndeterminate(entry.taken);
+            session.client.emitSteerIndeterminate([localId]);
+        };
+
+        const runSteerReconciliation = async (): Promise<void> => {
+            if (steerReconcileTimer) {
+                clearTimeout(steerReconcileTimer);
+                steerReconcileTimer = null;
+            }
+            if (shuttingDown || steerReconcileInProgress || pendingSteerReconciliations.size === 0) {
+                return;
+            }
+            steerReconcileInProgress = true;
+            try {
+                for (const [localId, entry] of Array.from(pendingSteerReconciliations.entries())) {
+                    if (pendingSteerReconciliations.get(localId) !== entry) continue;
+                    if (Date.now() >= entry.expiresAt) {
+                        // Terminal outcome: keep the durable indeterminate state.
+                        // Never convert missing client-id evidence into a
+                        // messages-consumed ACK; the user must explicitly retry
+                        // or cancel the held row.
+                        logger.debug(`[Codex] steer ${localId} reconciliation expired; keeping indeterminate`);
+                        pendingSteerReconciliations.delete(localId);
+                        continue;
+                    }
+                    const outcome = await reconcileSteerByClientId(entry.threadId, localId);
+                    if (outcome === 'accepted') {
+                        settleReconcileEntry(localId, entry);
+                    }
+                    // 'unknown' → keep the entry; the timer reschedules below.
+                }
+            } finally {
+                steerReconcileInProgress = false;
+                if (!shuttingDown && pendingSteerReconciliations.size > 0) {
+                    steerReconcileTimer = setTimeout(() => {
+                        steerReconcileTimer = null;
+                        void runSteerReconciliation();
+                        // Wake the main loop too (it may sit in
+                        // waitForTurnOrRecovery while the turn is in flight).
+                        wakeLoop();
+                    }, 1_000);
+                    steerReconcileTimer.unref?.();
+                }
+            }
+        };
+
+        const scheduleSteerReconcileRetry = () => {
+            if (shuttingDown) {
+                return;
+            }
+            if (steerReconcileTimer || steerReconcileInProgress) {
+                return;
+            }
+            steerReconcileTimer = setTimeout(() => {
+                steerReconcileTimer = null;
+                void runSteerReconciliation();
+            }, 1_000);
+            steerReconcileTimer.unref?.();
+        };
+
+        // thread/read auto-connects after a disconnect, but a freshly spawned
+        // app-server must be initialized before any request — the startup block
+        // only ran for the original process.
+        const ensureAppServerInitialized = async () => {
+            if (appServerClient.isConnected() && appServerClient.isInitialized()) {
+                return;
+            }
+            await appServerClient.connect();
+            await appServerClient.initialize({
+                clientInfo: {
+                    name: 'hapi-codex-client',
+                    version: '1.0.0'
+                },
+                capabilities: {
+                    experimentalApi: true
+                }
+            });
+        };
+
+        // Returns 'accepted' when the thread contains the steered user message
+        // (echoed as userMessage.clientId). Absence of the id is ambiguous
+        // (client ids are not guaranteed durable), so anything unreadable or
+        // unmatched stays 'unknown' and is retried.
+        const reconcileSteerByClientId = async (threadId: string, localId: string): Promise<'accepted' | 'unknown'> => {
+            try {
+                await ensureAppServerInitialized();
+                const response = await appServerClient.readThread(
+                    { threadId, includeTurns: true },
+                    { signal: AbortSignal.timeout(5_000) }
+                );
+                for (const turn of response.thread.turns ?? []) {
+                    for (const item of turn.items ?? []) {
+                        const record = asRecord(item);
+                        // Accept both wire shapes the app-server has used for
+                        // user messages (see conversationHistory.ts parsing).
+                        const type = asString(record?.type) ?? asString(record?.itemType);
+                        const clientId = asString(record?.clientId) ?? asString(record?.client_id);
+                        if ((type === 'userMessage' || type === 'user_message') && clientId === localId) {
+                            return 'accepted';
+                        }
+                    }
+                }
+                return 'unknown';
+            } catch (error) {
+                logger.debug(`[Codex] steer reconcile unavailable (${error instanceof Error ? error.message : String(error)})`);
+                return 'unknown';
+            }
+        };
+
+        // Non-interrupting mid-turn inject via app-server `turn/steer`.
+        // Returns null when the turn ended or is review/compact (not steerable).
+        const trySteerActiveTurn = async (
+            batch: QueuedMessage,
+            localId: string
+        ): Promise<{ dispatched: Promise<void>; completed: Promise<unknown> } | null> => {
+            const threadId = this.currentThreadId;
+            const turnId = this.currentTurnId;
+            if (!threadId || !turnId || !turnInFlight) {
+                return null;
+            }
+            try {
+                return await appServerClient.steerTurn({
+                    threadId,
+                    input: [{ type: 'text', text: batch.message }],
+                    expectedTurnId: turnId,
+                    // Echoed back as userMessage.clientId — lets an ambiguous
+                    // transport failure reconcile the thread later.
+                    clientUserMessageId: localId
+                }, { signal: this.abortController.signal });
+            } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
+                logger.debug(`[Codex] turn/steer failed (${detail})`);
+                return null;
+            }
+        };
+
+        // Per-message steer from the waiting queue (web "Steer" button).
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : '';
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' };
+                }
+                if (this.abortInProgress || !turnInFlight || !this.currentThreadId || !this.currentTurnId) {
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                // Reserve before awaiting turn/steer so the main loop cannot
+                // collect the same row for turn/start while steer is in flight.
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' };
+                }
+                // An explicit retry supersedes any old reconciliation poll for
+                // the same held row.
+                pendingSteerReconciliations.delete(localId);
+                const isControlCommand = Boolean(taken.item.isolate)
+                    || Boolean(parseCodexSpecialCommand(taken.item.message).type);
+                if (isControlCommand) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Control commands cannot be steered' };
+                }
+                if (activeMessage?.hash !== taken.item.modeHash) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Queued message mode differs from the active turn' };
+                }
+                const batch: QueuedMessage = {
+                    message: taken.item.message,
+                    mode: taken.item.mode,
+                    isolate: Boolean(taken.item.isolate),
+                    hash: taken.item.modeHash
+                };
+                const steerEpoch = this.steerEpoch;
+                // Pin the thread this steer targets: reconciliation must look at
+                // the steer's thread, not whichever turn is current later.
+                const steerThreadId = this.currentThreadId;
+                const steerTurnId = this.currentTurnId;
+                if (!session.queue.beginReservationDispatch(taken)) {
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
+                if (!dispatchStatePersisted) {
+                    session.queue.markReservationIndeterminate(taken);
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer state is indeterminate' };
+                }
+                const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (!taken.originIndeterminate) {
+                        const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                        if (!persisted) {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
+                        }
+                    }
+                    if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                        session.client.emitSteerIndeterminate([localId]);
+                        return false;
+                    }
+                    return true;
+                };
+                if (taken.state !== 'dispatching') {
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                if (!turnInFlight
+                    || this.currentThreadId !== steerThreadId
+                    || this.currentTurnId !== steerTurnId
+                    || !isCurrentSteerHandler(this.steerEpoch, steerEpoch, this.shouldExit)) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+                const steer = await trySteerActiveTurn(batch, localId);
+                if (steer) {
+                    const reconcileDispatchedSteer = (
+                        localId: string,
+                        taken: QueueReservation<EnhancedMode>,
+                        batch: QueuedMessage
+                    ) => {
+                        const threadId = steerThreadId;
+                        if (!threadId) {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return;
+                        }
+                        const entry = { threadId, taken, batch, expiresAt: Date.now() + 60_000 };
+                        pendingSteerReconciliations.set(localId, entry);
+                        markReconcileEntryIndeterminate(localId, entry);
+                        scheduleSteerReconcileRetry();
+                    };
+                    try {
+                        await steer.dispatched;
+                    } catch (error) {
+                        // A stalled/aborted stdin callback is indeterminate: the
+                        // bytes may have reached Codex even though dispatch did
+                        // not report success. Reconcile instead of replaying.
+                        void steer.completed.catch(() => {});
+                        if (isIndeterminateError(error)) {
+                            reconcileDispatchedSteer(localId, taken, batch);
+                            return { steered: false, error: 'Steer outcome is being reconciled' };
+                        }
+                        await restoreQueuedReservation();
+                        return { steered: false, error: error instanceof Error ? error.message : 'Steer failed' };
+                    }
+                    try {
+                        // Await app-server acceptance before reporting success:
+                        // an explicit JSON-RPC rejection must surface as failed
+                        // (row restored, normal turn/start delivers it later)
+                        // rather than a false steered. turn/steer's response is
+                        // the inject acceptance, not the full turn completion.
+                        await steer.completed;
+                    } catch (error) {
+                        if (isIndeterminateError(error)) {
+                            // Transport failure after dispatch: the outcome is
+                            // unknown — keep the row reserved and reconcile the
+                            // thread once the app-server is reachable again.
+                            reconcileDispatchedSteer(localId, taken, batch);
+                            return { steered: false, error: 'Steer outcome is being reconciled' };
+                        }
+                        await restoreQueuedReservation();
+                        return { steered: false, error: error instanceof Error ? error.message : 'Steer failed' };
+                    }
+                    session.queue.commitReservation(taken);
+                    messageBuffer.addMessage(batch.message, 'user');
+                    session.client.emitMessagesConsumed([localId], { steered: true });
+                    return { steered: true };
+                }
+                if (!isCurrentSteerHandler(this.steerEpoch, steerEpoch, this.shouldExit)) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                await restoreQueuedReservation();
+                return { steered: false, error: 'Active turn is not steerable' };
+            }
+        );
 
         const clearCompactRecovery = (recovery: typeof compactRecovery) => {
             if (!recovery) {
@@ -2198,7 +2553,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 });
 
                 lastFinalizedTurnId = request.turnId;
-                turnInFlight = false;
+                setTurnInFlight(false);
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
                 sameThreadRetryAttempt = 0;
@@ -2221,7 +2576,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } catch (error) {
                 if (interrupted) {
                     lastFinalizedTurnId = request.turnId;
-                    turnInFlight = false;
+                    setTurnInFlight(false);
                     allowAnonymousTerminalEvent = false;
                     this.currentTurnId = null;
                     activeMessage = null;
@@ -2746,7 +3101,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             if (msgType === 'task_started') {
                 clearReadyAfterTurnTimer?.();
-                turnInFlight = true;
+                setTurnInFlight(true);
                 if (!eventTurnId && !this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
                 }
@@ -2756,7 +3111,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (isTerminalEvent) {
-                turnInFlight = false;
+                setTurnInFlight(false);
                 this.conversationHistory.setBusy(false);
                 allowAnonymousTerminalEvent = false;
                 if (session.thinking) {
@@ -2886,6 +3241,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const threadId = eventThreadId ?? this.currentThreadId;
                 session.sendAgentMessage({
                     ...addCodexEventScope(msg, 'parent', threadId),
+                    flavor: 'codex',
                     model: asString(msg.model) ?? usageModel,
                     id: randomUUID()
                 });
@@ -3180,7 +3536,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             failPendingAgentStartsForSpawnArgumentError(spawnAgentError);
         });
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+        const { server: happyServer, mcpServers: hapiMcpServers } = await buildHapiMcpBridge(session.client, {
             // In app-server/collab mode, child agents share this MCP bridge.
             // If the MCP handler writes the title directly, child title calls
             // leak into the parent HAPI session. Defer the side effect until
@@ -3189,6 +3545,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             emitTitleSummary: false
         });
         this.happyServer = happyServer;
+        let mcpServers: CodexMcpServersConfig = hapiMcpServers;
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -3221,6 +3578,47 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 experimentalApi: true
             }
         });
+
+        let contextManagementConfig: CodexContextManagementConfig | undefined;
+        try {
+            const effectiveConfig = (await appServerClient.readConfig({
+                cwd: session.path,
+                includeLayers: false
+            })).config;
+            try {
+                const userMcpServers = extractCodexMcpServers(effectiveConfig);
+                const preparedMcpServers = await prepareCodexMcpServers(userMcpServers);
+                this.mcpProxyCleanup = preparedMcpServers.cleanup;
+                mcpServers = mergeCodexMcpServers(preparedMcpServers.servers, hapiMcpServers);
+                if (Object.keys(userMcpServers).length > 0) {
+                    logger.debug(`[Codex] Loaded ${Object.keys(userMcpServers).length} user MCP server(s)`);
+                }
+                if (preparedMcpServers.proxiedServerNames.length > 0) {
+                    logger.debug(
+                        `[Codex] Added stdio compatibility proxy for ${preparedMcpServers.proxiedServerNames.length} Windows MCP server(s)`
+                    );
+                }
+            } catch (error) {
+                logger.warn(`[Codex] Failed to merge user MCP servers; using HAPI bridge only: ${errorMessage(error)}`);
+            }
+            const modelContextWindow = effectiveConfig.model_context_window;
+            const modelAutoCompactTokenLimit = effectiveConfig.model_auto_compact_token_limit;
+            contextManagementConfig = {
+                ...(typeof modelContextWindow === 'number' && Number.isInteger(modelContextWindow) && modelContextWindow > 0
+                    ? { modelContextWindow }
+                    : {}),
+                ...(typeof modelAutoCompactTokenLimit === 'number'
+                    && Number.isInteger(modelAutoCompactTokenLimit)
+                    && modelAutoCompactTokenLimit > 0
+                    ? { modelAutoCompactTokenLimit }
+                    : {})
+            };
+            if (Object.keys(contextManagementConfig).length === 0) {
+                contextManagementConfig = undefined;
+            }
+        } catch (error) {
+            logger.debug('[Codex] Failed to read effective context management config; using app-server defaults', error);
+        }
 
         const publishConversationHistoryCapabilities = async () => {
             const conversationHistory = this.conversationHistory.getCapabilitiesForMetadata()?.conversationHistory
@@ -3340,7 +3738,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const resetCurrentTurnState = () => {
             clearDeferredThreadStatusFailure();
             cancelSafetyBufferingRequest('Session reset');
-            turnInFlight = false;
+            setTurnInFlight(false);
             allowAnonymousTerminalEvent = false;
             this.currentTurnId = null;
             permissionHandler.reset();
@@ -3372,7 +3770,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 cwd: session.path,
                 mode,
                 mcpServers,
-                cliOverrides: session.codexCliOverrides
+                cliOverrides: session.codexCliOverrides,
+                contextManagementConfig
             });
 
             try {
@@ -3437,7 +3836,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cwd: session.path,
                     mode,
                     mcpServers,
-                    cliOverrides: session.codexCliOverrides
+                    cliOverrides: session.codexCliOverrides,
+                    contextManagementConfig
                 });
                 try {
                     const resumeResponse = await appServerClient.resumeThread({
@@ -3468,7 +3868,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cwd: session.path,
                     mode,
                     mcpServers,
-                    cliOverrides: session.codexCliOverrides
+                    cliOverrides: session.codexCliOverrides,
+                    contextManagementConfig
                 });
                 const threadResponse = await appServerClient.startThread({
                     ...threadParams,
@@ -3646,6 +4047,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
+            if (!appServerClient.isConnected() || !appServerClient.isInitialized()) {
+                await ensureAppServerInitialized();
+            }
+            if (pendingSteerReconciliations.size > 0) {
+                await runSteerReconciliation();
+            }
             if (!pending && recoveryInFlight) {
                 await waitForTurnOrRecovery(this.abortController.signal);
                 if (this.abortController.signal.aborted && !this.shouldExit) {
@@ -3713,7 +4120,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cwd: session.path,
                         mode: message.mode,
                         mcpServers,
-                        cliOverrides: session.codexCliOverrides
+                        cliOverrides: session.codexCliOverrides,
+                        contextManagementConfig
                     });
 
                     const resumeCandidate = session.sessionId ?? null;
@@ -3790,7 +4198,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
 
-                turnInFlight = true;
+                setTurnInFlight(true);
                 this.conversationHistory.setBusy(true);
                 allowAnonymousTerminalEvent = false;
                 const mode = {
@@ -3870,7 +4278,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
-                turnInFlight = false;
+                setTurnInFlight(false);
                 this.conversationHistory.setBusy(false);
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
@@ -3922,10 +4330,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         clearDeferredThreadStatusFailure();
         cancelSafetyBufferingRequest('Session ended');
         cancelAllPendingThrottledAgentRunUpdates();
+        // Stop reconciliation: the launcher is leaving; no pending steer may
+        // spawn a fresh app-server after cleanup.
+        shuttingDown = true;
+        if (steerReconcileTimer) {
+            clearTimeout(steerReconcileTimer);
+            steerReconcileTimer = null;
+        }
+        pendingSteerReconciliations.clear();
     }
 
     protected async cleanup(): Promise<void> {
         logger.debug('[codex-remote]: cleanup start');
+        this.appServerClient.setTransportAbandonedHandler(null);
         this.appServerClient.setStderrHandler(null);
         try {
             await this.appServerClient.disconnect();
@@ -3938,6 +4355,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         if (this.happyServer) {
             this.happyServer.stop();
             this.happyServer = null;
+        }
+
+        if (this.mcpProxyCleanup) {
+            try {
+                await this.mcpProxyCleanup();
+            } catch (error) {
+                logger.debug('[codex-remote]: Error cleaning MCP proxy specs', error);
+            }
+            this.mcpProxyCleanup = null;
         }
 
         this.permissionHandler?.reset();

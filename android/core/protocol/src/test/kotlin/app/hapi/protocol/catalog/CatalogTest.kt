@@ -90,7 +90,7 @@ class CatalogTest {
     @Test
     fun `agent flavors match AGENT_FLAVORS and CREATABLE excludes gemini`() {
         assertEquals(
-            listOf("agy", "claude", "codex", "copilot", "cursor", "gemini", "grok", "kimi", "opencode", "pi"),
+            listOf("agy", "claude", "codex", "dsh", "copilot", "cursor", "gemini", "grok", "kimi", "opencode", "pi"),
             AgentFlavor.KNOWN.map { it.id }
         )
         assertFalse(AgentFlavor.CREATABLE.contains(AgentFlavor.Gemini))
@@ -109,11 +109,13 @@ class CatalogTest {
         assertTrue(Flavors.supportsEffort("pi"))
         assertFalse(Flavors.supportsEffort("codex"))
         assertFalse(Flavors.supportsEffort(null))
-        assertTrue(AgentFlavor.KNOWN.all { Flavors.supportsModelChange(it.id) })
+        assertTrue(AgentFlavor.KNOWN.filter { it != AgentFlavor.Dsh }.all { Flavors.supportsModelChange(it.id) })
+        assertFalse(Flavors.supportsModelChange("dsh"))
         assertFalse(Flavors.supportsModelChange("unknown"))
         assertEquals("Antigravity", Flavors.label("agy"))
         assertEquals("Grok Build", Flavors.label("grok"))
         assertEquals("OpenCode", Flavors.label("opencode"))
+        assertEquals("DeepSeek Harness", Flavors.label("dsh"))
         assertEquals("Unknown", Flavors.label("mystery"))
         assertTrue(Flavors.isCodexFamily("copilot"))
         assertFalse(Flavors.isCodexFamily("claude"))

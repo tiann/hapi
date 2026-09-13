@@ -106,12 +106,64 @@ object MessageWindowLogic {
     }
 
     /**
-     * Trim to [regularLimit] while never dropping queued rows: the regular
-     * budget shrinks by the queued count, `agent-run-*` rows trim against
-     * their own [AGENT_RUN_WINDOW_SIZE] bucket, and queued rows are re-merged
-     * afterwards (web `trimPreservingQueued`).
+     * Web `getReasoningStreamId`: the stream a reasoning row belongs to, or
+     * null for anything else. Unrecognised shapes read as null, which means
+     * "keep it".
      */
-    private fun trimPreservingQueued(messages: List<WindowMessage>, regularLimit: Int, mode: TrimMode): Trim {
+    private fun reasoningStreamId(message: WindowMessage): String? {
+        val outer = message.wire.content as? JsonObject ?: return null
+        if (outer["role"].stringOrNull != "agent") return null
+        val content = outer["content"] as? JsonObject ?: return null
+        if (content["type"].stringOrNull != "codex") return null
+        val data = content["data"] as? JsonObject ?: return null
+        if (data["type"].stringOrNull != "reasoning") return null
+        val id = data["id"].stringOrNull ?: return null
+        return id.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Web `dropSupersededReasoningSnapshots`: collapse a reasoning stream to
+     * the one snapshot that still says something. The CLI re-sends a growing
+     * buffer under a stable stream id every few hundred milliseconds and the
+     * timeline folds those rows into a single block, so spending window budget
+     * on the older ones is what pushes the surrounding conversation out of
+     * reach. Rows with no stream id are left alone.
+     */
+    private fun dropSupersededReasoningSnapshots(messages: List<WindowMessage>): List<WindowMessage> {
+        val newestByStream = LinkedHashMap<String, WindowMessage>()
+        for (message in messages) {
+            val streamId = reasoningStreamId(message) ?: continue
+            val incumbent = newestByStream[streamId]
+            if (incumbent == null) {
+                newestByStream[streamId] = message
+                continue
+            }
+            // Fall back to arrival order when either row predates seq
+            // numbering: `messages` is kept in display order, so later still
+            // means newer.
+            val challengerAt = messagePosition(message)
+            val incumbentAt = messagePosition(incumbent)
+            val newer = if (challengerAt != null && incumbentAt != null) {
+                challengerAt >= incumbentAt
+            } else {
+                true
+            }
+            if (newer) newestByStream[streamId] = message
+        }
+        if (newestByStream.isEmpty()) return messages
+        val survivors = newestByStream.values.mapTo(HashSet()) { it.id }
+        return messages.filter { reasoningStreamId(it) == null || it.id in survivors }
+    }
+
+    /**
+     * Trim to [regularLimit] while never dropping queued rows: superseded
+     * reasoning snapshots are collapsed first, the regular budget shrinks by
+     * the queued count, `agent-run-*` rows trim against their own
+     * [AGENT_RUN_WINDOW_SIZE] bucket, and queued rows are re-merged afterwards
+     * (web `trimPreservingQueued`).
+     */
+    private fun trimPreservingQueued(incoming: List<WindowMessage>, regularLimit: Int, mode: TrimMode): Trim {
+        val messages = dropSupersededReasoningSnapshots(incoming)
         val queued = messages.filter { it.isQueuedForInvocation }
         val queuedIds = queued.mapTo(HashSet()) { it.id }
         val nonQueued = messages.filter { it.id !in queuedIds }
@@ -175,7 +227,7 @@ object MessageWindowLogic {
         val effectiveMode = mode
             ?: if (previous.viewMode == MessageViewMode.History) TrimMode.Prepend else TrimMode.Append
         val effectiveLimit = regularLimit
-            ?: if (previous.viewMode == MessageViewMode.History) HISTORY_WINDOW_SIZE else VISIBLE_WINDOW_SIZE
+            ?: if (previous.viewMode == MessageViewMode.History) previous.historyRetentionLimit else VISIBLE_WINDOW_SIZE
         val merged = MessageMerge.mergeMessages(previous.messages, retainedIncoming)
         val (kept, dropped) = trimPreservingQueued(merged, effectiveLimit, effectiveMode).let { it.kept to it.dropped }
         var next = previous.withMessages(kept)
@@ -504,6 +556,37 @@ object MessageWindowLogic {
             } else {
                 changed = true
                 message.copy(status = status)
+            }
+        }
+        return if (changed) previous.withMessages(messages) else previous
+    }
+
+    /** Mark a row's native delivery outcome as unknown without invoking it. */
+    fun markIndeterminate(previous: MessageWindowState, localIds: List<String>): MessageWindowState {
+        if (localIds.isEmpty()) return previous
+        val ids = localIds.toSet()
+        var changed = false
+        val messages = previous.messages.map { message ->
+            if (message.localId == null || message.localId !in ids || message.status == MessageStatus.Indeterminate) {
+                message
+            } else {
+                changed = true
+                message.copy(status = MessageStatus.Indeterminate)
+            }
+        }
+        return if (changed) previous.withMessages(messages) else previous
+    }
+
+    fun markRequeued(previous: MessageWindowState, localIds: List<String>): MessageWindowState {
+        if (localIds.isEmpty()) return previous
+        val ids = localIds.toSet()
+        var changed = false
+        val messages = previous.messages.map { message ->
+            if (message.localId == null || message.localId !in ids || message.status != MessageStatus.Indeterminate) {
+                message
+            } else {
+                changed = true
+                message.copy(status = MessageStatus.Queued)
             }
         }
         return if (changed) previous.withMessages(messages) else previous

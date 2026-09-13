@@ -121,16 +121,16 @@ Hub-side delivery (`SSEManager.shouldSend`):
 | `heartbeat` | every connection |
 | `toast` | every **visible** connection in the namespace, regardless of filter (no `id`, never replayed) |
 | `message-received`, `scheduled-matured` | `all=true` connections + matching `sessionId` connections |
-| `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
-| `machine-updated` | `all=true` connections + matching `machineId` connections |
+| `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
+| `machine-updated`, `machine-agy-models-updated` | `all=true` connections + matching `machineId` connections |
 
-**The global connection must also handle the message-stream events** (`message-received`, `messages-consumed`, `message-cancelled`, `scheduled-matured`): while a session connection is down (reconnect gap) or the session isn't open, the global pipe is the only one alive, and it must still keep queued/optimistic bookkeeping correct — mark local messages consumed, remove cancelled rows, and refresh session-list scheduled counts. The session-scoped connection additionally ingests `message-received` into the message window.
+**The global connection must also handle the message-stream events** (`message-received`, `messages-consumed`, `messages-indeterminate`, `messages-requeued`, `message-cancelled`, `scheduled-matured`): while a session connection is down (reconnect gap) or the session isn't open, the global pipe is the only one alive, and it must still keep queued/optimistic bookkeeping correct — mark local messages consumed, remove cancelled rows, and refresh session-list scheduled counts. The session-scoped connection additionally ingests `message-received` into the message window.
 
 The two connections have **no ordering relationship with each other** — the same `session-updated` patch can arrive on both, in either order. That is why the versioned-patch gate below exists.
 
 ---
 
-## SyncEvent union (13 types)
+## SyncEvent union (16 types)
 
 Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). All events except `connection-changed` carry `namespace?: string`. Ignore unknown event types.
 
@@ -140,12 +140,15 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 | `session-updated` | `sessionId`, `data?: Session \| SessionPatch` | See [Versioned patch algorithm](#versioned-patch-algorithm). |
 | `session-removed` | `sessionId` | Drop the session from the list, drop its detail cache, clear its message window. |
 | `message-received` | `sessionId`, `message: DecryptedMessage` | Ingest into the message window; advance the tail cursor (see [pagination](./pagination.md)). Also fired for the caller's own send (the localId echo). |
-| `messages-invalidated` | `sessionId` | Message history changed **structurally** (rewind, fork, import, clear). Session scope: discard the whole window and run a fresh tail sync. Global scope: refetch the session list. |
+| `messages-invalidated` | `sessionId`; rewind may also include `reason: 'rewind'` and `truncateFromLocalId` | Message history changed **structurally** (rewind, fork, import, clear). For a rewind, retain only the known prefix through the client boundary before tail-syncing; for every other invalidation, discard the whole window and run a fresh tail sync. Global scope: refetch the session list. |
 | `scheduled-matured` | `sessionId` | A scheduled message became due and was handed to the agent. Refetch list/queue indicators. |
 | `session-ended` | `sessionId`, `reason?: 'completed'\|'terminated'\|'error'\|'handoff'\|'cleared'` | Session lifecycle signal (the `session-updated` flow still carries the state change). |
 | `machine-updated` | `machineId`, `data?: Machine \| MachinePatch \| null` | Full `Machine`: upsert (remove when `active:false`). `null`: machine removed. Patch `{active?, activeAt?, updatedAt?}`: `active:false` ⇒ remove, otherwise refetch machines. `data` absent ⇒ refetch. |
+| `machine-agy-models-updated` | `machineId` | The machine's `agy models` listing changed on a background re-check. Refetch `GET /api/machines/:id/agy-models` for that machine (answered from the machine's cache; it starts no `agy` run and produces no further event). Emitted when the re-check changes what that route would answer — a different listing, or a sign-in warning that appeared or cleared — never for the machine's first listing. |
 | `toast` | `data: {title, body, sessionId, url}` | Show as in-app toast/banner. Only delivered to visible connections (see [Visibility](#visibility)). |
 | `messages-consumed` | `sessionId`, `localIds: string[]`, `invokedAt: number` | The agent consumed queued user messages: stamp `invokedAt`, flip status to `sent`, remove from the queued bar. |
+| `messages-indeterminate` | `sessionId`, `localIds: string[]` | A native dispatch/queue mutation has an unknown outcome. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. Shared-engine Retry/Cancel can remain unavailable until reconciliation proves the outcome. |
+| `messages-requeued` | `sessionId`, `localIds: string[]` | An explicit Retry restored delivery to the normal queue. Clear the indeterminate marker. |
 | `message-cancelled` | `sessionId`, `messageId`, `localId?` | A queued message was cancelled: remove the row (match by `messageId` **or** `localId`). |
 | `heartbeat` | `data?: {timestamp}` | Feed the staleness watchdog. No other action. **Carries no `id`.** |
 | `connection-changed` | `data?: {status, subscriptionId?, resume?: 'ok'\|'gap'}` | Handshake; see [Handshake and resume](#handshake-and-resume). Store `subscriptionId` for visibility reporting. **Carries no `id`.** |
@@ -189,9 +192,9 @@ Reference list sort (web): `globalPinned` > `pinned` > `active` > `pendingReques
 
 `POST /api/visibility` with body `{"subscriptionId": "<from connection-changed>", "visibility": "visible" | "hidden"}` → `{"ok": true}`. Errors: `400` invalid body, `404` unknown `subscriptionId` (or namespace mismatch), `503` hub not ready. Each new connection has a **new** `subscriptionId` — re-report after every reconnect (the web reference reports both of its connections on every foreground/background transition and retries a failed report after 2 s).
 
-Semantics (`hub/src/visibility/visibilityTracker.ts`, `hub/src/push/pushNotificationChannel.ts`): when **any** connection in the namespace is visible, the hub delivers notification events (ready / permission request / task result) as in-app **`toast` SSE frames to the visible connections** and suppresses Web Push for the namespace; Web Push fires only when no visible connection exists (or toast delivery reached zero connections). Native FCM devices (`POST /api/devices/register`) are independent of visibility and fire unconditionally — see [native-companion-contract](../native-companion-contract.md).
+Semantics (`hub/src/visibility/visibilityTracker.ts`, `hub/src/push/pushNotificationChannel.ts`): Android/iOS native delivery is independent of Web visibility. When a native provider accepts a notification for at least one device, the hub skips the Web Push/toast duplicate for that dispatch. Otherwise, if **any** connection in the namespace is visible, the hub first sends **`toast` SSE frames to visible connections**. Web Push is the fallback when no connection is visible or toast delivery reaches zero connections. Provider acceptance is not a handset delivery receipt — see the [native companion contract](../native-companion-contract.md).
 
-Native rule: report `visible` on foreground and `hidden` on background, every time. A native client that stays `visible` while backgrounded suppresses its own (and every PWA's) hub-side push for the namespace, and receives its notifications only as toast frames nobody is looking at.
+Native rule: report `visible` on foreground and `hidden` on background, every time. A stale `visible` report can divert the namespace's Web Push fallback into unseen toast frames; it does not disable native push. The native app separately suppresses its local notification when the corresponding chat is already open in the foreground.
 
 ---
 

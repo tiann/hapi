@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.chat.composer
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -42,6 +44,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -58,14 +65,12 @@ import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
 
 /**
- * The chat input bar (B-M3a, extended in B-M3ce/B-M3f): multiline text field
- * (Enter = newline, mobile default), a send button whose long-press offers
- * "Send & steer" while a turn is active, an abort button during thinking,
- * a mic button for press-to-toggle dictation (recording chip with elapsed
- * time + cancel while capturing), a slash-command dropdown that opens while
- * the text is a lone `/token`, and the attachment tray: a "+" button opening
- * the picker sheet plus per-attachment chips (uploading spinner → thumbnail /
- * failed tap-to-retry, ✕ removes).
+ * The chat input card (B-M3a, extended in B-M3ce/B-M3f): attachments and the
+ * multiline text field grow above a fixed bottom action row. The trailing
+ * primary action is stateful: Stop while a turn runs with an empty draft,
+ * otherwise Send (long-press offers "Send & steer" during a turn). The card
+ * also hosts dictation and attachment controls, while slash suggestions stay
+ * outside so the popup cannot be clipped by the rounded surface.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -88,7 +93,7 @@ fun ChatComposer(
     onDictationCancel: () -> Unit = {},
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
@@ -96,89 +101,94 @@ fun ChatComposer(
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
-            if (attachments.isNotEmpty()) {
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    items(attachments, key = { it.id }) { attachment ->
-                        ComposerAttachmentChip(
-                            attachment = attachment,
-                            onRetry = { onAttachmentRetry(attachment.id) },
-                            onRemove = { onAttachmentRemove(attachment.id) },
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = RoundedCornerShape(20.dp),
+                tonalElevation = 1.dp,
+                shadowElevation = 2.dp,
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column {
+                    if (attachments.isNotEmpty()) {
+                        LazyRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(attachments, key = { it.id }) { attachment ->
+                                ComposerAttachmentChip(
+                                    attachment = attachment,
+                                    onRetry = { onAttachmentRetry(attachment.id) },
+                                    onRemove = { onAttachmentRemove(attachment.id) },
+                                )
+                            }
+                        }
+                    }
+                    val recording = dictation as? DictationState.Recording
+                    if (recording != null) {
+                        RecordingChip(
+                            startedAtMs = recording.startedAtMs,
+                            onCancel = onDictationCancel,
+                            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
                         )
                     }
-                }
-            }
-            val recording = dictation as? DictationState.Recording
-            if (recording != null) {
-                RecordingChip(
-                    startedAtMs = recording.startedAtMs,
-                    onCancel = onDictationCancel,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
-            }
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (onAddAttachment != null) {
-                    ComposerRoundButton(
-                        glyph = PlusGlyph,
-                        contentDescription = stringResource(R.string.chat_composer_add_attachment),
-                        onClick = onAddAttachment,
-                    )
-                }
-                // The input pill: borderless multiline field with the mic
-                // inline at its trailing edge (chat-bar idiom, not a form
-                // field — OutlinedTextField's label chrome read as broken).
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    shape = RoundedCornerShape(22.dp),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        BasicTextField(
-                            value = state.text,
-                            onValueChange = onTextChange,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = MaterialTheme.colorScheme.onSurface,
-                            ),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                            maxLines = 6,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 14.dp, end = 4.dp, top = 11.dp, bottom = 11.dp),
-                            decorationBox = { inner ->
-                                Box {
-                                    if (state.text.isEmpty()) {
-                                        Text(
-                                            text = stringResource(R.string.chat_composer_placeholder),
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            color = MaterialTheme.hapi.hint,
-                                        )
-                                    }
-                                    inner()
+                    BasicTextField(
+                        value = state.text,
+                        onValueChange = onTextChange,
+                        textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        maxLines = 6,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
+                        decorationBox = { inner ->
+                            Box {
+                                if (state.text.isEmpty()) {
+                                    Text(
+                                        text = stringResource(R.string.chat_composer_placeholder),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.hapi.hint,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
                                 }
-                            },
-                        )
+                                inner()
+                            }
+                        },
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // 48 dp touch slot with a centered 38 dp circle:
+                            // 7 + 5 = the shared 12 dp visual inset.
+                            .padding(start = 7.dp, end = 7.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (onAddAttachment != null) {
+                            ComposerActionButton(
+                                contentDescription = stringResource(R.string.chat_composer_add_attachment),
+                                onClick = onAddAttachment,
+                            ) {
+                                Icon(PlusGlyph, contentDescription = null, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
                         if (dictation != null) {
                             MicButton(state = dictation, onToggle = onDictationToggle)
                         }
+                        PrimaryActionButton(
+                            state = state,
+                            attachments = attachments,
+                            onSend = onSend,
+                            onSendSteer = onSendSteer,
+                            onAbort = onAbort,
+                        )
                     }
                 }
-                if (state.canSteer) {
-                    ComposerRoundButton(
-                        glyph = StopGlyph,
-                        contentDescription = stringResource(R.string.chat_composer_abort),
-                        onClick = onAbort,
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                }
-                SendButton(state = state, attachments = attachments, onSend = onSend, onSendSteer = onSendSteer)
             }
         }
     }
@@ -287,27 +297,42 @@ internal fun formatChipSize(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
-/** Shared 42 dp round action button (glyph icon, tinted via contentColor). */
+/** Shared 48 dp touch target with a centered 38 dp visual circle. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ComposerRoundButton(
-    glyph: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String?,
+private fun ComposerActionButton(
+    contentDescription: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     contentColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurfaceVariant,
     enabled: Boolean = true,
+    content: @Composable () -> Unit,
 ) {
-    Surface(
-        color = color,
-        contentColor = contentColor,
-        shape = CircleShape,
-        enabled = enabled,
-        onClick = onClick,
-        modifier = modifier.size(42.dp),
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+            .semantics(mergeDescendants = true) {
+                this.contentDescription = contentDescription
+                role = Role.Button
+                if (!enabled) disabled()
+            },
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(glyph, contentDescription = contentDescription, modifier = Modifier.size(20.dp))
+        Surface(
+            color = color,
+            contentColor = contentColor,
+            shape = CircleShape,
+            modifier = Modifier.size(38.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) { content() }
         }
     }
 }
@@ -415,42 +440,31 @@ internal fun formatElapsed(totalSeconds: Long): String {
 private fun MicButton(state: DictationState, onToggle: () -> Unit) {
     val recording = state is DictationState.Recording
     val busy = state is DictationState.Starting || state is DictationState.Transcribing
-    Surface(
+    ComposerActionButton(
+        contentDescription = stringResource(
+            if (recording) R.string.chat_composer_stop_recording else R.string.chat_composer_mic,
+        ),
+        onClick = onToggle,
+        enabled = !busy,
         color = if (recording) {
             MaterialTheme.colorScheme.errorContainer
         } else {
-            androidx.compose.ui.graphics.Color.Transparent
+            MaterialTheme.colorScheme.surfaceContainerHigh
         },
         contentColor = if (recording) {
             MaterialTheme.colorScheme.onErrorContainer
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
         },
-        shape = CircleShape,
-        enabled = !busy,
-        onClick = onToggle,
-        modifier = Modifier
-            .padding(end = 4.dp, bottom = 4.dp)
-            .size(38.dp),
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            when {
-                busy -> CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.hapi.hint,
-                )
-                recording -> Icon(
-                    StopGlyph,
-                    contentDescription = stringResource(R.string.chat_composer_stop_recording),
-                    modifier = Modifier.size(18.dp),
-                )
-                else -> Icon(
-                    MicGlyph,
-                    contentDescription = stringResource(R.string.chat_composer_mic),
-                    modifier = Modifier.size(19.dp),
-                )
-            }
+        when {
+            busy -> CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.hapi.hint,
+            )
+            recording -> Icon(StopGlyph, contentDescription = null, modifier = Modifier.size(18.dp))
+            else -> Icon(MicGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
         }
     }
 }
@@ -459,74 +473,91 @@ private fun MicButton(state: DictationState, onToggle: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SendButton(
+private fun PrimaryActionButton(
     state: ComposerUiState,
     attachments: List<ComposerAttachmentUi>,
     onSend: () -> Unit,
     onSendSteer: () -> Unit,
+    onAbort: () -> Unit,
 ) {
     var steerMenuOpen by remember { mutableStateOf(false) }
     val hasText = state.text.isNotBlank()
+    val hasDraft = hasText || attachments.isNotEmpty()
     // Attachments gate the send like the web: every chip must settle Ready
     // (uploading waits, failed must be retried or removed); a ready tray
     // allows an attachments-only send (wire: text or attachments required).
     val attachmentsBusy = attachments.any { it.status != ComposerAttachmentStatus.Ready }
     val attachmentsReady = attachments.isNotEmpty() && !attachmentsBusy
-    val enabled = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending
+    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending
+    val action = when {
+        state.isSending -> ComposerPrimaryAction.Sending
+        state.canSteer && !hasDraft -> ComposerPrimaryAction.Stop
+        else -> ComposerPrimaryAction.Send
+    }
 
-    Box(
-        modifier = Modifier
-            .size(42.dp)
-            .clip(CircleShape),
-    ) {
-        Surface(
-            color = if (enabled) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-            contentColor = if (enabled) {
-                MaterialTheme.colorScheme.onPrimary
-            } else {
-                MaterialTheme.hapi.hint
-            },
-            shape = CircleShape,
-            modifier = Modifier
-                .size(42.dp)
-                .combinedClickable(
-                    enabled = enabled,
-                    onClick = onSend,
-                    // Steer intent is deliberate: only offered while a turn is
-                    // active (`messageDelivery.ts` — queue is always the default).
-                    onLongClick = { if (state.canSteer) steerMenuOpen = true },
-                ),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                if (state.isSending) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.hapi.hint,
-                    )
+    Box {
+        when (action) {
+            ComposerPrimaryAction.Sending -> ComposerActionButton(
+                contentDescription = stringResource(R.string.chat_composer_send),
+                onClick = {},
+                enabled = false,
+                contentColor = MaterialTheme.hapi.hint,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.hapi.hint,
+                )
+            }
+            ComposerPrimaryAction.Stop -> ComposerActionButton(
+                contentDescription = stringResource(R.string.chat_composer_abort),
+                onClick = onAbort,
+                color = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ) {
+                Icon(StopGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
+            }
+            ComposerPrimaryAction.Send -> ComposerActionButton(
+                contentDescription = stringResource(R.string.chat_composer_send),
+                onClick = onSend,
+                onLongClick = if (state.canSteer && canSubmit) {
+                    { steerMenuOpen = true }
                 } else {
-                    Icon(
-                        ArrowUpGlyph,
-                        contentDescription = stringResource(R.string.chat_composer_send),
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                    null
+                },
+                enabled = canSubmit,
+                color = if (canSubmit) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                contentColor = if (canSubmit) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.hapi.hint
+                },
+            ) {
+                Icon(ArrowUpGlyph, contentDescription = null, modifier = Modifier.size(20.dp))
             }
         }
-        DropdownMenu(expanded = steerMenuOpen, onDismissRequest = { steerMenuOpen = false }) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.chat_send_steer)) },
-                onClick = {
-                    steerMenuOpen = false
-                    onSendSteer()
-                },
-            )
+        if (action == ComposerPrimaryAction.Send) {
+            DropdownMenu(expanded = steerMenuOpen, onDismissRequest = { steerMenuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_send_steer)) },
+                    onClick = {
+                        steerMenuOpen = false
+                        onSendSteer()
+                    },
+                )
+            }
         }
     }
+}
+
+private enum class ComposerPrimaryAction {
+    Sending,
+    Stop,
+    Send,
 }
 
 // -------------------------------------------------------------- previews --
@@ -543,8 +574,14 @@ private fun ChatComposerPreview() {
                     dictation = DictationState.Idle,
                 )
                 ChatComposer(
+                    state = ComposerUiState(text = "", isSending = false, canSteer = true),
+                    onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onAddAttachment = {},
+                    dictation = DictationState.Idle,
+                )
+                ChatComposer(
                     state = ComposerUiState(
-                        text = "Run the tests and summarize failures",
+                        text = "Run the tests and summarize failures\nThen propose the smallest safe fix.",
                         isSending = false,
                         canSteer = true,
                     ),
@@ -577,7 +614,7 @@ private fun AttachmentChipsComposerPreview() {
     HapiTheme {
         Surface {
             ChatComposer(
-                state = ComposerUiState(text = "", isSending = false, canSteer = false),
+                state = ComposerUiState(text = "", isSending = false, canSteer = true),
                 onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
                 onAddAttachment = {},
                 attachments = listOf(

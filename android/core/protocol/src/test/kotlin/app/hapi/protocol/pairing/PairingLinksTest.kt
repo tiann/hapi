@@ -8,9 +8,9 @@ class PairingLinksTest {
 
     @Test
     fun `parse accepts the companion deeplink form`() {
-        val link = PairingLinks.parse("hapicompanion://bind?hub=http://192.168.1.20:3006&code=abc123")
+        val link = PairingLinks.parse("hapicompanion://bind?hub=https://hub.example.com:8443&code=abc123")
 
-        assertEquals(BindLink(hubUrl = "http://192.168.1.20:3006", accessToken = "abc123"), link)
+        assertEquals(BindLink(hubUrl = "https://hub.example.com:8443", accessToken = "abc123"), link)
     }
 
     @Test
@@ -28,10 +28,10 @@ class PairingLinksTest {
     @Test
     fun `web form is not pinned to the hosted web origin`() {
         val link = PairingLinks.parseWebUrl(
-            "http://selfhosted.example:8080/?hub=http%3A%2F%2Fhub.example%3A3006&token=x"
+            "https://selfhosted.example:8443/?hub=https%3A%2F%2Fhub.example%3A8443&token=x"
         )
 
-        assertEquals("http://hub.example:3006", link?.hubUrl)
+        assertEquals("https://hub.example:8443", link?.hubUrl)
         assertEquals("x", link?.accessToken)
     }
 
@@ -60,13 +60,15 @@ class PairingLinksTest {
     }
 
     @Test
-    fun `web form requires hub to be an http url`() {
+    fun `web form requires both urls to use https`() {
+        assertNull(PairingLinks.parseWebUrl("http://app.hapi.run/?hub=https%3A%2F%2Fh.example.com&token=x"))
+        assertNull(PairingLinks.parseWebUrl("https://app.hapi.run/?hub=http%3A%2F%2Fh.example.com&token=x"))
         assertNull(PairingLinks.parseWebUrl("https://app.hapi.run/?hub=ftp%3A%2F%2Fh.example.com&token=x"))
         assertNull(PairingLinks.parseWebUrl("https://app.hapi.run/?hub=not-a-url&token=x"))
     }
 
     @Test
-    fun `web form rejects non-http schemes and malformed input`() {
+    fun `web form rejects non-https schemes and malformed input`() {
         assertNull(PairingLinks.parseWebUrl("hapicompanion://bind?hub=https%3A%2F%2Fh.example.com&code=x"))
         assertNull(PairingLinks.parseWebUrl("ftp://app.hapi.run/?hub=https%3A%2F%2Fh.example.com&token=x"))
         assertNull(PairingLinks.parseWebUrl(""))

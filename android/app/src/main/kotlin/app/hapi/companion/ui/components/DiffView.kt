@@ -67,7 +67,7 @@ fun DiffView(
         if (file.isBinary) {
             Text(
                 text = stringResource(R.string.diff_binary_file),
-                fontSize = 12.sp,
+                fontSize = 14.sp,
                 color = colors.hint,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
@@ -94,8 +94,8 @@ fun DiffView(
                     Text(
                         text = row.text,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
                         softWrap = false,
                         maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp),
@@ -111,7 +111,7 @@ fun DiffView(
                 } else {
                     stringResource(R.string.diff_collapse)
                 },
-                fontSize = 12.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier

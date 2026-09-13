@@ -203,6 +203,61 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock.durationMs).toBe(1500)
     })
 
+    it('attaches marked top-level Codex usage as a one-turn Round summary', () => {
+        const assistant = makeAgentMessage('Codex answer', {
+            id: 'codex-answer',
+            model: 'gpt-5.4'
+        })
+        const tokenCount: TracedMessage = {
+            id: 'codex-token-count',
+            localId: null,
+            createdAt: 1_700_000_002_000,
+            role: 'event',
+            content: {
+                type: 'token-count',
+                provider: 'codex',
+                model: 'gpt-5.4',
+                info: {}
+            },
+            usage: { input_tokens: 100, output_tokens: 10 },
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([assistant, tokenCount], makeContext())
+        expect(blocks).toMatchObject([{
+            kind: 'agent-text',
+            roundSummary: {
+                usage: { input_tokens: 100, output_tokens: 10 },
+                modelUsage: {
+                    'gpt-5.4': { inputTokens: 100, outputTokens: 10 }
+                },
+                numTurns: 1
+            }
+        }])
+    })
+
+    it('does not derive a Round summary from unmarked token usage', () => {
+        const assistant = makeAgentMessage('Imported Codex answer', {
+            id: 'imported-codex-answer',
+            model: 'gpt-5.4'
+        })
+        const tokenCount: TracedMessage = {
+            id: 'imported-codex-token-count',
+            localId: null,
+            createdAt: 1_700_000_002_000,
+            role: 'event',
+            content: {
+                type: 'token-count',
+                info: {}
+            },
+            usage: { input_tokens: 100, output_tokens: 10 },
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([assistant, tokenCount], makeContext())
+        expect(blocks[0]).not.toHaveProperty('roundSummary')
+    })
+
     it('merges turn-duration event into the last assistant block as fallback', () => {
         const assistantMsg = makeAgentMessage('Hello')
         const durationEvent: TracedMessage = {
@@ -291,9 +346,67 @@ describe('reduceTimeline', () => {
 
         expect(reasoningBlocks).toHaveLength(1)
         expect(reasoningBlocks[0]).toMatchObject({
-            id: 'reasoning-row-1:0',
+            id: 'reasoning-stream-1',
             text: 'first second'
         })
+    })
+
+    it('keeps reasoning block identity stable when the surviving snapshot row changes', () => {
+        // Production flow: the window store only keeps the newest snapshot row
+        // of a stream, so each reduce pass can see a different underlying
+        // message row. The block id must not churn with it, or the rendered
+        // reasoning panel remounts (replaying its open animation) per snapshot.
+        const makeRow = (id: string, text: string): TracedMessage => ({
+            id,
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'reasoning',
+                text,
+                uuid: id,
+                streamId: 'reasoning-stream-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage)
+
+        const firstPass = reduceTimeline([makeRow('row-1', 'partial')], makeContext())
+        const secondPass = reduceTimeline([makeRow('row-2', 'partial extended')], makeContext())
+
+        const firstBlock = firstPass.blocks.find((block) => block.kind === 'agent-reasoning') as any
+        const secondBlock = secondPass.blocks.find((block) => block.kind === 'agent-reasoning') as any
+
+        expect(firstBlock.id).toBe('reasoning-stream-1')
+        expect(secondBlock.id).toBe(firstBlock.id)
+        expect(secondBlock.text).toBe('partial extended')
+    })
+
+    it('treats blank stream ids as no stream so rows keep distinct row-derived ids', () => {
+        const makeRow = (id: string, streamId: string): TracedMessage => ({
+            id,
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'reasoning',
+                text: `text of ${id}`,
+                uuid: id,
+                streamId,
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage)
+
+        const { blocks } = reduceTimeline([
+            makeRow('blank-1', ''),
+            makeRow('blank-2', '   ')
+        ], makeContext())
+        const reasoningBlocks = blocks.filter((block) => block.kind === 'agent-reasoning')
+
+        expect(reasoningBlocks).toHaveLength(2)
+        expect(reasoningBlocks[0]).toMatchObject({ id: 'blank-1:0' })
+        expect(reasoningBlocks[1]).toMatchObject({ id: 'blank-2:0' })
     })
 
     it('collapses text snapshots with the same stream id while leaving legacy text separate', () => {
@@ -332,7 +445,7 @@ describe('reduceTimeline', () => {
 
         expect(textBlocks).toHaveLength(2)
         expect(textBlocks[0]).toMatchObject({
-            id: 'text-row-1:0',
+            id: 'text-stream-1',
             text: 'first second'
         })
         expect(textBlocks[1]).toMatchObject({

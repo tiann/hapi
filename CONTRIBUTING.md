@@ -54,7 +54,7 @@ Have an idea to improve HAPI? Open an issue with:
 ## Getting Started
 
 1. Fork and clone the repository
-2. Install dependencies:
+2. Install Bun 1.4.0, then install dependencies from the repo root:
    ```bash
    bun install
    ```
@@ -64,6 +64,14 @@ Have an idea to improve HAPI? Open an issue with:
    ```
 
 See the [README](README.md) for more build options.
+
+From the repo root, `bun typecheck` checks CLI, Hub, Web, and Relay;
+`bun run test` runs CLI/Web Vitest and Hub/Shared/Relay Bun tests. Native
+toolchains and checks are documented in [iOS](ios/README.md) and
+[Android](android/README.md).
+
+For documentation changes, run `bun run --cwd docs docs:build` and check
+affected links and anchors in the generated site.
 
 ## Questions?
 

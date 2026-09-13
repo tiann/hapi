@@ -30,6 +30,17 @@ export function convertPiTurnUsage(
     };
 }
 
+/** Builds a context-only usage update from Pi's post-compaction estimate. */
+export function convertPiCompactionUsage(estimatedTokensAfter: number | undefined): AgentMessage | null {
+    if (estimatedTokensAfter === undefined || !Number.isFinite(estimatedTokensAfter) || estimatedTokensAfter < 0) return null;
+    return {
+        type: 'usage',
+        inputTokens: 0,
+        outputTokens: 0,
+        contextTokens: estimatedTokensAfter,
+    };
+}
+
 /** Converts validated Pi lifecycle events to HAPI chat messages. */
 export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
     switch (event.type) {

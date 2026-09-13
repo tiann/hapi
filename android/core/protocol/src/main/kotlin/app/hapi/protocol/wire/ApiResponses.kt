@@ -119,6 +119,13 @@ data class CancelMessageResponse(
     val message: DecryptedMessage? = null,
 )
 
+@Serializable
+data class RetryIndeterminateMessageResponse(
+    val status: String,
+    val localId: String? = null,
+    val message: DecryptedMessage? = null,
+)
+
 /**
  * `POST /api/sessions/:id/messages/:messageId/steer`
  * (`SteerQueuedMessageResponseSchema` — discriminated on [status]):
@@ -140,6 +147,7 @@ data class SteerQueuedMessageResponse(
 data class QueuedStateResponse(
     val queuedLocalIds: List<String>,
     val invokedLocalMessages: List<InvokedLocalMessage>,
+    val indeterminateLocalIds: List<String> = emptyList(),
 )
 
 @Serializable
@@ -158,6 +166,9 @@ data class SpawnResponse(
     val type: String,
     val sessionId: String? = null,
     val message: String? = null,
+    /** `agent_unavailable | runner_upgrade_required | outside_workspace_roots`. */
+    val code: String? = null,
+    val agent: String? = null,
 )
 
 /** `GET /api/sessions/:id/slash-commands` (RPC-wrapped: check [success]). */
@@ -217,6 +228,21 @@ data class MachineDirectoryEntry(
 @Serializable
 data class MachinePathsExistsResponse(
     val exists: Map<String, Boolean>,
+    val outsideWorkspaceRoots: List<String>? = null,
+)
+
+/** `GET /api/machines/:id/agent-availability`. */
+@Serializable
+data class AgentAvailabilityResponse(
+    val agents: List<AgentAvailabilityEntry>,
+)
+
+@Serializable
+data class AgentAvailabilityEntry(
+    val agent: String,
+    val available: Boolean,
+    /** `not_found | invalid_configuration`. */
+    val reason: String? = null,
 )
 
 /**
@@ -288,4 +314,3 @@ data class TranscriptionProviderInfo(
     /** Subset of `standard` / `realtime`; native dictation uses `standard`. */
     val modes: List<String>,
 )
-

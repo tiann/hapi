@@ -26,7 +26,9 @@ Details and local-only mode: [Hub setup](./installation.md#hub-setup)
 hapi
 ```
 
-This starts Claude Code wrapped with HAPI. The session appears in the web UI.
+Choose an installed agent from the picker. Its session appears in the web UI.
+To start one directly, use `hapi claude`, `hapi codex`, or another
+[supported agent command](./agents.md). Scripts must specify the agent explicitly.
 
 ## Open the UI
 

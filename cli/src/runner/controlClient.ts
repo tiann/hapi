@@ -10,7 +10,7 @@ import packageJson from '../../package.json';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
-import { isProcessAlive, isHapiRunnerProcess, killProcess } from '@/utils/process';
+import { isProcessAlive, getHapiRunnerProcessIdentity, killProcess } from '@/utils/process';
 import { configuration } from '@/configuration';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders, isRunnerStateCompatibleWithIdentity } from './runnerIdentity';
 
@@ -146,8 +146,17 @@ export async function checkIfRunnerRunningAndCleanupStaleState(): Promise<boolea
   }
 
   // Verify PID is alive AND belongs to hapi (not a reused PID from another process)
-  if (isHapiRunnerProcess(state.pid)) {
+  const identity = getHapiRunnerProcessIdentity(state.pid);
+  if (identity === 'runner') {
     return true;
+  }
+
+  if (identity === 'unknown') {
+    // The pid is alive but unidentifiable. Reporting it as the runner would let
+    // callers signal a process that may not be ours, and clearing the state would
+    // drop the lock that keeps a second runner from starting. Do neither.
+    logger.debug('[RUNNER RUN] Runner PID could not be identified, leaving state untouched');
+    return false;
   }
 
   logger.debug('[RUNNER RUN] Runner PID not running or not a hapi process, cleaning up state');
@@ -286,6 +295,16 @@ export async function stopRunner() {
       return;
     }
 
+    // Every stop is a signal to the persisted pid and port, so gate the whole
+    // sequence on a confirmed identity. Callers derive their decision from a
+    // boolean, and a pid we cannot identify may belong to an unrelated process
+    // that reused it, whose port may have been reused as well.
+    const identity = getHapiRunnerProcessIdentity(state.pid);
+    if (identity !== 'runner') {
+      logger.debug(`Not stopping PID ${state.pid}: identity is ${identity}`);
+      return;
+    }
+
     logger.debug(`Stopping runner with PID ${state.pid}`);
 
     // Try HTTP graceful stop
@@ -300,7 +319,6 @@ export async function stopRunner() {
       logger.debug('HTTP stop failed, will force kill', error);
     }
 
-    // Force kill
     const killed = await killProcess(state.pid, true);
     if (killed) {
       logger.debug('Force killed runner');

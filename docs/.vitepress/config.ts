@@ -38,7 +38,8 @@ export default defineConfig({
       {
         text: 'Agents',
         items: [
-          { text: 'Agents', link: '/guide/agents' }
+          { text: 'Agents', link: '/guide/agents' },
+          { text: 'Codex Usage & Limits', link: '/guide/codex-shared-sessions' }
         ]
       },
       {
@@ -74,7 +75,7 @@ export default defineConfig({
     ],
 
     footer: {
-      message: 'Released under the AGPL-3.0 License.',
+      message: 'Released under the AGPL-3.0 License. · <a href="/docs/privacy.html">Privacy Policy</a>',
       copyright: 'Copyright © 2025-present'
     },
 

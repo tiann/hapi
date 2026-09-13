@@ -37,6 +37,7 @@ import java.util.Date
 fun QueuedMessagesBar(
     rows: List<QueuedRowUi>,
     onSteer: (messageId: String) -> Unit,
+    onRetry: (messageId: String) -> Unit,
     onEdit: (messageId: String) -> Unit,
     onCancel: (messageId: String) -> Unit,
     modifier: Modifier = Modifier,
@@ -65,7 +66,7 @@ fun QueuedMessagesBar(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             rows.forEach { row ->
-                QueuedRow(row, onSteer, onEdit, onCancel)
+                QueuedRow(row, onSteer, onRetry, onEdit, onCancel)
             }
         }
     }
@@ -75,6 +76,7 @@ fun QueuedMessagesBar(
 private fun QueuedRow(
     row: QueuedRowUi,
     onSteer: (String) -> Unit,
+    onRetry: (String) -> Unit,
     onEdit: (String) -> Unit,
     onCancel: (String) -> Unit,
 ) {
@@ -94,6 +96,13 @@ private fun QueuedRow(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (row.indeterminate) {
+                    Text(
+                        text = "Delivery outcome unknown",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 row.scheduledAt?.let { scheduledAt ->
                     Text(
                         text = stringResource(
@@ -105,7 +114,9 @@ private fun QueuedRow(
                     )
                 }
             }
-            if (row.canSteer) {
+            if (row.indeterminate) {
+                TextButton(onClick = { onRetry(row.id) }, enabled = row.canAct) { Text("Retry") }
+            } else if (row.canSteer) {
                 TextButton(onClick = { onSteer(row.id) }) { Text(stringResource(R.string.chat_queued_steer)) }
             }
             TextButton(onClick = { onEdit(row.id) }, enabled = row.canAct) { Text(stringResource(R.string.chat_queued_edit)) }
@@ -145,7 +156,7 @@ private fun QueuedMessagesBarPreview() {
                         canAct = true, canSteer = false,
                     ),
                 ),
-                onSteer = {}, onEdit = {}, onCancel = {},
+                onSteer = {}, onRetry = {}, onEdit = {}, onCancel = {},
             )
         }
     }

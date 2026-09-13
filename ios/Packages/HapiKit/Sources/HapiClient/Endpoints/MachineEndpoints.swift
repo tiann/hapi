@@ -33,6 +33,13 @@ extension APIClient {
         )
     }
 
+    /// `GET /api/machines/:id/agent-availability` — executable/static-config
+    /// availability for every supported Agent. A runner lacking the RPC
+    /// answers 409 `runner_upgrade_required`.
+    public func machineAgentAvailability(machineId: String) async throws -> AgentAvailabilityResponse {
+        try await request(.get, "/api/machines/\(encodePathComponent(machineId))/agent-availability")
+    }
+
     /// `POST /api/machines/:id/list-directory` (RPC envelope — check
     /// `success`).
     public func listMachineDirectory(
@@ -52,16 +59,18 @@ extension APIClient {
     }
 
     /// `POST /api/machines/:id/paths/exists` (≤ 1000 paths).
-    public func machinePathsExist(machineId: String, paths: [String]) async throws -> [String: Bool] {
+    public func machinePathsExist(
+        machineId: String,
+        paths: [String]
+    ) async throws -> MachinePathsExistsResponse {
         struct PathsExistsRequest: Encodable {
             let paths: [String]
         }
-        let response: MachinePathsExistsResponse = try await request(
+        return try await request(
             .post,
             "/api/machines/\(encodePathComponent(machineId))/paths/exists",
             body: PathsExistsRequest(paths: paths)
         )
-        return response.exists
     }
 
     /// `GET /api/machines/:id/codex-models` — pre-spawn codex model catalog

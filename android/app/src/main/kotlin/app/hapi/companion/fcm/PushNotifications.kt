@@ -4,12 +4,9 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
-import androidx.work.ForegroundInfo
 import app.hapi.companion.MainActivity
 import app.hapi.companion.R
 import app.hapi.data.push.PushPayload
@@ -36,7 +33,6 @@ object PushNotifications {
 
     /** Single id; per-notification identity comes from the tag. */
     private const val NOTIFICATION_ID = 0x4150 // 'HP'
-    private const val FOREGROUND_ID = 0x4151
 
     /** Internal intent route for notification taps (no public URI on purpose). */
     const val ACTION_OPEN_SESSION = "app.hapi.companion.action.OPEN_SESSION"
@@ -120,25 +116,6 @@ object PushNotifications {
 
     fun cancel(context: Context, tag: String) {
         NotificationManagerCompat.from(context).cancel(tag, NOTIFICATION_ID)
-    }
-
-    /**
-     * Foreground fallback for expedited workers on API < 31 (WorkManager runs
-     * them as a short foreground service there). Silent, low-key, dataSync
-     * type (declared in the manifest for targetSdk 34+).
-     */
-    fun workerForegroundInfo(context: Context): ForegroundInfo {
-        val notification = NotificationCompat.Builder(context, PushPayload.CHANNEL_TASK_NOTIFICATIONS)
-            .setSmallIcon(R.drawable.ic_stat_hapi)
-            .setContentTitle(context.getString(R.string.notif_working))
-            .setOnlyAlertOnce(true)
-            .setOngoing(true)
-            .build()
-        return if (Build.VERSION.SDK_INT >= 29) {
-            ForegroundInfo(FOREGROUND_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            ForegroundInfo(FOREGROUND_ID, notification)
-        }
     }
 
     // ------------------------------------------------------------- helpers --

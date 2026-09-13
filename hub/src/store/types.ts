@@ -38,6 +38,8 @@ export type StoredMachine = {
     seq: number
 }
 
+export type MessageDeliveryState = 'indeterminate'
+
 export type StoredMessage = {
     id: string
     sessionId: string
@@ -47,6 +49,8 @@ export type StoredMessage = {
     localId: string | null
     invokedAt: number | null
     scheduledAt: number | null
+    /** Omitted for ordinary queued/delivered rows; set when steer outcome is unknown. */
+    deliveryState?: MessageDeliveryState
 }
 
 export type StoredUser = {
@@ -77,8 +81,8 @@ export type StoredFcmDevice = {
     deviceId: string
     /**
      * base64 of the device-generated 32-byte E2E push encryption key.
-     * Required for `ios` rows (PUSH SPEC v1 envelope); always null for
-     * phone/wear rows.
+     * Required for `ios`, optional for `phone` (relay capable clients),
+     * null for legacy phone/Wear registrations.
      */
     pushKey: string | null
     createdAt: number

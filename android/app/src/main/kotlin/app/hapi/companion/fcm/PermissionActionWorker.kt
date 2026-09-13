@@ -2,7 +2,6 @@ package app.hapi.companion.fcm
 
 import android.content.Context
 import androidx.work.CoroutineWorker
-import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import app.hapi.companion.R
 import app.hapi.companion.di.AppGraph
@@ -84,12 +83,6 @@ class PermissionActionWorker(
             tag, sessionId, channelId, title, text, autoExpire,
         )
     }
-
-    /** Expedited-work fallback path on API < 31 (short dataSync foreground). */
-    override suspend fun getForegroundInfo(): ForegroundInfo =
-        PushNotifications.workerForegroundInfo(
-            applicationContext.localizedForAppLanguage(appGraph.appLanguage.value),
-        )
 
     companion object {
         const val KEY_SESSION_ID = "sessionId"

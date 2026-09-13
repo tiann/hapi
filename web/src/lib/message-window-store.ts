@@ -1,3 +1,4 @@
+import { getReasoningStreamId } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
@@ -79,6 +80,7 @@ type TailSyncController = {
 const states = new Map<string, InternalState>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
+const appliedRewindLocalIds = new Map<string, Set<string>>()
 
 const NOTIFY_THROTTLE_MS = 150
 const PERSIST_THROTTLE_MS = 200
@@ -311,7 +313,14 @@ function notifyImmediate(sessionId: string): void {
 
 function setState(sessionId: string, next: InternalState, immediate = false): void {
     states.set(sessionId, next)
-    schedulePersist(sessionId)
+    // A latest-reset state still contains the previous server snapshot. Do not
+    // persist that stale window while the authoritative replacement is in
+    // flight; a reload during the reset must not resurrect removed messages.
+    if (next.requiresLatestReset) {
+        pendingPersistSessionIds.delete(sessionId)
+    } else {
+        schedulePersist(sessionId)
+    }
     if (immediate) {
         notifyImmediate(sessionId)
     } else {
@@ -443,11 +452,48 @@ function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
     return type === 'agent-run-start' || type === 'agent-run-update' || type === 'agent-run-trace'
 }
 
+/** Collapse a reasoning stream down to the one snapshot that still says
+ *  something.
+ *
+ *  The CLI re-sends a growing reasoning buffer under a stable stream id every
+ *  few hundred milliseconds, and the timeline already folds those snapshots
+ *  into a single block by that id. Sessions recorded before the hub started
+ *  retiring them still carry every intermediate, and spending window budget on
+ *  rows that render as one block is what pushes the surrounding conversation
+ *  out of reach. Messages with no stream id are left alone. */
+function dropSupersededReasoningSnapshots(messages: DecryptedMessage[]): DecryptedMessage[] {
+    const newestByStream = new Map<string, DecryptedMessage>()
+    for (const message of messages) {
+        const streamId = getReasoningStreamId(message.content)
+        if (streamId === null) continue
+        const incumbent = newestByStream.get(streamId)
+        if (!incumbent) {
+            newestByStream.set(streamId, message)
+            continue
+        }
+        // Fall back to arrival order when either row predates seq numbering:
+        // `messages` is kept in display order, so later still means newer.
+        const challengerAt = messagePosition(message)
+        const incumbentAt = messagePosition(incumbent)
+        const newer = challengerAt && incumbentAt
+            ? comparePosition(challengerAt, incumbentAt) >= 0
+            : true
+        if (newer) newestByStream.set(streamId, message)
+    }
+    if (newestByStream.size === 0) return messages
+
+    const survivors = new Set<string>()
+    for (const message of newestByStream.values()) survivors.add(message.id)
+    return messages.filter((message) =>
+        getReasoningStreamId(message.content) === null || survivors.has(message.id))
+}
+
 function trimPreservingQueued(
-    messages: DecryptedMessage[],
+    incoming: DecryptedMessage[],
     regularLimit: number,
     mode: 'append' | 'prepend'
 ): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    const messages = dropSupersededReasoningSnapshots(incoming)
     const queued = messages.filter(isQueuedForInvocation)
     const queuedIds = new Set(queued.map((message) => message.id))
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
@@ -545,7 +591,20 @@ function applyLatestResponse(
         requestBaseline: Map<string, DecryptedMessage>
     }
 ): InternalState {
-    const retainedResponseMessages = response.messages.filter(shouldRetainWindowMessage)
+    const dismissedIds = new Set(
+        previous.messages
+            .filter((message) => message.queueDismissed)
+            .map((message) => message.id)
+    )
+    const retainedResponseMessages = response.messages
+        .filter(shouldRetainWindowMessage)
+        .map((message) => (
+            dismissedIds.has(message.id)
+            && message.invokedAt === null
+            && message.deliveryState === 'indeterminate'
+                ? { ...message, queueDismissed: true }
+                : message
+        ))
     const concurrentServerRows = previous.messages.filter((message) => (
         !optimisticMessage(message)
         && options.requestBaseline.get(message.id) !== message
@@ -1053,6 +1112,70 @@ export function clearMessageWindow(sessionId: string): void {
     }, true)
 }
 
+function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedMessage[]): void {
+    const previous = states.get(sessionId)
+    if (!previous) return
+
+    tailSyncControllers.delete(sessionId)
+    clearPersistedState(sessionId)
+    setState(sessionId, buildState(previous, {
+        messages,
+        epoch: null,
+        oldestPositionAt: null,
+        oldestPositionSeq: null,
+        newestPositionAt: null,
+        newestPositionSeq: null,
+        requiresLatestReset: true,
+        preferLatestOnActivation: false,
+        isSyncingTail: true,
+        isLoadingMore: false,
+        warning: null,
+        syncGeneration: previous.syncGeneration + 1,
+        olderGeneration: previous.olderGeneration + 1
+    }), true)
+}
+
+/**
+ * Mark the current window stale without exposing an empty transcript while a
+ * latest snapshot is fetched. The next tail sync sees `requiresLatestReset`
+ * and replaces server rows atomically with the authoritative response.
+ */
+export function invalidateMessageWindow(sessionId: string): void {
+    const previous = states.get(sessionId)
+    if (!previous) return
+
+    markMessageWindowForLatestReset(sessionId, previous.messages)
+}
+
+/**
+ * Apply the known local effect of a successful Rewind before the server
+ * snapshot arrives. Rewind removes the boundary message and every later row;
+ * retaining the earlier prefix keeps the chat usable and lets the current
+ * bottom position clamp directly to the new tail.
+ */
+export function rewindMessageWindow(sessionId: string, messageLocalId: string): void {
+    const previous = states.get(sessionId)
+    if (!previous) return
+
+    const applied = appliedRewindLocalIds.get(sessionId) ?? new Set<string>()
+    if (applied.has(messageLocalId)) return
+    applied.add(messageLocalId)
+    appliedRewindLocalIds.set(sessionId, applied)
+
+    const boundaryIndex = previous.messages.findIndex((message) => message.localId === messageLocalId)
+    if (boundaryIndex < 0) {
+        // The boundary may be outside the current latest window. Without a
+        // local boundary, retaining rows could show messages removed by the
+        // rewind until the authoritative tail sync completes.
+        clearMessageWindow(sessionId)
+        return
+    }
+
+    const messages = previous.messages.slice(0, boundaryIndex)
+
+    markMessageWindowForLatestReset(sessionId, messages)
+}
+
 export function seedMessageWindowFromSession(fromSessionId: string, toSessionId: string): void {
     if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) return
     const source = getState(fromSessionId)
@@ -1140,7 +1263,53 @@ export function removeOptimisticMessage(sessionId: string, localId: string): voi
     }, true)
 }
 
-export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number): void {
+export function markMessagesIndeterminate(sessionId: string, localIds: string[]): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    updateState(sessionId, (previous) => {
+        let changed = false
+        const messages = previous.messages.map((message) => {
+            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === 'indeterminate') {
+                return message
+            }
+            changed = true
+            return { ...message, deliveryState: 'indeterminate' as const }
+        })
+        return changed ? buildState(previous, { messages }) : previous
+    }, true)
+}
+
+export function markMessagesRequeued(sessionId: string, localIds: string[]): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    updateState(sessionId, (previous) => {
+        let changed = false
+        const messages = previous.messages.map((message) => {
+            if (
+                !message.localId
+                || !idSet.has(message.localId)
+                || (message.deliveryState === undefined && message.queueDismissed !== true)
+            ) {
+                return message
+            }
+            changed = true
+            const {
+                deliveryState: _deliveryState,
+                queueDismissed: _queueDismissed,
+                ...requeued
+            } = message
+            return requeued
+        })
+        return changed ? buildState(previous, { messages }) : previous
+    }, true)
+}
+
+export function markMessagesConsumed(
+    sessionId: string,
+    localIds: string[],
+    invokedAt: number,
+    steered?: boolean
+): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (previous) => {
@@ -1151,12 +1320,16 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
             }
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
-            if (!needsStatus && !needsInvokedAt) return message
+            const needsSteered = steered === true && message.steered !== true
+            const needsClearDismiss = message.queueDismissed === true
+            if (!needsStatus && !needsInvokedAt && !needsSteered && !needsClearDismiss) return message
             changed = true
+            const { deliveryState: _deliveryState, queueDismissed: _queueDismissed, ...withoutClientHold } = message
             return {
-                ...message,
+                ...withoutClientHold,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),
-                ...(needsInvokedAt ? { invokedAt } : {})
+                ...(needsInvokedAt ? { invokedAt } : {}),
+                ...(needsSteered ? { steered: true } : {})
             }
         })
         if (!changed) return previous

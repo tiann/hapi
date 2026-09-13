@@ -28,6 +28,8 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
     public var invokedAt: Int?
     /// Future-scheduled send time (epoch ms), when set.
     public var scheduledAt: Int?
+    /// `indeterminate` means a steer outcome is unknown and needs explicit resolution.
+    public var deliveryState: String?
 
     public init(
         id: String,
@@ -36,7 +38,8 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
         content: JSONValue = .null,
         createdAt: Int,
         invokedAt: Int? = nil,
-        scheduledAt: Int? = nil
+        scheduledAt: Int? = nil,
+        deliveryState: String? = nil
     ) {
         self.id = id
         self.seq = seq
@@ -45,6 +48,7 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.invokedAt = invokedAt
         self.scheduledAt = scheduledAt
+        self.deliveryState = deliveryState
     }
 
     public init(from decoder: Decoder) throws {
@@ -56,6 +60,7 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
         createdAt = try container.decode(Int.self, forKey: .createdAt)
         invokedAt = try container.decodeIfPresent(Int.self, forKey: .invokedAt)
         scheduledAt = try container.decodeIfPresent(Int.self, forKey: .scheduledAt)
+        deliveryState = try container.decodeIfPresent(String.self, forKey: .deliveryState)
     }
 }
 

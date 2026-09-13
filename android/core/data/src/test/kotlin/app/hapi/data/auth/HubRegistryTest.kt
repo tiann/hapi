@@ -23,17 +23,17 @@ class HubRegistryTest {
                 awaitItem(),
             )
 
-            assertEquals("http://hub.two:8443", registry.addHub("http://hub.two:8443/", makeActive = false))
+            assertEquals("https://hub.two:8443", registry.addHub("https://hub.two:8443/", makeActive = false))
             with(awaitItem()) {
-                assertEquals(listOf("https://hub.one", "http://hub.two:8443"), hubs)
+                assertEquals(listOf("https://hub.one", "https://hub.two:8443"), hubs)
                 assertEquals("https://hub.one", activeHubUrl)
             }
 
             // Re-adding an existing hub with makeActive just re-activates it.
-            assertEquals("http://hub.two:8443", registry.addHub("http://hub.two:8443"))
+            assertEquals("https://hub.two:8443", registry.addHub("https://hub.two:8443"))
             with(awaitItem()) {
-                assertEquals(listOf("https://hub.one", "http://hub.two:8443"), hubs)
-                assertEquals("http://hub.two:8443", activeHubUrl)
+                assertEquals(listOf("https://hub.one", "https://hub.two:8443"), hubs)
+                assertEquals("https://hub.two:8443", activeHubUrl)
             }
         }
     }
@@ -42,6 +42,7 @@ class HubRegistryTest {
     fun `invalid urls are rejected`() = runTest {
         val registry = HubRegistry(InMemoryHubRegistryStorage())
         assertNull(registry.addHub("not a url"))
+        assertNull(registry.addHub("http://x"))
         assertNull(registry.addHub("ftp://x"))
         assertEquals(HubRegistryState(), registry.state.value)
     }
@@ -100,5 +101,17 @@ class HubRegistryTest {
         )
         inconsistent.load()
         assertEquals("https://a.example", inconsistent.activeHubUrl)
+
+        // Upgrades drop legacy cleartext hubs and normalize the remaining HTTPS origins.
+        val legacy = HubRegistry(
+            InMemoryHubRegistryStorage(
+                """{"hubs":["http://old.example","HTTPS://Keep.Example/path"],"activeHubUrl":"http://old.example"}"""
+            )
+        )
+        legacy.load()
+        assertEquals(
+            HubRegistryState(hubs = listOf("https://keep.example"), activeHubUrl = "https://keep.example"),
+            legacy.state.value,
+        )
     }
 }

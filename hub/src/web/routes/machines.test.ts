@@ -4,6 +4,7 @@ import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMachinesRoutes } from './machines'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol'
 
 function createMachine(overrides?: Partial<Machine>): Machine {
     return {
@@ -17,7 +18,8 @@ function createMachine(overrides?: Partial<Machine>): Machine {
         metadata: {
             host: 'localhost',
             platform: 'darwin',
-            happyCliVersion: '1.0.0'
+            happyCliVersion: '1.0.0',
+            capabilities: [MACHINE_CAPABILITIES.AgentAvailability]
         },
         metadataVersion: 1,
         runnerState: null,
@@ -27,6 +29,86 @@ function createMachine(overrides?: Partial<Machine>): Machine {
 }
 
 describe('machines routes', () => {
+    it('blocks spawn and availability inspection when the runner needs an upgrade', async () => {
+        const machine = createMachine({
+            metadata: {
+                host: 'localhost',
+                platform: 'darwin',
+                happyCliVersion: '0.9.0',
+                capabilities: []
+            }
+        })
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: () => { throw new Error('must not spawn') },
+            getAgentAvailability: () => { throw new Error('must not inspect') },
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const spawn = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/project', agent: 'claude' })
+        })
+        expect(spawn.status).toBe(200)
+        expect(await spawn.json()).toEqual({
+            type: 'error',
+            message: 'This runner must be upgraded before creating sessions',
+            code: 'runner_upgrade_required'
+        })
+
+        const availability = await app.request('/api/machines/machine-1/agent-availability')
+        expect(availability.status).toBe(409)
+        expect(await availability.json()).toEqual({
+            error: 'This runner must be upgraded before creating sessions',
+            code: 'runner_upgrade_required'
+        })
+    })
+
+    it('returns Agent availability and complete path boundary results', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            getAgentAvailability: async () => ({
+                agents: [
+                    { agent: 'claude' as const, available: false, reason: 'not_found' as const },
+                    { agent: 'codex' as const, available: true }
+                ]
+            }),
+            checkPathsExist: async () => ({
+                exists: { '/workspace': true, '/outside': false },
+                outsideWorkspaceRoots: ['/outside']
+            })
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const availability = await app.request('/api/machines/machine-1/agent-availability')
+        expect(availability.status).toBe(200)
+        expect(await availability.json()).toEqual({
+            agents: [
+                { agent: 'claude', available: false, reason: 'not_found' },
+                { agent: 'codex', available: true }
+            ]
+        })
+
+        const paths = await app.request('/api/machines/machine-1/paths/exists', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ paths: ['/workspace', '/outside'] })
+        })
+        expect(paths.status).toBe(200)
+        expect(await paths.json()).toEqual({
+            exists: { '/workspace': true, '/outside': false },
+            outsideWorkspaceRoots: ['/outside']
+        })
+    })
+
     it('forwards Grok Auto permission mode when spawning', async () => {
         const machine = createMachine()
         let capturedPermissionMode: string | undefined
@@ -166,6 +248,92 @@ describe('machines routes', () => {
         })
     })
 
+    it('returns OpenCode model variants for an online machine', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listOpencodeModelVariantsForMachine: async () => ({
+                success: true,
+                variants: {
+                    'opencode-go/ox-alpha-free': ['low', 'high', 'max']
+                }
+            })
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/opencode-model-variants')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            variants: {
+                'opencode-go/ox-alpha-free': ['low', 'high', 'max']
+            }
+        })
+    })
+
+    it('forwards the cwd query parameter to the machine RPC', async () => {
+        let receivedCwd: string | null | undefined = 'unset'
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listOpencodeModelVariantsForMachine: async (machineId: string, cwd?: string | null) => {
+                void machineId
+                receivedCwd = cwd
+                return { success: true as const, variants: {} }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/opencode-model-variants?cwd=%2Ftmp')
+        expect(response.status).toBe(200)
+        expect(receivedCwd).toBe('/tmp')
+    })
+
+    it('returns a stable code when the OpenCode variants machine RPC target is absent', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listOpencodeModelVariantsForMachine: async () => {
+                throw new RpcTargetMissingError(
+                    'machine-1:listOpencodeModelVariants',
+                    'handler-not-registered'
+                )
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/opencode-model-variants')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: machine-1:listOpencodeModelVariants',
+            code: 'rpc_target_missing'
+        })
+    })
+
     it('forwards startingMode "pty" to SyncEngine.spawnSession in the startingMode slot', async () => {
         const machine = createMachine()
         let captured: unknown[] | null = null
@@ -250,7 +418,7 @@ describe('machines routes', () => {
         expect(captured![15]).toBe('remote')
     })
 
-    it('rejects a non-remote AGY machine spawn', async () => {
+    it('rejects a non-remote headless-agent machine spawn', async () => {
         const machine = createMachine()
         const spawnSession = () => { throw new Error('must not spawn') }
         const engine = {
@@ -262,13 +430,15 @@ describe('machines routes', () => {
         app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
         app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
 
-        for (const startingMode of ['local', 'pty']) {
-            const response = await app.request('/api/machines/machine-1/spawn', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ directory: '/tmp/x', agent: 'agy', startingMode })
-            })
-            expect(response.status).toBe(400)
+        for (const agent of ['agy', 'dsh']) {
+            for (const startingMode of ['local', 'pty']) {
+                const response = await app.request('/api/machines/machine-1/spawn', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ directory: '/tmp/x', agent, startingMode })
+                })
+                expect(response.status).toBe(400)
+            }
         }
     })
 
@@ -619,5 +789,26 @@ describe('machines routes', () => {
 
             expect((await patch(app, { displayName: 'Workstation' })).status).toBe(500)
         })
+    })
+
+    it('forwards an explicit agy model refresh to the machine and defaults to the cached catalog', async () => {
+        const machine = createMachine()
+        const calls: Array<{ refresh?: boolean } | undefined> = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listAgyModelsForMachine: (_machineId: string, options?: { refresh?: boolean }) => {
+                calls.push(options)
+                return Promise.resolve({ success: true, availableModels: [] })
+            },
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        expect((await app.request('/api/machines/machine-1/agy-models')).status).toBe(200)
+        expect((await app.request('/api/machines/machine-1/agy-models?refresh=true')).status).toBe(200)
+
+        expect(calls).toEqual([{ refresh: false }, { refresh: true }])
     })
 })

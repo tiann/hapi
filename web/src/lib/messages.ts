@@ -43,12 +43,24 @@ function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
     return a.id.localeCompare(b.id)
 }
 
+// Invariant: a message the CLI has consumed (invokedAt set) is delivered, not
+// queued. A message delivered immediately — e.g. steered into the active turn —
+// can carry a stale optimistic 'queued' status while its invokedAt is already
+// set; normalize so the queued clock never lingers on a delivered message.
+function clearStaleQueuedStatus(list: DecryptedMessage[]): DecryptedMessage[] {
+    return list.map((msg) =>
+        msg.status === 'queued' && msg.invokedAt != null
+            ? { ...msg, status: 'sent' as DecryptedMessage['status'] }
+            : msg
+    )
+}
+
 export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[]): DecryptedMessage[] {
     if (existing.length === 0) {
-        return [...incoming].sort(compareMessages)
+        return clearStaleQueuedStatus([...incoming]).sort(compareMessages)
     }
     if (incoming.length === 0) {
-        return [...existing].sort(compareMessages)
+        return clearStaleQueuedStatus([...existing]).sort(compareMessages)
     }
 
     const byId = new Map<string, DecryptedMessage>()
@@ -57,8 +69,25 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     }
     for (const msg of incoming) {
         const existing = byId.get(msg.id)
-        if (existing && existing.invokedAt != null && msg.invokedAt == null) {
-            byId.set(msg.id, { ...msg, invokedAt: existing.invokedAt })
+        if (existing) {
+            // Preserve client-only signals the incoming (server) copy can't carry:
+            // a late ack timestamp, the live 'steered' marker (not persisted), and
+            // force-dismiss of an indeterminate queued row (#1839).
+            const preserved: Partial<DecryptedMessage> = {}
+            if (existing.invokedAt != null && msg.invokedAt == null) {
+                preserved.invokedAt = existing.invokedAt
+            }
+            if (existing.steered && !msg.steered) {
+                preserved.steered = true
+            }
+            if (
+                existing.queueDismissed
+                && msg.invokedAt === null
+                && msg.deliveryState === 'indeterminate'
+            ) {
+                preserved.queueDismissed = true
+            }
+            byId.set(msg.id, Object.keys(preserved).length > 0 ? { ...msg, ...preserved } : msg)
         } else {
             byId.set(msg.id, msg)
         }
@@ -78,6 +107,8 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     if (incomingStoredLocalIds.size > 0) {
         const optimisticStatusByLocalId = new Map<string, DecryptedMessage['status']>()
         const optimisticInvokedAtByLocalId = new Map<string, number | null | undefined>()
+        const optimisticSteeredByLocalId = new Map<string, boolean>()
+        const optimisticQueueDismissedByLocalId = new Map<string, boolean>()
         for (const msg of merged) {
             if (msg.localId && isOptimisticMessage(msg) && incomingStoredLocalIds.has(msg.localId)) {
                 if (msg.status) {
@@ -85,6 +116,12 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 }
                 if (msg.invokedAt !== undefined) {
                     optimisticInvokedAtByLocalId.set(msg.localId, msg.invokedAt)
+                }
+                if (msg.steered) {
+                    optimisticSteeredByLocalId.set(msg.localId, true)
+                }
+                if (msg.queueDismissed) {
+                    optimisticQueueDismissedByLocalId.set(msg.localId, true)
                 }
             }
         }
@@ -94,18 +131,45 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
             }
             return !isOptimisticMessage(msg)
         })
-        if (optimisticStatusByLocalId.size > 0 || optimisticInvokedAtByLocalId.size > 0) {
+        if (
+            optimisticStatusByLocalId.size > 0
+            || optimisticInvokedAtByLocalId.size > 0
+            || optimisticSteeredByLocalId.size > 0
+            || optimisticQueueDismissedByLocalId.size > 0
+        ) {
             merged = merged.map((msg) => {
                 if (!msg.localId) return msg
                 const update: Partial<DecryptedMessage> = {}
                 if (optimisticStatusByLocalId.has(msg.localId) && !msg.status) {
-                    update.status = optimisticStatusByLocalId.get(msg.localId)
+                    const optimisticStatus = optimisticStatusByLocalId.get(msg.localId)
+                    // Don't carry an optimistic 'queued' status onto a server message
+                    // the CLI has already consumed (invokedAt set). This happens when a
+                    // message is delivered immediately — e.g. steered into the active
+                    // turn — so its server echo arrives pre-invoked; inheriting 'queued'
+                    // would pin the queued clock on an already-delivered message.
+                    if (optimisticStatus !== 'queued' || msg.invokedAt == null) {
+                        update.status = optimisticStatus
+                    }
                 }
                 if (optimisticInvokedAtByLocalId.has(msg.localId) && msg.invokedAt == null) {
                     const optimisticInvokedAt = optimisticInvokedAtByLocalId.get(msg.localId)
                     if (optimisticInvokedAt != null) {
                         update.invokedAt = optimisticInvokedAt
                     }
+                }
+                // The 'steered' marker is live-only (the hub never persists it), so
+                // carry it from the optimistic row onto the replacing server echo —
+                // otherwise the ↳ Steered badge vanishes the moment the echo lands.
+                if (optimisticSteeredByLocalId.has(msg.localId) && !msg.steered) {
+                    update.steered = true
+                }
+                if (
+                    optimisticQueueDismissedByLocalId.has(msg.localId)
+                    && msg.invokedAt === null
+                    && msg.deliveryState === 'indeterminate'
+                    && !msg.queueDismissed
+                ) {
+                    update.queueDismissed = true
                 }
                 if (Object.keys(update).length > 0) {
                     return { ...msg, ...update }
@@ -139,6 +203,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
         result.push(optimistic)
     }
 
-    result.sort(compareMessages)
-    return result
+    const normalized = clearStaleQueuedStatus(result)
+    normalized.sort(compareMessages)
+    return normalized
 }

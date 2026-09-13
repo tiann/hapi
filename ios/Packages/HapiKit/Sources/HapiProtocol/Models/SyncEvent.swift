@@ -139,6 +139,8 @@ public enum SyncEvent: Equatable, Sendable {
     case toast(namespace: String?, data: ToastPayload)
     /// Queued user messages were consumed: stamp `invokedAt` on the rows.
     case messagesConsumed(namespace: String?, sessionId: String, localIds: [String], invokedAt: Int)
+    case messagesIndeterminate(namespace: String?, sessionId: String, localIds: [String])
+    case messagesRequeued(namespace: String?, sessionId: String, localIds: [String])
     case messageCancelled(namespace: String?, sessionId: String, messageId: String, localId: String?)
     /// Feeds the staleness watchdog only. Carries no SSE `id`.
     case heartbeat(namespace: String?, timestamp: Int?)
@@ -240,6 +242,18 @@ extension SyncEvent: Decodable {
                 sessionId: try container.decode(String.self, forKey: .sessionId),
                 localIds: try container.decode([String].self, forKey: .localIds),
                 invokedAt: try container.decode(Int.self, forKey: .invokedAt)
+            )
+        case "messages-indeterminate":
+            self = .messagesIndeterminate(
+                namespace: namespace,
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                localIds: try container.decode([String].self, forKey: .localIds)
+            )
+        case "messages-requeued":
+            self = .messagesRequeued(
+                namespace: namespace,
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                localIds: try container.decode([String].self, forKey: .localIds)
             )
         case "message-cancelled":
             self = .messageCancelled(

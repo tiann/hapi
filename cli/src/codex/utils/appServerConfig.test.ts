@@ -102,6 +102,40 @@ describe('appServerConfig', () => {
         });
     });
 
+    it('preserves user MCP transport fields when building thread config', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default' },
+            mcpServers: {
+                'package-manager': {
+                    command: 'uvx',
+                    args: ['example-mcp', 'serve'],
+                    env: { EXAMPLE_TOKEN: 'from-process-environment' }
+                },
+                remote: {
+                    url: 'https://example.test/mcp',
+                    bearer_token_env_var: 'REMOTE_MCP_TOKEN'
+                },
+                hapi: {
+                    command: 'node',
+                    args: ['mcp']
+                }
+            }
+        });
+
+        expect(params.config).toMatchObject({
+            'mcp_servers.package-manager': {
+                command: 'uvx',
+                args: ['example-mcp', 'serve'],
+                env: { EXAMPLE_TOKEN: 'from-process-environment' }
+            },
+            'mcp_servers.remote': {
+                url: 'https://example.test/mcp',
+                bearer_token_env_var: 'REMOTE_MCP_TOKEN'
+            }
+        });
+    });
+
     it('ignores CLI overrides when permission mode is not default', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
@@ -185,6 +219,23 @@ describe('appServerConfig', () => {
             },
             developer_instructions: codexSystemPrompt,
             model_reasoning_effort: 'ultra'
+        });
+    });
+
+    it('passes effective Codex context management settings via thread config', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default' },
+            mcpServers,
+            contextManagementConfig: {
+                modelContextWindow: 400_000,
+                modelAutoCompactTokenLimit: 300_000
+            }
+        });
+
+        expect(params.config).toMatchObject({
+            model_context_window: 400_000,
+            model_auto_compact_token_limit: 300_000
         });
     });
 

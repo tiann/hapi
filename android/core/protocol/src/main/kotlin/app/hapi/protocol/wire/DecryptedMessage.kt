@@ -39,6 +39,7 @@ data class DecryptedMessage(
     val createdAt: Long,
     val invokedAt: OptionalField<Long?> = OptionalField.Absent,
     val scheduledAt: Long? = null,
+    val deliveryState: String? = null,
 ) {
     /** `invokedAt` collapsed to a plain value (both absent and `null` → null). */
     val invokedAtOrNull: Long? get() = invokedAt.valueOrNull()
@@ -70,6 +71,7 @@ internal object DecryptedMessageSerializer : KSerializer<DecryptedMessage> {
                 OptionalField.Absent
             },
             scheduledAt = obj["scheduledAt"].longOrNull,
+            deliveryState = obj["deliveryState"].stringOrNull,
         )
     }
 
@@ -86,6 +88,7 @@ internal object DecryptedMessageSerializer : KSerializer<DecryptedMessage> {
                 put("invokedAt", value.invokedAt.value?.let(::JsonPrimitive) ?: JsonNull)
             }
             value.scheduledAt?.let { put("scheduledAt", JsonPrimitive(it)) }
+            value.deliveryState?.let { put("deliveryState", JsonPrimitive(it)) }
         })
     }
 }

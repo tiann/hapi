@@ -33,6 +33,10 @@ For local network access:
 http://<your-computer-ip>:3006
 ```
 
+That cleartext URL is for a browser/PWA on your trusted LAN. The native
+Android companion requires an HTTPS hub URL; use `hapi hub --relay` or place
+an HTTPS reverse proxy/tunnel in front of the hub.
+
 If your phone cannot connect, make sure the hub is not only listening on `127.0.0.1`. For LAN access, set `listenHost` to `0.0.0.0` in `~/.hapi/settings.json` or set `HAPI_LISTEN_HOST=0.0.0.0`, then restart `hapi hub`.
 
 For internet access:
@@ -68,11 +72,12 @@ Yes. Telegram is optional. You can use the web app directly in any browser or in
 
 ### How do I receive notifications?
 
-HAPI supports three methods:
+HAPI supports these notification channels:
 
 1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
 2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
-3. **FCM native push** - Used by the Android/Wear OS companion apps; notifications are delivered via Firebase Cloud Messaging
+3. **Native app notifications** - Official Android and iOS apps use encrypted push delivery; pair your hub and allow notifications, with no push-provider setup required
+4. **ServerChan (Server酱)** - Send notifications to WeChat and other channels; see [ServerChan Setup](./notifications.md#serverchan-server酱-setup)
 
 ### Can I start sessions remotely?
 
@@ -95,7 +100,7 @@ Yes. Open any session and use the chat interface to send messages directly to th
 
 ### Why did my session look idle when the agent woke itself?
 
-Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI treats real ACP agent activity (and permission requests) as thinking again so the session list matches the agent - same keepalive path as a normal turn. This is different from session-attached jobs (`hapi job`), which show progress while the agent stays idle on purpose.
+Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI updates the session's thinking indicator when the agent resumes work or requests permission, so the list reflects that activity.
 
 ### Can I access a terminal remotely?
 
@@ -111,10 +116,11 @@ The voice assistant supports three backends: ElevenLabs, Gemini Live, and Qwen R
 
 ### Is my data safe?
 
-Yes. HAPI is local-first:
-- All data stays on your machine
-- Nothing is uploaded to external servers
-- The database is stored locally in `~/.hapi/`
+HAPI keeps session history on the hub you operate, in `~/.hapi/` by default,
+rather than on a central HAPI account server. Your devices connect to that hub.
+Coding agents still use their configured model providers; optional voice,
+title generation, and notification features also contact external services.
+See the [Privacy Policy](../privacy.md) for data handling and encrypted native push.
 
 ### How secure is the token authentication?
 
@@ -128,6 +134,16 @@ Only if they have your access token. For additional security:
 - Consider Tailscale for private networking
 
 ## Troubleshooting
+
+### Why does a session stop when its laptop host sleeps?
+
+Remote mode changes where you control the agent, not where it executes. The machine running the CLI or runner must remain awake. If the hub runs elsewhere, the web app may still load while that execution machine is unavailable. Running the hub on a server does not move an existing laptop session to that server.
+
+First verify a small request with the laptop open. If that fails too, check the agent's pending permissions, CLI connection, and network before changing power settings. Terminal disconnection and operating-system sleep are separate problems: preserving a process after an SSH disconnect does not let it execute while its host is asleep.
+
+For a MacBook that must work with the lid closed, use a supported external-display setup or a compatible closed-lid solution. Leaving the lid open with idle sleep managed is another option. Keep an active laptop powered and ventilated. After closing the lid, confirm new command output from the phone before relying on a long run.
+
+This [Apple Silicon MacBook setup guide](https://clamshell.dev/guides/keep-claude-code-running-lid-closed#phone-check) includes a two-minute timestamp check and an optional Clamshell setup. Clamshell is a separate paid app with a trial; HAPI does not require it.
 
 ### "Connection refused" error
 
@@ -156,6 +172,9 @@ Then restart `hapi hub` and open:
 ```bash
 http://<your-computer-ip>:3006
 ```
+
+This direct LAN URL is for browser/PWA access. The native Android companion
+requires HTTPS (`hapi hub --relay`, or your own HTTPS reverse proxy/tunnel).
 
 Also verify your OS firewall allows inbound connections on port `3006`.
 
@@ -244,7 +263,7 @@ hapi doctor clean
 | Design | Cloud-first | Local-first |
 | Users | Multi-user | Single user by default; lightweight multi-account isolation via [namespaces](./namespace.md) |
 | Deployment | Multiple services | Single binary |
-| Data | Encrypted on server | Never leaves your machine |
+| Session history | Encrypted on server | Stored on your own hub |
 
 See [Why HAPI](./why-hapi.md) for detailed comparison.
 

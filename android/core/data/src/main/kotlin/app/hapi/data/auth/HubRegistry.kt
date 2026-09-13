@@ -78,7 +78,7 @@ class HubRegistry(private val storage: HubRegistryStorage) {
     /**
      * Adds [hubUrl] (normalized) to the roster — or just re-activates it when
      * already present and [makeActive]. Returns the normalized origin, or null
-     * when [hubUrl] is not a valid http(s) URL.
+     * when [hubUrl] is not a valid HTTPS URL.
      */
     suspend fun addHub(hubUrl: String, makeActive: Boolean = true): String? {
         val normalized = HubUrls.normalize(hubUrl) ?: return null
@@ -131,10 +131,13 @@ class HubRegistry(private val storage: HubRegistryStorage) {
         }
     }
 
-    /** Restores the invariant: active ∈ hubs (default: first), hubs deduped. */
+    /** Restores the invariant: HTTPS-only, normalized/deduped hubs; active ∈ hubs. */
     private fun sanitize(state: HubRegistryState): HubRegistryState {
-        val hubs = state.hubs.distinct()
-        val active = state.activeHubUrl?.takeIf { it in hubs } ?: hubs.firstOrNull()
+        val hubs = state.hubs.mapNotNull(HubUrls::normalize).distinct()
+        val active = state.activeHubUrl
+            ?.let(HubUrls::normalize)
+            ?.takeIf { it in hubs }
+            ?: hubs.firstOrNull()
         return HubRegistryState(hubs = hubs, activeHubUrl = active)
     }
 }

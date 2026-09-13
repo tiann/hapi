@@ -79,6 +79,15 @@ extension APIClient {
         )
     }
 
+    /// `POST /api/sessions/:id/messages/:messageId/retry` — explicitly retry
+    /// an indeterminate delivery.
+    public func retryIndeterminateMessage(sessionId: String, messageId: String) async throws -> RetryIndeterminateMessageResponse {
+        try await request(
+            .post,
+            "/api/sessions/\(encodePathComponent(sessionId))/messages/\(encodePathComponent(messageId))/retry"
+        )
+    }
+
     /// `POST /api/sessions/:id/messages/:messageId/steer` — promote a queued
     /// message to steer delivery.
     public func steerMessage(sessionId: String, messageId: String) async throws -> SteerQueuedMessageResponse {

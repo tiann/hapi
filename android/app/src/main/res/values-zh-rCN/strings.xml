@@ -32,14 +32,14 @@
     <string name="pairing_confirm_switch">使用现有配对</string>
     <string name="pairing_confirm_repair">用新配对码重新配对</string>
     <string name="pairing_confirm_cancel">取消</string>
-    <string name="pairing_invalid_link">该配对链接无效或不完整。</string>
+    <string name="pairing_invalid_link">该配对链接无效、不完整，或未使用 HTTPS。</string>
     <string name="pairing_back">返回</string>
 
     <!-- Manual entry -->
     <string name="pairing_manual_title">手动配对</string>
     <string name="pairing_manual_hint">这两项信息可在 hub 启动时的终端里找到，也可在网页应用的“设置 → 伴侣应用配对”中查看。</string>
     <string name="pairing_hub_url_label">Hub 地址</string>
-    <string name="pairing_hub_url_placeholder">http://192.168.1.10:3006</string>
+    <string name="pairing_hub_url_placeholder">https://hub.example.com</string>
     <string name="pairing_token_label">访问令牌</string>
     <string name="pairing_token_placeholder">粘贴访问令牌</string>
     <string name="pairing_pair_button">配对</string>
@@ -47,7 +47,7 @@
     <!-- QR scan -->
     <string name="pairing_scan_title">扫描配对二维码</string>
     <string name="pairing_scan_prompt">将相机对准配对二维码</string>
-    <string name="pairing_scan_not_pairing_qr">这不是 HAPI 配对二维码。请扫描 hub 打印的两个二维码之一（伴侣应用或网页应用）。</string>
+    <string name="pairing_scan_not_pairing_qr">这不是有效的 HTTPS HAPI 配对二维码。请扫描 hub 打印的两个二维码之一（伴侣应用或网页应用）。</string>
     <string name="pairing_scan_again">重新扫描</string>
     <string name="pairing_scan_permission_rationale">扫描配对二维码需要相机权限。您也可以改用手动配对。</string>
     <string name="pairing_scan_grant_camera">授予相机权限</string>
@@ -55,6 +55,8 @@
     <!-- Home (session list top bar + hub chores) -->
     <string name="home_menu">菜单</string>
     <string name="home_settings">设置</string>
+    <string name="home_hub">Hub</string>
+    <string name="home_hub_menu">Hub 与设置</string>
     <string name="home_switch_hub">切换 hub</string>
     <string name="home_pair_another">配对另一个 hub…</string>
     <string name="home_sign_out">退出登录</string>
@@ -71,6 +73,13 @@
     <string name="new_session_runner_spawn_error">Runner 上次启动错误：%1$s</string>
     <string name="new_session_directory">目录</string>
     <string name="new_session_directory_placeholder">/path/to/project</string>
+    <string name="new_session_browse">浏览目录</string>
+    <string name="directory_browser_choose_directory">选择目录</string>
+    <string name="directory_browser_up">前往上级目录</string>
+    <string name="directory_browser_refresh">刷新</string>
+    <string name="directory_browser_show_hidden">显示隐藏目录</string>
+    <string name="directory_browser_empty">没有子目录</string>
+    <string name="directory_browser_select_current">选择当前目录</string>
     <string name="new_session_recent_paths">最近路径</string>
     <string name="new_session_type">会话类型</string>
     <string name="new_session_type_simple">简单</string>
@@ -80,6 +89,8 @@
     <string name="new_session_worktree_name">工作树名称</string>
     <string name="new_session_worktree_name_placeholder">feature-x（可选）</string>
     <string name="new_session_agent">代理</string>
+    <string name="new_session_agent_availability_loading">正在检查已安装的代理…</string>
+    <string name="new_session_retry">重试</string>
     <string name="new_session_model">模型</string>
     <string name="new_session_effort">思考强度</string>
     <string name="new_session_reasoning_effort">推理强度</string>
@@ -192,7 +203,6 @@
     <string name="notif_session_not_found">在已配对的 hub 上未找到该会话</string>
     <string name="notif_action_failed">无法连接 hub — 请打开应用处理</string>
     <string name="notif_reply_failed">回复未发送 — 请打开应用重试</string>
-    <string name="notif_working">正在连接 hub…</string>
 
     <!-- Session list (B-M2b / B-M3ce, extracted in B-M5a) -->
     <string name="sessions_section_pinned">置顶会话</string>
@@ -494,7 +504,7 @@
     <string name="scratchlist_reject_budget">此笔记的附件容量已用完</string>
 
     <!-- Pairing errors (PairingViewModel semantic errors, B-M1d) -->
-    <string name="pairing_error_invalid_url">请输入有效的 hub 地址，例如 http://192.168.1.10:3006 或 https://hub.example.com。</string>
+    <string name="pairing_error_invalid_url">请输入有效的 HTTPS hub 地址，例如 https://hub.example.com。</string>
     <string name="pairing_error_empty_token">请输入 hub 显示的访问令牌。</string>
     <string name="pairing_error_token_rejected">Hub 拒绝了此访问令牌。Hub 轮换 CLI_API_TOKEN 后令牌会变化 — 请重新获取二维码或令牌后再试。</string>
     <string name="pairing_error_hub_gone">该 hub 已不在配对列表中。请在下方重新配对。</string>
@@ -515,4 +525,50 @@
     <string name="new_session_error_codex_models">加载 Codex 模型失败</string>
     <string name="new_session_error_models_detail">加载模型失败：%1$s</string>
     <string name="new_session_error_worktree_name">名称需要至少包含一个字母或数字</string>
+    <string name="new_session_error_directory_outside_workspace_roots">目录必须位于此机器配置的某个工作区根目录内。</string>
+    <string name="directory_browser_error">浏览目录失败</string>
+    <string name="new_session_error_agent_availability">检查已安装代理失败</string>
+    <string name="new_session_error_runner_upgrade_required">创建会话前，请升级并重启此机器上的 HAPI runner。</string>
+    <string name="new_session_error_no_available_agents">此机器上没有安装受支持的代理。</string>
+    <string name="new_session_error_selected_agent_unavailable">所选代理在此机器上不可用。</string>
+    <string name="chat_back_to_latest">回到最新 ↓</string>
+    <string name="chat_history_retry">历史加载失败，点此重试</string>
+    <string name="chat_history_continue">继续加载历史</string>
+    <string name="chat_history_load">加载更早的消息</string>
+    <string name="chat_history_beginning">已到会话起点</string>
+    <string name="chat_copy_full_content">复制完整内容</string>
+    <string name="chat_showing_parts">已显示 %1$d / %2$d 部分</string>
+    <string name="chat_load_more_content">加载更多内容</string>
+    <string name="tool_questions_answers">问答</string>
+    <string name="tool_question_answers">答案</string>
+    <string name="tool_custom_answer">自定义答案</string>
+    <string name="tool_answer_note">备注</string>
+    <string name="chat_view_full_message">查看完整消息</string>
+    <string name="chat_full_message">完整消息</string>
+    <string name="chat_previous_part">上一段</string>
+    <string name="chat_next_part">下一段</string>
+    <string name="chat_part_number">第 %1$d 段</string>
+    <string name="chat_export_retry">重试导出</string>
+    <string name="chat_export_full_content">导出全文</string>
+    <string name="chat_content_copied">已复制</string>
+    <string name="chat_close_reader">关闭阅读页面</string>
+    <string name="chat_snapshot_notice">只读快照：此记录已不在当前消息窗口中。</string>
+    <string name="chat_group_history_notice">更早的调用尚未加载，请返回会话加载历史消息。</string>
+    <string name="chat_tool_details">工具详情</string>
+    <string name="chat_content_unavailable">此内容暂不可用，请返回会话重新加载。</string>
+    <string name="chat_latest_tool">最新工具</string>
+    <string name="chat_view_current_file">查看当前文件</string>
+    <string name="chat_view_full_input">查看完整输入</string>
+    <string name="chat_view_process">查看过程 · %1$d 步</string>
+    <string name="chat_agent_process">子任务过程</string>
+    <string name="chat_show_image">查看图片</string>
+    <string name="chat_reconnecting_retry">正在重新连接… 点按重试</string>
+    <string name="sessions_filters">筛选</string>
+    <string name="sessions_filters_active">已应用筛选</string>
+    <string name="sessions_clear_filter">清除筛选</string>
+    <string name="sessions_machine_fallback">机器 · %1$s</string>
+    <string name="sessions_filter_summary">筛选：%1$s</string>
+    <string name="privacy_policy">隐私政策</string>
+    <string name="privacy_open_failed">没有可打开此链接的应用。</string>
+    <string name="chat_tool_resolved">已处理</string>
 </resources>

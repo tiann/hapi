@@ -201,8 +201,12 @@ fun isEligibleForToolGrouping(block: ToolCallBlock): Boolean {
     if (PLAN_TOOL_NAMES.contains(block.tool.name)) return false
     if (MILESTONE_TOOL_NAMES.contains(block.tool.name)) return false
     if (isInteractiveToolBlock(block)) return false
-    if (block.tool.name == "CodexBash" && getCodexCommandActions(block).isNotEmpty()) {
-        return isCodexExplorationTool(block)
+    // Classification selects the group family; shared Codex `unknown`
+    // agent commands still belong in ordinary groups. User shell stays separate.
+    if (block.tool.name == "CodexBash"
+        && getInputStringAny(block.tool.input, listOf("command_source", "commandSource"))?.lowercase() == "usershell"
+    ) {
+        return false
     }
     return true
 }
@@ -216,16 +220,36 @@ private fun createToolGroupId(
     tools: List<ToolCallBlock>,
     needsOlderHistory: Boolean,
     previousGroups: List<ToolGroupBlock>,
+    reservedGroupIds: Set<String>,
+    usedIds: MutableSet<String>,
 ): String {
     val firstToolId = tools.firstOrNull()?.id ?: "unknown"
     val lastToolId = tools.lastOrNull()?.id ?: firstToolId
 
-    val previous = previousGroups.firstOrNull { it.firstToolId == firstToolId || it.lastToolId == lastToolId }
+    // A split may share both old boundaries, but only one resulting group
+    // can own the old identity. Reserve other old IDs against fresh runs.
+    val previous = previousGroups.firstOrNull {
+        (it.firstToolId == firstToolId || it.lastToolId == lastToolId) && it.id !in usedIds
+    }
     if (previous != null) {
+        usedIds.add(previous.id)
         return previous.id
     }
 
-    return if (needsOlderHistory) "tool-group:$lastToolId" else "tool-group:$firstToolId"
+    val boundaries = if (needsOlderHistory) listOf(lastToolId, firstToolId) else listOf(firstToolId, lastToolId)
+    for (boundary in boundaries) {
+        val candidate = "tool-group:$boundary"
+        if (candidate !in reservedGroupIds && usedIds.add(candidate)) return candidate
+    }
+    val base = "tool-group:${boundaries.first()}"
+    var suffix = 2
+    var candidate = "$base#$suffix"
+    while (candidate in reservedGroupIds || candidate in usedIds) {
+        suffix += 1
+        candidate = "$base#$suffix"
+    }
+    usedIds.add(candidate)
+    return candidate
 }
 
 fun isToolGroupBlock(block: VisibleChatBlock): Boolean = block is ToolGroupBlock
@@ -236,6 +260,8 @@ fun buildVisibleChatBlocks(
 ): List<VisibleChatBlock> {
     val visibleBlocks = mutableListOf<VisibleChatBlock>()
     val previousGroups = options.previousGroups
+    val reservedGroupIds = previousGroups.mapTo(mutableSetOf()) { it.id }
+    val usedIds = blocks.mapTo(mutableSetOf()) { it.id }
 
     var index = 0
     while (index < blocks.size) {
@@ -279,7 +305,7 @@ fun buildVisibleChatBlocks(
         }
         visibleBlocks.add(
             ToolGroupBlock(
-                id = createToolGroupId(tools, needsOlderHistory, previousGroups),
+                id = createToolGroupId(tools, needsOlderHistory, previousGroups, reservedGroupIds, usedIds),
                 createdAt = tools.first().createdAt,
                 invokedAt = tools.first().invokedAt,
                 firstToolId = tools.first().id,

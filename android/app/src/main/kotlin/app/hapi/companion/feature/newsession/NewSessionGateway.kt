@@ -2,7 +2,9 @@ package app.hapi.companion.feature.newsession
 
 import app.hapi.data.api.HapiApi
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
+import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 
@@ -15,10 +17,17 @@ interface NewSessionGateway {
     suspend fun spawn(machineId: String, request: SpawnSessionRequest): SpawnResponse
 
     /** `POST /api/machines/:id/list-directory` (RPC-wrapped). */
-    suspend fun listDirectory(machineId: String, path: String): MachineListDirectoryResponse
+    suspend fun listDirectory(
+        machineId: String,
+        path: String,
+        includeHidden: Boolean = false,
+    ): MachineListDirectoryResponse
 
     /** `POST /api/machines/:id/paths/exists`. */
-    suspend fun pathsExist(machineId: String, paths: List<String>): Map<String, Boolean>
+    suspend fun pathsExist(machineId: String, paths: List<String>): MachinePathsExistsResponse
+
+    /** `GET /api/machines/:id/agent-availability`. */
+    suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse
 
     /** `GET /api/machines/:id/codex-models` (RPC-wrapped; 503 `rpc_target_missing` = hide picker). */
     suspend fun codexModels(machineId: String): CodexModelsResponse
@@ -29,11 +38,17 @@ class ApiNewSessionGateway(private val api: HapiApi) : NewSessionGateway {
     override suspend fun spawn(machineId: String, request: SpawnSessionRequest): SpawnResponse =
         api.spawnSession(machineId, request)
 
-    override suspend fun listDirectory(machineId: String, path: String): MachineListDirectoryResponse =
-        api.listMachineDirectory(machineId, path)
+    override suspend fun listDirectory(
+        machineId: String,
+        path: String,
+        includeHidden: Boolean,
+    ): MachineListDirectoryResponse = api.listMachineDirectory(machineId, path, includeHidden)
 
-    override suspend fun pathsExist(machineId: String, paths: List<String>): Map<String, Boolean> =
-        api.checkMachinePathsExist(machineId, paths).exists
+    override suspend fun pathsExist(machineId: String, paths: List<String>): MachinePathsExistsResponse =
+        api.checkMachinePathsExist(machineId, paths)
+
+    override suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse =
+        api.getMachineAgentAvailability(machineId)
 
     override suspend fun codexModels(machineId: String): CodexModelsResponse =
         api.getMachineCodexModels(machineId)

@@ -4,7 +4,7 @@
 #
 # The relay has a single runtime dependency (jose), so a fresh install from
 # the package manifest is deliberate - no workspace lockfile gymnastics.
-FROM oven/bun:1-slim
+FROM oven/bun:1.4.0-slim
 
 WORKDIR /app
 
@@ -16,7 +16,9 @@ COPY src ./src
 ENV RELAY_PORT=8790
 EXPOSE 8790
 
-# The APNs .p8 key must be mounted read-only and pointed at via env:
+# Mount provider credentials read-only (APNs and/or FCM):
+#   -v /secrets/firebase-service-account.json:/keys/fcm.json:ro
+#   -e RELAY_FCM_SERVICE_ACCOUNT_PATH=/keys/fcm.json
 #   -v /secrets/AuthKey_XXXXXXXXXX.p8:/keys/apns.p8:ro
 #   -e RELAY_APNS_KEY_P8_PATH=/keys/apns.p8
 USER bun

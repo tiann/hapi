@@ -1,9 +1,11 @@
 import {
     HAPI_SESSION_EXPORT_SCHEMA_VERSION,
+    SESSION_EXPORT_MAX_BYTES,
     SESSION_EXPORT_MESSAGE_LIMIT,
+    type HapiSessionExport,
     type HapiSessionExportResult
 } from '@hapi/protocol/sessionExport'
-import type { AttachmentMetadata, DecryptedMessage, Session } from '@hapi/protocol/types'
+import type { AttachmentMetadata, DecryptedMessage, Metadata, Session } from '@hapi/protocol/types'
 import {
     isClaudeChatVisibleMessage,
     isRedundantGoalStatusEventContent,
@@ -42,12 +44,44 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
         content: message.content,
         createdAt: message.createdAt,
         invokedAt: message.invokedAt,
-        scheduledAt: message.scheduledAt
+        scheduledAt: message.scheduledAt,
+        ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
     }
 }
 
 function toVisibleDecryptedMessages(messages: StoredMessageForDelivery[]): DecryptedMessage[] {
     return messages.filter(isWebVisibleStoredMessage).map(toDecryptedMessage)
+}
+
+function jsonByteLength(value: unknown): number {
+    const json = JSON.stringify(value)
+    return json === undefined ? Number.MAX_SAFE_INTEGER : Buffer.byteLength(json, 'utf8')
+}
+
+function estimateSessionExportBytes(
+    session: Session,
+    exportedAt: number,
+    messages: StoredMessageForDelivery[],
+    scratchlist: HapiSessionExport['scratchlist']
+): number {
+    const prefix = JSON.stringify({
+        schemaVersion: HAPI_SESSION_EXPORT_SCHEMA_VERSION,
+        exportedAt,
+        session
+    })
+    const suffix = JSON.stringify({ scratchlist })
+    if (prefix === undefined || suffix === undefined) {
+        return Number.MAX_SAFE_INTEGER
+    }
+
+    const messageBytes = messages.reduce(
+        (total, message, index) => total + jsonByteLength(toDecryptedMessage(message)) + (index > 0 ? 1 : 0),
+        0
+    )
+    return Buffer.byteLength(prefix.slice(0, -1), 'utf8')
+        + Buffer.byteLength(',"messages":[', 'utf8')
+        + messageBytes
+        + Buffer.byteLength(`],${suffix.slice(1)}`, 'utf8')
 }
 
 function isQueuedUserMessage(message: StoredMessageForDelivery): boolean {
@@ -100,6 +134,13 @@ function getNormalizedDeliveryMode(
  * provenance for Web diagnostics, but make deferred CLI delivery an ordinary
  * queue item so it cannot steer a later generation.
  */
+export type RetryIndeterminateMessageResult =
+    | { status: 'retried'; localId: string }
+    | { status: 'already-queued'; localId: string | null }
+    | { status: 'retry-unavailable'; localId: string }
+    | { status: 'invoked'; message: DecryptedMessage }
+    | { status: 'not-found' }
+
 function contentForDeferredDelivery(content: unknown): unknown {
     if (!isObject(content) || content.role !== 'user' || !isObject(content.meta)) {
         return content
@@ -117,6 +158,7 @@ function contentForDeferredDelivery(content: unknown): unknown {
 export class MessageService {
     /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
+    private readonly activeIndeterminateRetries = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -132,6 +174,19 @@ export class MessageService {
         }
     }
 
+    private recordConsumedAcknowledgement(
+        sessionId: string,
+        localId: string,
+    ): CancelQueuedMessageResult {
+        const invokedAt = Date.now()
+        this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
+        this.publisher.emit({ type: 'messages-consumed', sessionId, localIds: [localId], invokedAt })
+        const settled = this.store.messages.lookupQueuedMessage(sessionId, localId)
+        return settled.status === 'invoked'
+            ? settled
+            : { status: 'cancelled', localId }
+    }
+
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
@@ -141,7 +196,10 @@ export class MessageService {
         const states = this.store.messages.getLocalMessageStates(sessionId, localIds)
         return {
             queuedLocalIds: states
-                .filter((state) => state.invokedAt === null)
+                .filter((state) => state.invokedAt === null && state.deliveryState !== 'indeterminate' && state.deliveryState !== 'dispatching')
+                .map((state) => state.localId),
+            indeterminateLocalIds: states
+                .filter((state) => state.invokedAt === null && (state.deliveryState === 'indeterminate' || state.deliveryState === 'dispatching'))
                 .map((state) => state.localId),
             invokedLocalMessages: states.flatMap((state) => state.invokedAt === null
                 ? []
@@ -152,24 +210,15 @@ export class MessageService {
     getSessionExport(
         sessionId: string,
         session: Session,
-        limit: number = SESSION_EXPORT_MESSAGE_LIMIT
+        options: { force?: boolean } = {}
     ): HapiSessionExportResult {
-        const messages = this.store.messages.getAllMessages(sessionId)
+        const storedMessages = this.store.messages.getAllMessages(sessionId)
             .filter(isExportVisibleStoredMessage)
             .sort((a, b) => {
                 const aAt = a.invokedAt ?? a.createdAt
                 const bAt = b.invokedAt ?? b.createdAt
                 return aAt !== bAt ? aAt - bAt : a.seq - b.seq
             })
-            .map(toDecryptedMessage)
-
-        if (messages.length > limit) {
-            return {
-                type: 'too-large',
-                count: messages.length,
-                limit
-            }
-        }
 
         // Chronological ASC for archive readability (store list is DESC).
         const scratchlist = this.store.scratchlist.list(sessionId)
@@ -186,13 +235,33 @@ export class MessageService {
                 attachments: row.attachments
             }))
 
+        const exportedAt = Date.now()
+        const estimatedBytes = estimateSessionExportBytes(session, exportedAt, storedMessages, scratchlist)
+        if (estimatedBytes > SESSION_EXPORT_MAX_BYTES) {
+            return {
+                type: 'too-large',
+                count: storedMessages.length,
+                estimatedBytes,
+                maxBytes: SESSION_EXPORT_MAX_BYTES
+            }
+        }
+
+        if (!options.force && storedMessages.length > SESSION_EXPORT_MESSAGE_LIMIT) {
+            return {
+                type: 'warning',
+                count: storedMessages.length,
+                limit: SESSION_EXPORT_MESSAGE_LIMIT,
+                estimatedBytes
+            }
+        }
+
         return {
             type: 'success',
             payload: {
                 schemaVersion: HAPI_SESSION_EXPORT_SCHEMA_VERSION,
-                exportedAt: Date.now(),
+                exportedAt,
                 session,
-                messages,
+                messages: storedMessages.map(toDecryptedMessage),
                 scratchlist
             }
         }
@@ -399,7 +468,8 @@ export class MessageService {
             content: contentForDeferredDelivery(message.content),
             createdAt: message.createdAt,
             invokedAt: message.invokedAt,
-            scheduledAt: message.scheduledAt
+            scheduledAt: message.scheduledAt,
+            ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
         }))
     }
 
@@ -423,9 +493,22 @@ export class MessageService {
             return lookup
         }
 
-        // Phase 2: row is still queued.  Ask the CLI whether it already shifted the item
+        // Phase 2: row is still queued. Ask the CLI whether it already shifted the item
         // (race window between collectBatch() shift and messages-consumed ack).
         const { localId, resolvedId, scheduledAt } = lookup
+        const shared = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients === true
+        const connected = (this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)?.size ?? 0) > 0
+        if (shared && localId && !connected && (scheduledAt === null || scheduledAt <= Date.now())) {
+            // A shared worker keeps running through hub outages. Offline does
+            // not mean its native queue is empty; never claim cancellation.
+            if (localId) {
+                this.store.messages.setMessagesDeliveryState(sessionId, [localId], 'indeterminate')
+                this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds: [localId] })
+            }
+            return { status: 'busy', localId }
+        }
+        const isDispatching = lookup.status === 'dispatching'
+        const isIndeterminate = lookup.status === 'indeterminate'
 
         if (!localId) {
             // No localId — row exists but has no cancel path; treat as cancelled.
@@ -434,11 +517,62 @@ export class MessageService {
             return { status: 'cancelled', localId: null }
         }
 
+        // A live dispatch is not cancellable by timeout. Convert it to the
+        // durable unknown state and require a second explicit resolution.
+        if (isDispatching) {
+            const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+            if (ackResult === 'consumed') {
+                return this.recordConsumedAcknowledgement(sessionId, localId)
+            }
+            // The native request may have reached the agent while the cancel
+            // round-trip was pending. Never delete a live dispatch; hold it as
+            // unknown and let the user explicitly retry or discard afterwards.
+            const changed = this.store.messages.setMessagesDeliveryState(sessionId, [localId], 'indeterminate')
+            if (changed === 0) {
+                const settled = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
+                if (settled.status === 'invoked') return settled
+                if (settled.status === 'absent') return { status: 'cancelled', localId }
+            } else {
+                this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds: [localId] })
+            }
+            return { status: 'busy', localId }
+        }
+
+        // An indeterminate steer is never converted to invoked by a cancel
+        // timeout. Explicit cancel resolves it by discarding the durable row;
+        // an online CLI still gets a chance to remove its held reservation.
+        if (isIndeterminate) {
+            const roomName = `session:${sessionId}`
+            const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
+            const ackResult = cliCount > 0
+                ? await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+                : 'timeout' as const
+            if (ackResult === 'consumed') {
+                return this.recordConsumedAcknowledgement(sessionId, localId)
+            }
+            if (ackResult === 'in-flight' || ackResult === 'indeterminate' || (ackResult === 'timeout' && cliCount > 0)
+                || (shared && ackResult !== 'removed')) {
+                return { status: 'busy', localId }
+            }
+            this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
+            const recheck = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
+            if (recheck.status === 'invoked') {
+                // The steer won the race while the cancel ACK was in flight;
+                // never broadcast cancellation over a delivered row.
+                return recheck
+            }
+            if (recheck.status !== 'absent') {
+                return { status: 'busy', localId }
+            }
+            this.publisher.emit({ type: 'message-cancelled', sessionId, messageId, localId })
+            return { status: 'cancelled', localId }
+        }
+
         // Phase 2b: future-scheduled messages were never emitted to the CLI, so they
-        // are not in the CLI's in-memory queue.  Asking the CLI whether it can remove
-        // the item would always return 'not-found', which the normal ack path
-        // misinterprets as "CLI already consumed it" and stamps invoked_at.
-        // Short-circuit: delete the row directly without a CLI ack round-trip.
+        // are not in the CLI's in-memory queue. Asking the CLI whether it can remove
+        // the item would always return 'not-found', forcing an unnecessary
+        // indeterminate state. Short-circuit: delete the row directly without a CLI
+        // ack round-trip.
         //
         // Single event loop turn: the scheduledAt > now check and the
         // deleteQueuedMessageById call execute atomically with no await between
@@ -499,41 +633,30 @@ export class MessageService {
 
         const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
 
+        if (ackResult === 'consumed') {
+            return this.recordConsumedAcknowledgement(sessionId, localId)
+        }
+        if (ackResult === 'in-flight' || ackResult === 'indeterminate') {
+            // The row is inside an async steer (mid-turn delivery): it can
+            // neither be removed nor stamped invoked — the steer's eventual
+            // accept/reject decides. Report busy so the caller keeps the row.
+            return { status: 'busy', localId }
+        }
+
         if (ackResult === 'not-found' || ackResult === 'timeout') {
-            // CLI could not remove the item — it was already shift()-ed or CLI is
-            // offline.  Stamp invoked_at immediately so the message lands in the thread
-            // as 'sent' instead of disappearing.  The agent's later assistant message
-            // (if it produced one) joins the same thread normally.
-            const invokedAt = Date.now()
-            try {
-                this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
-            } catch (err) {
-                console.error('cancelQueuedMessage: markMessagesInvoked failed', err)
-                // DB write failed — let the HTTP 500 surface to the caller.
-                throw err
+            // Neither outcome proves the model consumed the message. The CLI may have
+            // reserved it, disconnected, or simply missed the request. Hold the durable
+            // row out of automatic replay until a positive consumed ACK arrives or the
+            // user explicitly retries/discards it.
+            const changed = this.store.messages.setMessagesDeliveryState(sessionId, [localId], 'indeterminate')
+            if (changed === 0) {
+                const settled = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
+                if (settled.status === 'invoked') return settled
+                if (settled.status === 'absent') return { status: 'cancelled', localId }
+            } else {
+                this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds: [localId] })
             }
-            this.forgetScheduledMatureNotified([localId])
-            // Notify all SSE subscribers (other open tabs) that this queued row is now
-            // invoked so they remove it from the floating bar.  Without this emit, only
-            // the tab that sent the DELETE request learns about the status change via the
-            // HTTP response; every other subscriber keeps the row in the queued bar until
-            // a refresh or a later event.  Mirrors the identical publish in the normal
-            // CLI-driven path (sessionHandlers.ts messages-consumed handler).
-            this.publisher.emit({
-                type: 'messages-consumed',
-                sessionId,
-                localIds: [localId],
-                invokedAt,
-            })
-            // Re-fetch the single row via lookupQueuedMessage to avoid the 200-row
-            // pagination cap of getMessages.  After markMessagesInvoked the row will
-            // have invoked_at set, so lookupQueuedMessage returns status='invoked'.
-            const recheck = this.store.messages.lookupQueuedMessage(sessionId, localId)
-            if (recheck.status === 'invoked') {
-                return recheck
-            }
-            // Row absent from DB after markMessagesInvoked — edge case, treat as cancelled
-            return { status: 'cancelled', localId }
+            return { status: 'busy', localId }
         }
 
         // Phase 3: CLI confirmed removal.  Now DELETE the DB row and broadcast SSE.
@@ -546,6 +669,108 @@ export class MessageService {
         })
 
         return { status: 'cancelled', localId }
+    }
+
+    async retryIndeterminateMessage(
+        sessionId: string,
+        messageId: string
+    ): Promise<RetryIndeterminateMessageResult> {
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (lookup.status === 'absent') return { status: 'not-found' }
+        if (lookup.status === 'invoked') {
+            return {
+                status: 'invoked',
+                message: toDecryptedMessage(lookup.message)
+            }
+        }
+        if (lookup.status === 'queued') {
+            return { status: 'already-queued', localId: lookup.localId }
+        }
+        if (!lookup.localId) return { status: 'not-found' }
+        const retryKey = `${sessionId}:${lookup.localId}`
+        if (this.activeIndeterminateRetries.has(retryKey)) {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+        this.activeIndeterminateRetries.add(retryKey)
+
+        try {
+        const roomName = `session:${sessionId}`
+        const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
+        if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+
+        const cancelResult = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+        if (cancelResult === 'consumed') {
+            const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
+            return settled.status === 'invoked'
+                ? { status: 'invoked', message: toDecryptedMessage(settled.message) }
+                : { status: 'not-found' }
+        }
+        if (cancelResult === 'in-flight' || cancelResult === 'timeout') {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+        if ((this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients
+            && cancelResult !== 'removed') {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+        const refreshed = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (refreshed.status === 'invoked') {
+            return { status: 'invoked', message: toDecryptedMessage(refreshed.message) }
+        }
+        if (refreshed.status === 'absent') return { status: 'not-found' }
+        if (refreshed.status === 'dispatching') {
+            const changed = this.store.messages.setMessagesDeliveryState(sessionId, [lookup.localId], 'indeterminate')
+            if (changed === 0) return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+
+        const message = this.store.messages.claimIndeterminateMessage(sessionId, messageId)
+        if (!message || !message.localId) return { status: 'not-found' }
+
+        const update = {
+            id: message.id,
+            seq: message.seq,
+            createdAt: message.createdAt,
+            body: {
+                t: 'retry-queued-message' as const,
+                sid: sessionId,
+                messageId: message.id,
+                localId: message.localId,
+                message: {
+                    id: message.id,
+                    seq: message.seq,
+                    createdAt: message.createdAt,
+                    localId: message.localId,
+                    content: contentForDeferredDelivery(message.content)
+                }
+            }
+        }
+        const room = this.io.of('/cli').to(roomName)
+        const accepted = await new Promise<boolean>((resolve) => {
+            room.timeout(500).emit(
+                'update',
+                update,
+                (_err: Error | null, responses: Array<{ accepted?: boolean }>) => {
+                    resolve(responses?.some((response) => response.accepted === true) ?? false)
+                }
+            )
+        })
+        if (!accepted) {
+            this.store.messages.setMessagesDeliveryState(sessionId, [message.localId], 'indeterminate')
+            this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds: [message.localId] })
+            return { status: 'retry-unavailable', localId: message.localId }
+        }
+        const requeued = this.store.messages.setMessagesDeliveryState(sessionId, [message.localId], 'queued')
+        if (requeued === 0) {
+            const settled = this.store.messages.lookupQueuedMessage(sessionId, message.id)
+            if (settled.status === 'invoked') return { status: 'invoked', message: toDecryptedMessage(settled.message) }
+            return { status: 'retry-unavailable', localId: message.localId }
+        }
+        this.publisher.emit({ type: 'messages-requeued', sessionId, localIds: [message.localId] })
+        return { status: 'retried', localId: message.localId }
+        } finally {
+            this.activeIndeterminateRetries.delete(retryKey)
+        }
     }
 
     /**
@@ -561,7 +786,7 @@ export class MessageService {
         localId: string,
         messageId: string,
         timeoutMs: number
-    ): Promise<'removed' | 'not-found' | 'timeout'> {
+    ): Promise<'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'> {
         return new Promise((resolve) => {
             const room = this.io.of('/cli').to(`session:${sessionId}`)
             // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)
@@ -579,11 +804,25 @@ export class MessageService {
                         localId
                     }
                 },
-                (err: Error | null, responses: Array<{ removed: boolean }>) => {
+                (err: Error | null, responses: Array<{ removed: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean }>) => {
                     // Check responses before err: in a reconnect overlap or any room with
                     // multiple CLI sockets, Socket.IO may set err (one socket timed out)
                     // while still delivering successful responses from the sockets that did
-                    // ack. Any confirmed removal wins over the partial timeout.
+                    // ack. An explicit in-flight report dominates: one socket may be
+                    // dispatching the steer while a stale duplicate socket reports
+                    // removed — deleting the row then would orphan the executing message.
+                    if (responses?.some((r) => r.consumed === true)) {
+                        resolve('consumed')
+                        return
+                    }
+                    if (responses?.some((r) => r.indeterminate === true)) {
+                        resolve('indeterminate')
+                        return
+                    }
+                    if (responses?.some((r) => r.inFlight === true)) {
+                        resolve('in-flight')
+                        return
+                    }
                     const removed = responses?.some((r) => r.removed === true) ?? false
                     if (removed) {
                         resolve('removed')
@@ -657,6 +896,7 @@ export class MessageService {
         const cliContent = inserted.inserted
             ? msg.content
             : contentForDeferredDelivery(msg.content)
+        const shouldEmitToCli = msg.deliveryState !== 'indeterminate'
         this.onSessionActivity?.(actualSessionId, msg.createdAt)
 
         // Only emit to CLI if the message is not scheduled for the future.
@@ -666,7 +906,7 @@ export class MessageService {
         // the pre-insert `now` capture could misclassify a borderline scheduledAt
         // as future when it has already become past by the time we check.
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
-        if (!isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
+        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -697,7 +937,8 @@ export class MessageService {
                 content: msg.content,
                 createdAt: msg.createdAt,
                 invokedAt: msg.invokedAt,
-                scheduledAt: msg.scheduledAt
+                scheduledAt: msg.scheduledAt,
+                ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {})
             }
         })
         return { actualSessionId, createdAt: msg.createdAt }
@@ -736,8 +977,8 @@ export class MessageService {
 
     /** Replay durable immediate prompts whenever their CLI session attaches. */
     replayImmediateQueuedMessages(sessionId: string): number {
-        if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+        if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         for (const msg of queued) {
             const update = {
                 id: msg.id,
@@ -763,7 +1004,7 @@ export class MessageService {
     /** Release a completed clear handoff in finalized seq order. */
     releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): number {
         if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
-        const queued = this.store.messages.getUninvokedLocalMessages(sessionId)
+        const queued = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
             .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
         for (const msg of queued) {
             const update = {
@@ -796,12 +1037,10 @@ export class MessageService {
      * restart scenarios (pitfall #2 guard).
      *
      * Race window with cancel: this tick widens the cancel race to 5 s for
-     * scheduled messages (vs near-zero for immediate-queued ones).  If the CLI
-     * has already shift()-ed the row when cancel arrives, cancelQueuedMessage
-     * gets 'not-found' from the CLI ack and stamps invoked_at (PR #568 contract
-     * preserved).  Web client surfaces this as 'sent' in the thread.
-     * See messageService.test.ts "cancel × mature race" for the documented
-     * expected behaviour. */
+     * scheduled messages (vs near-zero for immediate-queued ones). If the CLI
+     * has already shift()-ed the row when cancel arrives, a non-positive cancel
+     * ACK leaves the row indeterminate; only an explicit consumed ACK stamps it
+     * invoked. See messageService.test.ts "cancel × mature race". */
     releaseMatureScheduledMessages(now: number, skipSessionIds?: ReadonlySet<string>): void {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { getReasoningStreamId } from '@hapi/protocol/messages'
 import { Store } from './index'
 
 function makeStore(): Store {
@@ -545,5 +547,167 @@ describe('content codec integration', () => {
         expect(scheduled).toHaveLength(1)
         const delivered = scheduled[0]!.content as { content: { text: string } }
         expect(delivered.content.text).toBe(text)
+    })
+
+    it('requeues an indeterminate delivery only on explicit request', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'requeue-indeterminate')
+        const msg = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'retry me' } },
+            'lid-retry'
+        )
+        expect(store.messages.setMessagesDeliveryState(session.id, ['lid-retry'], 'dispatching')).toBe(1)
+        expect(store.messages.setMessagesDeliveryState(session.id, ['lid-retry'], 'indeterminate')).toBe(1)
+        expect(store.messages.getDeliverableMessagesAfter(session.id, 0, Date.now())).toHaveLength(0)
+        const claimed = store.messages.claimIndeterminateMessage(session.id, msg.id)
+        expect(claimed).toMatchObject({ id: msg.id, invokedAt: null, deliveryState: 'indeterminate' })
+        expect(store.messages.claimIndeterminateMessage(session.id, msg.id)).toBeNull()
+        expect(store.messages.getDeliverableMessagesAfter(session.id, 0, Date.now())).toHaveLength(0)
+        expect(store.messages.setMessagesDeliveryState(session.id, ['lid-retry'], 'queued')).toBe(1)
+        expect(store.messages.getDeliverableMessagesAfter(session.id, 0, Date.now())).toHaveLength(1)
+    })
+
+    it('holds indeterminate delivery out of replay without stamping invoked_at', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'indeterminate')
+        const msg = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'uncertain' } },
+            'lid-uncertain'
+        )
+
+        expect(store.messages.markMessagesIndeterminate(session.id, ['lid-uncertain'])).toBe(1)
+        expect(store.messages.markMessagesIndeterminate(session.id, ['lid-uncertain'])).toBe(0)
+        expect(store.messages.getDeliverableMessagesAfter(session.id, 0, Date.now())).toHaveLength(0)
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id)).toHaveLength(0)
+        expect(store.messages.getUninvokedLocalMessages(session.id)[0]).toMatchObject({
+            id: msg.id,
+            deliveryState: 'indeterminate',
+            invokedAt: null
+        })
+        expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toEqual({
+            status: 'indeterminate',
+            localId: 'lid-uncertain',
+            resolvedId: msg.id,
+            scheduledAt: null
+        })
+
+        const invokedAt = Date.now()
+        expect(store.messages.markMessagesInvoked(session.id, ['lid-uncertain'], invokedAt)).toBe(1)
+        expect(store.messages.getMessages(session.id)[0]).toMatchObject({ invokedAt })
+    })
+})
+
+describe('deleteLiveReasoningSnapshots', () => {
+    function reasoningMessage(streamId: string, text: string, live: boolean) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'reasoning', message: text, id: streamId, ...(live ? { live: true } : {}) }
+            }
+        }
+    }
+
+    function reasoningTexts(store: Store, sessionId: string): string[] {
+        return store.messages.getAllMessages(sessionId)
+            .map((message) => getReasoningStreamId(message.content) === null
+                ? null
+                : ((message.content as { content: { data: { message: string } } }).content.data.message))
+            .filter((text): text is string => text !== null)
+    }
+
+    it('keeps only the newest snapshot of a stream', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-collapse')
+
+        for (const text of ['a', 'ab', 'abc']) {
+            const stored = store.messages.addMessage(session.id, reasoningMessage('stream-1', text, true))
+            store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', stored.id)
+        }
+
+        expect(reasoningTexts(store, session.id)).toEqual(['abc'])
+    })
+
+    it('lets a settled message supersede the snapshots of its own stream', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-settle')
+
+        store.messages.addMessage(session.id, reasoningMessage('stream-1', 'partial', true))
+        const settled = store.messages.addMessage(session.id, reasoningMessage('stream-1', 'final', false))
+        store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', settled.id)
+
+        expect(reasoningTexts(store, session.id)).toEqual(['final'])
+    })
+
+    it('never removes a settled message', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-settled-kept')
+
+        store.messages.addMessage(session.id, reasoningMessage('stream-1', 'final', false))
+        const removed = store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1')
+
+        expect(removed).toBe(0)
+        expect(reasoningTexts(store, session.id)).toEqual(['final'])
+    })
+
+    it('leaves other streams alone', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-other-stream')
+
+        store.messages.addMessage(session.id, reasoningMessage('stream-1', 'first', true))
+        const other = store.messages.addMessage(session.id, reasoningMessage('stream-2', 'second', true))
+        store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-2', other.id)
+
+        expect(reasoningTexts(store, session.id)).toEqual(['first', 'second'])
+    })
+
+    it('never crosses a session boundary', () => {
+        const store = makeStore()
+        const mine = makeSession(store, 'reasoning-mine')
+        const theirs = makeSession(store, 'reasoning-theirs')
+
+        store.messages.addMessage(theirs.id, reasoningMessage('stream-1', 'theirs', true))
+        store.messages.deleteLiveReasoningSnapshots(mine.id, 'stream-1')
+
+        expect(reasoningTexts(store, theirs.id)).toEqual(['theirs'])
+    })
+
+    it('spares the message that replaced the snapshots', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-keep-replacement')
+
+        const replacement = store.messages.addMessage(session.id, reasoningMessage('stream-1', 'newest', true))
+        const removed = store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', replacement.id)
+
+        expect(removed).toBe(0)
+        expect(reasoningTexts(store, session.id)).toEqual(['newest'])
+    })
+
+    it('never lets a stream pass through zero rows', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-never-empty')
+
+        // Walk a stream the way the handler does — store, then sweep — and
+        // assert the stream is represented after every single step.
+        for (const text of ['a', 'ab', 'abc', 'abcd']) {
+            const stored = store.messages.addMessage(session.id, reasoningMessage('stream-1', text, true))
+            expect(reasoningTexts(store, session.id).length).toBeGreaterThan(0)
+            store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', stored.id)
+            expect(reasoningTexts(store, session.id)).toEqual([text])
+        }
+    })
+
+    it('leaves unrelated messages untouched', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'reasoning-unrelated')
+
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } })
+        store.messages.addMessage(session.id, reasoningMessage('stream-1', 'partial', true))
+        store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1')
+
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        expect(reasoningTexts(store, session.id)).toEqual([])
     })
 })

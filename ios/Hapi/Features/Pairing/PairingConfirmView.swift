@@ -1,9 +1,9 @@
 import HapiClient
 import SwiftUI
 
-/// Final confirmation step shared by every pairing path (deep link, QR scan,
-/// manual entry): shows what is about to be paired, runs `AppModel.pair`
-/// with progress, and renders ``PairingErrorView`` states on failure.
+/// Confirmation step for the deep-link path (`hapicompanion://bind`) — the
+/// one entry where an external link initiates pairing, so an explicit user
+/// confirmation stays in between. Manual entry and QR scan pair inline.
 ///
 /// On success `AppModel` clears all pairing presentation state and flips to
 /// `.paired`, which dismisses this view's container — nothing to do here.
@@ -11,8 +11,7 @@ struct PairingConfirmView: View {
     let pending: PendingPairing
 
     @Environment(AppModel.self) private var model
-    @State private var isPairing = false
-    @State private var failure: PairingFailure?
+    @State private var attempt = PairingAttempt()
 
     private var isAddingAnotherHub: Bool {
         if case .paired = model.state { return true }
@@ -37,7 +36,7 @@ struct PairingConfirmView: View {
                     : String(localized: "The app checks the hub is reachable, then exchanges the token for a session."))
             }
 
-            if let failure {
+            if let failure = attempt.failure {
                 Section {
                     PairingErrorView(failure: failure)
                 }
@@ -45,43 +44,25 @@ struct PairingConfirmView: View {
 
             Section {
                 Button {
-                    pairNow()
+                    attempt.pair(model, hubUrl: pending.hubUrl, accessToken: pending.accessToken)
                 } label: {
-                    if isPairing {
+                    if attempt.isPairing {
                         HStack(spacing: 8) {
                             ProgressView()
                             Text("Pairing…")
                         }
                         .frame(maxWidth: .infinity)
                     } else {
-                        Text(failure == nil ? String(localized: "Pair") : String(localized: "Try Again"))
+                        Text(attempt.failure == nil ? String(localized: "Pair") : String(localized: "Try Again"))
                             .frame(maxWidth: .infinity)
                     }
                 }
-                .disabled(isPairing)
+                .disabled(attempt.isPairing)
             }
         }
         .navigationTitle(isAddingAnotherHub ? String(localized: "Add Hub") : String(localized: "Pair"))
         .navigationBarTitleDisplayMode(.inline)
-        .interactiveDismissDisabled(isPairing)
-    }
-
-    private func pairNow() {
-        guard !isPairing else { return }
-        isPairing = true
-        failure = nil
-        Task {
-            do {
-                try await model.pair(hubUrl: pending.hubUrl, accessToken: pending.accessToken)
-                // Success: AppModel flipped to .paired and closed the pairing
-                // surfaces; this view is on its way out.
-            } catch let pairingFailure as PairingFailure {
-                failure = pairingFailure
-            } catch {
-                failure = .unreachable
-            }
-            isPairing = false
-        }
+        .interactiveDismissDisabled(attempt.isPairing)
     }
 }
 
