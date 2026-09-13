@@ -84,6 +84,7 @@ describe('listClaudeModelsForCwd', () => {
             '--input-format', 'stream-json',
             '--output-format', 'stream-json',
             '--verbose',
+            '--bare',
             '--strict-mcp-config',
             '--setting-sources', 'user'
         ], expect.objectContaining({
@@ -134,6 +135,11 @@ describe('listClaudeModelsForCwd', () => {
         // resolve a catalog in auth-dependent setups; only the project
         // scope, which an arbitrary un-trusted cwd controls, is excluded.
         expect(spawnArgs[flagIndex + 1]).toBe('user')
+        // --setting-sources only excludes the project scope. A user-level
+        // SessionStart hook still ran on every probe until --bare; measured on
+        // claude 2.1.270 as 4 hook events, and 0 with the flag, for the same
+        // catalog. Opening the picker must not execute hooks.
+        expect(spawnArgs).toContain('--bare')
 
         child.stdout.emit('data', Buffer.from(controlResponseLine(SAMPLE_MODELS, capturedRequestId(child))))
         await resultPromise

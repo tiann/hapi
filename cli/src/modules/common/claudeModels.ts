@@ -79,7 +79,15 @@ function runClaudeListModelsProbe(cwd: string): Promise<ListClaudeModelsForCwdRe
             // No prompt is ever sent and no MCP servers are configured for
             // this call, so there is no reason to let the workspace's own
             // .mcp.json boot project MCP servers just to answer list_models.
-            '--strict-mcp-config',
+            // --bare skips hooks, LSP, plugin sync, attribution, auto-memory,
+        // background prefetches and keychain reads. Measured on claude 2.1.270:
+        // without it this probe fires SessionStart hooks (4 events) and runs
+        // whatever they shell out to; with it, 0 events and a byte-identical
+        // catalog. Opening the model picker must not execute anybody's hooks --
+        // a remote web client typing directory paths would otherwise trigger
+        // local command execution once per directory.
+        '--bare',
+        '--strict-mcp-config',
             // This probe can run against an arbitrary cwd before the user
             // ever starts a session there (e.g. NewSession re-probes on every
             // directory change), so it must not load that directory's own
