@@ -430,7 +430,7 @@ describe('startHappyServer dynamic link_pr awareness', () => {
         mockUpsertSessionExternalRef.mockReset()
     })
 
-    it('keeps link_pr advertised and gates execution at call time when awareness flips', async () => {
+    it('toggles link_pr list visibility without dropping the MCP session', async () => {
         mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
         const sessionClient = {
             sessionId: 'sess-awareness',
@@ -441,25 +441,21 @@ describe('startHappyServer dynamic link_pr awareness', () => {
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
 
-        // No enableLinkPr pin — catalog stays stable; hub awareness is checked live.
         const server = await startHappyServer(sessionClient, { enableChangeTitle: false })
         stopServer = server.stop
         expect(server.toolNames).toContain('link_pr')
 
         mcp = new Client({ name: 'hapi-awareness-dynamic', version: '1.0.0' })
         await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
-        const tools = await mcp.listTools()
-        expect(tools.tools.map((tool) => tool.name)).toContain('link_pr')
 
-        const disabled = await mcp.callTool({
-            name: 'link_pr',
-            arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
-        }) as ToolResult
-        expect(disabled.isError).toBe(true)
-        expect(disabled.content?.[0]?.text).toContain('GitHub PR awareness is disabled')
-        expect(mockUpsertSessionExternalRef).not.toHaveBeenCalled()
+        const offTools = await mcp.listTools()
+        expect(offTools.tools.map((tool) => tool.name)).not.toContain('link_pr')
 
         mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        // Any request re-syncs visibility; listTools is enough.
+        const onTools = await mcp.listTools()
+        expect(onTools.tools.map((tool) => tool.name)).toContain('link_pr')
+
         mockUpsertSessionExternalRef.mockResolvedValue({
             ok: true,
             status: 200,
@@ -473,13 +469,25 @@ describe('startHappyServer dynamic link_pr awareness', () => {
                 linkedAt: 1
             }]
         })
-        const enabled = await mcp.callTool({
+        const linked = await mcp.callTool({
             name: 'link_pr',
             arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
         }) as ToolResult
-        expect(enabled.isError).toBeFalsy()
-        expect(enabled.content?.[0]?.text).toContain('Linked tiann/hapi#1163')
-        expect(mockUpsertSessionExternalRef).toHaveBeenCalledOnce()
+        expect(linked.isError).toBeFalsy()
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const offAgain = await mcp.listTools()
+        expect(offAgain.tools.map((tool) => tool.name)).not.toContain('link_pr')
+
+        // Unrelated tools remain available on the same connection.
+        expect(offAgain.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+            'display_image',
+            'display_video',
+            'display_media',
+            'list_peers',
+            'ping_peer',
+            'inspect_peer',
+        ]))
     })
 })
 

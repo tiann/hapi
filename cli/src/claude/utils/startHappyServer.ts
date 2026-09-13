@@ -61,18 +61,23 @@ export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
         .map((toolName) => `mcp__hapi__${toolName}`);
 }
 
+type LinkPrMode = boolean | 'dynamic'
+
 function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
     /**
-     * `true`/`false` pin registration. `'dynamic'` always registers `link_pr`
-     * and re-checks hub awareness at call time so toggles do not require a
-     * transport rebuild (stdio bridge caches its HTTP MCP session).
+     * `true`/`false` pin registration. `'dynamic'` registers `link_pr` and
+     * toggles list visibility via RegisteredTool.enable/disable + list_changed
+     * without destroying the MCP transport (stdio bridge caches its session).
      */
-    enableLinkPr: boolean | 'dynamic',
+    enableLinkPr: LinkPrMode,
     skillLookup: StartHappyServerOptions['skillLookup']
-): McpServer {
+): {
+    mcp: McpServer
+    setLinkPrVisible?: (enabled: boolean) => void
+} {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
         try {
@@ -210,6 +215,7 @@ function createHapiMcpServer(
         });
     }
 
+    let setLinkPrVisible: ((enabled: boolean) => void) | undefined
     if (enableLinkPr !== false) {
         const linkPrInputSchema: z.ZodTypeAny = z.object({
             url: z.string().optional().describe('GitHub PR URL (https://github.com/owner/repo/pull/N)'),
@@ -218,7 +224,7 @@ function createHapiMcpServer(
             role: z.enum(['primary', 'secondary']).optional().describe('Defaults to primary'),
         });
 
-        mcp.registerTool<any, any>('link_pr', {
+        const linkPrTool = mcp.registerTool<any, any>('link_pr', {
             description: 'Attach the current HAPI session to a GitHub pull request. Call as soon as you open, adopt, or are handed a PR for this session\'s work. Requires hub githubPrAwareness. Self-session only.',
             title: 'Link Pull Request',
             inputSchema: linkPrInputSchema,
@@ -283,6 +289,13 @@ function createHapiMcpServer(
                 }
             }
         });
+        if (enableLinkPr === 'dynamic') {
+            linkPrTool.disable();
+            setLinkPrVisible = (enabled) => {
+                if (enabled) linkPrTool.enable();
+                else linkPrTool.disable();
+            };
+        }
     }
 
     mcp.registerTool<any, any>('display_image', {
@@ -543,7 +556,7 @@ function createHapiMcpServer(
         });
     }
 
-    return mcp;
+    return { mcp, setLinkPrVisible };
 }
 
 function readMcpSessionId(req: IncomingMessage): string | undefined {
@@ -560,17 +573,34 @@ function readMcpSessionId(req: IncomingMessage): string | undefined {
 export async function startHappyServer(client: ApiSessionClient, options: StartHappyServerOptions = {}) {
     const emitTitleSummary = options.emitTitleSummary ?? true;
     const enableChangeTitle = options.enableChangeTitle ?? true;
-    // Pin false/true for tests. Production omits the option → 'dynamic': always
-    // advertise link_pr and gate at call time so awareness toggles cannot
-    // destroy the stdio bridge's cached HTTP MCP session.
-    const linkPrMode: boolean | 'dynamic' = options.enableLinkPr === undefined
+    // Pin false/true for tests. Production omits the option → 'dynamic': keep
+    // link_pr registered and toggle list visibility without destroying sessions.
+    const linkPrMode: LinkPrMode = options.enableLinkPr === undefined
         ? 'dynamic'
         : options.enableLinkPr;
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
+    const linkPrVisibilitySyncers = new Set<(enabled: boolean) => void>();
+
+    const syncLinkPrVisibility = async (): Promise<void> => {
+        if (linkPrMode !== 'dynamic' || linkPrVisibilitySyncers.size === 0) return;
+        const enabled = await fetchGithubPrAwarenessEnabled();
+        for (const sync of linkPrVisibilitySyncers) {
+            sync(enabled);
+        }
+    };
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, linkPrMode, options.skillLookup);
+        const { mcp, setLinkPrVisible } = createHapiMcpServer(
+            client,
+            emitTitleSummary,
+            enableChangeTitle,
+            linkPrMode,
+            options.skillLookup
+        );
+        if (setLinkPrVisible) {
+            linkPrVisibilitySyncers.add(setLinkPrVisible);
+        }
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -579,9 +609,11 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             },
             onsessionclosed: (sessionId) => {
                 transports.delete(sessionId);
-                const server = mcps.get(sessionId);
                 mcps.delete(sessionId);
-                void server?.close();
+                if (setLinkPrVisible) {
+                    linkPrVisibilitySyncers.delete(setLinkPrVisible);
+                }
+                void mcp.close();
             },
         });
         void mcp.connect(transport);
@@ -590,10 +622,15 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
 
     const server = createServer(async (req, res) => {
         try {
+            await syncLinkPrVisibility();
             const sessionId = readMcpSessionId(req);
             const transport = sessionId
                 ? transports.get(sessionId)
                 : createMcpTransport();
+            if (!sessionId) {
+                // New MCP session registered a syncer — apply current hub flag.
+                await syncLinkPrVisibility();
+            }
 
             if (!transport) {
                 if (!res.headersSent) {
@@ -624,6 +661,9 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
+    // Always include link_pr in the stdio --tools shortlist when dynamic so the
+    // bridge can register then enable/disable; HTTP listTools still honors the
+    // live visibility flag via RegisteredTool.enable/disable.
     const toolNames = [
         ...(enableChangeTitle ? ['change_title'] : []),
         ...(linkPrMode !== false ? ['link_pr'] : []),
@@ -648,6 +688,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             }
             transports.clear();
             mcps.clear();
+            linkPrVisibilitySyncers.clear();
             server.close();
         }
     };

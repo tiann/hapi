@@ -124,7 +124,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
     });
 
     if (toolNames.has('link_pr')) {
-      server.registerTool<any, any>(
+      const linkPrTool = server.registerTool<any, any>(
         'link_pr',
         {
           description: 'Attach the current HAPI session to a GitHub pull request',
@@ -134,6 +134,18 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         async (args: Record<string, unknown>) => {
           try {
             const client = await ensureHttpClient();
+            await syncLinkPrVisibilityFromHttp(client);
+            if (!linkPrTool.enabled) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'GitHub PR awareness is disabled in Settings → Features. Enable it, then retry link_pr.',
+                  },
+                ],
+                isError: true,
+              };
+            }
             const response = await client.callTool({ name: 'link_pr', arguments: args });
             return response as any;
           } catch (error) {
@@ -146,6 +158,31 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           }
         }
       );
+      // Start hidden until the first HTTP listTools sync confirms awareness.
+      linkPrTool.disable();
+
+      async function syncLinkPrVisibilityFromHttp(client: Client): Promise<void> {
+        try {
+          const listed = await client.listTools();
+          const visible = listed.tools.some((tool) => tool.name === 'link_pr');
+          if (visible) linkPrTool.enable();
+          else linkPrTool.disable();
+        } catch {
+          // Keep prior visibility on transient HTTP errors.
+        }
+      }
+
+      // Periodic sync so Codex listTools tracks hub toggles without destroying
+      // the cached HTTP MCP session.
+      const visibilityTimer = setInterval(() => {
+        void ensureHttpClient()
+          .then((client) => syncLinkPrVisibilityFromHttp(client))
+          .catch(() => undefined);
+      }, 15_000);
+      visibilityTimer.unref?.();
+      void ensureHttpClient()
+        .then((client) => syncLinkPrVisibilityFromHttp(client))
+        .catch(() => undefined);
     }
 
     const displayImageInputSchema: z.ZodTypeAny = z.object({
