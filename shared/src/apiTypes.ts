@@ -721,6 +721,7 @@ export type RpcListDirectoryResponse = ListDirectoryResponse
 
 export type FileMetadataEntry = {
     path: string
+    type?: 'file' | 'directory' | 'other'
     size?: number
     modified?: number
 }

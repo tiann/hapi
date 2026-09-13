@@ -165,7 +165,7 @@ Source: `hub/src/web/routes/git.ts`. Git endpoints return the **raw command outp
 | `GET /api/sessions/:id/git-diff-numstat` | Query: `staged=true\|false` | `GitCommandResponse` (raw `git diff --numstat` stdout) |
 | `GET /api/sessions/:id/git-diff-file` | Query: `path` (required), `staged?` | `GitCommandResponse` (raw unified diff) |
 | `GET /api/sessions/:id/file` | Query: `path` (required) | `{success, content?, size?, modified?, error?}` — `content` is **base64** (decode before display; web ref: `web/src/routes/sessions/file.tsx`) |
-| `GET /api/sessions/:id/files` | Query: `query?`, `limit?` (1–500, default 200) | `{success, files: [{fileName, filePath, fullPath, fileType: 'file', size?, modified?}]}` (ripgrep-backed search) |
+| `GET /api/sessions/:id/files` | Query: `query?`, `limit?` (1–500, default 200) | `{success, files: [{fileName, filePath, fullPath, fileType: 'file', size?, modified?}], pathSearch?: boolean}`; filename queries use ripgrep-backed fuzzy search, non-wildcard queries containing a path separator use an exact workspace-relative/absolute path lookup, and a trailing `/` or Windows `\\` searches recursively under that directory |
 | `GET /api/sessions/:id/directory` | Query: `path?` (empty = session root) | `{success, entries?: [{name, type: 'file'\|'directory'\|'other', size?, modified?}], error?}` |
 
 When the session has no `metadata.path` yet, these return HTTP 200 `{success: false, error: 'Session path not available'}`.

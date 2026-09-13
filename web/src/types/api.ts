@@ -149,6 +149,7 @@ export type FileSearchResponse = {
     success: boolean
     files?: FileSearchItem[]
     error?: string
+    pathSearch?: boolean
 }
 
 export type GitFileStatus = {

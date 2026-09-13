@@ -481,6 +481,7 @@ export default {
   'files.tab.changes': '变更',
   'files.tab.directories': '目录',
   'files.search.empty': '没有匹配搜索的文件。',
+  'files.search.emptyPath': '该路径下没有匹配搜索的文件。',
   'files.search.error.failed': '搜索文件失败。',
   'files.search.error.failedWithDetail': '搜索文件失败：{error}',
   'files.changes.section.staged': '已暂存变更（{n}）',

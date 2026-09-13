@@ -662,7 +662,7 @@ export default function FilesPage() {
                             <div className="p-6 text-sm text-[var(--app-hint)]">{searchErrorMessage}</div>
                         ) : searchResults.files.length === 0 ? (
                             <div className="p-6 text-sm text-[var(--app-hint)]">
-                                {t('files.search.empty')}
+                                {t(searchResults.isPathSearch ? 'files.search.emptyPath' : 'files.search.empty')}
                             </div>
                         ) : (
                             <div className="border-t border-[var(--app-divider)]">
