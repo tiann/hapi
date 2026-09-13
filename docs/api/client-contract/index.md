@@ -4,12 +4,16 @@
 
 **Scope:** The HTTP contract between a client and one hub — pairing and auth, REST endpoints, SSE streaming, message pagination, message decoding, and error semantics. Core session/chat features use **REST + SSE**. Web terminals additionally use the JWT-authenticated Socket.IO `/terminal` namespace, outside this contract; `/cli` is the internal CLI↔hub namespace and is not a native-client API.
 
+For installation, pairing and the features exposed by each app, see the
+[native app guide](../../guide/native-apps.md). An endpoint documented here
+does not imply that both apps expose a corresponding UI.
+
 ## Pages
 
 | Page | Contents |
 |------|----------|
 | [Auth](./auth.md) | Pairing deeplink, access-token grammar, JWT exchange, silent re-auth, namespaces, credential storage |
-| [REST](./rest.md) | Endpoint tables (v1-required and out-of-scope), request/response shapes, gzip negotiation |
+| [REST](./rest.md) | Interactive client APIs, other hub surfaces, request/response shapes, gzip negotiation |
 | [SSE](./sse.md) | `GET /api/events` stream: subscription modes, resume handshake, event ids, reconnect policy |
 | [Pagination](./pagination.md) | Message window: composite cursors, epoch reset, optimistic-send reconciliation |
 | [Messages](./messages.md) | `DecryptedMessage.content` decoding tree (`codex` / `output` / `event` families) |
@@ -32,7 +36,7 @@ Source of truth: `hub/src/web/server.ts` (`/health` route), `shared/src/version.
 }
 ```
 
-- `protocolVersion` is the wire-protocol generation (`PROTOCOL_VERSION` in `shared/src/version.ts`, currently `1`). A client built against this contract targets version 1 and should surface an "update required" state if it ever sees a higher value.
+- `protocolVersion` is the wire-protocol generation (`PROTOCOL_VERSION` in `shared/src/version.ts`, currently `1`), separate from app/hub release versions. Both native apps require it to equal their supported version and stop pairing on any mismatch. Sources: iOS `HapiClient/Auth/HubPairingService.swift`; Android `feature/pairing/PairingViewModel.kt`.
 - `capabilities` is **additive**: new hub features appear as new keys. Clients must ignore unknown keys and treat missing keys as "not supported". Feature-gate on capability keys, never on hub build versions.
 
 ## Executable spec: golden fixtures
@@ -42,6 +46,8 @@ The prose in [Messages](./messages.md) describes the decoding tree, but the *nor
 The fixtures and native conformance suites are present in this repository.
 Regenerate fixtures from the repo root with `bun run gen:fixtures`; never
 hand-edit generated JSON. See the native package READMEs for conformance checks.
+Fixtures pin protocol decoding and state transitions, not visual presentation
+or feature parity between native apps and the web.
 
 ## Relationship to the companion push contract
 

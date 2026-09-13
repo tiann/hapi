@@ -11,6 +11,11 @@ binding (requires Telegram `initData`).
 
 A companion implementing this contract is a **native client to the same hub the PWA talks to**, surfacing notifications and reply / approve actions on a phone or wearable. The hub may run on the operator's development machine or a separate host; agents execute on their CLI/Runner machines.
 
+This page specifies background push. The repository's iOS and Android phone
+apps also provide interactive sessions and chat; see the [native app guide](../guide/native-apps.md)
+and [client contract](./client-contract/index.md). The hub retains direct-FCM
+support for `wear` registrations; the repository does not include a Wear OS app.
+
 ---
 
 ## Native device registration
@@ -92,7 +97,9 @@ below; after decryption the same data contract drives rendering and actions.
 
 `localId` is optional in the send-message body - an opaque client-generated id for reconciling the locally shown message with the server-echoed one.
 
-`sentFrom` extension (optional future): `android-phone`, `android-wear`.
+The REST send endpoint stamps `sentFrom: 'webapp'` server-side for native
+and web sends alike; clients do not send a `sentFrom` field. See
+[Messages](./client-contract/rest.md#messages).
 
 ---
 
@@ -167,8 +174,10 @@ can read notification content (PUSH SPEC v1).
   (e.g. `SecRandomCopyBytes`), base64-encoded. This is the per-device E2E
   encryption key; the hub validates it decodes to exactly 32 bytes and
   rejects the registration otherwise. Keep it in the Keychain (shared with
-  the Notification Service Extension via an app group). Rotate it by
-  re-registering.
+  the Notification Service Extension via a Keychain access group). Both
+  iOS targets declare `$(AppIdentifierPrefix)run.hapi.companion.push` in
+  `keychain-access-groups`; no App Group container is used for this key.
+  Rotate it by re-registering.
 - Upsert on `(namespace, deviceId, platform)`, same as Android. Unregister
   is the same `DELETE /api/devices/register` `{ "token": ... }`.
 
@@ -239,6 +248,13 @@ APNS_TEAM_ID=YYYYYYYYYY
 APNS_BUNDLE_ID=your.ios.bundle.id
 APNS_ENV=production   # or sandbox (Xcode/dev builds)
 ```
+
+Direct APNs credentials must match the app's signing developer account and
+bundle ID, and `APNS_ENV` must match the environment of its device token.
+Changing the developer account or bundle ID for a self-build requires matching
+provider configuration; the official relay's credentials cannot deliver to
+an arbitrary self-signed app. A self-hosted relay must use matching credentials
+as well. See the [iOS build instructions](https://github.com/tiann/hapi/blob/main/ios/README.md#push-notifications).
 
 Relay protocol (for self-hosted relays): `POST {relayUrl}/v1/push` with
 `{"platform":"ios","token":"<hex>","envelope":"<base64>","collapseId":"...","priority":10}`;
