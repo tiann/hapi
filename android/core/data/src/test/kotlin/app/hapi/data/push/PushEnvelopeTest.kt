@@ -58,13 +58,13 @@ class PushEnvelopeTest {
     @Test
     fun `encrypted and direct pushes retain the same rendering and actions`() {
         val decoder = PushMessageDecoder { key }
-        for (type in listOf("permission-request", "ready", "task-notification")) {
+        for (type in listOf("permission-request", "input-request", "ready", "task-notification")) {
             val plain = mapOf("type" to type, "sessionId" to "s1", "requestId" to "r1", "contractVersion" to "1",
                 "title" to "请求权限", "body" to "完成 😀", "severity" to "warning")
             val encrypted = mapOf("hapi_v" to "1", "hapi_e" to encrypt(Json.encodeToString(plain)))
             val payload = decoder.decode(encrypted)
             assertEquals(PushPayload.parse(plain), payload)
-            assertTrue(payload!!.supportsActions)
+            assertEquals(type != "input-request", payload!!.supportsActions)
             assertEquals("$type-s1", payload.notificationTag)
             assertEquals(PushPayload.parse(plain), PushMessageDecoder { error("plain path must not read a key") }.decode(plain))
         }

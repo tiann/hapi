@@ -160,6 +160,10 @@ same golden vector as iOS; notification content is unavailable to the relay
 and Google. Failed decrypts are dropped. Direct private FCM retains its
 existing unwrapped data payload. Rendering, foreground-chat suppression,
 Allow/Deny and Reply workers use the same decoded `PushPayload` in both paths.
+`input-request` notifications instead preview the first question, remaining
+question count and session name, using the HIGH-importance `input_requests`
+channel. They offer no Allow/Deny or message Reply: tap to open the session and
+answer in the question form.
 The notification contract still does not name the sending hub: action
 workers try the active hub first, then other paired hubs on session miss;
 tapping opens the session against the active hub.

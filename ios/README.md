@@ -171,7 +171,10 @@ provider credentials as described below.
   carries an SDK-only copy of the HapiKit `PushEnvelope` decrypt, kept honest
   by the shared test vector.
 - **Actions.** `permission-request` → Allow / Deny; `ready` and
-  `task-notification` → inline Reply. Handlers run in the notification
+  `task-notification` → inline Reply. `input-request` previews the first
+  question, remaining question count and session name, with tap-to-open only
+  (no approval or Reply action). Apple Watch mirrors the preview; answer on
+  the phone. Handlers run in the notification
   delegate's async completion and resolve the owning hub Android-style
   (active hub first, then the roster; 404 "Session not found" / 403 = try
   the next hub) — approve/deny post `{}`, reply posts `{text, localId}`.
