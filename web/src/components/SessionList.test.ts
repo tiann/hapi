@@ -7,6 +7,7 @@ import {
     filterActiveSessionsOnly,
     filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
+    bucketRunningSessions,
     getSessionTimeRange,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
@@ -651,5 +652,56 @@ describe('getPullRefreshIndicatorRotation', () => {
     it('turns the pull indicator upward once refresh is ready', () => {
         expect(getPullRefreshIndicatorRotation('pulling')).toBe(0)
         expect(getPullRefreshIndicatorRotation('ready')).toBe(180)
+    })
+})
+
+describe('bucketRunningSessions', () => {
+    // tiann/hapi#1820: a keepalive-only session stays `active` (its socket is
+    // genuinely up) but must not read as a ready session in the list.
+    const idle = makeSession({
+        id: 'idle-1',
+        active: true,
+        updatedAt: 10,
+        metadata: { path: '/p', host: 'h', lifecycleState: 'idle' } as SessionSummary['metadata']
+    })
+    const quiet = makeSession({
+        id: 'quiet-1',
+        active: true,
+        updatedAt: 20,
+        metadata: { path: '/p', host: 'h', lifecycleState: 'running' } as SessionSummary['metadata']
+    })
+
+    it('separates keepalive-only sessions from quiet-but-ready ones', () => {
+        const buckets = bucketRunningSessions([idle, quiet], true)
+
+        expect(buckets.idle.map((s) => s.id)).toEqual(['idle-1'])
+        expect(buckets.active.map((s) => s.id)).toEqual(['quiet-1'])
+        // Exactly one bucket each — the row must not be duplicated.
+        expect(buckets.working).toHaveLength(0)
+        expect(buckets.pending).toHaveLength(0)
+    })
+
+    it('moves a session out of idle once it is working again', () => {
+        const woken = { ...idle, thinking: true }
+        const buckets = bucketRunningSessions([woken, quiet], true)
+
+        expect(buckets.idle).toHaveLength(0)
+        expect(buckets.working.map((s) => s.id)).toEqual(['idle-1'])
+    })
+
+    it('keeps real work ahead of the idle mark', () => {
+        // An idle-marked session that picked up a background task or a pending
+        // request belongs in its work bucket, not in idle.
+        expect(bucketRunningSessions([{ ...idle, backgroundTaskCount: 1 }], true).working).toHaveLength(1)
+        expect(bucketRunningSessions([{ ...idle, pendingRequestsCount: 1 }], true).pending).toHaveLength(1)
+    })
+
+    it('ignores disconnected and pinned sessions', () => {
+        const buckets = bucketRunningSessions([
+            { ...idle, active: false },
+            { ...idle, id: 'idle-pinned', pinned: true }
+        ], true)
+
+        expect(buckets.idle).toHaveLength(0)
     })
 })

@@ -470,6 +470,18 @@ describe('CursorLegacyMigrator.migrateOne — refusals', () => {
         if (!out.ok) expect(out.reason).toBe('running_refused')
     })
 
+    // tiann/hapi#1820: an idle-marked row still has a live CLI behind it.
+    // Reading 'idle' as a dead row would let the migrator transplant the ACP
+    // session directory out from under a running Cursor runner.
+    it('refuses sessions whose lifecycleState is "idle" without forceArchiveRunning', async () => {
+        const session = h.makeSession({
+            metadata: { path: '/x', host: 'h', flavor: 'cursor', cursorSessionId: 'u', lifecycleState: 'idle' }
+        })
+        const out = await makeMigrator(h, null).migrateOne(session, {})
+        expect(out.ok).toBe(false)
+        if (!out.ok) expect(out.reason).toBe('running_refused')
+    })
+
     it('refuses sessions where session.active=true even without lifecycleState (Codex #34 P2)', async () => {
         const session = h.makeSession({
             active: true,

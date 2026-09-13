@@ -1371,6 +1371,32 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
         })
 
+        // tiann/hapi#1820: 'idle' is a live lifecycle. Once a keepalive-only
+        // session finally loses its socket it must stay archivable, exactly
+        // like a stale 'running' row — comparing against the 'running'
+        // literal here would strand it behind a 409.
+        it('archives an inactive session left in the keepalive-idle lifecycle', async () => {
+            const calls: string[] = []
+            const session = createSession({
+                active: false,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    lifecycleState: 'idle'
+                }
+            })
+            const { app } = createApp(session, {
+                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual(['session-1'])
+        })
+
         it('returns 2xx and skips archiveSession when the row is already archived (idempotent)', async () => {
             let called = false
             const session = createSession({

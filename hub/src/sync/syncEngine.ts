@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -619,6 +619,16 @@ export class SyncEngine {
     }
 
     /**
+     * tiann/hapi#1820: any message on the wire is agent progress, whichever
+     * side authored it. Separate from `recordSessionActivity`, which also
+     * bumps `updatedAt` and is deliberately restricted to human turns so the
+     * session list keeps ordering by human interaction.
+     */
+    recordAgentProgress(sessionId: string, at: number): void {
+        this.sessionCache.recordAgentProgress(sessionId, at)
+    }
+
+    /**
      * tiann/hapi#893 (scratchlist v2). Read-side: list entries for a
      * session. Auth / namespace check is the route layer's job (via
      * `requireSessionFromParam`); by the time we get here the caller
@@ -946,6 +956,10 @@ export class SyncEngine {
             this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive?.()
+        // tiann/hapi#1820: `activeAt` expiry above only catches sessions whose
+        // socket went quiet. Keepalive-only zombies keep `activeAt` fresh
+        // forever, so reconcile their agent-health signal separately.
+        this.sessionCache.reconcileKeepaliveIdle()
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
         this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
@@ -1771,11 +1785,13 @@ export class SyncEngine {
             // running forever and any downstream code that filters by
             // lifecycleState (not the cache active flag) would keep
             // treating archived ACP sessions as live.
+            // tiann/hapi#1820: 'idle' is the same stale-live case as 'running'
+            // once the row is inactive, so clear it the same way.
             const oldLifecycle = typeof latest.metadata.lifecycleState === 'string' ? latest.metadata.lifecycleState : undefined
             const nextMetadata: typeof latest.metadata = {
                 ...latest.metadata,
                 cursorSessionProtocol: 'acp' as const,
-                ...(oldLifecycle === 'running' ? { lifecycleState: 'archived' as const } : {})
+                ...(isLiveLifecycleState(oldLifecycle) ? { lifecycleState: 'archived' as const } : {})
             }
             // Drop the migration-in-progress flag in the same write (see
             // header comment). Safe whether or not it was set.
