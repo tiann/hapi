@@ -26,6 +26,7 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
             url: 'http://localhost:0',
             stop: () => {}
         },
+        toolNames: ['change_title'],
         mcpServers: harness.bridgeMcpServers
     })
 }));

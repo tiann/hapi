@@ -162,7 +162,8 @@ describe('Codex context details', () => {
                     args: ['mcp'],
                     tools: { change_title: {}, list_peers: {} }
                 }
-            }
+            },
+            mcpServerInventory: [{ name: 'hapi', toolNames: ['change_title', 'list_peers'] }]
         })
 
         expect(details).toMatchObject({
@@ -233,7 +234,7 @@ describe('Codex context details', () => {
         })
     })
 
-    it('includes configured MCP inventories alongside the injected bridge', () => {
+    it('does not infer tool inventories from MCP approval configuration', () => {
         const details = buildCodexContextDetails({
             updatedAt: 100,
             mcpServers: { hapi: { command: 'hapi', args: ['mcp'], tools: { change_title: {} } } },
@@ -246,7 +247,7 @@ describe('Codex context details', () => {
 
         expect(details.codex?.mcpServers).toEqual([
             { name: 'qmd', status: 'ready', toolNames: ['search'] },
-            { name: 'hapi', toolNames: ['change_title'] }
+            { name: 'hapi' }
         ])
     })
 

@@ -66,6 +66,12 @@ describe('codex MCP inventory', () => {
         }])
     })
 
+    it('preserves disabled status over authentication status', () => {
+        expect(parseCodexMcpStatusResponse({
+            data: [{ name: 'qmd', enabled: false, auth_status: 'unsupported' }]
+        })).toEqual([{ name: 'qmd', status: 'disabled' }])
+    })
+
     it.each([{}, []])('preserves an authoritative empty runtime tool list: %j', (tools) => {
         const inventory = parseCodexMcpStatusResponse({
             data: [{ name: 'qmd', tools }]

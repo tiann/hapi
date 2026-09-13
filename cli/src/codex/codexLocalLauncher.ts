@@ -99,7 +99,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let mcpServerInventory: Awaited<ReturnType<typeof listConfiguredCodexMcpServers>> = undefined;
 
     // Start hapi hub for MCP bridge (same as remote mode)
-    const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+    const { server: happyServer, mcpServers, toolNames: hapiToolNames } = await buildHapiMcpBridge(session.client);
     logger.debug(`[codex-local]: Started hapi MCP bridge server at ${happyServer.url}`);
     const getMcpContextArgs = () => {
         const savedMcpServers = session.client.getMetadata()?.contextDetails?.codex?.mcpServers;
@@ -107,7 +107,12 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             || ((savedMcpServers?.length ?? 0) === 0 && Object.keys(mcpServers).length > 0);
         return {
             mcpServers: includeKnownBridge ? mcpServers : undefined,
-            mcpServerInventory: mcpInventoryLoaded ? mcpServerInventory : undefined
+            mcpServerInventory: includeKnownBridge
+                ? [
+                    ...(mcpInventoryLoaded ? (mcpServerInventory ?? []) : []),
+                    ...(Object.keys(mcpServers).length > 0 ? [{ name: 'hapi', toolNames: [...hapiToolNames] }] : [])
+                ]
+                : undefined
         };
     };
     const inventoryTask = Promise.all([

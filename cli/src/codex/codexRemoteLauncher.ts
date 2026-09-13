@@ -3264,7 +3264,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     slashCommands: slashCommandsLoaded ? availableSlashCommands : undefined,
                     skills: nativeSkillsAvailable ? nativeSkills : undefined,
                     mcpServers: mcpInventoryLoaded ? mcpServers : undefined,
-                    mcpServerInventory: mcpInventoryLoaded ? codexMcpServerInventory : undefined
+                    mcpServerInventory: getMcpServerInventory()
                 });
                 publishContextDetails(session.client, details);
                 session.sendAgentMessage({
@@ -3565,7 +3565,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             failPendingAgentStartsForSpawnArgumentError(spawnAgentError);
         });
 
-        const { server: happyServer, mcpServers: hapiMcpServers } = await buildHapiMcpBridge(session.client, {
+        const { server: happyServer, mcpServers: hapiMcpServers, toolNames: hapiToolNames } = await buildHapiMcpBridge(session.client, {
             // In app-server/collab mode, child agents share this MCP bridge.
             // If the MCP handler writes the title directly, child title calls
             // leak into the parent HAPI session. Defer the side effect until
@@ -3575,6 +3575,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         });
         this.happyServer = happyServer;
         let mcpServers: CodexMcpServersConfig = hapiMcpServers;
+        const getMcpServerInventory = (): readonly CodexMcpServerInventory[] | undefined => mcpInventoryLoaded
+            ? mergeCodexMcpInventories(
+                codexMcpServerInventory,
+                ...(Object.keys(hapiMcpServers).length > 0 ? [[{ name: 'hapi', toolNames: [...hapiToolNames] }]] : [])
+            )
+            : undefined;
         const publishCodexThreadContext = (response: unknown, params: ThreadStartParams, threadId?: string): void => {
             latestCodexThreadResponse = response;
             latestCodexThreadParams = params;
@@ -3586,7 +3592,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 slashCommands: slashCommandsLoaded ? availableSlashCommands : undefined,
                 skills: nativeSkillsAvailable ? nativeSkills : undefined,
                 mcpServers: mcpInventoryLoaded ? mcpServers : undefined,
-                mcpServerInventory: mcpInventoryLoaded ? codexMcpServerInventory : undefined
+                mcpServerInventory: getMcpServerInventory()
             }));
         };
 
@@ -3600,7 +3606,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 slashCommands: slashCommandsLoaded ? availableSlashCommands : undefined,
                 skills: nativeSkillsAvailable ? nativeSkills : undefined,
                 mcpServers: mcpInventoryLoaded ? mcpServers : undefined,
-                mcpServerInventory: mcpInventoryLoaded ? codexMcpServerInventory : undefined
+                mcpServerInventory: getMcpServerInventory()
             }));
         };
 
@@ -3624,7 +3630,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             slashCommands: slashCommandsLoaded ? availableSlashCommands : undefined,
             skills: nativeSkillsAvailable ? nativeSkills : undefined,
             mcpServers: mcpInventoryLoaded ? mcpServers : undefined,
-            mcpServerInventory: mcpInventoryLoaded ? codexMcpServerInventory : undefined
+            mcpServerInventory: getMcpServerInventory()
         });
         if (initialCodexContextDetails.codex) {
             publishContextDetails(session.client, initialCodexContextDetails);

@@ -74,13 +74,14 @@ function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | unde
         const name = asString(item?.name ?? item?.serverName ?? item?.server_name)
         if (!name) return []
         const enabled = item?.enabled
-        const status = asString(
-            item?.status
-            ?? item?.state
-            ?? item?.authStatus
-            ?? item?.auth_status
-            ?? (enabled === false ? 'disabled' : undefined)
-        )
+        const status = enabled === false
+            ? 'disabled'
+            : asString(
+                item?.status
+                ?? item?.state
+                ?? item?.authStatus
+                ?? item?.auth_status
+            )
         const toolNames = asToolNames(item?.toolNames ?? item?.tool_names ?? item?.tools)
         return [{
             name,

@@ -52,7 +52,8 @@ vi.mock('../codexAppServerClient', () => ({
     isIndeterminateError: () => false
 }));
 vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({
-    mcpServers: { hapi: { command: 'hapi', args: ['mcp'], tools: { change_title: {} } } }, server: { stop() {} }
+    mcpServers: { hapi: { command: 'hapi', args: ['mcp'], tools: { change_title: {} } } },
+    toolNames: ['change_title'], server: { stop() {} }
 }) }));
 vi.mock('@/modules/common/slashCommands', () => ({
     listSlashCommands: async () => [{ name: '/compact' }]

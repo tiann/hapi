@@ -243,13 +243,11 @@ export function buildCodexContextDetails(args: {
             ...(server.status ? { status: server.status } : {})
         })
     }
-    for (const [name, server] of Object.entries(args.mcpServers ?? {})) {
+    for (const name of Object.keys(args.mcpServers ?? {})) {
         const previous = mcpServerByName.get(name)
-        const tools = asRecord(asRecord(server)?.tools)
-        const toolNames = previous?.toolNames ?? (tools ? Object.keys(tools) : undefined)
         mcpServerByName.set(name, {
             name,
-            ...(toolNames !== undefined ? { toolNames } : {}),
+            ...(previous?.toolNames !== undefined ? { toolNames: [...previous.toolNames] } : {}),
             ...(previous?.status ? { status: previous.status } : {})
         })
     }

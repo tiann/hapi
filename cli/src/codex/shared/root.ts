@@ -230,14 +230,19 @@ export class SharedCodexRoot {
         mcpServerInventory?: readonly CodexMcpServerInventory[];
     } {
         const bridgeServers = this.bridge?.mcpServers ?? {};
+        const bridgeInventory = Object.keys(bridgeServers).length > 0 && Array.isArray(this.bridge?.toolNames)
+            ? [{ name: 'hapi', toolNames: [...this.bridge.toolNames] }]
+            : [];
         const savedMcpServers = this.session.getMetadata()?.contextDetails?.codex?.mcpServers;
         const includeBridge = this.mcpInventoryLoaded
             || ((savedMcpServers?.length ?? 0) === 0 && Object.keys(bridgeServers).length > 0);
         const availableInventories = [this.configuredMcpServerInventory, this.statusMcpServerInventory]
             .filter((inventory): inventory is CodexMcpServerInventory[] => inventory !== undefined);
         const inventory = this.mcpInventoryLoaded
-            ? mergeCodexMcpInventories(...availableInventories)
-            : undefined;
+            ? mergeCodexMcpInventories(...availableInventories, bridgeInventory)
+            : includeBridge && bridgeInventory.length > 0
+                ? bridgeInventory
+                : undefined;
         return {
             mcpServers: includeBridge ? bridgeServers : undefined,
             mcpServerInventory: inventory

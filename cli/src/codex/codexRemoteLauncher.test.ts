@@ -1111,6 +1111,7 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
         server: {
             stop: () => {}
         },
+        toolNames: ['change_title'],
         mcpServers: harness.bridgeMcpServers
         };
     }
