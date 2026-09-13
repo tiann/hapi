@@ -158,6 +158,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.conversationHistoryEntryIds !== undefined) {
         preserved.conversationHistoryEntryIds = metadata.conversationHistoryEntryIds
     }
+    if (metadata.contextDetails !== undefined) {
+        preserved.contextDetails = metadata.contextDetails
+    }
     if (metadata.conversationHistoryDiverged !== undefined) {
         preserved.conversationHistoryDiverged = metadata.conversationHistoryDiverged
     }

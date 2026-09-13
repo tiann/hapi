@@ -334,6 +334,11 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the agent details content centered when the modal scrollbar is visible. */
+.agent-details-scroll-y {
+    scrollbar-gutter: stable both-edges;
+}
+
 /* On touch-first devices, keep the chat scrollbar from shifting centered content. */
 @media (hover: none) and (pointer: coarse) {
     .chat-scroll-y {

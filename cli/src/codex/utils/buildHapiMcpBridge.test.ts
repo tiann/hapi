@@ -81,6 +81,10 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             list_peers: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
         })
+        expect(bridge.toolNames).toEqual([
+            'change_title', 'display_image', 'display_video', 'display_media',
+            'list_peers', 'ping_peer', 'inspect_peer', 'skill_lookup'
+        ])
     })
 
     it('does not expose skill_lookup for native-skill bridge callers', async () => {

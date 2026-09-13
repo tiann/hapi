@@ -4,7 +4,7 @@ import { AgentState, SessionEffort, SessionModel } from '@/api/types';
 import { EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
-import { classifyClaudeSlashCatalog, extractSDKMetadata } from '@/claude/sdk/metadataExtractor';
+import { classifyClaudeSlashCatalog, extractSDKMetadata, type SDKMetadata } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
@@ -28,6 +28,7 @@ import {
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 export interface StartOptions {
     model?: string
@@ -41,6 +42,25 @@ export interface StartOptions {
     existingSessionId?: string
     workingDirectory?: string
     resumeSessionId?: string
+}
+
+export function buildClaudeStaticContextDetails(args: {
+    model?: string
+    sdkMetadata: SDKMetadata
+    catalog: { commands: string[]; skills: SkillSummary[] }
+}): ReturnType<typeof buildClaudeContextDetails> {
+    const catalogAvailable = args.sdkMetadata.slashCommands !== undefined;
+    return buildClaudeContextDetails({
+        model: args.model,
+        system: {
+            model: args.model,
+            tools: args.sdkMetadata.tools,
+            ...(catalogAvailable ? {
+                skills: args.catalog.skills,
+                slash_commands: args.catalog.commands
+            } : {})
+        }
+    });
 }
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
@@ -107,6 +127,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             catalogPromise = loadCatalog().then((result) => {
                 const { sdkMetadata, catalog } = result;
                 logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+                const staticContextDetails = buildClaudeStaticContextDetails({
+                    model: options.model,
+                    sdkMetadata,
+                    catalog
+                });
+                if (staticContextDetails) {
+                    publishContextDetails(session, staticContextDetails);
+                }
                 if (sdkMetadata.slashCommands === undefined) {
                     catalogPromise = null;
                     if (sdkMetadata.tools !== undefined) {

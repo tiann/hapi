@@ -9,6 +9,11 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 
+const sharedHarness = vi.hoisted(() => ({
+    skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
+    mcpInventoryArgs: undefined as readonly string[] | undefined
+}));
+
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
@@ -23,6 +28,10 @@ vi.mock('../codexAppServerClient', () => ({
         async connect() {}
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
+        async listSkills() {
+            return { data: [{ cwd: '/tmp', skills: sharedHarness.skills, errors: [] }] };
+        }
+        async listMcpServerStatuses() { return { data: [] }; }
         async disconnect() { this.initialized = false; }
         async request(method: string, params: Record<string, unknown> = {}) {
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
@@ -44,8 +53,22 @@ vi.mock('../codexAppServerClient', () => ({
     isIndeterminateError: () => false
 }));
 vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({
-    mcpServers: {}, server: { stop() {} }
+    mcpServers: { hapi: { command: 'hapi', args: ['mcp'], tools: { change_title: {} } } },
+    toolNames: ['change_title'], server: { stop() {} }
 }) }));
+vi.mock('@/modules/common/slashCommands', () => ({
+    listSlashCommands: async () => [{ name: '/compact' }]
+}));
+vi.mock('../utils/codexMcpInventory', () => ({
+    listConfiguredCodexMcpServers: async (_cwd: string, args?: readonly string[]) => {
+        sharedHarness.mcpInventoryArgs = args;
+        return [];
+    },
+    mergeCodexMcpInventories: (...inventories: Array<Array<unknown>>) => inventories.flat(),
+    parseCodexMcpStatusResponse: (value: unknown) => value && typeof value === 'object' && 'data' in value
+        ? (value as { data: unknown[] }).data
+        : undefined
+}));
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -74,6 +97,7 @@ async function fixture() {
     } as unknown as ApiSessionClient;
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
+        codexInventoryArgs: ['-c', 'mcp_servers.qmd.enabled=false'],
         create: async () => { throw new Error('Unexpected root creation'); },
         end: async () => { throw new Error('Unexpected root archive'); }
     } satisfies RootHost);
@@ -87,7 +111,7 @@ async function fixture() {
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, rpc, send, state: () => state, updateState, reconnect: () => reconnect?.() };
+    return { root, native, rpc, send, state: () => state, metadata: () => metadata, updateState, reconnect: () => reconnect?.() };
 }
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
@@ -277,5 +301,48 @@ describe('shared steering availability', () => {
         f.native.thread.turns = [{ id: 'busy', status: 'completed', items: [] }];
         f.reconnect();
         await vi.waitFor(() => expect(f.state().steeringActive).toBe(false));
+    });
+
+    it('publishes provider inventories through the active shared root', async () => {
+        const f = await fixture();
+
+        await f.root.activate();
+
+        await vi.waitFor(() => expect(f.metadata().contextDetails).toMatchObject({
+            provider: 'codex',
+            codex: {
+                slashCommands: ['/compact'],
+                skills: [{ name: 'find-docs' }],
+                mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
+            }
+        }));
+    });
+
+    it('passes effective launch configuration to shared MCP discovery', async () => {
+        sharedHarness.mcpInventoryArgs = undefined;
+        const f = await fixture();
+
+        await f.root.activate();
+
+        await vi.waitFor(() => expect(sharedHarness.mcpInventoryArgs).toEqual([
+            '-c', 'mcp_servers.qmd.enabled=false'
+        ]));
+    });
+
+    it('refreshes shared skills on skills/changed and preserves them on failure', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([{ name: 'find-docs' }]));
+
+        sharedHarness.skills = [];
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([]));
+
+        sharedHarness.skills = [{ name: 'replacement', description: 'Replacement', path: '/tmp/SKILL.md', scope: 'user', enabled: true }];
+        const client = f.root.client as unknown as { listSkills: (params: unknown) => Promise<unknown> };
+        client.listSkills = async () => { throw new Error('skills unavailable'); };
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(f.metadata().contextDetails?.codex?.skills).toEqual([]);
     });
 });
