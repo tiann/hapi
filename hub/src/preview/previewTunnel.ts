@@ -152,7 +152,20 @@ export class PreviewTunnel {
         // Byte-accurate queue accounting: `desiredSize` is highWaterMark minus
         // the number of queued-and-not-yet-consumed bytes, so buffered refreshes
         // as the browser drains the stream and `pull` is where resume happens.
-        const body = new ReadableStream<Uint8Array>({
+        // Bun's ReadableStream typings prefer its own "direct" source shape, so
+        // route the web-standard (source, strategy) construction through an
+        // explicitly typed alias — CI and older bun-types reject the direct
+        // overload with a strategy.
+        type ByteCountingSource = {
+            start(controller: ReadableStreamDefaultController<Uint8Array>): void
+            pull(controller: ReadableStreamDefaultController<Uint8Array>): void
+            cancel(): void
+        }
+        const constructByteCountingStream = ReadableStream as unknown as new (
+            source: ByteCountingSource,
+            strategy: { highWaterMark: number; size: (chunk: Uint8Array) => number }
+        ) => ReadableStream<Uint8Array>
+        const body = new constructByteCountingStream({
             start: (controller) => {
                 conn.controller = controller
             },
