@@ -63,6 +63,60 @@ export default function hapiTitleExtension(pi) {
             return { content: [{ type: 'text', text: 'Session title set: ' + title }], details: {} };
         }
     });
+
+    pi.registerTool({
+        name: 'hapi_display_image',
+        label: 'Display Image',
+        description: "Display a local image file to the human user inline in the current HAPI chat session. Call it when the user asks to view a local image, screenshot, or diagram. The image is shown in the chat; note it also enters the model context, so prefer reading the file for analysis and this tool for presentation.",
+        parameters: Type.Object({
+            path: Type.String({ description: 'Absolute filesystem path of the local image to display (png, jpeg, gif or webp, up to 25 MiB).' })
+        }),
+        async execute(_toolCallId, params) {
+            const filePath = String((params && params.path) || '').trim();
+            if (!filePath) {
+                return { content: [{ type: 'text', text: 'Error: path must be non-empty' }], details: {} };
+            }
+            const { stat, readFile } = await import('node:fs/promises');
+            // Bound resource use before reading: reject non-regular paths (e.g.
+            // /dev/zero) and oversized files up front instead of allocating.
+            let meta;
+            try {
+                meta = await stat(filePath);
+            } catch (error) {
+                const detail = error && error.message ? error.message : String(error);
+                return { content: [{ type: 'text', text: 'Failed to read file: ' + detail }], details: {} };
+            }
+            if (!meta.isFile()) {
+                return { content: [{ type: 'text', text: 'Path is not a regular file' }], details: {} };
+            }
+            if (meta.size > 25 * 1024 * 1024) {
+                return { content: [{ type: 'text', text: 'File exceeds the 25 MiB display limit' }], details: {} };
+            }
+            let bytes;
+            try {
+                bytes = await readFile(filePath);
+            } catch (error) {
+                const detail = error && error.message ? error.message : String(error);
+                return { content: [{ type: 'text', text: 'Failed to read file: ' + detail }], details: {} };
+            }
+            const mimeType = detectImageMime(bytes);
+            if (!mimeType) {
+                return { content: [{ type: 'text', text: 'Unsupported image content (png, jpeg, gif or webp only)' }], details: {} };
+            }
+            return {
+                content: [{ type: 'image', data: bytes.toString('base64'), mimeType: mimeType }],
+                details: {}
+            };
+        }
+    });
+}
+
+function detectImageMime(bytes) {
+    if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+    if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return 'image/gif';
+    if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+    return null;
 }
 `;
 
