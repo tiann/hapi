@@ -63,9 +63,9 @@ object ClaudeModels {
     /**
      * `CLAUDE_MODEL_FALLBACK_OPTIONS`: what the picker offers when the live
      * catalog is unavailable: one row per family, in catalog order. The `[1m]`
-     * ids are absent on purpose: they are the same models as their bare
-     * counterparts, so they survive only in [LABELS], which keeps resolving
-     * them for sessions created before they were dropped.
+     * ids are dropped from this offer list so a family appears once; they stay
+     * in [LABELS], which keeps resolving them for sessions created before they
+     * were dropped.
      *
      * Haiku is absent for a different reason: it is the first Claude model that
      * supports no effort at all, and these pickers post model and effort
