@@ -21,9 +21,15 @@ export type SessionStatusTerminal = {
     startedAt: number
 }
 
+export type SessionStatusTaskProgress = {
+    completed: number
+    total: number
+}
+
 export type SessionStatusData = {
     goal: ThreadGoal | null
     tasks: TodoItem[]
+    taskProgress: SessionStatusTaskProgress | null
     subagents: SessionStatusSubagent[]
     terminals: SessionStatusTerminal[]
     undiscoveredTerminalCount: number
@@ -168,9 +174,17 @@ export function buildSessionStatusData(args: {
     const possibleTerminalCommands = undiscoveredTerminalCount > 0
         ? detectedTerminals.uncertain.map((terminal) => terminal.command)
         : []
+    const allTasks = args.tasks ?? []
+    const tasks = allTasks.filter((task) => task.status !== 'completed')
     const data: SessionStatusData = {
         goal: args.goal ?? null,
-        tasks: args.tasks ? [...args.tasks] : [],
+        tasks,
+        taskProgress: tasks.length > 0
+            ? {
+                completed: allTasks.filter((task) => task.status === 'completed').length,
+                total: allTasks.length
+            }
+            : null,
         subagents: tools
             .map(subagentFromBlock)
             .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),

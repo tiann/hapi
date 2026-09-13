@@ -1348,6 +1348,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
+        engine?.rebuildSessionTodos?.(canonical.sessionId, { touchUpdatedAt: false })
     }
 
     if (engine) {
@@ -2086,6 +2087,9 @@ function importSingleCodexSession(options: {
             engine?.handleRealtimeEvent({ type: 'session-updated', sessionId })
         } else {
             emitImportedMessageEvents(engine, sessionId, appendedMessages)
+        }
+        if (appendedMessages.length > 0) {
+            engine?.rebuildSessionTodos?.(sessionId, { touchUpdatedAt: false })
         }
 
         const output = [

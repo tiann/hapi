@@ -1,12 +1,14 @@
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { Store, StoredSession } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
-import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
+import { extractSessionTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+const STRUCTURED_TODOS_BACKFILL_PAGE_SIZE = 200
+export const STRUCTURED_TODOS_BACKFILL_MIGRATION_ID = 'structured-session-todos-v1'
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
 // restoreSessionArchiveMetadata) retry on version-mismatch with a fresh cache
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
@@ -93,31 +95,38 @@ export class SessionCache {
 
     /**
      * After fork hydrate / rewind truncate, re-scan the transcript for the
-     * latest TodoWrite (or clear todos). Bypasses the one-shot backfill flag
+     * latest structured task update (or clear todos). Bypasses the one-shot backfill flag
      * and the normal `setSessionTodos` monotonic guard. Watermark still
      * ratchets inside `replaceSessionTodos` — do not pass the remaining
      * message's older `createdAt` as the SSE version.
      */
-    rebuildTodosFromTranscript(sessionId: string): void {
+    rebuildTodosFromTranscript(sessionId: string, options: { touchUpdatedAt?: boolean } = {}): void {
         const stored = this.store.sessions.getSession(sessionId)
         if (!stored) return
 
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
-        const messages = this.store.messages.getAllMessages(sessionId)
+        const messages = this.store.messages.getAllMessages(sessionId).sort((a, b) => {
+            const byTime = (a.invokedAt ?? a.createdAt) - (b.invokedAt ?? b.createdAt)
+            return byTime || a.seq - b.seq
+        })
         let foundTodos: unknown | null = null
+        let foundSource: { at: number; seq: number } | null = null
         for (let i = messages.length - 1; i >= 0; i -= 1) {
             const message = messages[i]
             if (!message) continue
-            const todos = extractTodoWriteTodosFromMessageContent(message.content)
+            const todos = extractSessionTodosFromMessageContent(message.content)
             if (todos) {
                 foundTodos = todos
+                foundSource = { at: message.invokedAt ?? message.createdAt, seq: message.seq }
                 break
             }
         }
         this.store.sessions.replaceSessionTodos(
             sessionId,
             foundTodos,
-            stored.namespace
+            stored.namespace,
+            foundSource,
+            options
         )
         this.todoBackfillAttemptedSessionIds.add(sessionId)
         this.refreshSession(sessionId)
@@ -137,20 +146,9 @@ export class SessionCache {
 
         const existing = this.sessions.get(sessionId)
 
-        if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
+        if (!this.todoBackfillAttemptedSessionIds.has(sessionId)) {
+            stored = this.backfillStructuredTodosForSession(stored)
             this.todoBackfillAttemptedSessionIds.add(sessionId)
-            const messages = this.store.messages.getMessages(sessionId, 200)
-            for (let i = messages.length - 1; i >= 0; i -= 1) {
-                const message = messages[i]
-                const todos = extractTodoWriteTodosFromMessageContent(message.content)
-                if (todos) {
-                    const updated = this.store.sessions.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
-                    if (updated) {
-                        stored = this.store.sessions.getSession(sessionId) ?? stored
-                    }
-                    break
-                }
-            }
         }
 
         const metadata = (() => {
@@ -229,9 +227,80 @@ export class SessionCache {
 
     reloadAll(): void {
         const sessions = this.store.sessions.getSessions()
+        if (!this.store.migrations.isCompleted(STRUCTURED_TODOS_BACKFILL_MIGRATION_ID)) {
+            this.backfillStructuredTodos(sessions)
+            this.store.migrations.markCompleted(STRUCTURED_TODOS_BACKFILL_MIGRATION_ID)
+        }
         for (const session of sessions) {
+            this.todoBackfillAttemptedSessionIds.add(session.id)
             this.refreshSession(session.id)
         }
+    }
+
+    private backfillStructuredTodos(sessions: StoredSession[]): void {
+        for (const stored of sessions) {
+            const refreshed = this.backfillStructuredTodosForSession(stored)
+            this.todoBackfillAttemptedSessionIds.add(refreshed.id)
+        }
+    }
+
+    private backfillStructuredTodosForSession(stored: StoredSession): StoredSession {
+        const latest = this.findLatestStructuredTodos(stored.id)
+        if (!latest || !this.isNewerTodoSource(latest.source, stored)) {
+            return stored
+        }
+
+        const updated = this.store.sessions.setSessionTodos(
+            stored.id,
+            latest.todos,
+            latest.source,
+            stored.namespace
+        )
+        if (!updated) {
+            if (this.store.sessions.getSession(stored.id)) {
+                throw new Error(`Failed to backfill structured tasks for session ${stored.id}`)
+            }
+            return stored
+        }
+        return this.store.sessions.getSession(stored.id) ?? stored
+    }
+
+    private findLatestStructuredTodos(
+        sessionId: string
+    ): { todos: NonNullable<ReturnType<typeof extractSessionTodosFromMessageContent>>; source: { at: number; seq: number } } | null {
+        let before: { at: number; seq: number } | undefined
+
+        while (true) {
+            const page = this.store.messages.getMessagesByPosition(
+                sessionId,
+                STRUCTURED_TODOS_BACKFILL_PAGE_SIZE,
+                before
+            )
+            for (let i = page.length - 1; i >= 0; i -= 1) {
+                const message = page[i]
+                if (!message) continue
+                const todos = extractSessionTodosFromMessageContent(message.content)
+                if (todos) {
+                    return {
+                        todos,
+                        source: { at: message.invokedAt ?? message.createdAt, seq: message.seq }
+                    }
+                }
+            }
+
+            if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return null
+            const oldest = page[0]
+            if (!oldest) return null
+            before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
+        }
+    }
+
+    private isNewerTodoSource(source: { at: number; seq: number }, stored: StoredSession): boolean {
+        if (stored.todosSourceAt === null || stored.todosSourceSeq === null) {
+            return true
+        }
+        return source.at > stored.todosSourceAt
+            || (source.at === stored.todosSourceAt && source.seq > stored.todosSourceSeq)
     }
 
     setSessionPinned(sessionId: string, pinned: boolean): void {
@@ -1283,7 +1352,10 @@ export class SessionCache {
             this.store.sessions.setSessionTodos(
                 newSessionId,
                 oldStored.todos,
-                oldStored.todosUpdatedAt,
+                {
+                    at: oldStored.todosSourceAt ?? oldStored.todosUpdatedAt,
+                    seq: oldStored.todosSourceSeq ?? -1
+                },
                 namespace
             )
         }

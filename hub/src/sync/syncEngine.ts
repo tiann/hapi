@@ -618,6 +618,11 @@ export class SyncEngine {
         this.sessionCache.recordSessionActivity(sessionId, updatedAt)
     }
 
+    /** Rebuild structured task state after a transcript is imported directly. */
+    rebuildSessionTodos(sessionId: string, options?: { touchUpdatedAt?: boolean }): void {
+        this.sessionCache.rebuildTodosFromTranscript(sessionId, options)
+    }
+
     /**
      * tiann/hapi#893 (scratchlist v2). Read-side: list entries for a
      * session. Auth / namespace check is the route layer's job (via
