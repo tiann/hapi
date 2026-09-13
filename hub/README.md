@@ -46,6 +46,7 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `CORS_ORIGINS` - Comma-separated origins, or `*`.
 - `HAPI_HOME` - Data directory (default: ~/.hapi).
 - `DB_PATH` - SQLite database path (default: HAPI_HOME/hapi.db).
+- `HAPI_ATTACHMENTS_ROOT` - Durable attachment blob directory (default: HAPI_HOME/attachments).
 - `TELEGRAM_NOTIFICATION` - Enable/disable Telegram notifications (default: true).
 - `HAPI_RELAY_API` - Relay API domain (default: relay.hapi.run).
 - `HAPI_RELAY_AUTH` - Explicit relay auth key. By default the hub obtains and persists an individually revocable key from the relay. A persisted key rejected with HTTP 403 is discarded and reissued once; an explicitly configured environment key must be updated manually.
@@ -104,8 +105,9 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/resume` - Resume inactive session.
 - `POST /api/sessions/:id/reopen` - Reopen a session; follow the returned session ID.
 - `POST /api/sessions/:id/clear` - Start a fresh conversation when supported.
-- `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
+- `POST /api/sessions/:id/upload` - Upload file to durable Hub storage (base64, max 50MB).
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
+- `GET /api/sessions/:id/attachments/:attachmentId/original` - Read an authenticated original.
 - `POST /api/sessions/:id/archive` - Archive active session.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.

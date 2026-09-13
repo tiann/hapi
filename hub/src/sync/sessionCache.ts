@@ -1,6 +1,6 @@
-import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { Store, StoredMessage } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -13,6 +13,26 @@ const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+
+function collectDurableAttachmentIds(messages: StoredMessage[]): string[] {
+    const ids = new Set<string>()
+    for (const message of messages) {
+        if (!isRecord(message.content) || message.content.role !== 'user') continue
+        const content = message.content.content
+        if (!isRecord(content) || !Array.isArray(content.attachments)) continue
+        for (const attachment of content.attachments) {
+            const parsed = AttachmentMetadataSchema.safeParse(attachment)
+            if (parsed.success && parsed.data.attachmentId) {
+                ids.add(parsed.data.attachmentId)
+            }
+        }
+    }
+    return Array.from(ids)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -1076,6 +1096,36 @@ export class SessionCache {
         if (!deleted) {
             throw new Error('Failed to delete session')
         }
+        // Delete durable bytes only after the session row is gone. If the row
+        // deletion fails, retaining the attachment keeps surviving messages
+        // from pointing at missing originals.
+        try {
+            await this.store.attachments.deleteAllForSession(session.namespace, sessionId)
+        } catch (error) {
+            // The session row is already gone, so still finalize the in-memory
+            // lifecycle. The leftover bytes/metadata are retained for the
+            // startup orphan sweep instead of leaving a ghost session in the
+            // running Hub.
+            console.warn('[attachments] Failed to clean up deleted session attachments', {
+                sessionId,
+                error
+            })
+        }
+
+        this.finalizeDeletedSession(sessionId, session.namespace, scratchlistAttachments)
+    }
+
+    /**
+     * Finish the in-memory half of a deletion whose database transaction has
+     * already removed the session row (for example, duplicate-session merge).
+     */
+    finalizeDeletedSession(
+        sessionId: string,
+        namespace: string,
+        scratchlistAttachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[] = []
+    ): void {
+        const session = this.sessions.get(sessionId)
+        if (!session || session.namespace !== namespace) return
 
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
@@ -1089,10 +1139,10 @@ export class SessionCache {
         }) => {
             const hapiHome = getHapiHomeDir()
             await deleteScratchlistAttachmentFiles(hapiHome, scratchlistAttachments)
-            await deleteScratchlistSessionAttachmentDir(hapiHome, session.namespace, sessionId)
+            await deleteScratchlistSessionAttachmentDir(hapiHome, namespace, sessionId)
         })
 
-        this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
+        this.publisher.emit({ type: 'session-removed', sessionId, namespace })
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
@@ -1127,7 +1177,20 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
+        const referencedAttachmentIds = options.deleteOldSession
+            ? null
+            : collectDurableAttachmentIds(this.store.messages.getAllMessages(oldSessionId))
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        if (referencedAttachmentIds === null) {
+            this.store.attachments.transferSession(namespace, oldSessionId, newSessionId)
+        } else {
+            this.store.attachments.transferIds(
+                namespace,
+                oldSessionId,
+                newSessionId,
+                referencedAttachmentIds
+            )
+        }
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
         // with the original socket, so its notify chain must stay on that id.
         if (options.deleteOldSession) {
@@ -1319,6 +1382,9 @@ export class SessionCache {
         }
 
         if (options.deleteOldSession) {
+            // Capture durable attachment uploads that completed during the
+            // awaited scratchlist migration above before deleting the source.
+            this.store.attachments.transferSession(namespace, oldSessionId, newSessionId)
             const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
             if (!deleted) {
                 throw new Error('Failed to delete old session during merge')

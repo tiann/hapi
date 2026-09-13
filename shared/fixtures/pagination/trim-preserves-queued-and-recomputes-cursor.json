@@ -3615,7 +3615,7 @@
         },
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "trim-preserves-queued-and-recomputes-cursor",
     "ops": [
         {

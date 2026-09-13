@@ -18,8 +18,8 @@ import app.hapi.protocol.wire.UploadFileResponse
 interface AttachmentUploadApi {
     /**
      * `POST /api/sessions/:id/upload` — JSON + base64 (NOT multipart),
-     * ≤ 50 MB decoded → 413. The returned `path` becomes
-     * `AttachmentMetadata.path` in the send-message body.
+     * ≤ 50 MB decoded → 413. New durable hubs return an attachmentId;
+     * legacy hubs may return a CLI-local path.
      */
     suspend fun uploadFile(
         sessionId: String,
@@ -30,6 +30,17 @@ interface AttachmentUploadApi {
 
     /** `POST /api/sessions/:id/upload/delete` — best-effort orphan cleanup. */
     suspend fun deleteUpload(sessionId: String, path: String): DeleteUploadResponse
+
+    /** Delete by either the legacy path or the opaque durable attachment id. */
+    suspend fun deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?,
+    ): DeleteUploadResponse = if (path != null && attachmentId == null) {
+        deleteUpload(sessionId, path)
+    } else {
+        DeleteUploadResponse(success = false, error = "Attachment reference unavailable")
+    }
 }
 
 /**
