@@ -65,6 +65,12 @@ describe('rewriteLocation', () => {
         expect(rewriteLocation('http://127.0.0.1:5173/x', '/preview/m1')).toBe('http://127.0.0.1:5173/x')
         expect(rewriteLocation('next/page', '/preview/m1')).toBe('next/page')
     })
+
+    it('is idempotent and never touches protocol-relative targets', () => {
+        expect(rewriteLocation('/preview/m1/login', '/preview/m1')).toBe('/preview/m1/login')
+        expect(rewriteLocation('/preview/m1/login?next=/x', '/preview/m1')).toBe('/preview/m1/login?next=/x')
+        expect(rewriteLocation('//example.test/login', '/preview/m1')).toBe('//example.test/login')
+    })
 })
 
 describe('rewriteSetCookie', () => {

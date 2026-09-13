@@ -74,11 +74,15 @@ export function rewriteHtml(html: string, prefix: string, docDir = ''): string {
  * Rewrites a `Location` header. Only root-relative targets can be expressed
  * through the mount; absolute upstream origins are left alone (they would leak
  * the dev server's real address, but rewriting them to a fake external URL
- * would be worse).
+ * would be worse). Idempotent for already-prefixed values (an upstream with
+ * the recommended base/basePath may already emit prefixed redirects), and
+ * protocol-relative `//host` targets are never treated as local paths.
  */
 export function rewriteLocation(value: string, prefix: string): string {
-    if (value.startsWith('/')) return `${prefix}${value}`
-    return value
+    if (!value.startsWith('/') || value.startsWith('//')) return value
+    const pathname = value.split(/[?#]/, 1)[0]
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return value
+    return `${prefix}${value}`
 }
 
 /** Rewrites a Set-Cookie header's Path attribute to live under the prefix. */
