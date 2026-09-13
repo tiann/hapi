@@ -164,6 +164,7 @@ describe('bootstrapExistingSession', () => {
                 text: 'resume me',
                 updatedAt: 100
             },
+            acpManualTitle: true,
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
@@ -188,6 +189,7 @@ describe('bootstrapExistingSession', () => {
         })
 
         expect(result.metadata).toEqual(expect.objectContaining({
+            acpManualTitle: true,
             claudeSessionId: 'claude-thread-1',
             codexSessionId: 'codex-thread-1',
             geminiSessionId: 'gemini-thread-1',
@@ -222,6 +224,7 @@ describe('bootstrapExistingSession', () => {
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
         const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
         expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
+            acpManualTitle: true,
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
@@ -229,6 +232,7 @@ describe('bootstrapExistingSession', () => {
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',
             expect.objectContaining({
+                acpManualTitle: true,
                 codexSessionId: 'codex-thread-1',
                 grokSessionId: 'grok-thread-1',
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
