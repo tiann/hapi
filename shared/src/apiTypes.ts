@@ -577,6 +577,12 @@ export type ForkConversationRpcResult = {
     forkSession?: boolean
 }
 
+/** Raw RPC response, including generic serialized handler failures. */
+export type ForkConversationRpcResponse = ForkConversationRpcResult | {
+    /** Serialized CLI handler failure returned through the generic RPC layer. */
+    error: string
+}
+
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
