@@ -1099,6 +1099,30 @@ describe('sessions routes', () => {
                 expect(applySessionConfigCalls).toEqual(status === 200
                     ? [['session-1', route === 'effort' ? { effort: 'low' } : { model: 'grok-4.5' }]]
                     : [])
+
+                if (route === 'model') {
+                    // The combined payload takes a different exit on each side
+                    // of the capability line: with it, /model's own local-control
+                    // gate passes and the Claude-only check answers 400; without
+                    // it, that gate answers 409 and the effort guards are never
+                    // reached. Neither ever applies anything.
+                    const combined = createApp(createSession({
+                        metadata: {
+                            path: '/tmp/project',
+                            host: 'localhost',
+                            flavor: 'grok',
+                            ...(concurrentClients === undefined ? {} : { capabilities: { concurrentClients } })
+                        },
+                        agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+                    }))
+                    const combinedResponse = await combined.app.request('/api/sessions/session-1/model', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ model: 'grok-4.5', effort: 'low' })
+                    })
+                    expect(combinedResponse.status).toBe(concurrentClients === true ? 400 : 409)
+                    expect(combined.applySessionConfigCalls).toEqual([])
+                }
             }
         }
     })
