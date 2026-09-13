@@ -127,4 +127,51 @@ describe('shared native queue', () => {
         expect(rpc.mock.calls[3]).toEqual(['turn/steer', { threadId: 'thread', expectedTurnId: 'turn-a', input, clientUserMessageId: 'local' }]);
         expect(queue.state('local')).toBe('queued');
     });
+    it('steers a fresh peer nudge that was never queued', async () => {
+        const { queue, rpc, consumed } = await fixture();
+        rpc.mockResolvedValueOnce({});
+        expect(await queue.steer('peer-1', 'turn-live', input)).toEqual({ steered: true });
+        expect(rpc).toHaveBeenCalledWith('turn/steer', {
+            threadId: 'thread', expectedTurnId: 'turn-live', input, clientUserMessageId: 'peer-1'
+        });
+        expect(consumed).toHaveBeenCalledWith(['peer-1'], true);
+        expect(rpc.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
+    });
+    it('enqueues rejected auto-steer before a waiting cancel can ACK', async () => {
+        const { queue, rpc } = await fixture();
+        let rejectSteer!: (error: Error) => void;
+        const blocked = new Promise<never>((_, reject) => { rejectSteer = reject; });
+        rpc.mockImplementation(async method => {
+            if (method === 'turn/steer') return blocked;
+            if (method === 'thread/queue/add') {
+                return { queuedSubmission: { id: 'n', input, clientUserMessageId: 'peer-1' } };
+            }
+            if (method === 'thread/queue/list') {
+                return { data: [{ id: 'n', input, clientUserMessageId: 'peer-1' }], nextCursor: null };
+            }
+            if (method === 'thread/queue/delete') return { deleted: true };
+            throw new Error(`Unexpected request: ${method}`);
+        });
+        const steerPromise = queue.steerThenEnqueue('peer-1', 'turn-live', input);
+        await vi.waitFor(() => expect(queue.state('peer-1')).toBe('unknown'));
+        const cancelPromise = queue.cancel('peer-1');
+        rejectSteer(new Error('steer refused'));
+        expect(await steerPromise).toMatchObject({ steered: false });
+        expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+        expect(await cancelPromise).toBe(true);
+        expect(queue.state('peer-1')).toBe('canceled');
+    });
+    it('allows enqueue after cancel for the explicit retry handshake', async () => {
+        const { queue, rpc } = await fixture();
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } });
+        await queue.enqueue('local', input);
+        rpc.mockResolvedValueOnce({ data: [{ id: 'n', input, clientUserMessageId: 'local' }], nextCursor: null })
+            .mockResolvedValueOnce({ deleted: true });
+        expect(await queue.cancel('local')).toBe(true);
+        expect(queue.state('local')).toBe('canceled');
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n2', input, clientUserMessageId: 'local' } });
+        await queue.enqueue('local', input);
+        expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(2);
+        expect(queue.state('local')).toBe('queued');
+    });
 });

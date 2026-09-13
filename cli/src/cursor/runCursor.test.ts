@@ -138,7 +138,7 @@ describe('runCursor', () => {
         });
 
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
-            | ((msg: { content: { text: string } }, localId?: string) => void)
+            | ((msg: { content: { text: string }; meta?: { deliveryMode?: 'queue' | 'steer' } }, localId?: string) => void)
             | undefined;
         expect(userMessageHandler).toBeDefined();
 
@@ -151,7 +151,23 @@ describe('runCursor', () => {
                 permissionMode: 'default',
                 model: 'cursor-grok-4.5-medium'
             },
-            'local-1'
+            'local-1',
+            undefined
+        );
+
+        userMessageHandler!(
+            { content: { text: 'peer nudge' }, meta: { deliveryMode: 'steer' } },
+            'peer-1'
+        );
+        expect(enqueueCursorUserMessage).toHaveBeenCalledWith(
+            expect.anything(),
+            'peer nudge',
+            {
+                permissionMode: 'default',
+                model: 'cursor-grok-4.5-medium'
+            },
+            'peer-1',
+            true
         );
     });
 });

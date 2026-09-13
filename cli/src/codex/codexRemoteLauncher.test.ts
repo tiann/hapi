@@ -1285,6 +1285,40 @@ describe('codexRemoteLauncher', () => {
         session.queue.close();
     });
 
+    it('auto-steers a steerHint arrival when the first turn inherited its model', async () => {
+        harness.suppressTurnCompletion = true;
+        // First prompt omits model (inherited / default). startThread resolves
+        // gpt-5.4; a peer nudge hashed with that resolved model must still
+        // match the active turn and call turn/steer.
+        const inheritedMode: EnhancedMode = {
+            permissionMode: 'default',
+            collaborationMode: 'default'
+        };
+        const { session, emitMessagesConsumed } = createSessionStub(
+            ['first turn'],
+            inheritedMode,
+            false,
+            false
+        );
+        void codexRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.startTurnThreadIds.length).toBe(1));
+        expect(session.getModel()).toBe('gpt-5.4');
+
+        const resolvedMode: EnhancedMode = {
+            ...inheritedMode,
+            model: 'gpt-5.4'
+        };
+        session.queue.push('peer nudge', resolvedMode, 'peer-1', true);
+
+        await vi.waitFor(() => expect(harness.steerTurnParams.length).toBe(1));
+        expect(harness.steerTurnParams[0]).toMatchObject({
+            expectedTurnId: 'turn-1',
+            clientUserMessageId: 'peer-1'
+        });
+        await vi.waitFor(() => expect(emitMessagesConsumed).toHaveBeenCalledWith(['peer-1'], { steered: true }));
+        session.queue.close();
+    });
+
     it('restores the row when the app-server explicitly rejects after dispatch', async () => {
         harness.suppressTurnCompletion = true;
         // Plain Error without the indeterminate marker = definite JSON-RPC
