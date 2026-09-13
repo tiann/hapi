@@ -560,6 +560,8 @@ export default {
   'tool.rejected': '已拒绝',
   'tool.cancel': '取消',
   'tool.exitPlan': '退出计划模式',
+  'tool.plan.implement': '执行计划',
+  'tool.plan.continue': '继续规划',
   'tool.patch': '补丁',
   'tool.input': '输入',
   'tool.trace': '追踪',

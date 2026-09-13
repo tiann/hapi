@@ -198,6 +198,8 @@ export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedReque
 
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
+    // Current actionable shared Codex proposal; content remains in the transcript.
+    codexPlanProposalId: z.string().nullish(),
     // True while the CLI is delivering a queued message into the active turn
     // (Steer). Surfaced so the web can reflect the inject in progress.
     steeringActive: z.boolean().nullish(),

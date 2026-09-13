@@ -7,6 +7,23 @@ import { T0, wireMessage } from './support'
  * stream snapshots keyed by data.id.
  */
 export const codexCases: FixtureCase[] = [
+    ...([true, false] as const).map((available): FixtureCase => {
+        const callId = 'codex-proposed-plan:root:turn:plan-item'
+        const data = [
+            { type: 'message', message: 'Proposal preface', id: 'codex:root:turn:before:agent_message' },
+            { type: 'tool-call', name: 'ExitPlanMode', callId, input: { plan: '# Shared plan\n\n1. Inspect\n2. Implement' }, id: 'codex:root:turn:plan-item:proposed_plan' },
+            { type: 'tool-call-result', callId, output: null, id: 'codex:root:turn:plan-item:proposed_plan:result' },
+            ...(!available ? [{ type: 'message', message: 'Implementation started', id: 'codex:root:next:message:agent_message' }] : [])
+        ]
+        return {
+            name: available ? 'codex-shared-plan-available' : 'codex-shared-plan-historical',
+            description: 'Shared Codex proposals remain completed content without a synthetic permission. The current plan id only enables Web client actions; native continuation preserves the card.',
+            messages: data.map((entry, index) => wireMessage({ id: `shared-plan-${index}`, seq: index + 1, createdAt: T0 + index * 1000,
+                content: { role: 'agent', content: { type: 'codex', data: entry } }
+            })),
+            agentState: { codexPlanProposalId: available ? callId : null }
+        }
+    }),
     ...(['ExitPlanMode', 'exit_plan_mode'] as const).map((name, index): FixtureCase => {
         const plan = '# 实施计划\n\n1. Inspect **input.plan**\n2. Render Markdown\n\n```swift\nlet ready = true\n```\n'
         const callId = `codex-proposed-plan:plan-${index}`

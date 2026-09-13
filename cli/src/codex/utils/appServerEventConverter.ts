@@ -1002,6 +1002,15 @@ export class AppServerEventConverter {
                 return events;
             }
 
+            if (itemType === 'plan') {
+                // Plan deltas are provisional; Codex's completed item is authoritative.
+                const plan = asString(item.text);
+                if (method === 'item/completed' && plan?.trim()) {
+                    events.push(scoped({ type: 'proposed_plan', plan }));
+                }
+                return events;
+            }
+
             if (itemType === 'reasoning') {
                 if (method === 'item/completed') {
                     if (this.completedReasoningItems.has(itemId)) {

@@ -20,6 +20,7 @@ import type {
     DirectoryEntry,
     FileReadResponse,
     GeneratedImageResponse,
+    ImplementCodexPlanResult,
     CopilotModelsResponse,
     GrokModelsResponse,
     GrokReasoningEffortResponse,
@@ -489,6 +490,10 @@ export class RpcGateway {
 
     async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ClearConversation, {}, 120_000) as { sessionId: string }
+    }
+
+    async implementCodexPlan(sessionId: string, planId: string): Promise<ImplementCodexPlanResult> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ImplementCodexPlan, { planId }, 60_000) as ImplementCodexPlanResult
     }
 
     async rewindConversation(

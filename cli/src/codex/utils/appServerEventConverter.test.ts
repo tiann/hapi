@@ -566,6 +566,15 @@ describe('AppServerEventConverter', () => {
 
 
 
+    it('uses completed proposal text instead of provisional plan deltas', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', { item: { id: 'plan', type: 'plan', text: '' } })).toEqual([]);
+        expect(converter.handleNotification('item/plan/delta', { itemId: 'plan', delta: 'provisional' })).toEqual([]);
+        expect(converter.handleNotification('item/completed', { item: { id: 'plan', type: 'plan', text: '# Final plan' } }))
+            .toEqual([{ type: 'proposed_plan', plan: '# Final plan' }]);
+        expect(converter.handleNotification('item/completed', { item: { id: 'empty', type: 'plan', text: ' \n' } })).toEqual([]);
+    });
+
     it('maps turn plan updates into update_plan events', () => {
         const converter = new AppServerEventConverter();
 

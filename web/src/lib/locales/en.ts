@@ -562,6 +562,8 @@ export default {
   'tool.rejected': 'Rejected',
   'tool.cancel': 'Cancel',
   'tool.exitPlan': 'Exit Plan Mode',
+  'tool.plan.implement': 'Implement plan',
+  'tool.plan.continue': 'Continue planning',
   'tool.patch': 'Patch',
   'tool.input': 'Input',
   'tool.trace': 'Trace',

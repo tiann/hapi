@@ -67,6 +67,7 @@ function createApp(session: Session, opts?: {
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
+    implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
@@ -164,6 +165,7 @@ function createApp(session: Session, opts?: {
         })),
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
         clearConversation: opts?.clearConversation,
+        implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
@@ -180,6 +182,49 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it('dispatches plan implementation using the authenticated namespace and returns stale/unknown outcomes', async () => {
+        const session = createSession({ metadata: { path: '/tmp', host: 'test', flavor: 'codex', capabilities: { concurrentClients: true } } })
+        const calls: unknown[] = []
+        let result: Awaited<ReturnType<SyncEngine['implementCodexPlan']>> = { ok: true }
+        const { app } = createApp(session, { implementCodexPlan: async (...args) => { calls.push(args); return result } })
+        const post = () => app.request('/api/sessions/session-1/codex/plan/implement', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planId: 'plan' })
+        })
+        expect((await post()).status).toBe(200)
+        expect(calls).toEqual([['session-1', 'default', 'plan']])
+        result = { ok: false, code: 'stale_plan', error: 'Old plan' }
+        expect((await post()).status).toBe(409)
+        result = { ok: false, code: 'indeterminate', error: 'Unknown result' }
+        expect((await post()).status).toBe(503)
+    })
+
+    it('does not dispatch plan actions with an invalid body, inactive session or unsupported runtime', async () => {
+        for (const [active, shared, body, expected] of [
+            [true, true, {}, 400], [false, true, { planId: 'plan' }, 409], [true, false, { planId: 'plan' }, 409]
+        ] as const) {
+            let called = false
+            const { app } = createApp(createSession({ active, metadata: { path: '/tmp', host: 'test', flavor: 'codex', capabilities: { concurrentClients: shared } } }), {
+                implementCodexPlan: async () => { called = true; return { ok: true } }
+            })
+            const response = await app.request('/api/sessions/session-1/codex/plan/implement', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+            })
+            expect(response.status).toBe(expected)
+            expect(called).toBe(false)
+        }
+    })
+
+    it('reports a lost plan RPC reply as indeterminate', async () => {
+        const { app } = createApp(createSession({ metadata: { path: '/tmp', host: 'test', flavor: 'codex', capabilities: { concurrentClients: true } } }), {
+            implementCodexPlan: async () => { throw new Error('timeout') }
+        })
+        const response = await app.request('/api/sessions/session-1/codex/plan/implement', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planId: 'plan' })
+        })
+        expect(response.status).toBe(503)
+        expect(await response.json()).toMatchObject({ ok: false, code: 'indeterminate' })
+    })
+
     it.each([true, false])('clears shared sessions after resuming only when inactive (active: %s)', async active => {
         const calls: string[] = []
         const { app } = createApp(createSession({ active, permissionMode: 'read-only', metadata: {

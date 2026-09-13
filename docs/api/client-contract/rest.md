@@ -122,7 +122,19 @@ the caller stay on the original thread. Fork may return an already-bound shared
 child; the hub must not spawn a second engine. Use advertised history
 capabilities: shared Codex currently supports fork, not in-place rewind.
 
-All respond `{ok: true}`; apply-failures return 409 with a message. Model/effort **catalogs** (RPC-wrapped; all return `{success, ...} \| {success: false, error}`):
+Shared Codex plan execution: `POST /api/sessions/:id/codex/plan/implement`
+with `{planId}` returns `{ok: true}` after native queue acceptance. Use the
+current `agentState.codexPlanProposalId` to match the transcript proposal's
+tool-call id; `null` withdraws actions without removing content. The CLI
+validates the latest completed Plan-mode turn, switches to Default, and queues
+`Implement the plan.` with a stable submission id. Repeating an accepted
+action does not enqueue it again. This is separate from tool permissions.
+Errors include HTTP 409 (`stale_plan` / `unavailable`), 502 (`failed`) and 503
+(`indeterminate`); error bodies have `{ok: false, code, error}`. Do not
+automatically resend after an unconfirmed result. "Continue planning" is a
+local composer-focus action and does not submit a native approval or message.
+
+The configuration routes in the table above respond `{ok: true}`; apply-failures return 409 with a message. Model/effort **catalogs** (RPC-wrapped; all return `{success, ...} \| {success: false, error}`):
 
 | Method & path | Notes |
 |---|---|
