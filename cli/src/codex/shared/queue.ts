@@ -12,6 +12,7 @@ const LedgerSchema = z.record(z.string(), z.object({
 }));
 export type QueueInput = z.infer<typeof InputSchema>;
 type Entry = z.infer<typeof LedgerSchema>[string];
+type SteerResult = { steered: boolean; indeterminate?: boolean; error?: string };
 
 /** Native queue is the only drainer. The ledger records uncertainty, not a second queue. */
 export class SharedCodexQueue {
@@ -163,40 +164,38 @@ export class SharedCodexQueue {
     }
 
     enqueue(id: string, input: QueueInput, resumeInterrupted = false): Promise<void> {
-        return this.serial(async () => {
-            const existing = this.entries[id];
-            // Successful cancel is terminal for this localId. Auto-steer rejection
-            // falls through to enqueue; cancel can win that race (rejected → canceled)
-            // before the fallback runs — never resurrect via thread/queue/add.
-            if (existing?.state === 'canceled') return;
-            if (existing && !['rejected', 'released'].includes(existing.state)) {
-                if (existing.state === 'consumed') this.consumed([id]);
-                else await this.reconcileNow();
-                return;
+        return this.serial(() => this.enqueueNow(id, input, resumeInterrupted));
+    }
+
+    private async enqueueNow(id: string, input: QueueInput, resumeInterrupted = false): Promise<void> {
+        const existing = this.entries[id];
+        if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
+            if (existing.state === 'consumed') this.consumed([id]);
+            else await this.reconcileNow();
+            return;
+        }
+        // Preserve native edits and non-text input when the hub redelivers.
+        if (existing?.state === 'released') input = existing.input;
+        const entry: Entry = { state: 'unknown', input };
+        this.entries[id] = entry; await this.save();
+        try {
+            const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
+                threadId: this.threadId, input, clientUserMessageId: id
+            }));
+            if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; }
+            await this.save();
+            if (resumeInterrupted) {
+                // Atomic idle precondition upstream: a competing terminal cannot turn this into steer.
+                await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
             }
-            // Preserve native edits and non-text input when the hub redelivers.
-            if (existing?.state === 'released') input = existing.input;
-            const entry: Entry = { state: 'unknown', input };
-            this.entries[id] = entry; await this.save();
-            try {
-                const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
-                    threadId: this.threadId, input, clientUserMessageId: id
-                }));
-                if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; }
+        } catch (error) {
+            if (entry.state !== 'consumed') {
+                entry.state = isIndeterminateError(error) || error instanceof z.ZodError ? 'unknown' : 'rejected';
                 await this.save();
-                if (resumeInterrupted) {
-                    // Atomic idle precondition upstream: a competing terminal cannot turn this into steer.
-                    await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
-                }
-            } catch (error) {
-                if (entry.state !== 'consumed') {
-                    entry.state = isIndeterminateError(error) || error instanceof z.ZodError ? 'unknown' : 'rejected';
-                    await this.save();
-                    if (entry.state === 'unknown') this.uncertain([id]);
-                }
-                throw error;
+                if (entry.state === 'unknown') this.uncertain([id]);
             }
-        });
+            throw error;
+        }
     }
 
     cancel(id: string): Promise<boolean | 'consumed' | 'indeterminate'> {
@@ -223,43 +222,66 @@ export class SharedCodexQueue {
         });
     }
 
-    steer(id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
+    steer(id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<SteerResult> {
+        return this.serial(() => this.steerNow(id, expectedTurnId, freshInput));
+    }
+
+    /**
+     * Peer auto-steer: try turn/steer, then fall through to native queue on
+     * explicit refusal — both inside one serialized operation so a waiting
+     * cancel cannot ACK success between reject and queue/add (which would let
+     * Codex execute after the hub reported removal). Explicit retry still uses
+     * plain enqueue after its cancel handshake and may re-submit a canceled id.
+     */
+    steerThenEnqueue(
+        id: string,
+        expectedTurnId: string,
+        input: QueueInput,
+        resumeInterrupted = false
+    ): Promise<SteerResult> {
         return this.serial(async () => {
-            let entry = this.entries[id];
-            if (entry?.state === 'consumed') return { steered: false, error: 'Message already consumed' };
-            if (entry) {
-                try { await this.reconcileNow(); }
-                catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
-                if (this.state(id) === 'consumed') return { steered: false, error: 'Message already consumed' };
-                if (!entry.nativeId || entry.state !== 'queued') return { steered: false, indeterminate: true };
-                entry.state = 'unknown'; await this.save();
-                try {
-                    const response = z.object({ deleted: z.boolean() }).parse(await this.client.request('thread/queue/delete', {
-                        threadId: this.threadId, queuedSubmissionId: entry.nativeId
-                    }));
-                    if (!response.deleted) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
-                } catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
-            } else if (freshInput) {
-                entry = { input: freshInput, state: 'unknown' }; this.entries[id] = entry; await this.save();
-            } else return { steered: false, error: 'Message not queued' };
-            try {
-                await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input: entry.input, clientUserMessageId: id });
-                entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
-            } catch (error) {
-                if (this.state(id) === 'consumed') return { steered: true };
-                if (isIndeterminateError(error)) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
-                // Definitely rejected; restoring a removed queued item is safe. Never restore an unknown dispatch.
-                if (!freshInput) {
-                    try {
-                        const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
-                            threadId: this.threadId, input: entry.input, clientUserMessageId: id
-                        }));
-                        if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; }
-                    } catch { if (this.state(id) !== 'consumed') { entry.state = 'unknown'; this.uncertain([id]); } }
-                } else entry.state = 'rejected';
-                await this.save(); return { steered: false, error: error instanceof Error ? error.message : String(error) };
-            }
+            const result = await this.steerNow(id, expectedTurnId, input);
+            if (result.steered || result.indeterminate) return result;
+            await this.enqueueNow(id, input, resumeInterrupted);
+            return result;
         });
+    }
+
+    private async steerNow(id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<SteerResult> {
+        let entry = this.entries[id];
+        if (entry?.state === 'consumed') return { steered: false, error: 'Message already consumed' };
+        if (entry) {
+            try { await this.reconcileNow(); }
+            catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+            if (this.state(id) === 'consumed') return { steered: false, error: 'Message already consumed' };
+            if (!entry.nativeId || entry.state !== 'queued') return { steered: false, indeterminate: true };
+            entry.state = 'unknown'; await this.save();
+            try {
+                const response = z.object({ deleted: z.boolean() }).parse(await this.client.request('thread/queue/delete', {
+                    threadId: this.threadId, queuedSubmissionId: entry.nativeId
+                }));
+                if (!response.deleted) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+            } catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+        } else if (freshInput) {
+            entry = { input: freshInput, state: 'unknown' }; this.entries[id] = entry; await this.save();
+        } else return { steered: false, error: 'Message not queued' };
+        try {
+            await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input: entry.input, clientUserMessageId: id });
+            entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
+        } catch (error) {
+            if (this.state(id) === 'consumed') return { steered: true };
+            if (isIndeterminateError(error)) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+            // Definitely rejected; restoring a removed queued item is safe. Never restore an unknown dispatch.
+            if (!freshInput) {
+                try {
+                    const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
+                        threadId: this.threadId, input: entry.input, clientUserMessageId: id
+                    }));
+                    if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; }
+                } catch { if (this.state(id) !== 'consumed') { entry.state = 'unknown'; this.uncertain([id]); } }
+            } else entry.state = 'rejected';
+            await this.save(); return { steered: false, error: error instanceof Error ? error.message : String(error) };
+        }
     }
 
     async flush(): Promise<void> { await this.operations.catch(() => {}); await this.writes; }
