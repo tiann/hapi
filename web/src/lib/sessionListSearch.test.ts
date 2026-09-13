@@ -4,12 +4,13 @@ import {
     SESSION_SEARCH_FIELD_WEIGHTS,
     buildSessionSearchScoreIndex,
     compareSessionsBySearchRelevance,
-    idfForDocumentFrequency,
+    rankSessionGroupsBySearchRelevance,
     searchFieldHasBoundaryMatch,
     searchFieldIncludesQuery,
     sessionMatchesQuery,
     sortSessionsBySearchRelevance,
 } from './sessionListSearch'
+import { shouldShowPinnedDivider } from '@/components/SessionList'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -90,13 +91,6 @@ describe('session search relevance ranking', () => {
         expect(SESSION_SEARCH_FIELD_WEIGHTS.title).toBeGreaterThan(SESSION_SEARCH_FIELD_WEIGHTS.path)
     })
 
-    it('down-weights terms that match most of the corpus (IDF)', () => {
-        const common = idfForDocumentFrequency(100, 100)
-        const rare = idfForDocumentFrequency(100, 1)
-        expect(rare).toBeGreaterThan(common)
-        expect(common).toBeGreaterThan(0)
-    })
-
     it('ranks Home Assistant above recent path-only /home/ and mid-token homelab matches', () => {
         const homeAssistant = makeSession({
             id: 'd755080b',
@@ -142,7 +136,7 @@ describe('session search relevance ranking', () => {
         expect(compareSessionsBySearchRelevance(ranked[0]!, ranked[1]!, index)).toBeLessThan(0)
     })
 
-    it('lets a distinctive second term dominate when the first term is ubiquitous', () => {
+    it('requires every query term (AND) so path-only Home does not match Home Assistant', () => {
         const homeAssistant = makeSession({
             id: 'ha',
             updatedAt: 1,
@@ -165,11 +159,31 @@ describe('session search relevance ranking', () => {
         expect(index.matchedIds.has('ha')).toBe(true)
     })
 
+    it('prefers an exact / contiguous title phrase over term-scrambled titles', () => {
+        // tiann #1842: query "Home Assistant" scored identically for both titles,
+        // so the newer scrambled title won on recency alone.
+        const exact = makeSession({
+            id: 'exact-title',
+            updatedAt: 100,
+            metadata: { path: '/work/a', name: 'Home Assistant' },
+        })
+        const scrambled = makeSession({
+            id: 'scrambled-title',
+            updatedAt: 99_000,
+            metadata: { path: '/work/b', name: 'Assistant for Home' },
+        })
+        const index = buildSessionSearchScoreIndex([scrambled, exact], 'Home Assistant', () => 'oos')
+        expect(index.matchedIds.has('exact-title')).toBe(true)
+        expect(index.matchedIds.has('scrambled-title')).toBe(true)
+        expect(index.scores.get('exact-title') ?? 0).toBeGreaterThan(
+            index.scores.get('scrambled-title') ?? 0
+        )
+        expect(sortSessionsBySearchRelevance([scrambled, exact], index)[0]?.id).toBe('exact-title')
+    })
+
     it('picks the best field by post-bonus contribution, not raw weight', () => {
-        // Machine "Home" (weight 2 × boundary 1.75 = 3.5) must beat a mid-token
-        // title hit like "homelab" (weight 10 × 1 = 10)... wait, 10 > 3.5 so title still wins.
-        // Use summary (weight 3, mid-token) vs machine boundary (2 × 1.75 = 3.5):
-        // raw-weight picker would keep summary (3 > 2) → score 3; post-bonus picks machine → 3.5.
+        // Summary mid-token (weight 3) vs machine boundary (2 × 1.75 = 3.5):
+        // raw-weight picker keeps summary; post-bonus picks machine.
         const session = makeSession({
             id: 'boundary-wins',
             updatedAt: 1,
@@ -184,12 +198,81 @@ describe('session search relevance ranking', () => {
             id === 'home-box' ? 'Home' : 'oos'
         )
         expect(index.matchedIds.has('boundary-wins')).toBe(true)
-        // Sanity: score should reflect machine boundary contribution (2 * idf * 1.75),
-        // not the weaker mid-token summary contribution (3 * idf * 1).
-        const idfAlone = index.scores.get('boundary-wins') ?? 0
-        expect(idfAlone).toBeGreaterThan(0)
-        // Rebuild with only summary match to compare: strip machine label.
+        const withMachine = index.scores.get('boundary-wins') ?? 0
+        expect(withMachine).toBeGreaterThan(0)
         const summaryOnly = buildSessionSearchScoreIndex([session], 'home', () => 'oos')
-        expect(summaryOnly.scores.get('boundary-wins') ?? 0).toBeLessThan(idfAlone)
+        expect(summaryOnly.scores.get('boundary-wins') ?? 0).toBeLessThan(withMachine)
+    })
+
+    it('keeps project-pinned sessions contiguous under relevance sort (one pin divider)', () => {
+        // tiann #1842 repro: interleaved pin→ordinary→pin→ordinary drew two dividers.
+        const homePinned = makeSession({
+            id: 'home-pinned',
+            pinned: true,
+            updatedAt: 400,
+            metadata: { path: '/work/proj', name: 'Home pinned' },
+        })
+        const homeOrdinary = makeSession({
+            id: 'home-ordinary',
+            updatedAt: 300,
+            metadata: { path: '/work/proj', name: 'Home ordinary' },
+        })
+        const homelabPinned = makeSession({
+            id: 'homelab-pinned',
+            pinned: true,
+            updatedAt: 200,
+            metadata: { path: '/work/proj', name: 'homelab pinned' },
+        })
+        const homelabOrdinary = makeSession({
+            id: 'homelab-ordinary',
+            updatedAt: 100,
+            metadata: { path: '/work/proj', name: 'homelab ordinary' },
+        })
+        const sessions = [homePinned, homeOrdinary, homelabPinned, homelabOrdinary]
+        const index = buildSessionSearchScoreIndex(sessions, 'home', () => 'oos')
+        const [group] = rankSessionGroupsBySearchRelevance(
+            [{
+                sessions: [...sessions],
+                hasPinnedSession: true,
+                hasActiveSession: false,
+                latestUpdatedAt: 400,
+            }],
+            index
+        )
+        expect(group?.sessions.map((s) => s.id)).toEqual([
+            'home-pinned',
+            'homelab-pinned',
+            'home-ordinary',
+            'homelab-ordinary',
+        ])
+        const dividers = group!.sessions
+            .map((_, i) => shouldShowPinnedDivider(group!.sessions, i))
+            .filter(Boolean)
+        expect(dividers).toHaveLength(1)
+    })
+})
+
+describe('sessionMatchesQuery multi-word inclusion (shared callers)', () => {
+    it('requires every token (AND) across fields for mentions / share picker', () => {
+        const session = makeSession({
+            id: 'cross-field',
+            metadata: {
+                path: '/work/home-lab',
+                name: 'Assistant notes',
+                summary: { text: 'unrelated' },
+            },
+        })
+        // "home" hits path; "assistant" hits title — AND across fields is intentional.
+        expect(sessionMatchesQuery(session, 'home assistant', 'oos')).toBe(true)
+        expect(sessionMatchesQuery(session, 'home missing', 'oos')).toBe(false)
+    })
+
+    it('rejects when only one of two query terms is present', () => {
+        const session = makeSession({
+            id: 'partial',
+            metadata: { path: '/work/x', name: 'Home lab' },
+        })
+        expect(sessionMatchesQuery(session, 'home', 'oos')).toBe(true)
+        expect(sessionMatchesQuery(session, 'home assistant', 'oos')).toBe(false)
     })
 })

@@ -5,7 +5,9 @@ import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
 /**
  * Field weights for session-list metadata search. Higher = more operator-facing.
- * Path stays fully searchable; ubiquitous segments are down-weighted via IDF.
+ * Path stays fully searchable; ranking relies on field weight + boundary/phrase
+ * bonuses (not corpus IDF — a single-term IDF multiplier is identical for every
+ * match and cannot change relative order).
  */
 export const SESSION_SEARCH_FIELD_WEIGHTS = {
     title: 10,
@@ -21,6 +23,12 @@ export type SessionSearchField = keyof typeof SESSION_SEARCH_FIELD_WEIGHTS
 
 /** Extra multiplier when the query sits on an alphanumeric token boundary. */
 export const SESSION_SEARCH_BOUNDARY_BONUS = 1.75
+
+/** Contiguous full-query phrase in the title (multi-word). */
+export const SESSION_SEARCH_TITLE_PHRASE_BONUS = 25
+
+/** Exact title match (normalized). */
+export const SESSION_SEARCH_EXACT_TITLE_BONUS = 50
 
 type FieldValues = Record<SessionSearchField, string[]>
 
@@ -104,35 +112,30 @@ function bestWeightedHitForTerm(
     return { weight: bestWeight, boundary: bestBoundary }
 }
 
-/** Smoothed IDF: rare terms dominate; terms matching most of the corpus contribute little. */
-export function idfForDocumentFrequency(documentCount: number, matchingCount: number): number {
-    if (documentCount <= 0) return 0
-    return Math.log(1 + documentCount / (1 + matchingCount))
-}
-
-export function buildSessionSearchIdf(
-    corpus: ReadonlyArray<{ fields: FieldValues }>,
-    terms: readonly string[],
-    wildcard: boolean
-): Map<string, number> {
-    const idfByTerm = new Map<string, number>()
-    const n = corpus.length
-    for (const term of terms) {
-        let df = 0
-        for (const doc of corpus) {
-            if (bestWeightedHitForTerm(doc.fields, term, wildcard).weight > 0) {
-                df += 1
-            }
+/** Exact title or contiguous multi-word phrase in the title. */
+export function titlePhraseBonus(titles: readonly string[], normalizedQuery: string): number {
+    if (!normalizedQuery || titles.length === 0) return 0
+    let best = 0
+    for (const title of titles) {
+        const normalizedTitle = title.trim().toLowerCase()
+        if (!normalizedTitle) continue
+        if (normalizedTitle === normalizedQuery) {
+            best = Math.max(best, SESSION_SEARCH_EXACT_TITLE_BONUS)
+            continue
         }
-        idfByTerm.set(term, idfForDocumentFrequency(n, df))
+        // Contiguous phrase only matters for multi-word queries (single tokens
+        // already get field weight + boundary).
+        if (normalizedQuery.includes(' ') && searchFieldIncludesQuery(normalizedTitle, normalizedQuery)) {
+            best = Math.max(best, SESSION_SEARCH_TITLE_PHRASE_BONUS)
+        }
     }
-    return idfByTerm
+    return best
 }
 
 export function scoreSessionSearchFields(
     fields: FieldValues,
     terms: readonly string[],
-    idfByTerm: ReadonlyMap<string, number>,
+    normalizedQuery: string,
     wildcard: boolean
 ): { matched: boolean; score: number } {
     if (terms.length === 0) return { matched: true, score: 0 }
@@ -143,10 +146,13 @@ export function scoreSessionSearchFields(
         if (hit.weight <= 0) continue
         matchedTerms += 1
         const boundaryFactor = hit.boundary ? SESSION_SEARCH_BOUNDARY_BONUS : 1
-        score += hit.weight * (idfByTerm.get(term) ?? 0) * boundaryFactor
+        score += hit.weight * boundaryFactor
     }
     // AND across terms — every token must hit somewhere.
     if (matchedTerms < terms.length) return { matched: false, score: 0 }
+    if (!wildcard) {
+        score += titlePhraseBonus(fields.title, normalizedQuery)
+    }
     return { matched: true, score }
 }
 
@@ -179,17 +185,12 @@ export function buildSessionSearchScoreIndex(
         return { scores, matchedIds }
     }
 
-    const corpus = sessions.map((session) => ({
-        session,
-        fields: collectSessionSearchFields(
+    for (const session of sessions) {
+        const fields = collectSessionSearchFields(
             session,
             resolveMachineLabel(session.metadata?.machineId ?? null)
-        ),
-    }))
-    const idfByTerm = buildSessionSearchIdf(corpus, terms, wildcard)
-
-    for (const { session, fields } of corpus) {
-        const { matched, score } = scoreSessionSearchFields(fields, terms, idfByTerm, wildcard)
+        )
+        const { matched, score } = scoreSessionSearchFields(fields, terms, normalized, wildcard)
         if (!matched) continue
         matchedIds.add(session.id)
         scores.set(session.id, score)
@@ -225,6 +226,27 @@ export function sortSessionsBySearchRelevance<T extends SessionSummary>(
     return [...sessions].sort((a, b) => compareSessionsBySearchRelevance(a, b, index))
 }
 
+/**
+ * Relevance sort that keeps project-pinned rows contiguous ahead of ordinary
+ * rows. Flat score sort would interleave pinned↔ordinary and the renderer
+ * draws a divider on every such transition (#1842 / tiann).
+ */
+export function sortSessionsBySearchRelevancePreservingPins<T extends SessionSummary>(
+    sessions: readonly T[],
+    index: SessionSearchScoreIndex
+): T[] {
+    const pinned: T[] = []
+    const ordinary: T[] = []
+    for (const session of sessions) {
+        if (session.pinned) pinned.push(session)
+        else ordinary.push(session)
+    }
+    return [
+        ...sortSessionsBySearchRelevance(pinned, index),
+        ...sortSessionsBySearchRelevance(ordinary, index),
+    ]
+}
+
 function maxSessionScore(sessions: readonly SessionSummary[], index: SessionSearchScoreIndex): number {
     let max = 0
     for (const session of sessions) {
@@ -242,7 +264,7 @@ export function rankSessionGroupsBySearchRelevance<T extends {
 }>(groups: readonly T[], index: SessionSearchScoreIndex): T[] {
     const ranked = groups.map((group) => ({
         ...group,
-        sessions: sortSessionsBySearchRelevance(group.sessions, index),
+        sessions: sortSessionsBySearchRelevancePreservingPins(group.sessions, index),
     }))
     return ranked.sort((a, b) => {
         const scoreA = maxSessionScore(a.sessions, index)
@@ -263,6 +285,7 @@ export function rankSessionGroupsBySearchRelevance<T extends {
  * Shared boolean matcher (session list, @-mentions, share picker).
  * Substring semantics — partial typing must keep working. Boundary affinity is
  * a ranking bonus in buildSessionSearchScoreIndex, not an exclusion gate.
+ * Multi-word queries AND across terms (each token must hit some field).
  */
 export function sessionMatchesQuery(
     session: SessionSummary,
