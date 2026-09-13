@@ -66,7 +66,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 <DialogHeader className={centerTitle ? 'pr-0' : undefined}>
                     <DialogTitle
                         className={centerTitle
-                            ? 'min-h-6 px-10 text-center leading-6'
+                            ? 'min-h-6 w-full px-10 text-center leading-6 max-sm:translate-x-1 max-sm:translate-y-px'
                             : undefined}
                     >
                         {title}

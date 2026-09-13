@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
+import { ScheduledAttachmentValidationError } from '../../sync/scheduledAttachmentValidation'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMessagesRoutes } from './messages'
 
@@ -407,6 +408,40 @@ describe('POST /api/sessions/:id/messages — scheduledAt + attachments rejected
 
         expect(response.status).toBe(200)
         expect(sentMessages).toHaveLength(1)
+    })
+
+    it('maps a missing valid-format Hub attachment to a 400 response', async () => {
+        const { app, sentMessages } = createApp({
+            sendMessage: async () => {
+                throw new ScheduledAttachmentValidationError(
+                    'Invalid scheduled attachment: Attachment file missing',
+                )
+            },
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                text: 'hello',
+                localId: 'local-missing-hub-attachment',
+                scheduledAt: Date.now() + 60_000,
+                attachments: [{
+                    id: '33333333-3333-4333-8333-333333333333',
+                    filename: 'missing.png',
+                    mimeType: 'image/png',
+                    size: 10,
+                    path: 'hapi-hub:scratchlist/default/session-1/33333333-3333-4333-8333-333333333333-missing.png',
+                }],
+            }),
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            error: 'Invalid scheduled attachment: Attachment file missing',
+            code: 'scheduled_attachment_invalid',
+        })
+        expect(sentMessages).toHaveLength(0)
     })
 })
 

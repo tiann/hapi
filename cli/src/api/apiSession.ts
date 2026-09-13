@@ -236,6 +236,9 @@ export class ApiSessionClient extends EventEmitter {
     onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
     private readonly token: string
     readonly sessionId: string
+    // Stable for this ApiSessionClient, so a Socket.IO transport reconnect
+    // does not look like a new CLI process to the Hub.
+    private readonly clientInstanceId = randomUUID()
     private metadata: Metadata | null
     private metadataVersion: number
     private agentState: AgentState | null
@@ -307,7 +310,8 @@ export class ApiSessionClient extends EventEmitter {
             auth: {
                 token: this.token,
                 clientType: 'session-scoped' as const,
-                sessionId: this.sessionId
+                sessionId: this.sessionId,
+                clientInstanceId: this.clientInstanceId,
             },
             path: '/socket.io/',
             reconnection: true,

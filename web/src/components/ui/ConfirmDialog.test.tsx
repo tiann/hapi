@@ -30,7 +30,7 @@ describe('ConfirmDialog', () => {
         const description = within(dialog).getByText('Archive this session?')
 
         expect(title.parentElement).toHaveClass('pr-0')
-        expect(title).toHaveClass('min-h-6', 'px-10', 'text-center', 'leading-6')
+        expect(title).toHaveClass('min-h-6', 'w-full', 'px-10', 'text-center', 'leading-6', 'max-sm:translate-x-1', 'max-sm:translate-y-px')
         expect(description).toHaveClass('mt-2', 'text-left')
         expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveClass('top-3', 'h-8')
     })

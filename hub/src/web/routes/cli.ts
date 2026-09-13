@@ -223,7 +223,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         if (!engine) return c.json({ error: 'Not ready' }, 503)
         const parsed = ClearOpencodeSessionCallbackRequestSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) return c.json({ error: 'Invalid clear callback request' }, 400)
-        const result = engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
+        const result = await engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
         if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
         return c.json({ ok: true, sessionId: result.sessionId })
     })
@@ -273,8 +273,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const limit = parsed.data.limit ?? 200
-        // Future-scheduled rows are excluded from CLI backfill — see
-        // messages.ts:getDeliverableMessagesAfter for the rationale.  The
+        // All scheduled rows are excluded from CLI backfill — see
+        // messages.ts:getDeliverableMessagesAfter for the rationale. The
         // mature-scan path (releaseMatureScheduledMessages) is the sole
         // emit channel for scheduled rows.
         const messages = engine.getDeliverableMessagesAfter(resolved.sessionId, {

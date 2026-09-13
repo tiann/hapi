@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import {
     addScratchlistEntry,
     deleteScratchlistEntry,
-    moveScratchlistEntry,
     persistScratchlist,
     readScratchlist,
+    reorderScratchlistEntry,
+    updateScratchlistEntry,
     type ScratchlistEntry,
 } from '@/lib/scratchlist'
+import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 
 /**
  * useScratchlist - per-session scratchlist state hook.
@@ -76,9 +78,27 @@ export function useScratchlist(sessionId: string) {
     const move = useCallback((id: string, direction: 'up' | 'down') => {
         setScratchlist((prev) => ({
             sessionId: prev.sessionId,
-            entries: moveScratchlistEntry(prev.entries, id, direction),
+            entries: reorderScratchlistEntry(
+                prev.entries,
+                id,
+                Math.max(0, prev.entries.findIndex((entry) => entry.id === id) + (direction === 'up' ? -1 : 1))
+            ),
         }))
     }, [])
 
-    return { entries, add, remove, move }
+    const update = useCallback((id: string, text: string, attachments?: ScratchlistAttachmentMetadata[]) => {
+        setScratchlist((prev) => ({
+            sessionId: prev.sessionId,
+            entries: updateScratchlistEntry(prev.entries, id, text, Date.now(), attachments),
+        }))
+    }, [])
+
+    const reorder = useCallback((id: string, targetIndex: number) => {
+        setScratchlist((prev) => ({
+            sessionId: prev.sessionId,
+            entries: reorderScratchlistEntry(prev.entries, id, targetIndex),
+        }))
+    }, [])
+
+    return { entries, add, remove, update, move, reorder }
 }

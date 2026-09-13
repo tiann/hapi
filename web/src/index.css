@@ -334,6 +334,34 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the scratchlist rows at the same horizontal position when its
+ * scrollbar appears or disappears. Extend the scroll viewport into the
+ * drawer's right padding so the native scrollbar occupies that padding,
+ * leaving the rows at their original, symmetric drawer insets. */
+.scratchlist-scroll-y {
+    width: calc(100% + var(--scratchlist-scrollbar-width, 0px));
+    margin-right: calc(0px - var(--scratchlist-scrollbar-width, 0px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+    touch-action: pan-y;
+}
+
+.scratchlist-scroll-content {
+    width: 100%;
+}
+
+/* Older WebViews without scrollbar-gutter need the same fixed-slot fallback.
+ * A permanently scrollable viewport is preferable to letting the first
+ * scrollbar appearance resize every row. */
+@supports not (scrollbar-gutter: stable) {
+    .scratchlist-scroll-y {
+        overflow-y: scroll;
+    }
+}
+
 /* On touch-first devices, keep the chat scrollbar from shifting centered content. */
 @media (hover: none) and (pointer: coarse) {
     .chat-scroll-y {
