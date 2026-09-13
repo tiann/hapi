@@ -19,6 +19,11 @@ export interface Settings {
     serverChanSendKey?: string
     serverChanNotification?: boolean
     serverChanBackgroundOnly?: boolean
+    wxPusherAppToken?: string
+    wxPusherUids?: string[]
+    wxPusherTopicIds?: number[]
+    wxPusherNotification?: boolean
+    wxPusherBackgroundOnly?: boolean
     listenHost?: string
     listenPort?: number
     publicUrl?: string

@@ -69,6 +69,35 @@
       "default": false,
       "description": "Only send ServerChan notifications when no visible HAPI connection exists in the namespace. ENV: SERVERCHAN_BACKGROUND_ONLY"
     },
+    "wxPusherAppToken": {
+      "type": "string",
+      "description": "WxPusher application token for App/client notifications. ENV: WXPUSHER_APP_TOKEN"
+    },
+    "wxPusherUids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "WxPusher recipient UIDs. ENV: WXPUSHER_UIDS (comma-separated)"
+    },
+    "wxPusherTopicIds": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "WxPusher topic recipient IDs. ENV: WXPUSHER_TOPIC_IDS (comma-separated)"
+    },
+    "wxPusherNotification": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable WxPusher notifications. ENV: WXPUSHER_NOTIFICATION"
+    },
+    "wxPusherBackgroundOnly": {
+      "type": "boolean",
+      "default": false,
+      "description": "Only send WxPusher notifications when no visible HAPI connection exists in the namespace. ENV: WXPUSHER_BACKGROUND_ONLY"
+    },
     "relayAuthKey": {
       "type": "string",
       "description": "Per-hub relay auth key issued by the relay server. Auto-obtained if not set. ENV: HAPI_RELAY_AUTH"
