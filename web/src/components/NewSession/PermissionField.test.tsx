@@ -20,6 +20,11 @@ function renderField(props: Partial<Parameters<typeof PermissionField>[0]> = {})
 }
 
 describe('PermissionField', () => {
+    it('offers only native shared permission modes for Codex', () => {
+        renderField({ agent: 'codex' })
+        expect(screen.getAllByRole('option').map(option => (option as HTMLOptionElement).value))
+            .toEqual(['default', 'read-only', 'yolo'])
+    })
     it('renders native permission modes for codex-family agents', () => {
         const onChange = vi.fn()
         renderField({ agent: 'copilot', nativeValue: 'default', onNativeChange: onChange })

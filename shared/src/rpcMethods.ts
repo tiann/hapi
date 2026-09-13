@@ -53,6 +53,7 @@ export const RPC_METHODS = {
     UsageQuerySaveSettings: 'usage-query-save-settings',
     UsageQueryTest: 'usage-query-test',
     UsageQuery: 'usage-query',
+    ClearConversation: 'clear-conversation',
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const

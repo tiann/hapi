@@ -39,7 +39,8 @@ export default defineConfig({
       {
         text: 'Agents',
         items: [
-          { text: 'Agents', link: '/guide/agents' }
+          { text: 'Agents', link: '/guide/agents' },
+          { text: 'Codex Usage & Limits', link: '/guide/codex-shared-sessions' }
         ]
       },
       {

@@ -332,13 +332,3 @@ export function buildTurnStartParams(args: {
 
     return params;
 }
-
-/** Resume the actual task settings before reconciling HAPI's queued configuration. */
-export function withoutCodexModelOverrides(params: ThreadStartParams): ThreadStartParams {
-    const { model, serviceTier, ...rest } = params;
-    const config = { ...rest.config };
-    delete config.model;
-    delete config.model_reasoning_effort;
-    delete config.service_tier;
-    return { ...rest, config };
-}

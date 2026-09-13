@@ -301,6 +301,7 @@ export function HappyComposer(props: {
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
     controlledByUser?: boolean
+    concurrentClients?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
@@ -409,6 +410,7 @@ export function HappyComposer(props: {
         contextWindow,
         contextModel,
         controlledByUser = false,
+        concurrentClients = false,
         agentFlavor,
         availableModelOptions,
         piModels,
@@ -1004,8 +1006,8 @@ export function HappyComposer(props: {
     }, [switchDisabled, onSwitchToRemote, haptic])
 
     const permissionModeOptions = useMemo(
-        () => getPermissionModeOptionsForFlavor(agentFlavor),
-        [agentFlavor]
+        () => getPermissionModeOptionsForFlavor(agentFlavor).filter(option => !concurrentClients || option.mode !== 'safe-yolo'),
+        [agentFlavor, concurrentClients]
     )
     const collaborationModeOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
