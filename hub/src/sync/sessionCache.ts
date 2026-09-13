@@ -1502,12 +1502,15 @@ export class SessionCache {
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
     ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
-        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => ({
-            field,
-            value,
-            dedupeKey: field === 'piSessionId' ? `${field}:${metadata.machineId ?? 'unscoped'}:${value}` : `${field}:${value}`,
-            ...(field === 'piSessionId' && metadata.machineId ? { machineId: metadata.machineId } : {})
-        })
+        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => {
+            const machineScoped = field === 'piSessionId' || field === 'opencodeSessionId'
+            return {
+                field,
+                value,
+                dedupeKey: machineScoped ? `${field}:${metadata.machineId ?? 'unscoped'}:${value}` : `${field}:${value}`,
+                ...(machineScoped && metadata.machineId ? { machineId: metadata.machineId } : {})
+            }
+        }
         if (metadata.codexSessionId) return scoped('codexSessionId', metadata.codexSessionId)
         if (metadata.claudeSessionId) return scoped('claudeSessionId', metadata.claudeSessionId)
         if (metadata.geminiSessionId) return scoped('geminiSessionId', metadata.geminiSessionId)
@@ -1544,8 +1547,9 @@ export class SessionCache {
 
                 const currentSession = this.sessions.get(sessionId)
                 const candidates: { id: string; session: Session }[] = []
+                const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
-                    if (agentId.field !== 'piSessionId' || currentSession.metadata.machineId === agentId.machineId) {
+                    if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: sessionId, session: currentSession })
                     }
                 }
@@ -1554,7 +1558,7 @@ export class SessionCache {
                     if (existing.namespace !== session.namespace) continue
                     if (!existing.metadata) continue
                     if (existing.metadata[agentId.field] !== agentId.value) continue
-                    if (agentId.field === 'piSessionId' && existing.metadata.machineId !== agentId.machineId) continue
+                    if (machineScoped && existing.metadata.machineId !== agentId.machineId) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
