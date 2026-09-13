@@ -1,4 +1,6 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import { bodyLimit } from 'hono/body-limit'
 
 import {
     PREVIEW_MAX_REQUEST_BODY_BYTES,
@@ -75,6 +77,24 @@ export function createPreviewRoutes(deps: {
     previewTunnel: PreviewTunnel
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+
+    // Preview documents live in an opaque-origin sandbox (see PREVIEW_CSP), so
+    // their same-origin subresource fetches / module scripts arrive with
+    // `Origin: null`. A non-credentialed wildcard CORS policy lets them load
+    // their own modules and data while the sandbox keeps them isolated from
+    // the hub UI's origin privileges. Capability = unguessable mountId.
+    app.use('*', cors({
+        origin: '*',
+        allowMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowHeaders: ['authorization', 'content-type', 'last-event-id', 'range', 'if-none-match']
+    }))
+
+    // Enforce the body cap while the request streams in — a chunked upload
+    // without Content-Length must not be buffered in full before rejection.
+    app.use('*', bodyLimit({
+        maxSize: PREVIEW_MAX_REQUEST_BODY_BYTES,
+        onError: (c) => c.text('Preview request body too large', 413)
+    }))
 
     const handle = async (c: { req: { method: string; url: string; header: (name: string) => string | undefined; arrayBuffer: () => Promise<ArrayBuffer> } }): Promise<Response> => {
         const url = new URL(c.req.url)

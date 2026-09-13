@@ -105,6 +105,38 @@ describe('preview routes', () => {
         expect(opened).toHaveLength(0)
     })
 
+    it('enforces the body cap on chunked uploads without Content-Length', async () => {
+        const { deps, opened } = makeDeps()
+        const oversized = new ReadableStream<Uint8Array>({
+            start: (controller) => {
+                controller.enqueue(new Uint8Array(1024 * 1024 + 1))
+                controller.close()
+            }
+        })
+        const request = new Request(`http://hub.test${PREFIX}/upload`, {
+            method: 'POST',
+            body: oversized,
+            duplex: 'half'
+        } as RequestInit)
+        const response = await buildApp(deps).request(request)
+
+        expect(response.status).toBe(413)
+        expect(opened).toHaveLength(0)
+    })
+
+    it('answers non-credentialed wildcard CORS so sandboxed pages can load modules', async () => {
+        const { deps } = makeDeps()
+        const get = await buildApp(deps).request(`${PREFIX}/index.html`, { headers: { origin: 'null' } })
+        // Opaque origin sends `Origin: null`; modules and fetch need ACAO.
+        expect(get.headers.get('access-control-allow-origin')).toBe('*')
+
+        const preflight = await buildApp(deps).request(`${PREFIX}/index.html`, {
+            method: 'OPTIONS',
+            headers: { origin: 'null', 'access-control-request-method': 'GET' }
+        })
+        expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
+    })
+
     it('answers 502 when the tunnel conn dies before a head', async () => {
         const { deps } = makeDeps({
             openHttp: () => ({

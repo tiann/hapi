@@ -125,6 +125,7 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
     const handlers: PreviewConnHandlers = {}
     const method = (frame.method ?? 'GET').toUpperCase()
     let upstream: ReturnType<typeof upstreamRequest>
+    let upstreamResponse: import('node:http').IncomingMessage | undefined
     let responded = false
     let done = false
     let idleTimer: ReturnType<typeof setTimeout> | null = null
@@ -169,6 +170,7 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
     upstream.on('response', (res) => {
         if (done) return
         armIdle()
+        upstreamResponse = res
         const status = res.statusCode ?? 502
         const headers = sanitizeResponseHeaders(res.headers, prefix)
         // Encoded bodies are opaque bytes — never decode-and-rewrite them.
@@ -240,6 +242,12 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
         onData(payload) {
             armIdle()
             upstream.write(payload)
+        },
+        // Hub flow control on the response direction — proxied responses have
+        // no size cap, so a slow reader must actually stop the upstream.
+        onFlow(action) {
+            if (action === 'pause') upstreamResponse?.pause()
+            else upstreamResponse?.resume()
         },
         onClose() {
             terminate(undefined, 'browser aborted')

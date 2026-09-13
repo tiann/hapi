@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { createServer, type Server } from 'node:http'
+import { once } from 'node:events'
 
 import {
     buildUpstreamRequestPath,
     buildUpstreamWsUrl,
     canRewriteBody,
     parseWsProtocols,
-    sanitizeRequestHeaders
+    sanitizeRequestHeaders,
+    serveProxyMount
 } from './proxyClient'
 import type { PreviewOpenFrame } from '@hapi/protocol/preview'
+import type { PreviewMount } from './mountManager'
+import type { PreviewConnSink } from './tunnelClient'
 
 function frame(overrides: Partial<PreviewOpenFrame> = {}): PreviewOpenFrame {
     return {
@@ -67,4 +72,63 @@ describe('sanitizeRequestHeaders', () => {
         expect(headers['accept-encoding']).toBe('identity')
         expect(headers.host).toBe('127.0.0.1:5173')
     })
+})
+
+describe('serveProxyMount backpressure', () => {
+    it('honors pause/resume from the hub on the upstream response', async () => {
+        const upstream = createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/octet-stream' })
+            const timer = setInterval(() => {
+                if (res.writableEnded || res.destroyed) {
+                    clearInterval(timer)
+                    return
+                }
+                res.write(Buffer.alloc(64 * 1024, 1))
+            }, 2)
+            res.on('close', () => clearInterval(timer))
+        })
+        upstream.listen(0, '127.0.0.1')
+        await once(upstream, 'listening')
+        const port = (upstream.address() as { port: number }).port
+
+        const mount: PreviewMount = {
+            mountId: '5f0c9a2e-1b3d-4e5f-8a9b-0c1d2e3f4a5b',
+            kind: 'proxy',
+            name: 'dev',
+            port,
+            ws: true,
+            publicUrl: 'http://hub/preview/5f0c9a2e-1b3d-4e5f-8a9b-0c1d2e3f4a5b/',
+            expiresAt: Date.now() + 3600_000,
+            createdAt: Date.now()
+        }
+        let received = 0
+        const sink: PreviewConnSink = {
+            respond() {},
+            data(payload) {
+                received += payload.byteLength
+            },
+            end() {},
+            error() {},
+            wsMessage() {},
+            wsClose() {},
+            close() {}
+        }
+
+        const handlers = serveProxyMount(mount, frame({ path: 'stream' }), sink)
+        // Let some data flow, then pause and verify the upstream actually stops.
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        const atPause = received
+        expect(atPause).toBeGreaterThan(0)
+
+        handlers.onFlow?.('pause')
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        expect(received).toBe(atPause)
+
+        handlers.onFlow?.('resume')
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        expect(received).toBeGreaterThan(atPause)
+
+        handlers.onClose?.()
+        ;(upstream as Server).close()
+    }, 10_000)
 })

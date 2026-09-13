@@ -95,8 +95,9 @@ export function createSocketServer(deps: SocketServerDeps): {
     const terminalNs = io.of('/terminal')
     // Preview mounts + tunnel live on the /cli namespace (they ride the CLI's
     // socket); the web routes consume them via the registry/tunnel objects.
-    const previewRegistry = new PreviewRegistry(configuration.publicUrl)
+    // The tunnel is constructed first so mount removal can revoke its conns.
     const previewTunnel = new PreviewTunnel(cliNs as unknown as CliPreviewNamespace)
+    const previewRegistry = new PreviewRegistry(configuration.publicUrl, (mountId) => previewTunnel.closeMount(mountId))
     const terminalRegistry = new TerminalRegistry({
         idleTimeoutMs,
         // Release the per-terminal scrollback buffer whenever a terminal is

@@ -233,6 +233,16 @@ export class PreviewTunnel {
         }
     }
 
+    /** Mount removed (preview_stop / TTL / eviction): kill its live conns. */
+    closeMount(mountId: string): void {
+        for (const conn of [...this.conns.values()]) {
+            if (conn.mountId !== mountId) continue
+            this.closeConn(conn)
+            // WebSocket conns must also close toward the browser.
+            conn.wsClose?.(1001, 'Preview ended')
+        }
+    }
+
     get stats(): { conns: number } {
         return { conns: this.conns.size }
     }
@@ -320,6 +330,11 @@ export class PreviewTunnel {
                 conn.pausedSent = true
                 conn.resumedSent = false
                 this.emit(conn.socketId, { type: 'pause', connId: conn.connId })
+            }
+            // A conforming CLI stops at `pause`; a runaway one gets cut off
+            // before it can grow hub memory without bound.
+            if (conn.buffered > this.pauseThresholdBytes * 4) {
+                this.closeConn(conn)
             }
         } catch {
             // Stream already closed by the consumer.

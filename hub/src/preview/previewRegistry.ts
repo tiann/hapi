@@ -49,8 +49,14 @@ export class PreviewRegistry {
     /**
      * `publicUrl` is injected (only the hub knows HAPI_PUBLIC_URL) rather than
      * read from hub configuration so tests can run without booting it.
+     * `onRemove` fires whenever a mount leaves the registry (preview_stop, TTL
+     * sweep, eviction) so the owner can kill in-flight tunnel conns — removal
+     * must revoke the capability, not just future lookups.
      */
-    constructor(private readonly publicUrl: string) {}
+    constructor(
+        private readonly publicUrl: string,
+        private readonly onRemove: (mountId: string) => void = () => {}
+    ) {}
 
     /** Lookup + touch. Returns null for unknown (caller decides 404 vs 410). */
     get(mountId: string, now = Date.now()): PreviewMountEntry | null {
@@ -203,6 +209,7 @@ export class PreviewRegistry {
         this.mounts.delete(mountId)
         this.removeFromSocketIndex(mountId, entry.socketId)
         this.tombstones.set(mountId, now)
+        this.onRemove(mountId)
         return true
     }
 

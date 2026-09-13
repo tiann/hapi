@@ -252,11 +252,6 @@ function createWebApp(options: {
     app.use('/health', corsMiddleware)
     app.use('/api/*', corsMiddleware)
     app.use('/cli/*', corsMiddleware)
-    // Preview pages fetch their own subresources from the same origin, but a
-    // mounted page may also be embedded elsewhere — answer preflights.
-    if (options.previewRegistry && options.previewTunnel) {
-        app.use('/preview/*', corsMiddleware)
-    }
 
     // Health check endpoint (no auth required).
     // Capabilities are additive so older clients can ignore unknown fields.

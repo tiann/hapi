@@ -132,4 +132,18 @@ describe('PreviewRegistry', () => {
         registry.register(descriptor(), ctx())
         expect(registry.checkToken(registry.get(MOUNT_ID)!, null)).toBe(true)
     })
+
+    it('fires the onRemove hook on unregister, expiry and eviction (tunnel revocation)', () => {
+        const removed: string[] = []
+        const registry = new PreviewRegistry("http://hub:3006", (mountId) => removed.push(mountId))
+
+        registry.register(descriptor({ ttlSeconds: 30 }), ctx('sock-1'))
+        registry.register(descriptor({ mountId: MOUNT_ID_2, name: 'second', ttlSeconds: 30 }), ctx('sock-2'))
+
+        registry.unregister({ mountId: MOUNT_ID }, ctx('sock-1'))
+        expect(removed).toEqual([MOUNT_ID])
+
+        registry.sweep(Date.now() + 10 * 60_000)
+        expect(removed).toEqual([MOUNT_ID, MOUNT_ID_2])
+    })
 })

@@ -234,4 +234,49 @@ describe('PreviewTunnel lifecycle (regressions)', () => {
         expect(seen).toEqual(['late-but-alive'])
         expect(tunnel.stats.conns).toBe(1)
     })
+
+    it('closeMount kills live conns and closes websockets toward the browser', async () => {
+        const { ns, fake } = makeNamespace()
+        const tunnel = new PreviewTunnel(ns)
+        const httpConn = tunnel.openHttp(makeEntry(), httpMeta())
+        const wsConn = tunnel.openWs(makeEntry(), httpMeta())
+        const httpConnId = (fake.framesToCli[0] as { connId: string }).connId
+        const wsConnId = (fake.framesToCli[1] as { connId: string }).connId
+
+        let wsClosed: number | undefined
+        wsConn!.onClose((code) => {
+            wsClosed = code
+        })
+
+        tunnel.closeMount(MOUNT_ID)
+
+        expect(await httpConn!.head).toBeNull()
+        expect(wsClosed).toBe(1001)
+        expect(tunnel.stats.conns).toBe(0)
+        expect(fake.framesToCli.filter((frame) => frame.type === 'close').map((frame) => (frame as { connId: string }).connId))
+            .toEqual([httpConnId, wsConnId])
+    })
+
+    it('cuts the conn off when the buffer blows far past the pause threshold', async () => {
+        const { ns, fake } = makeNamespace()
+        const tunnel = new PreviewTunnel(ns, { pauseThresholdBytes: 1000, resumeThresholdBytes: 200 })
+        const conn = tunnel.openHttp(makeEntry(), httpMeta())
+        const connId = (fake.framesToCli[0] as { connId: string }).connId
+
+        tunnel.handleFrame('sock-1', { type: 'response', connId, status: 200, headers: {} })
+        // 5 MiB with a 1 KiB threshold — far past the 4x kill line.
+        tunnel.handleFrame('sock-1', { type: 'data', connId, seq: 0, payload: new Uint8Array(5 * 1024 * 1024) })
+
+        expect(tunnel.stats.conns).toBe(0)
+        // The body stream is closed: the buffered tail drains, then terminates —
+        // the transfer cannot keep growing hub memory.
+        const reader = conn!.body.getReader()
+        let drained = 0
+        for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            drained += value.byteLength
+        }
+        expect(drained).toBeLessThanOrEqual(5 * 1024 * 1024)
+    })
 })
