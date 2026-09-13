@@ -3,11 +3,15 @@ import { logger } from '@/ui/logger';
 import type { AgentMessage, PlanItem } from '@/agent/types';
 import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
-import { asString, isObject } from '@hapi/protocol';
+import { asString, isObject, isDisplayLinksToolName, redactDisplayLinksToolInput } from '@hapi/protocol';
 import { deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
+
+function redactIfDisplayLinks(name: string, input: unknown): unknown {
+    return isDisplayLinksToolName(name) ? redactDisplayLinksToolInput(input) : input;
+}
 
 function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'completed' | 'failed' {
     if (status === 'in_progress' || status === 'completed' || status === 'failed') {
@@ -757,7 +761,7 @@ export class AcpMessageHandler {
                 update.content
             );
         // Content JSON can be `{}` (same as unusable rawInput); never lock that in.
-        const input = isUsableRawInput(candidate) ? candidate : null;
+        const input = redactIfDisplayLinks(name, isUsableRawInput(candidate) ? candidate : null);
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
@@ -787,7 +791,7 @@ export class AcpMessageHandler {
         if (isUsableRawInput(update.rawInput)) {
             const derivedName = deriveToolNameFromUpdate(update);
             const name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
-            const input = update.rawInput;
+            const input = redactIfDisplayLinks(name, update.rawInput);
             this.toolCalls.set(toolCallId, { name, input });
             this.onMessage({
                 type: 'tool_call',
@@ -814,9 +818,9 @@ export class AcpMessageHandler {
                     update.content
                 );
                 if (isUsableRawInput(fallback)) {
-                    input = fallback;
                     const derivedName = deriveToolNameFromUpdate(update);
                     name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    input = redactIfDisplayLinks(name, fallback);
                     this.toolCalls.set(toolCallId, { name, input });
                     rederived = true;
                 }

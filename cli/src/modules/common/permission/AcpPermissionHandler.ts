@@ -1,7 +1,7 @@
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types'
 import type { PermissionMode } from '@hapi/protocol/types'
-import { deriveToolInput, deriveToolName } from '@/agent/utils'
+import { deriveToolInput, deriveToolName, sanitizePermissionToolInput } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
     BasePermissionHandler,
@@ -61,7 +61,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             kind: request.kind,
             rawInput: request.rawInput
         })
-        const toolInput = deriveToolInput(request)
+        const toolInput = sanitizePermissionToolInput(toolName, deriveToolInput(request))
         const autoDecision = this.resolveAutoApprovalDecision(
             this.getPermissionMode(),
             toolName,

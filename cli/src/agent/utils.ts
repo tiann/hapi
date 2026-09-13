@@ -1,8 +1,13 @@
-import { isObject } from '@hapi/protocol';
+import { isDisplayLinksToolName, isObject, redactDisplayLinksToolInput } from '@hapi/protocol';
 import type { PermissionRequest } from './types';
 
 export function deriveToolInput(request: PermissionRequest): unknown {
     return request.rawInput !== undefined ? request.rawInput : request.rawOutput ?? null;
+}
+
+/** Strip display_links exact-copy bytes before agentState / hub persistence. */
+export function sanitizePermissionToolInput(toolName: string, input: unknown): unknown {
+    return isDisplayLinksToolName(toolName) ? redactDisplayLinksToolInput(input) : input;
 }
 
 type ToolNameSource = 'title' | 'raw_input_name' | 'raw_input_tool' | 'kind' | 'default';

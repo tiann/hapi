@@ -8,7 +8,7 @@
         "olderCursor": null,
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "message-cancelled-removes-queued-row",
     "ops": [
         {

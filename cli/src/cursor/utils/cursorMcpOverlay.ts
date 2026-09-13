@@ -12,6 +12,7 @@ import {
     lstatSync,
     mkdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
     rmSync,
     statSync,
@@ -40,10 +41,41 @@ export function cursorHapiMcpServerId(sessionId: string): string {
     return `hapi-${trimmed}`;
 }
 
-/** Resolve the Cursor MCP config directory (override for tests; default `~/.cursor`). */
+/**
+ * Resolve the Cursor MCP config directory.
+ *
+ * Precedence: explicit `override` → `HAPI_CURSOR_MCP_CONFIG_DIR` → `~/.cursor`.
+ * Relocated homes (e.g. `~/.cursor` → `/var/lib/hapi/cursor`) are followed to a
+ * real directory so the overlay can write `mcp.json` on the target filesystem.
+ * Symlinked `mcp.json` files are still refused at write time.
+ */
 export function resolveCursorMcpConfigDir(override?: string): string {
-    const trimmed = override?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : join(homedir(), '.cursor');
+    const fromEnv = process.env.HAPI_CURSOR_MCP_CONFIG_DIR?.trim();
+    const trimmed = override?.trim() || fromEnv || '';
+    const candidate = trimmed.length > 0 ? trimmed : join(homedir(), '.cursor');
+    const entry = lstatSync(candidate, { throwIfNoEntry: false });
+    if (!entry) {
+        return candidate;
+    }
+    if (entry.isSymbolicLink()) {
+        let real: string;
+        try {
+            real = realpathSync(candidate);
+        } catch {
+            throw new Error(`Cursor config directory symlink is dangling: ${candidate}`);
+        }
+        const realEntry = lstatSync(real, { throwIfNoEntry: false });
+        if (!realEntry?.isDirectory()) {
+            throw new Error(
+                `Cursor config directory symlink must resolve to a directory: ${candidate} -> ${real}`,
+            );
+        }
+        return real;
+    }
+    if (!entry.isDirectory()) {
+        throw new Error(`Cursor config path is not a directory: ${candidate}`);
+    }
+    return candidate;
 }
 
 type McpServerEntry = {
@@ -263,6 +295,12 @@ function sameMcpEntry(a: McpServerEntry | undefined, b: McpServerEntry | undefin
  * Merge the per-session HAPI stdio bridge into `~/.cursor/mcp.json` (or
  * `options.mcpConfigDir`) and approve it for Cursor's native MCP loader.
  *
+ * Concurrent `hapi-*` entries stay enabled. Each Cursor HappyServer registers a
+ * per-session `hapi_<sessionId>_display_links` tool so bare-name collisions
+ * (forum 148059) cannot paint the wrong chat; `assertBoundDisplayLinksSession`
+ * remains defense-in-depth. Do not `agent mcp disable` siblings — cleanup never
+ * re-enables them, which strands a live session.
+ *
  * Cleanup undoes only the exact entry this session installed under `serverId` (or restores a
  * pre-existing value for that same id). Concurrent edits to other mcpServers keys — and to
  * this id when it no longer matches the installed overlay — survive the session.
@@ -285,13 +323,10 @@ export function installCursorMcpOverlay(
         throw new Error('serverId is required for Cursor HAPI MCP overlay');
     }
 
+    // resolveCursorMcpConfigDir follows a relocated ~/.cursor symlink to a real dir.
     const cursorDir = resolveCursorMcpConfigDir(options.mcpConfigDir);
     const mcpJsonPath = join(cursorDir, 'mcp.json');
     const lockPath = `${mcpJsonPath}.hapi.lock`;
-    const cursorDirEntry = lstatSync(cursorDir, { throwIfNoEntry: false });
-    if (cursorDirEntry?.isSymbolicLink()) {
-        throw new Error(`Refusing to use a symlinked Cursor config directory: ${cursorDir}`);
-    }
     mkdirSync(cursorDir, { recursive: true });
 
     const installedHapi: McpServerEntry = {

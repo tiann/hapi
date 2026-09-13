@@ -10,6 +10,7 @@ import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
 import type { CodexMcpServerConfig } from './codexMcpServers';
+import { isDisplayLinksToolName } from '@hapi/protocol';
 
 /**
  * MCP server entry configuration.
@@ -48,6 +49,8 @@ export interface HapiMcpBridgeOptions {
     exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    /** Cursor-only (#1516). Also inferred from skillLookup.flavor === 'cursor'. */
+    enableDisplayLinks?: boolean;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -82,6 +85,7 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        enableDisplayLinks: options.enableDisplayLinks,
         skillLookup: options.skillLookup
     });
     const bridgeCommand = getHappyCliCommand([
@@ -102,6 +106,14 @@ export async function buildHapiMcpBridge(
             approval_mode: 'prompt'
         }
     };
+    // Cursor-only (#1516) — per-session tool name; auto-approve so the model uses it
+    // instead of typing doubled-letter-mangled URLs.
+    const displayLinksToolName = happyServer.toolNames.find((name) => isDisplayLinksToolName(name));
+    if (displayLinksToolName) {
+        tools[displayLinksToolName] = {
+            approval_mode: 'approve'
+        };
+    }
     if (options.enableChangeTitle !== false) {
         tools.change_title = {
             approval_mode: 'approve'

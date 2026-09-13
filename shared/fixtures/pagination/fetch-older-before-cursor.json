@@ -33,7 +33,7 @@
         },
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "fetch-older-before-cursor",
     "ops": [
         {
