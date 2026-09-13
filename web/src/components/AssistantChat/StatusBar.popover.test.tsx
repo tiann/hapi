@@ -198,7 +198,7 @@ describe('StatusBar context details popover', () => {
         expect(leftStatusGroup?.className.split(' ')).not.toContain('sm:gap-3')
         expect(rightStatusGroup?.className.split(' ')).toContain('gap-2')
 
-        const trigger = screen.getByRole('button', { name: '上下文详情' })
+        const trigger = screen.getByRole('button', { name: '上下文浮窗' })
         expect(trigger.className.split(' ')).not.toContain('relative')
         expect(trigger.className.split(' ')).not.toContain('-top-px')
         expect(trigger.className.split(' ')).toContain('text-[10px]')
@@ -214,7 +214,7 @@ describe('StatusBar context details popover', () => {
         const cacheLine = await screen.findByText('缓存：86k')
         const details = cacheLine.parentElement
         expect(details?.textContent).toBe('缓存：86k使用：90k（35%）剩余：168k（65%）')
-        expect(screen.queryByText('上下文详情')).toBeNull()
+        expect(screen.queryByText('上下文浮窗')).toBeNull()
     })
 
     it('localizes the popover content without localizing the external left label', async () => {
@@ -232,7 +232,7 @@ describe('StatusBar context details popover', () => {
             </I18nProvider>
         )
 
-        const trigger = screen.getByRole('button', { name: 'Context details' })
+        const trigger = screen.getByRole('button', { name: 'Context popover' })
         expect(trigger.textContent).toContain('ctx 258k (65% left)')
 
         fireEvent.click(trigger)

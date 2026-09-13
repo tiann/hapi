@@ -13,6 +13,7 @@ import {
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -3910,6 +3911,34 @@ export class SyncEngine {
 
     async getAgentAvailability(machineId: string): ReturnType<RpcGateway['getAgentAvailability']> {
         return await this.rpcGateway.getAgentAvailability(machineId)
+    }
+
+    async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<UsageQuerySettingsResponse> {
+        return await this.rpcGateway.getUsageQuerySettings(machineId, agent)
+    }
+
+    async saveUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<UsageQuerySettingsResponse> {
+        return await this.rpcGateway.saveUsageQuerySettings(machineId, agent, settings)
+    }
+
+    async testUsageQueryTemplate(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<UsageQueryResult> {
+        return await this.rpcGateway.testUsageQueryTemplate(machineId, agent, template)
+    }
+
+    async queryUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<UsageQueryResult> {
+        return await this.rpcGateway.queryUsage(machineId, agent, force)
     }
 
     async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {

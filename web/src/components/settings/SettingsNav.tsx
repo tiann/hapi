@@ -37,6 +37,7 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
         machines: t('settings.hub.machines.summary'),
         storage: t('settings.storage.summary'),
         usage: t('settings.usage.summary'),
+        'usage-query': t('settings.usageQuery.summary'),
         about: `v${__APP_VERSION__}`,
     }
     const visibleCategories = settingsCategories.filter((category) => !OWNER_ONLY_CATEGORIES.has(category.id) || getNamespaceFromToken(token) === 'default')

@@ -1,6 +1,15 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
+    UsageQueryResultSchema,
+    UsageQuerySettingsResponseSchema,
+    type UsageQueryAgent,
+    type UsageQueryAgentSettings,
+    type UsageQueryResult,
+    type UsageQuerySettingsResponse,
+    type UsageQueryTemplate
+} from '@hapi/protocol/usageQuery'
+import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
     CursorChatStoreStatusSchema,
@@ -94,6 +103,8 @@ export type RpcListGrokReasoningEffortOptionsResponse = GrokReasoningEffortRespo
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
+export type RpcUsageQuerySettingsResponse = UsageQuerySettingsResponse
+export type RpcUsageQueryResult = UsageQueryResult
 
 export class RpcGateway {
     constructor(
@@ -277,6 +288,41 @@ export class RpcGateway {
     async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
         return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<RpcUsageQuerySettingsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQueryGetSettings, { agent })
+        return UsageQuerySettingsResponseSchema.parse(result)
+    }
+
+    async saveUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<RpcUsageQuerySettingsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQuerySaveSettings, {
+            agent,
+            ...settings
+        })
+        return UsageQuerySettingsResponseSchema.parse(result)
+    }
+
+    async testUsageQueryTemplate(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<RpcUsageQueryResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQueryTest, { agent, template })
+        return UsageQueryResultSchema.parse(result)
+    }
+
+    async queryUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<RpcUsageQueryResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQuery, { agent, force })
+        return UsageQueryResultSchema.parse(result)
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<PathExistsResponse> {

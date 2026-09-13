@@ -62,6 +62,13 @@ import type {
 import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
+import type {
+    UsageQueryAgent,
+    UsageQueryAgentSettings,
+    UsageQueryResult,
+    UsageQuerySettingsResponse,
+    UsageQueryTemplate
+} from '@hapi/protocol/usageQuery'
 
 export type RetryIndeterminateMessageResponse =
     | { status: 'retried' | 'already-queued' | 'retry-unavailable'; localId: string | null }
@@ -810,6 +817,54 @@ export class ApiClient {
     async getMachineAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         return await this.request<AgentAvailabilityResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/agent-availability`
+        )
+    }
+
+    async getMachineUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<UsageQuerySettingsResponse> {
+        return await this.request<UsageQuerySettingsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/usage-query/settings?agent=${encodeURIComponent(agent)}`
+        )
+    }
+
+    async saveMachineUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<UsageQuerySettingsResponse> {
+        return await this.request<UsageQuerySettingsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/usage-query/settings`,
+            {
+                method: 'PUT',
+                body: JSON.stringify({ agent, ...settings })
+            }
+        )
+    }
+
+    async testMachineUsageQuery(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<UsageQueryResult> {
+        return await this.request<UsageQueryResult>(
+            `/api/machines/${encodeURIComponent(machineId)}/usage-query/test`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ agent, template })
+            }
+        )
+    }
+
+    async queryMachineUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<UsageQueryResult> {
+        return await this.request<UsageQueryResult>(
+            `/api/machines/${encodeURIComponent(machineId)}/usage-query/query`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ agent, force })
+            }
         )
     }
 
