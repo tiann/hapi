@@ -865,7 +865,15 @@ export type ListAgyModelsResponse = AgyModelsResponse
 
 export type CursorModelSummary = OpencodeModelSummary
 
-export type CursorModelsResponse = OpencodeModelsResponse
+export type CursorModelsResponse = OpencodeModelsResponse & {
+    /**
+     * True when ACP advertised Cursor's parameterized model picker: bare model bases
+     * plus separate `fast` / `thought_level` config options. The ACP apply path
+     * expresses variant CLI skus through those options, so variant rows stay valid
+     * even when the catalog itself carries no bracket wire ids.
+     */
+    parameterized?: boolean
+}
 
 export type ListCursorModelsResponse = CursorModelsResponse
 
