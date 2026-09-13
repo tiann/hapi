@@ -289,6 +289,29 @@ describe('ScratchlistPanel', () => {
         }
     })
 
+    it('reorders entries with the keyboard shortcut', async () => {
+        persistScratchlist(SID, [
+            makeEntry({ id: 'top', text: 'top entry' }),
+            makeEntry({ id: 'middle', text: 'middle entry' }),
+            makeEntry({ id: 'bot', text: 'bot entry' }),
+        ])
+        renderPanel()
+        expandPanel()
+
+        fireEvent.keyDown(screen.getAllByTestId('scratchlist-entry-text')[0]!, {
+            key: 'ArrowDown',
+            altKey: true,
+        })
+
+        await waitFor(() => {
+            expect(readScratchlist(SID).map((entry) => entry.id)).toEqual(['middle', 'top', 'bot'])
+        })
+        expect(screen.getAllByTestId('scratchlist-entry-text')[0]).toHaveAttribute(
+            'aria-keyshortcuts',
+            'Alt+ArrowUp Alt+ArrowDown',
+        )
+    })
+
     it('cancels a pending mouse long press when the pointer is released outside the row', () => {
         vi.useFakeTimers()
         persistScratchlist(SID, [makeEntry({ id: 'outside-release', text: 'outside release' })])

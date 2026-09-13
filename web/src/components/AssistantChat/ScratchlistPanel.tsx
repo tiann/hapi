@@ -1206,7 +1206,20 @@ function ScratchlistInventory({
                                         data-testid="scratchlist-entry-text"
                                         data-scratchlist-text=""
                                         title={t('scratchlist.action.editEntry')}
+                                        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                                         onClick={() => startEditing(entry)}
+                                        onKeyDown={(event) => {
+                                            if (!event.altKey || disabled) return
+                                            const delta = event.key === 'ArrowUp'
+                                                ? -1
+                                                : event.key === 'ArrowDown' ? 1 : 0
+                                            if (!delta) return
+                                            const index = entriesRef.current.findIndex((item) => item.id === entry.id)
+                                            const targetIndex = Math.max(0, Math.min(entriesRef.current.length - 1, index + delta))
+                                            if (index < 0 || targetIndex === index) return
+                                            event.preventDefault()
+                                            onReorder(entry.id, targetIndex)
+                                        }}
                                         disabled={disabled}
                                         className="min-h-6 min-w-0 w-full cursor-text rounded text-left text-sm leading-6 text-[var(--app-fg)] outline-none line-clamp-4 whitespace-pre-wrap break-words focus-visible:ring-1 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-60"
                                     >
