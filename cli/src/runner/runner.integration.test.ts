@@ -174,6 +174,17 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     expect(sessions).toEqual([]);
   });
 
+  it('preserves shared Codex support after a runner heartbeat', async () => {
+    const initial = await readRunnerState();
+    expect(initial?.sharedCodexRuntime).toBe(true);
+
+    await waitFor(async () => Boolean((await readRunnerState())?.lastHeartbeat), 35_000);
+
+    const afterHeartbeat = await readRunnerState();
+    expect(afterHeartbeat?.pid).toBe(initial?.pid);
+    expect(afterHeartbeat?.sharedCodexRuntime).toBe(true);
+  }, 40_000);
+
   it('should track session-started webhook from terminal session', async () => {
     // Simulate a terminal-started session reporting to runner
     const mockMetadata: Metadata = {

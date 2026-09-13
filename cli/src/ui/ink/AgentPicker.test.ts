@@ -43,6 +43,8 @@ describe('agent picker', () => {
                 stdout: stdout as unknown as NodeJS.WriteStream,
                 stderr: stdout as unknown as NodeJS.WriteStream,
                 stdin: stdin as unknown as NodeJS.ReadStream,
+                // Ink buffers non-static output until unmount in CI; debug emits every frame.
+                debug: true,
                 patchConsole: false,
                 exitOnCtrlC: false
             })

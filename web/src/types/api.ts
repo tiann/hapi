@@ -128,6 +128,12 @@ export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus
     originalText?: string
     invokedAt?: number | null
+    /**
+     * Client-only: user force-dismissed an indeterminate queued row while the
+     * hub still reported busy. Hidden from QueuedMessagesBar but retained so a
+     * later messages-consumed SSE can mark it sent in the thread.
+     */
+    queueDismissed?: boolean
 }
 
 export type FileSearchItem = {

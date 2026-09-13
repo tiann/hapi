@@ -38,8 +38,13 @@ class PlanProposalTest {
     @Test fun plansStartExpandedUpdateInPlaceAndKeepSourceAndErrors() {
         val block = mutableStateOf(previewToolCall("proposal", "ExitPlanMode", input = mapOf("plan" to "# 实施计划\n\nRead **input.plan**.")))
         block.value = block.value.withTool(block.value.tool.copy(result = JsonNull))
+        val projection = TranscriptProjection()
         compose.setContent {
-            HapiTheme { Column(Modifier.verticalScroll(rememberScrollState())) { ToolCallBlockView(block.value, null) } }
+            HapiTheme {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    ToolCallBlockView(projection.project(listOf(block.value)).single() as ToolCallBlock, null)
+                }
+            }
         }
         compose.onNodeWithText("实施计划").assertIsDisplayed()
         compose.onNodeWithText("Read input.plan.").assertIsDisplayed()

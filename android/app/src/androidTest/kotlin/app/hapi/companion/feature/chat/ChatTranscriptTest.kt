@@ -188,25 +188,26 @@ class ChatTranscriptTest {
         assertFollowing()
     }
 
-    private fun mountWithExpandedGroup(restoration: StateRestorationTester? = null): ToolGroupBlock {
+    private fun mountWithGroupSummary(restoration: StateRestorationTester? = null): ToolGroupBlock {
         val tools = (1..12).map { previewToolCall("group-child-$it", "Read", input = mapOf("file_path" to "file-$it.txt")) }
         val group = buildVisibleChatBlocks(tools, ToolGroupingOptions(hasMoreMessages = false))
             .filterIsInstance<ToolGroupBlock>().single()
         assertTrue(!group.defaultOpen)
         mount(rows(0..24) + group + rows(25..79), restoration)
-        browse(26, 0)
+        // Keep the preceding row outside the content-padding/spacing band.
+        // Exercise a partially visible summary, not an item-boundary ambiguity.
+        browse(26, 20)
         compose.onNodeWithText("12 tools").performClick()
         compose.waitForIdle()
-        // Anchor to a child row, not an ordinary row whose index could happen
-        // to survive losing the group's expansion map.
-        compose.runOnIdle { scope.launch { list.scrollToItem(32, 17) } }
-        compose.waitForIdle()
-        assertEquals("group-child-6", anchor().first)
+        // Tapping a summary cannot change transcript membership or height.
+        assertEquals(group.id, anchor().first)
+        compose.onNodeWithTag("chat-row-group-child-1").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(82, list.layoutInfo.totalItemsCount) }
         return group
     }
 
-    @Test fun navigationReturnPreservesExpandedChildrenAndTheirReadingAnchor() {
-        mountWithExpandedGroup()
+    @Test fun navigationReturnPreservesGroupSummaryAnchor() {
+        mountWithGroupSummary()
         val before = anchor()
         compose.runOnIdle { shown.value = false }
         compose.waitForIdle()
@@ -215,18 +216,18 @@ class ChatTranscriptTest {
         assertHistoryRestored(before)
     }
 
-    @Test fun savedInstanceStateRestoresExpandedChildrenBeforeRestoringTheListIndex() {
+    @Test fun savedInstanceStateRestoresGroupSummaryAnchor() {
         val restoration = StateRestorationTester(compose)
-        mountWithExpandedGroup(restoration)
+        mountWithGroupSummary(restoration)
         val before = anchor()
         viewportReports.set(emptyList())
         restoration.emulateSavedInstanceStateRestore()
         assertHistoryRestored(before)
     }
 
-    @Test fun removedGroupsDoNotRestoreStaleExpansionFlags() {
+    @Test fun groupReappearanceNeverAddsInlineChildren() {
         val restoration = StateRestorationTester(compose)
-        val group = mountWithExpandedGroup(restoration)
+        val group = mountWithGroupSummary(restoration)
         compose.runOnIdle {
             state.value = state.value.copy(blocks = rows(0..79), messagesVersion = 1)
         }

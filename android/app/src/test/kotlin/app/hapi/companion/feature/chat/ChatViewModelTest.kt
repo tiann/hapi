@@ -269,7 +269,8 @@ private fun detailSession(): Session = Session(
 
 /** Transport that hands each connection a handshake verdict from [verdicts] (last repeats). */
 private class ScriptedTransport(private val verdicts: List<String>) : SseTransport {
-    private var connects = 0
+    var connects = 0
+        private set
 
     override fun open(url: String, lastEventId: String?) = flow<TransportEvent> {
         val verdict = verdicts.getOrElse(connects) { verdicts.last() }
@@ -336,6 +337,54 @@ private class Harness(
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ChatViewModelTest {
+    @Test
+    fun `inspection cancels hidden history demand and keeps one session subscription`() = runTest {
+        val transport = ScriptedTransport(listOf("ok"))
+        val gate = CompletableDeferred<Unit>()
+        // Model an HTTP response already crossing the cancellation boundary.
+        val api = object : FakeMessagesApi() {
+            override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse =
+                if (query is MessagesQuery.Before) withContext(kotlinx.coroutines.NonCancellable) {
+                    super.getMessages(sessionId, query)
+                } else super.getMessages(sessionId, query)
+        }
+        val h = Harness(this, transport, api)
+        api.tailResponses += MessagesResponse(
+            listOf(agentMessage("latest", 10, 10_000, "latest")),
+            page("latest", true, nextBeforeAt = 10_000, nextBeforeSeq = 10),
+        )
+        api.beforePage = MessagesResponse(
+            listOf(agentMessage("older", 9, 9_000, "older")),
+            page("before", true, nextBeforeAt = 9_000, nextBeforeSeq = 9),
+        )
+        api.beforeGate = gate
+        h.viewModel.start()
+        h.viewModel.uiState.first { it.blocks.isNotEmpty() }
+        runCurrent()
+        h.viewModel.readingViewportChanged(false, true)
+        runCurrent()
+        assertEquals(1, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.beginInspection()
+        // Layout callbacks from the exiting destination must be ignored.
+        h.viewModel.readingViewportChanged(true, true)
+        gate.complete(Unit)
+        runCurrent()
+        val store = h.messageWindows.open(SESSION_ID)
+        assertEquals(MessageViewMode.History, store.state.value.viewMode)
+        assertEquals(listOf("latest"), store.state.value.messages.map { it.id })
+        assertEquals(1, transport.connects)
+        assertEquals(1, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.setTranscriptVisible(true)
+        h.viewModel.start() // Host re-entry / rotation is idempotent.
+        runCurrent()
+        assertEquals(1, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.readingViewportChanged(false, true)
+        h.viewModel.uiState.first { it.historyVersion == 1L }
+        assertEquals(2, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        assertEquals(1, transport.connects)
+        h.viewModel.stop()
+    }
+
     @Test
     fun `Default workers cannot mutate paging state outside the UI dispatcher`() = runTest {
         val workers = CoroutineScope(SupervisorJob() + Dispatchers.Default)

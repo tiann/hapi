@@ -4,7 +4,7 @@ Endpoint tables for native clients, grouped by feature. Request/response shapes 
 
 ## Conventions
 
-- All paths below are relative to the hub base URL. Everything under `/api` requires `Authorization: Bearer <JWT>` ([Auth](./auth.md)).
+- All paths below are relative to the hub base URL. `/api` routes require `Authorization: Bearer <JWT>` except the `/api/auth` exchange and Telegram `/api/bind` ([Auth](./auth.md)).
 - Path params (`:id`, `:messageId`, …) must be URL-encoded (the web client uses `encodeURIComponent` throughout).
 - Request bodies are JSON (`content-type: application/json`) with **one exception**: `POST /api/voice/transcription` is `multipart/form-data`. Responses are JSON unless noted (generated images and scratchlist attachments return raw bytes).
 - Bodies are validated with Zod; failures return `400` (see [Errors](./errors.md)).
@@ -66,10 +66,10 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
 | `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
-| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = steer still resolving) |
+| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = native delivery/removal is unresolved) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
 | `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
-| `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync optimistic sends after reconnect |
+| `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], indeterminateLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync after reconnect; preserve indeterminate rows without auto-replaying them |
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
@@ -97,8 +97,8 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 
 | Method & path | Request | Applies to |
 |---|---|---|
-| `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` (per-flavor allowed sets in `modes.ts`) |
-| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null}` | All flavors (`supportsModelChange` is true for every current flavor); remote-only for codex/cursor/grok |
+| `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` and `dsh` (per-flavor allowed sets in `modes.ts`) |
+| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for codex/cursor/grok |
 | `POST /api/sessions/:id/effort` | `{effort: string \| null}` | claude, grok, pi (`supportsEffort`) |
 | `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode (remote-only) |
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |
@@ -110,6 +110,8 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 ownership mode. `/switch` returns HTTP 409 with
 `code: 'control_mode_not_applicable'`; do not offer takeover. The remote-only
 Codex configuration restrictions above do not apply to these sessions.
+Shared Codex rejects `safe-yolo` even though it remains in the historical
+Codex permission-mode schema; do not offer it for concurrent sessions.
 
 Shared `/clear` has no global `supersededBySessionId` change; clients other than
 the caller stay on the original thread. Fork may return an already-bound shared
@@ -262,7 +264,7 @@ These exist on the hub but v1 native clients must not implement or call them:
 | Codex Desktop import | `/api/codex/*` (`hub/src/web/routes/codexDesktop.ts`) | Desktop-import tooling |
 | Pi session import | `/api/pi/*`, `/api/sessions/:id/pi-*` (`hub/src/web/routes/piSessions.ts`, `sessions.ts`) | Import tooling (the `pi-models` catalog above is the one exception) |
 | Work graph | `/api/work-graph/*` (`hub/src/web/routes/workGraph.ts`) | Web-only feature |
-| Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices` (FCM) |
+| Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices/register` (Android/iOS push contract) |
 | Hub settings write | `PUT /api/hub-settings` | Owner-only hub administration |
 | Telegram | `POST /api/bind` | Telegram Mini App binding only |
 | Voice assistant | `/api/voice/token`, `/voices`, `/backend`, `/gemini-token`, `/qwen-token`, `/qwen-ws`, `/gemini-ws`, `/transcription/realtime-token`, `/telemetry`, credentials endpoints | Realtime assistant, not v1 dictation |

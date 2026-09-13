@@ -2,8 +2,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 
 import { APNS_PRODUCTION_HOST, APNS_SANDBOX_HOST } from './apnsClient'
-
-export const DEFAULT_PUSH_RELAY_URL = 'https://push.hapi.run'
+import { DEFAULT_PUSH_RELAY_URL } from '../push-native/relayClient'
 
 /**
  * Transport selection (PUSH SPEC v1), resolved from hub configuration —

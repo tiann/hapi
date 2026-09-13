@@ -1493,19 +1493,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Heartbeat
       try {
         const updatedState: RunnerLocallyPersistedState = {
-          pid: process.pid,
-          httpPort: controlPort,
-          startTime: fileState.startTime,
-          startedWithCliVersion: packageJson.version,
-          startedWithCliMtimeMs,
-          startedWithApiUrl: fileState.startedWithApiUrl,
-          startedWithMachineId: fileState.startedWithMachineId,
-          startedWithCliApiTokenHash: fileState.startedWithCliApiTokenHash,
-          startedWithExtraHeadersHash: fileState.startedWithExtraHeadersHash,
-          startedWithArgv,
-          startedWithVersionHandoffDisabled,
-          lastHeartbeat: new Date().toLocaleString(),
-          runnerLogPath: fileState.runnerLogPath
+          ...fileState,
+          lastHeartbeat: new Date().toLocaleString()
         };
         writeRunnerState(updatedState);
         if (process.env.DEBUG) {

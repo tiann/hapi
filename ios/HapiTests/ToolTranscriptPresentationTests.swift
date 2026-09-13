@@ -259,7 +259,14 @@ private struct ToolTranscriptHTTP: HTTPPerforming {
         }
         append(["type": "message", "message": "工具详情独立阅读；关闭后保留聊天位置。"])
         for index in 0..<42 {
-            if index < 17 { tool("Bash", input: ["command": "git diff --stat"], error: index == 0) }
+            // Exercise the shared Codex wire shape, not just legacy Bash calls:
+            // unknown actions must remain grouped in the real transcript/inspector.
+            if index < 17 {
+                tool("CodexBash", input: [
+                    "command": "git diff --stat", "command_source": "unifiedExecStartup",
+                    "command_actions": [["type": "unknown", "command": "git diff --stat"]],
+                ], error: index == 0)
+            }
             else if index < 23 { tool("Edit", input: ["file_path": "/workspace/ChatView.swift"]) }
             else { tool("exec", input: ["code": "await tools.exec_command({cmd: 'swift test'})"]) }
         }

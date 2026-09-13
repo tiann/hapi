@@ -1,6 +1,10 @@
 # HAPI CLI Runner: Control Flow and Lifecycle
 
-The runner is a persistent background process that manages HAPI sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
+The runner is a persistent background process that starts and manages HAPI
+sessions from web/phone. After you update the CLI, it can restart itself onto
+the new binary; it does not download or install updates.
+
+Source paths below are relative to `cli/` unless prefixed with another package.
 
 ## 1. Runner Lifecycle
 
@@ -9,8 +13,8 @@ The runner is a persistent background process that manages HAPI sessions, enable
 Command: `hapi runner start`
 
 Control Flow:
-1. `src/index.ts` receives `runner start` command
-2. Spawns detached process via `spawnHappyCLI(['runner', 'start-sync'], { detached: true })`
+1. `src/commands/runner.ts` handles `runner start`, stopping any existing runner first so new flags/environment take effect
+2. Spawns detached `runner start-sync`, forwarding configured workspace roots
 3. New process calls `startRunner()` from `src/runner/run.ts`
 4. `startRunner()` performs startup:
    - Sets up shutdown promise and handlers (SIGINT, SIGTERM, uncaughtException, unhandledRejection)
@@ -19,8 +23,8 @@ Control Flow:
    - If same version running: exits with "Runner already running"
    - Lock acquisition: `acquireRunnerLock()` creates exclusive lock file to prevent multiple runners
    - Direct-connect setup: `authAndSetupMachineIfNeeded()` ensures `CLI_API_TOKEN` is set and `machineId` exists
-   - State persistence: writes PID, version, HTTP port, mtime to runner.state.json
    - HTTP server: starts Fastify on random port for local CLI control (list, stop, spawn)
+   - State persistence: writes PID, version, HTTP port, mtime to runner.state.json
    - WebSocket: establishes persistent connection to backend via `ApiMachineClient`
    - RPC registration: exposes `spawn-happy-session`, `stop-session`, `stop-runner` handlers
    - Heartbeat loop: every 60s (or `HAPI_RUNNER_HEARTBEAT_INTERVAL`) checks for version updates, prunes dead sessions, verifies PID ownership
@@ -40,16 +44,17 @@ Control Flow:
 
 ### Version Detection & Auto-Update
 
-The runner detects when CLI binary changes (e.g., after `npm upgrade hapi`):
+The runner detects when the CLI binary changes (e.g., after `npm update -g @twsxtd/hapi`):
 1. At startup, records `startedWithCliMtimeMs` (file modification time of CLI binary)
 2. Heartbeat compares current CLI mtime with recorded mtime via `getInstalledCliMtimeMs()`
-3. If mtime changed:
-   - Clears heartbeat interval
-   - Spawns new runner via `spawnHappyCLI(['runner', 'start'])`
-   - Waits 10 seconds to be killed by new runner
-4. New runner starts, sees old runner running with different mtime
-5. New runner calls `stopRunner()` which tries HTTP `/stop`, falls back to SIGKILL
-6. New runner takes over
+3. Replays the original runner arguments (including workspace roots), marking the replacement as an authorized handoff child
+4. Releases the lock and waits up to 30 seconds for a different live runner PID in the state file
+5. On confirmation, the old runner exits. On failure, it tries to reacquire the lock and stays online for a later retry; it exits if another process holds the lock
+
+`HAPI_DISABLE_VERSION_HANDOFF=1` disables this automatic replacement, not
+the rest of the heartbeat. A foreground supervisor should run
+`hapi runner start-sync`; advertise `HAPI_RUNNER_SUPERVISED=1` only when it
+will restart the process after exit.
 
 ### Heartbeat System
 
@@ -64,8 +69,11 @@ Every 60 seconds (configurable via `HAPI_RUNNER_HEARTBEAT_INTERVAL`):
 
 Command: `hapi runner stop`
 
+This stops the runner, not its detached agent sessions. Use `stop-session`
+to stop an individual session, or `doctor clean` for broader process cleanup.
+
 Control Flow:
-1. `stopRunner()` in `controlClient.ts` reads runner.state.json
+1. `stopRunner()` in `controlClient.ts` reads runner.state.json and verifies the PID still belongs to a HAPI runner before contacting or signaling it
 2. Attempts graceful shutdown via HTTP POST to `/stop`
 3. Runner receives request, triggers shutdown with source `hapi-cli`
 4. `cleanupAndShutdown()` executes:
@@ -78,12 +86,16 @@ Control Flow:
 
 ## 2. Multi-Agent Support
 
-The runner supports spawning sessions with different AI agents:
+The runner supports the [current agent catalog](../../../docs/guide/agents.md).
+If a spawn request omits `agent`, its fallback is still Claude; this is
+separate from the interactive `hapi` picker, which waits for your choice
+instead of launching Claude implicitly.
+Examples of agent authentication:
 
 | Agent | Command | Token Environment |
 |-------|---------|-------------------|
-| `claude` (default) | `hapi claude` | `CLAUDE_CODE_OAUTH_TOKEN` |
-| `codex` | `hapi codex` | `CODEX_HOME` (temp directory with `auth.json` and a copy of user `config.toml`) |
+| `claude` | `hapi claude` | Agent's existing login, or supplied `CLAUDE_CODE_OAUTH_TOKEN` |
+| `codex` | `hapi codex` | Existing Codex home; a supplied token gets a temporary `CODEX_HOME` with `auth.json` and a copy of user `config.toml` |
 | `grok` | `hapi grok` | Grok CLI login or `XAI_API_KEY` |
 | `opencode` | `hapi opencode` | OpenCode config (no token injection) |
 
@@ -103,11 +115,11 @@ Initiated by mobile app via backend RPC:
 1. Backend forwards RPC `spawn-happy-session` to runner via WebSocket
 2. `ApiMachineClient` invokes `spawnSession()` handler
 3. `spawnSession()`:
-   - Validates/creates directory (with approval flow)
+   - Checks agent availability and workspace-root boundaries, then validates/creates the directory
    - Configures agent-specific token environment
    - Spawns detached HAPI process with `--hapi-starting-mode remote --started-by runner`
    - Adds to `pidToTrackedSession` map
-   - Sets up 15-second awaiter for session webhook
+   - Waits for the session-start webhook (15 seconds by default; `HAPI_RUNNER_WEBHOOK_TIMEOUT_MS` overrides)
 4. New HAPI process:
    - Creates session with backend, receives `happySessionId`
    - Calls `notifyRunnerSessionStarted()` to POST to runner's `/session-started`
@@ -116,9 +128,9 @@ Initiated by mobile app via backend RPC:
 
 ### Terminal-Spawned Sessions
 
-User runs `hapi` directly:
-1. CLI auto-starts runner if configured
-2. HAPI process calls `notifyRunnerSessionStarted()`
+User starts an agent from the terminal:
+1. Session bootstrap registers with the hub; a runner is not required for terminal use
+2. HAPI process calls `notifyRunnerSessionStarted()` if it can reach the local runner control server
 3. Runner receives webhook, creates `TrackedSession` with `startedBy: 'hapi directly - likely by user from terminal'`
 4. Session tracked for health monitoring
 
@@ -137,9 +149,9 @@ When spawning a session, directory handling:
 ### Session Termination
 
 Via RPC `stop-session` or HTTP `/stop-session`:
-1. `stopSession()` finds session by `happySessionId` or `PID-{pid}` format
-2. Sends termination request via `killProcessByChildProcess()` or `killProcess()` (Windows uses `taskkill /T`)
-3. `on('exit')` handler removes from tracking map
+1. `stopSession()` locates the session, including persisted resume-process records
+2. Stops its process tree and verifies exit; shared Codex uses a root-scoped stop so sibling conversations are not killed
+3. Returns `stopped`, `already_gone`, or `still_alive`; uncertainty is not reported as successful termination
 
 ## 4. HTTP Control Server (Fastify)
 
@@ -183,8 +195,10 @@ Terminates a specific session.
 ```
 **Response (200):**
 ```json
-{ "success": true }
+{ "status": "stopped" }
 ```
+
+`status` is `stopped`, `already_gone`, or `still_alive`.
 
 #### POST `/spawn-session`
 Creates a new session.
@@ -259,21 +273,23 @@ Graceful runner shutdown.
   - `stop-session` - stop session by ID
   - `stop-runner` - request shutdown
 
-All data is plain JSON over TLS; authentication is `CLI_API_TOKEN` (no end-to-end encryption).
+Application payloads are plain JSON authenticated with `CLI_API_TOKEN`.
+Transport protection depends on the hub URL: use HTTPS for remote access;
+the built-in network relay protects traffic with WireGuard + TLS.
 
 ## 7. Process Discovery and Cleanup
 
 ### Doctor Command
 
-`hapi doctor` uses `ps aux | grep` to find all HAPI processes:
-- Production: matches `hapi` binary, `happy-coder`
+`hapi doctor` uses `ps-list` to find HAPI processes:
+- Production: matches `hapi` / `hapi.exe`
 - Development: matches `src/index.ts` (run via `bun`)
 - Categorizes by command args: runner, runner-spawned, user-session, doctor
 
 ### Clean Runaway Processes
 
 `hapi doctor clean`:
-1. `findRunawayHappyProcesses()` filters for likely orphans
+1. `findRunawayHappyProcesses()` selects runner and runner-spawned process categories (not only proven orphans); use with care
 2. `killRunawayHappyProcesses()`:
    - Sends SIGTERM
    - Waits 1 second
@@ -282,9 +298,10 @@ All data is plain JSON over TLS; authentication is `CLI_API_TOKEN` (no end-to-en
 ## 8. Integration Testing
 
 ### Test Environment
-- Requires `.env.integration-test`
-- Uses local hapi-hub (http://localhost:3006)
-- Separate `~/.hapi-dev-test` home directory
+- Run `bun run test:cli:integration` from the repo root (separate serial Vitest project)
+- Global setup starts an isolated hub on a free loopback port, with a temporary home/database and generated token
+- No `.env.integration-test` or running user hub is required
+- Real detached process trees are owned and cleaned up by the test harness; stress coverage is opt-in via `HAPI_RUN_STRESS_TESTS=true`
 
 ### Key Test Scenarios
 - Session listing, spawning, stopping
@@ -303,6 +320,8 @@ All data is plain JSON over TLS; authentication is `CLI_API_TOKEN` (no end-to-en
 > and authentication uses `CLI_API_TOKEN` (REST `Authorization: Bearer ...` + Socket.IO `handshake.auth.token`).
 
 ## Data Structure (Similar to Session's metadata + agentState)
+
+Simplified excerpts; the complete wire schemas live in `shared/src/schemas.ts`.
 
 ```typescript
 // Static machine information (rarely changes)
@@ -328,10 +347,9 @@ interface RunnerState {
 
 ## 1. CLI Startup Phase
 
-Checks if machine ID exists in settings:
-- If not: creates ID locally only (so sessions can reference it)
-- Does NOT create machine on hub - that's runner's job
-- CLI doesn't manage machine details - all API & schema live in runner subpackage
+Authentication/bootstrap ensures a machine ID exists in settings. Session
+bootstrap also creates/loads that machine on the hub with its metadata;
+the runner supplies live runner state, heartbeats, and machine-scoped RPCs.
 
 ## 2. Runner Startup - Initial Registration
 
@@ -457,9 +475,14 @@ RPC method naming (machine-scoped) uses a `${machineId}:` prefix, for example:
 
 ## 6. Server Broadcasts to Clients
 
+The Socket.IO examples below are for CLI machine subscribers. Web/native
+clients instead receive `machine-updated` via SSE and refetch `/api/machines`
+when the event has no machine data. Do not feed the CLI `update` envelope
+directly into a native client's SSE decoder.
+
 ### When runner state changes:
 ```json
-// Server -> Mobile/Web clients
+// Server -> CLI machine subscribers
 socket.emit('update', {
   "id": "update-id-xyz",
   "seq": 456,
@@ -527,7 +550,7 @@ Authorization: Bearer <CLI_API_TOKEN>
    - `runnerStateVersion`: For runner state updates
    - Allows concurrent updates without conflicts
 
-3. **Security**: No end-to-end encryption (TLS only); CLI auth is a shared secret `CLI_API_TOKEN`
+3. **Security**: Plain JSON at the application layer; remote transport uses HTTPS or the encrypted network relay. CLI auth is `CLI_API_TOKEN`
 
 4. **Update Events**: Server broadcasts use same pattern as sessions:
    - `t: 'update-machine'` with optional metadata and/or runnerState fields
@@ -537,15 +560,8 @@ Authorization: Bearer <CLI_API_TOKEN>
 
 ---
 
-# Improvements
+# Operational notes
 
-- runner.state.json file is getting hard removed when runner exits or is stopped. We should keep it around and have 'state' field and 'stateReason' field that will explain why the runner is in that state
-- If the file is not found - we assume the runner was never started or was cleaned out by the user or doctor
-- If the file is found and corrupted - we should try to upgrade it to the latest version? or simply remove it if we have write access
-
-- posts helpers for runner do not return typed results
-- I don't like that runnerPost returns either response from runner or { error: ... }. We should have consistent envelope type
-
-- we loose track of children processes when runner exits / restarts - we should write them to the same state file? At least the pids should be there for doctor & cleanup
-
-- the runner control server binds to `127.0.0.1` on a random port; if we ever expose it beyond localhost, require an explicit auth token/header
+- Normal shutdown removes `runner.state.json`; its absence does not prove the runner has never run. Use logs for shutdown history.
+- Resume-spawn tracking persists separately in `runner.state.json.resume-processes.json`, with process-generation checks before recovery or termination. It is not a complete inventory of every terminal-started process.
+- The local control server binds to `127.0.0.1` on a random port. It has no remote authentication layer; do not expose it through a public proxy.

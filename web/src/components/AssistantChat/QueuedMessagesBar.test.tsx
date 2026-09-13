@@ -15,7 +15,7 @@ import {
 import { formatScheduledTime } from '@/lib/scheduledTime'
 import { clearQueuedEditRecovery, getQueuedEditRecovery } from '@/lib/queued-edit-recovery'
 
-type DeferredCancelResult = { status: 'cancelled' | 'invoked' }
+type DeferredCancelResult = { status: 'cancelled' | 'invoked' | 'busy'; localId?: string }
 
 const mocks = vi.hoisted(() => ({
     composerText: '',
@@ -72,8 +72,10 @@ vi.mock('@/lib/toast-context', () => ({
 function makeQueuedMessage(
     scheduledAt: number | null = null,
     id = 'server-message-id',
-    withAttachments = false,
+    options: boolean | Partial<DecryptedMessage> = false,
 ): DecryptedMessage {
+    const withAttachments = typeof options === 'boolean' ? options : false
+    const overrides = typeof options === 'boolean' ? {} : options
     return {
         id,
         localId: `local-${id}`,
@@ -98,6 +100,7 @@ function makeQueuedMessage(
                 } : {}),
             },
         },
+        ...overrides,
     } as unknown as DecryptedMessage
 }
 
@@ -497,6 +500,53 @@ describe('QueuedMessagesBar edit restore', () => {
         expect(onEdit).not.toHaveBeenCalled()
         expect(mocks.addToast).toHaveBeenCalledWith({
             title: 'queuedMessages.editAlreadyInvoked',
+            body: '',
+            sessionId: 'session-1',
+            url: window.location.href,
+        })
+    })
+
+    it('does not prefill when a normal cancel returns busy (steer still may deliver)', async () => {
+        const { onEdit } = renderQueuedMessage()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        await resolveCancel({ status: 'busy', localId: 'local-server-message-id' })
+
+        expect(mocks.composerSetText).not.toHaveBeenCalled()
+        expect(onEdit).not.toHaveBeenCalled()
+        expect(mocks.addToast).not.toHaveBeenCalled()
+    })
+
+    it('does not prefill when editing an indeterminate row whose cancel returns busy', async () => {
+        // Hub may still be mid-dispatch (serialized as indeterminate). Prefilling
+        // would invite a duplicate send if the original later lands.
+        mocks.messageWindowState = {
+            messages: [makeQueuedMessage(null, 'server-message-id', { deliveryState: 'indeterminate' })],
+        }
+        const onEdit = vi.fn()
+        const queryClient = new QueryClient({
+            defaultOptions: { mutations: { retry: false } },
+        })
+        render(
+            <QueryClientProvider client={queryClient}>
+                <QueuedMessagesBar
+                    sessionId="session-1"
+                    api={null}
+                    pendingSchedule={null}
+                    pendingScheduleRevision={0}
+                    onEdit={onEdit}
+                />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByText('queuedMessages.steerOutcomeUnknown')).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        await resolveCancel({ status: 'busy', localId: 'local-server-message-id' })
+
+        expect(mocks.composerSetText).not.toHaveBeenCalled()
+        expect(onEdit).not.toHaveBeenCalled()
+        expect(mocks.addToast).toHaveBeenCalledWith({
+            title: 'queuedMessages.editBusyNotRestored',
             body: '',
             sessionId: 'session-1',
             url: window.location.href,

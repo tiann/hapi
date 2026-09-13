@@ -145,6 +145,7 @@ data class ChatUiState(
     val historyVersion: Long = 0,
     val messagesVersion: Long = 0,
     val requiresLatestReset: Boolean = false,
+    val processSteps: Map<String, Int> = emptyMap(),
 )
 
 /** Composer bar state (M3a). */
@@ -365,6 +366,29 @@ class ChatViewModel(
     private var historyGate: AtomicBoolean? = null
     private var historyDemand = false
     private var readerFollowsTail = true
+    private var transcriptVisible = true
+    internal val inspection = ChatInspectionState()
+    private val transcriptProjection = TranscriptProjection()
+    val reconnecting: StateFlow<Boolean> = sseEngine.reconnecting(subscriptionKey)
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    @MainThread
+    internal fun setTranscriptVisible(visible: Boolean) {
+        transcriptVisible = visible
+        if (!visible) {
+            historyDemand = false
+            cancelHistory()
+        }
+    }
+
+    @MainThread
+    internal fun beginInspection() {
+        jumpJob?.cancel()
+        jumpJob = null
+        mutableJumpingLatest.value = false
+        readingViewportChanged(followsTail = false, needsOlder = false)
+        setTranscriptVisible(false)
+    }
     private var historyPumpScheduled = false
     private var lastHistoryLayout: Pair<Long, Boolean>? = null
     private var lastHistoryEpoch: Long? = null
@@ -515,7 +539,7 @@ class ChatViewModel(
 
     // ------------------------------------------------------------ lifecycle --
 
-    /** Idempotent; call from the screen's composition, paired with [stop]. */
+    /** Idempotent; the conversation host starts this, the holder calls [stop] on exit. */
     @MainThread
     fun start() {
         if (started) return
@@ -623,6 +647,7 @@ class ChatViewModel(
 
     /** Initial-load error state → try again (detail + tail). */
     fun retry() {
+        sseEngine.requestReconnect(subscriptionKey)
         scope.launch {
             loadDetail()
             windowStore.value?.let { store -> runCatching { store.syncTail(ensureAfterCurrent = true) } }
@@ -639,6 +664,7 @@ class ChatViewModel(
 
     @MainThread
     fun readingViewportChanged(followsTail: Boolean, needsOlder: Boolean) {
+        if (!transcriptVisible) return
         val changed = readerFollowsTail != followsTail
         readerFollowsTail = followsTail
         historyDemand = needsOlder
@@ -687,7 +713,7 @@ class ChatViewModel(
     private fun pumpHistory() {
         val store = windowStore.value ?: return
         val window = store.state.value
-        if (!started || mutableJumpingLatest.value || !historyDemand || !window.hasMore ||
+        if (!started || !transcriptVisible || mutableJumpingLatest.value || !historyDemand || !window.hasMore ||
             window.isSyncingTail || window.isLoadingMore || olderJob != null ||
             mutableHistoryPaging.value.phase != ChatHistoryPagingState.Phase.Idle) return
         val request = mutableHistoryPaging.value.begin()
@@ -1669,6 +1695,7 @@ class ChatViewModel(
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
         )
         previousGroups = visibleBlocks.filterIsInstance<ToolGroupBlock>()
+        inspection.update(visibleBlocks, window.epoch)
         val sources = visibleBlocks.mapNotNull { block ->
             when (block) {
                 is AgentTextBlock -> block.text
@@ -1692,7 +1719,9 @@ class ChatViewModel(
             header = buildHeader(inputs),
             flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
-            blocks = visibleBlocks,
+            blocks = transcriptProjection.project(visibleBlocks),
+            processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
+                .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,
             hasMore = window.hasMore,
             isLoadingOlder = window.isLoadingMore,

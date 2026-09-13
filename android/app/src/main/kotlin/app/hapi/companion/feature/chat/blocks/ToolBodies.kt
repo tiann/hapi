@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -67,7 +68,7 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
             ToolInputSection(tool)
             ToolResultSection(tool)
         }
-        var sourceExpanded by remember(tool.id) { mutableStateOf(false) }
+        var sourceExpanded by rememberSaveable(tool.id) { mutableStateOf(false) }
         if (tool.input != null || tool.result != null || answers != null) {
             TextButton(onClick = { sourceExpanded = !sourceExpanded }) {
                 Text(stringResource(R.string.files_viewer_source))
@@ -173,7 +174,7 @@ private fun ToolInputSection(tool: ChatToolCall) {
 
         name == "CodexDiff" -> {
             val unified = getInputString(input, "unified_diff")
-            val files = remember(unified) { unified?.takeIf { it.length <= TOOL_TEXT_PAGE_SIZE }?.let(::tryParseDiff) }
+            val files = remember(unified) { unified?.takeIf { fitsToolPage(it) }?.let(::tryParseDiff) }
             if (files != null) {
                 files.forEach { DiffView(file = it) }
             } else if (unified != null) {
@@ -288,7 +289,6 @@ private fun ToolResultSection(tool: ChatToolCall) {
     if (result is JsonNull) return
     val isError = tool.state == "error"
     val rendering by produceState<ResultRendering?>(null, tool) {
-        value = null
         value = withContext(Dispatchers.Default) { resultRendering(tool) }
     }
 
@@ -317,10 +317,10 @@ internal fun resultRendering(tool: ChatToolCall): ResultRendering? {
         if (text.isBlank()) return null
         return when (val style = toolResultStyle(tool)) {
             is ToolResultStyle.Code -> ResultRendering.Code(text, style.language)
-            ToolResultStyle.Markdown -> if (text.length <= TOOL_TEXT_PAGE_SIZE) ResultRendering.Prose(text)
+            ToolResultStyle.Markdown -> if (fitsToolPage(text)) ResultRendering.Prose(text)
                 else ResultRendering.Code(text, "markdown")
             ToolResultStyle.Terminal -> {
-                if (tool.state != "error" && text.length <= TOOL_TEXT_PAGE_SIZE) {
+                if (tool.state != "error" && fitsToolPage(text)) {
                     tryParseDiff(text)?.let { return ResultRendering.Diffs(it) }
                 }
                 ResultRendering.Terminal(text)

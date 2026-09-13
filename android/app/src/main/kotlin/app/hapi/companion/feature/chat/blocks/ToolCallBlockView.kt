@@ -1,19 +1,14 @@
 package app.hapi.companion.feature.chat.blocks
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -33,11 +28,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
-import app.hapi.companion.feature.chat.ChatBlockCard
 import app.hapi.companion.feature.chat.LocalChatInteractions
-import app.hapi.companion.feature.chat.toolCardPresentation
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
@@ -48,59 +40,36 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * One tool invocation (web `ToolCard`): collapsed header row — icon glyph,
- * title, subtitle, status — expanding to the per-tool body ([ToolCallBody]),
- * the read-only permission state, and nested children (sidechain transcript).
- * Plan proposals and pending permissions start expanded. Only actual pending
- * permissions carry the "awaiting approval" banner.
+ * Conversation summary; ordinary payloads and sidechains live in screen-owned
+ * destinations. Plan proposals start expanded inline before approval controls
+ * and retain explicit folding across input updates.
  */
 @Composable
-fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifier = Modifier) {
+fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifier = Modifier, processSteps: Int? = null) {
     val tool = block.tool
     val resources = LocalContext.current.resources
-    val presentation = remember(tool, basePath, resources) { toolCardPresentation(tool, basePath, resources) }
-    val pendingPermission = tool.permission?.status == "pending"
+    val presentation = remember(tool.name, tool.input, tool.description, basePath, resources) {
+        app.hapi.companion.feature.chat.toolSummaryPresentation(tool, basePath, resources)
+    }
+    val inspection = app.hapi.companion.feature.chat.LocalChatInspection.current
+    val steps = processSteps ?: block.children.size.takeIf { app.hapi.companion.feature.chat.opensToolProcess(block) }
     val planProposal = isPlanProposalTool(tool.name)
     // An output-first placeholder can acquire its real tool name later. Open a
     // newly recognized plan, but retain explicit folding across input updates.
-    var expanded by rememberSaveable(block.id, planProposal) { mutableStateOf(pendingPermission || planProposal) }
-    val colors = MaterialTheme.hapi
+    var expanded by rememberSaveable(block.id, planProposal) { mutableStateOf(planProposal) }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = modifier.fillMaxWidth().animateContentSize(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(text = presentation.icon, fontSize = 14.sp)
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = presentation.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    presentation.subtitle?.let { subtitle ->
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.hint,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                ToolStatusIndicator(tool.state)
-            }
+            ToolSummaryRow(
+                presentation, tool.state, expanded = expanded.takeIf { planProposal },
+                onClick = {
+                    if (planProposal) expanded = !expanded else inspection?.openTool(block.id)
+                },
+            )
 
             if (planProposal && expanded) {
                 ToolCallBody(
@@ -113,89 +82,66 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
             tool.permission?.let { permission ->
                 val interactions = LocalChatInteractions.current
                 if (permission.status == "pending" && interactions != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
+                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f)) {
                         Column {
                             Text(
-                                text = stringResource(R.string.chat_tool_awaiting_approval),
+                                stringResource(R.string.chat_tool_awaiting_approval),
                                 style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.padding(start = 10.dp, top = 6.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                             )
+                            androidx.compose.material3.TextButton(onClick = { inspection?.openTool(block.id) }) {
+                                Text(stringResource(R.string.chat_view_full_input))
+                            }
                             PendingPermissionFooter(
-                                tool = tool,
-                                requestId = permission.id,
-                                flavor = interactions.flavor,
+                                tool = tool, requestId = permission.id, flavor = interactions.flavor,
                                 override = interactions.permissionOverrides[permission.id],
                                 onAction = interactions.resolvePermission,
                             )
                         }
                     }
-                } else {
-                    PermissionStateRow(permission)
+                } else PermissionStateRow(permission)
+            }
+            if (steps != null) {
+                androidx.compose.material3.TextButton(onClick = { inspection?.openTool(block.id) }) {
+                    Text(stringResource(R.string.chat_view_process, steps))
                 }
-            }
-
-            if (!planProposal && expanded) {
-                ToolCallBody(
-                    tool = tool,
-                    basePath = basePath,
-                    modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
-                )
-            }
-
-            if (block.children.isNotEmpty()) {
-                ChildrenColumn(block, basePath, expanded)
             }
         }
     }
 }
 
-/** Sidechain children, nested behind an indent rail; collapsed to a count row. */
 @Composable
-private fun ChildrenColumn(block: ToolCallBlock, basePath: String?, parentExpanded: Boolean) {
-    var childrenOpen by rememberSaveable("children:" + block.id) { mutableStateOf(parentExpanded) }
-    val colors = MaterialTheme.hapi
-
-    val stepsLabel = if (block.children.size == 1) {
-        stringResource(R.string.chat_agent_steps_one)
-    } else {
-        stringResource(R.string.chat_agent_steps_many, block.children.size)
-    }
-    Text(
-        text = (if (childrenOpen) "▾ " else "▸ ") + stepsLabel,
-        style = MaterialTheme.typography.labelMedium,
-        color = colors.hint,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { childrenOpen = !childrenOpen }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    )
-    if (!childrenOpen) return
-
-    Row(
-        modifier = Modifier
-            .padding(start = 12.dp, end = 8.dp, bottom = 10.dp)
-            .height(IntrinsicSize.Min),
+internal fun ToolSummaryRow(
+    presentation: app.hapi.companion.feature.chat.ToolCardPresentation,
+    state: String,
+    expanded: Boolean? = null,
+    onClick: () -> Unit,
+) {
+    val stacked = androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.5f
+    Column(
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .then(Modifier.heightIn(min = 48.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        Spacer(
-            modifier = Modifier
-                .width(2.dp)
-                .fillMaxHeight()
-                .clip(RoundedCornerShape(1.dp))
-                .background(colors.divider),
-        )
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            block.children.forEach { child ->
-                ChatBlockCard(block = child, basePath = basePath)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(presentation.icon, modifier = Modifier.padding(end = 8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(presentation.title, style = MaterialTheme.typography.bodyMedium, maxLines = if (stacked) 2 else 1, overflow = TextOverflow.Ellipsis)
+                presentation.subtitle?.let {
+                    Text(it, style = app.hapi.companion.ui.theme.HapiTypography.caption,
+                        color = MaterialTheme.hapi.hint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
+            if (!stacked) SummaryStatus(state, expanded)
         }
+        if (stacked) SummaryStatus(state, expanded)
+    }
+}
+
+@Composable
+private fun SummaryStatus(state: String, expanded: Boolean?) {
+    Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (state != ToolState.COMPLETED) ToolStatusIndicator(state)
+        Text(if (expanded == true) "⌄" else "›", modifier = Modifier.padding(start = 8.dp), color = MaterialTheme.hapi.hint)
     }
 }
 

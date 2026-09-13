@@ -27,12 +27,13 @@ the command line:
 xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 
-# Package tests (also runs on macOS, the package is pure Foundation)
+# Package tests (macOS; protocol/client plus UI package tests)
 swift test --package-path ios/Packages/HapiKit
 ```
 
-CI runs both on `macos-15` via `.github/workflows/ios.yml` (triggered by
-changes under `ios/**` and `shared/fixtures/**`).
+CI runs package tests, the simulator build, and app-hosted transcript tests
+on `macos-15` via `.github/workflows/ios.yml` (triggered by changes under
+`ios/**` and `shared/fixtures/**`).
 
 ### Localization catalog
 
@@ -238,7 +239,7 @@ ios/
   Hapi.xcodeproj/        Hand-rolled minimal project (objectVersion 77).
   Hapi/                  App target sources. This is an Xcode 16 "synchronized
                          folder": add files here and they join the target
-                         without touching project.pbxproj. As of M2a:
+                         without touching project.pbxproj. Main areas:
                            Models/    AppModel (pairing state machine, hub
                                       switching, deep-link routing, scene
                                       phase) + HubSession (per-active-hub
@@ -269,7 +270,7 @@ ios/
                                       pinned section, applied-filter summary,
                                       pull-to-refresh, long-press
                                       pin/archive; row taps push the chat),
-                                      Chat/ (M2f read-only chat: ChatModel —
+                                      Chat/ (interactive chat: ChatModel —
                                       window state + session detail →
                                       ChatPipeline off-main, ~100 ms
                                       coalesced, last-seen stamping, header
@@ -375,7 +376,7 @@ ios/
                                       preferredColorScheme; system follows
                                       the OS, explicit modes override, OLED
                                       = dark on pure black); Language —
-                                      persist-only until the M5 i18n pass;
+                                      system/English/简体中文; applies on relaunch;
                                       owner-gated (JWT ns == "default",
                                       fail closed) Usage dashboard — range
                                       7d/30d/all, stat tiles, Swift Charts
@@ -862,9 +863,9 @@ for push entitlements:
    actions — can be exercised with `xcrun simctl push` using a payload whose
    `hapi.e` was produced with the device's registered key.
 
-## Milestones (track A of the native-clients plan)
+## Milestone history (track A of the native-clients plan)
 
-- **M0** — this scaffold: project, HapiKit package, CI, one passing test.
+- **M0** — initial scaffold: project, HapiKit package, CI, one passing test.
 - **M1** — foundations: HapiProtocol wire models + catalogs; APIClient + auth
   (Keychain, single-flight 401 refresh); SSEClient + reconnect state machine +
   versioned patch application (incl. gzip streaming check); pairing flow
