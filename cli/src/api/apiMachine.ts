@@ -29,6 +29,7 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { registerWorkspaceFileHandlers } from '../modules/common/workspaceFileHandlers'
 import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
@@ -122,6 +123,10 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+        registerWorkspaceFileHandlers(this.rpcHandlerManager, {
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+        })
 
         // Only the machine daemon answers `<machineId>:listAgyModels`, so it is
         // the one process that can tell the hub its catalog moved.
