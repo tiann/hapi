@@ -542,35 +542,65 @@ function readMcpSessionId(req: IncomingMessage): string | undefined {
 export async function startHappyServer(client: ApiSessionClient, options: StartHappyServerOptions = {}) {
     const emitTitleSummary = options.emitTitleSummary ?? true;
     const enableChangeTitle = options.enableChangeTitle ?? true;
-    const enableLinkPr = options.enableLinkPr ?? await fetchGithubPrAwarenessEnabled();
+    // Explicit option pins the catalog for the process lifetime (tests / stdio
+    // --tools). When omitted, re-fetch hub awareness for each new MCP session
+    // and invalidate existing HTTP sessions if the flag flips mid-run.
+    const linkPrPinned = options.enableLinkPr;
+    const initialEnableLinkPr = linkPrPinned ?? await fetchGithubPrAwarenessEnabled();
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
+    const linkPrBySession = new Map<string, boolean>();
 
-    const createMcpTransport = () => {
+    const resolveEnableLinkPr = async (): Promise<boolean> =>
+        linkPrPinned ?? await fetchGithubPrAwarenessEnabled();
+
+    const disposeSession = async (sessionId: string): Promise<void> => {
+        transports.delete(sessionId);
+        linkPrBySession.delete(sessionId);
+        const server = mcps.get(sessionId);
+        mcps.delete(sessionId);
+        await server?.close();
+    };
+
+    const createMcpTransport = async (): Promise<StreamableHTTPServerTransport> => {
+        const enableLinkPr = await resolveEnableLinkPr();
         const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, enableLinkPr, options.skillLookup);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
                 transports.set(sessionId, transport);
                 mcps.set(sessionId, mcp);
+                linkPrBySession.set(sessionId, enableLinkPr);
             },
             onsessionclosed: (sessionId) => {
-                transports.delete(sessionId);
-                const server = mcps.get(sessionId);
-                mcps.delete(sessionId);
-                void server?.close();
+                void disposeSession(sessionId);
             },
         });
-        void mcp.connect(transport);
+        await mcp.connect(transport);
         return transport;
     };
 
     const server = createServer(async (req, res) => {
         try {
             const sessionId = readMcpSessionId(req);
-            const transport = sessionId
-                ? transports.get(sessionId)
-                : createMcpTransport();
+            let transport: StreamableHTTPServerTransport | undefined;
+            if (sessionId) {
+                transport = transports.get(sessionId);
+                if (transport) {
+                    const current = await resolveEnableLinkPr();
+                    if (linkPrBySession.get(sessionId) !== current) {
+                        // Awareness flipped — drop the stale catalog so the
+                        // client re-inits and listTools sees the new set.
+                        await disposeSession(sessionId);
+                        if (!res.headersSent) {
+                            res.writeHead(404).end();
+                        }
+                        return;
+                    }
+                }
+            } else {
+                transport = await createMcpTransport();
+            }
 
             if (!transport) {
                 if (!res.headersSent) {
@@ -603,7 +633,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
 
     const toolNames = [
         ...(enableChangeTitle ? ['change_title'] : []),
-        ...(enableLinkPr ? ['link_pr'] : []),
+        ...(initialEnableLinkPr ? ['link_pr'] : []),
         'display_image',
         'display_video',
         'display_media',
@@ -625,6 +655,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             }
             transports.clear();
             mcps.clear();
+            linkPrBySession.clear();
             server.close();
         }
     };

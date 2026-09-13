@@ -6,13 +6,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
 import { upsertSessionExternalRef } from '@/api/upsertSessionExternalRef'
+import { fetchGithubPrAwarenessEnabled } from '@/api/fetchGithubPrAwareness'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 vi.mock('@/api/upsertSessionExternalRef', () => ({
     upsertSessionExternalRef: vi.fn()
 }))
 
+vi.mock('@/api/fetchGithubPrAwareness', () => ({
+    fetchGithubPrAwarenessEnabled: vi.fn(async () => false)
+}))
+
 const mockUpsertSessionExternalRef = vi.mocked(upsertSessionExternalRef)
+const mockFetchGithubPrAwarenessEnabled = vi.mocked(fetchGithubPrAwarenessEnabled)
 
 type ToolResult = {
     content?: Array<{ type: string; text?: string }>
@@ -406,6 +412,48 @@ describe('startHappyServer link_pr', () => {
         expect(result.content?.[0]?.text).toContain('at most 32 external refs')
         expect(mockUpsertSessionExternalRef).toHaveBeenCalledOnce()
         expect(sessionClient.flushMetadata).not.toHaveBeenCalled()
+    })
+})
+
+describe('startHappyServer dynamic link_pr awareness', () => {
+    let stopServer: (() => void) | null
+    let mcp: Client | null
+
+    afterEach(async () => {
+        await mcp?.close()
+        stopServer?.()
+        mcp = null
+        stopServer = null
+        mockFetchGithubPrAwarenessEnabled.mockReset()
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+    })
+
+    it('exposes link_pr on a fresh MCP connect after awareness flips on', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const sessionClient = {
+            sessionId: 'sess-awareness',
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        // No enableLinkPr pin — catalog follows hub fetches.
+        const server = await startHappyServer(sessionClient, { enableChangeTitle: false })
+        stopServer = server.stop
+        expect(server.toolNames).not.toContain('link_pr')
+
+        mcp = new Client({ name: 'hapi-awareness-off', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        const offTools = await mcp.listTools()
+        expect(offTools.tools.map((tool) => tool.name)).not.toContain('link_pr')
+        await mcp.close()
+        mcp = null
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        mcp = new Client({ name: 'hapi-awareness-on', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        const onTools = await mcp.listTools()
+        expect(onTools.tools.map((tool) => tool.name)).toContain('link_pr')
     })
 })
 
