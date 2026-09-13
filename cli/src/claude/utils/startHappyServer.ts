@@ -65,7 +65,12 @@ function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
-    enableLinkPr: boolean,
+    /**
+     * `true`/`false` pin registration. `'dynamic'` always registers `link_pr`
+     * and re-checks hub awareness at call time so toggles do not require a
+     * transport rebuild (stdio bridge caches its HTTP MCP session).
+     */
+    enableLinkPr: boolean | 'dynamic',
     skillLookup: StartHappyServerOptions['skillLookup']
 ): McpServer {
     const handler = async (title: string) => {
@@ -205,7 +210,7 @@ function createHapiMcpServer(
         });
     }
 
-    if (enableLinkPr) {
+    if (enableLinkPr !== false) {
         const linkPrInputSchema: z.ZodTypeAny = z.object({
             url: z.string().optional().describe('GitHub PR URL (https://github.com/owner/repo/pull/N)'),
             repo: z.string().optional().describe('owner/repo slug when not passing url'),
@@ -218,6 +223,19 @@ function createHapiMcpServer(
             title: 'Link Pull Request',
             inputSchema: linkPrInputSchema,
         }, async (args: { url?: string; repo?: string; number?: number; role?: 'primary' | 'secondary' }) => {
+            if (enableLinkPr === 'dynamic') {
+                const awarenessEnabled = await fetchGithubPrAwarenessEnabled();
+                if (!awarenessEnabled) {
+                    return {
+                        content: [{
+                            type: 'text' as const,
+                            text: 'Failed to link PR: GitHub PR awareness is disabled in hub settings (Settings → General)',
+                        }],
+                        isError: true,
+                    };
+                }
+            }
+
             const raw = args.url?.trim()
                 || (args.repo && args.number ? `${args.repo}#${args.number}` : '')
             const parsed = parseGithubPrInput(raw)
@@ -542,65 +560,40 @@ function readMcpSessionId(req: IncomingMessage): string | undefined {
 export async function startHappyServer(client: ApiSessionClient, options: StartHappyServerOptions = {}) {
     const emitTitleSummary = options.emitTitleSummary ?? true;
     const enableChangeTitle = options.enableChangeTitle ?? true;
-    // Explicit option pins the catalog for the process lifetime (tests / stdio
-    // --tools). When omitted, re-fetch hub awareness for each new MCP session
-    // and invalidate existing HTTP sessions if the flag flips mid-run.
-    const linkPrPinned = options.enableLinkPr;
-    const initialEnableLinkPr = linkPrPinned ?? await fetchGithubPrAwarenessEnabled();
+    // Pin false/true for tests. Production omits the option → 'dynamic': always
+    // advertise link_pr and gate at call time so awareness toggles cannot
+    // destroy the stdio bridge's cached HTTP MCP session.
+    const linkPrMode: boolean | 'dynamic' = options.enableLinkPr === undefined
+        ? 'dynamic'
+        : options.enableLinkPr;
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
-    const linkPrBySession = new Map<string, boolean>();
 
-    const resolveEnableLinkPr = async (): Promise<boolean> =>
-        linkPrPinned ?? await fetchGithubPrAwarenessEnabled();
-
-    const disposeSession = async (sessionId: string): Promise<void> => {
-        transports.delete(sessionId);
-        linkPrBySession.delete(sessionId);
-        const server = mcps.get(sessionId);
-        mcps.delete(sessionId);
-        await server?.close();
-    };
-
-    const createMcpTransport = async (): Promise<StreamableHTTPServerTransport> => {
-        const enableLinkPr = await resolveEnableLinkPr();
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, enableLinkPr, options.skillLookup);
+    const createMcpTransport = () => {
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, linkPrMode, options.skillLookup);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
                 transports.set(sessionId, transport);
                 mcps.set(sessionId, mcp);
-                linkPrBySession.set(sessionId, enableLinkPr);
             },
             onsessionclosed: (sessionId) => {
-                void disposeSession(sessionId);
+                transports.delete(sessionId);
+                const server = mcps.get(sessionId);
+                mcps.delete(sessionId);
+                void server?.close();
             },
         });
-        await mcp.connect(transport);
+        void mcp.connect(transport);
         return transport;
     };
 
     const server = createServer(async (req, res) => {
         try {
             const sessionId = readMcpSessionId(req);
-            let transport: StreamableHTTPServerTransport | undefined;
-            if (sessionId) {
-                transport = transports.get(sessionId);
-                if (transport) {
-                    const current = await resolveEnableLinkPr();
-                    if (linkPrBySession.get(sessionId) !== current) {
-                        // Awareness flipped — drop the stale catalog so the
-                        // client re-inits and listTools sees the new set.
-                        await disposeSession(sessionId);
-                        if (!res.headersSent) {
-                            res.writeHead(404).end();
-                        }
-                        return;
-                    }
-                }
-            } else {
-                transport = await createMcpTransport();
-            }
+            const transport = sessionId
+                ? transports.get(sessionId)
+                : createMcpTransport();
 
             if (!transport) {
                 if (!res.headersSent) {
@@ -633,7 +626,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
 
     const toolNames = [
         ...(enableChangeTitle ? ['change_title'] : []),
-        ...(initialEnableLinkPr ? ['link_pr'] : []),
+        ...(linkPrMode !== false ? ['link_pr'] : []),
         'display_image',
         'display_video',
         'display_media',
@@ -655,7 +648,6 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             }
             transports.clear();
             mcps.clear();
-            linkPrBySession.clear();
             server.close();
         }
     };
