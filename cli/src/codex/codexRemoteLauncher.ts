@@ -3693,10 +3693,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             .catch((error) => {
                 logger.debug(`[Codex] mcpServerStatus/list failed: ${errorMessage(error)}`);
             });
-        await reserve.initialize();
-        this.usageTimer = setInterval(() => { void refreshUsage(); }, 60_000);
-        this.usageTimer.unref();
-
         let contextManagementConfig: CodexContextManagementConfig | undefined;
         try {
             const effectiveConfig = (await appServerClient.readConfig({
@@ -3903,7 +3899,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
                 const threadId = asString(resumeThread?.id) ?? resumeCandidate;
                 applyResolvedModel(resumeRecord?.model);
-                reserve.attach(threadId, resumeResponse);
                 publishCodexThreadContext(resumeResponse, threadParams, threadId);
                 this.currentThreadId = threadId;
                 this.conversationHistory.setThreadId(threadId);
@@ -3970,7 +3965,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
                     const threadId = asString(resumeThread?.id) ?? resumeCandidate;
                     applyResolvedModel(resumeRecord?.model);
-                    reserve.attach(threadId, resumeResponse);
                     publishCodexThreadContext(resumeResponse, threadParams, threadId);
                     this.currentThreadId = threadId;
                     this.conversationHistory.setThreadId(threadId);
@@ -4273,7 +4267,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             const responseThread = responseRecord ? asRecord(responseRecord.thread) : null;
                             threadId = asString(responseThread?.id) ?? resumeCandidate;
                             applyResolvedModel(responseRecord?.model);
-                            if (threadId) reserve.attach(threadId, response, shouldForkImportedSource ? resumeCandidate : undefined);
                             publishCodexThreadContext(response, threadParams, threadId);
                             logger.debug(shouldForkImportedSource
                                 ? `[Codex] Forked imported app-server thread ${resumeCandidate} -> ${threadId}`
