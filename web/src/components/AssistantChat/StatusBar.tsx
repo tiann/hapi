@@ -18,7 +18,6 @@ import {
     shouldShowReasoningStatusLabel
 } from '@/lib/codexStatusLabels'
 import { isFastServiceTier } from './codexFastMode'
-import { CodexUsage } from './CodexUsage'
 import { useTranslation } from '@/lib/use-translation'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 
@@ -303,9 +302,6 @@ export function StatusBar(props: {
                         {connectionStatus.text}
                     </span>
                 </div>
-                {props.agentFlavor === 'codex' && props.agentState?.codexUsage ? (
-                    <CodexUsage usage={props.agentState.codexUsage} />
-                ) : null}
                 {contextUsageLabel ? (
                     <Popover.Root>
                         <Popover.Trigger asChild>

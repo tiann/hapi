@@ -487,6 +487,10 @@ export class RpcGateway {
         ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResult
     }
 
+    async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ClearConversation, {}, 120_000) as { sessionId: string }
+    }
+
     async rewindConversation(
         sessionId: string,
         params: { messageLocalId: string }

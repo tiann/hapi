@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex 用量',
-  'codexUsage.ordinary': '常规用量',
-  'codexUsage.unknown': '未知',
-  'codexUsage.remaining': '剩余 {percent}%',
-  'codexUsage.window': '{minutes} 分钟窗口',
-  'codexUsage.resets': '重置时间 {time}',
-
   // Loading states
   'loading': '加载中…',
   'authorizing': '认证中…',
@@ -601,6 +594,7 @@ export default {
   'tool.question': '问题',
   'tool.selectOption': '请至少选择一个选项或输入答案。',
   'tool.waitingForApproval': '等待审批…',
+  'tool.resolved': '已在 Codex 中处理',
   'tool.canceled': '已取消',
   'tool.approvedForSession': '本会话已批准',
   'tool.aborted': '已中止',
@@ -674,6 +668,7 @@ export default {
   'composer.scheduleErrorTooFar': '最多只能定时 7 天。',
   'queuedMessages.scheduledFor': '定时发送: {time}',
   'queuedMessages.editAlreadyInvoked': '消息已发送，无法编辑',
+  'queuedMessages.editBusyNotRestored': '发送结果仍未确认，未恢复草稿（消息可能仍在发送中）',
   'queuedMessages.editCurrentDraftKept': '队列消息已取消，已保留当前草稿和定时设置。',
   'queuedMessages.steer': '立即插入当前回合',
   'queuedMessages.steerFailed': '插入失败，消息仍在队列中',

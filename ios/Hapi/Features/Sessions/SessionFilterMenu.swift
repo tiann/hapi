@@ -24,10 +24,10 @@ struct SessionFilterMenu: View {
                         // Native Menu buttons turn the second Text into a
                         // subtitle; Picker options silently discard it.
                         Text(machine.label)
-                        Text("\(machine.sessionCount) sessions")
+                        Text("\(machine.sessionCount, specifier: "%lld") sessions")
                         if model.activeMachineFilter == machine.id { Image(systemName: "checkmark") }
                     }
-                    .accessibilityLabel(Text("\(machine.label), \(machine.sessionCount) sessions"))
+                    .accessibilityLabel(Text("\(machine.label), \(machine.sessionCount, specifier: "%lld") sessions"))
                     .accessibilityAddTraits(model.activeMachineFilter == machine.id ? .isSelected : [])
                 }
             }

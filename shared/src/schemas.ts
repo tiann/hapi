@@ -35,6 +35,7 @@ export const OpencodeClearOperationSchema = z.object({
 export type OpencodeClearOperation = z.infer<typeof OpencodeClearOperationSchema>
 
 const SessionCapabilitiesSchema = z.object({
+    concurrentClients: z.boolean().optional(),
     terminal: z.boolean().optional(),
     conversationHistory: ConversationHistoryCapabilitiesSchema.optional()
 })
@@ -180,7 +181,7 @@ export const AgentStateCompletedRequestSchema = z.object({
     arguments: z.unknown(),
     createdAt: z.number().nullish(),
     completedAt: z.number().nullish(),
-    status: z.enum(['canceled', 'denied', 'approved']),
+    status: z.enum(['canceled', 'denied', 'approved', 'resolved']),
     reason: z.string().optional(),
     mode: z.string().optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
@@ -195,22 +196,7 @@ export const AgentStateCompletedRequestSchema = z.object({
 
 export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedRequestSchema>
 
-const CodexUsageWindowSchema = z.object({
-    remainingPercent: z.number().min(0).max(100).nullable(),
-    windowDurationMins: z.number().positive().nullable(),
-    resetsAt: z.number().nonnegative().nullable()
-})
-
-const CodexUsageBucketSchema = z.object({
-    primary: CodexUsageWindowSchema.nullable(),
-    secondary: CodexUsageWindowSchema.nullable()
-})
-
 export const AgentStateSchema = z.object({
-    codexUsage: z.object({
-        ordinary: CodexUsageBucketSchema,
-        reserve: CodexUsageBucketSchema.nullable()
-    }).nullish(),
     controlledByUser: z.boolean().nullish(),
     // True while the CLI is delivering a queued message into the active turn
     // (Steer). Surfaced so the web can reflect the inject in progress.
@@ -489,6 +475,7 @@ export const RunnerStateSchema = z.object({
     httpPort: z.number().optional(),
     startedAt: z.number().optional(),
     capabilities: z.object({
+        codexSharedRuntime: z.literal(true).optional(),
         piExistingSessionResume: z.literal(true).optional(),
         agentConfigs: z.array(AgentConfigDescriptorSchema).optional()
     }).optional(),

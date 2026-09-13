@@ -63,14 +63,20 @@ final class ToolCallLayoutTests: XCTestCase {
         }
     }
 
-    func testGroupRowsAreContiguousOnlyWithinTheirOwnGroup() {
-        let tool = block(name: "Read", command: "")
-        let first = TranscriptRow.groupedTool(tool, groupID: "group-a", isLast: false)
-        let last = TranscriptRow.groupedTool(tool, groupID: "group-a", isLast: true)
-        let nextGroup = TranscriptRow.groupedTool(tool, groupID: "group-b", isLast: true)
-        XCTAssertEqual(last.spacing(after: first), 0)
-        XCTAssertEqual(nextGroup.spacing(after: last), 8)
-        XCTAssertNotEqual(first, last, "A live append changes corner ownership, even with a stable tool ID")
+    func testGroupSummaryDiffIgnoresMemberOutputButKeepsVisibleChanges() {
+        let first = block(name: "Read", command: "")
+        var second = first
+        second.id = "second"
+        second.tool.id = "second"
+        let blocks = buildVisibleChatBlocks([.toolCall(first), .toolCall(second)], options: .init(hasMoreMessages: false))
+        guard case .toolGroup(var group) = blocks[0] else { return XCTFail("Expected group") }
+        let original = TranscriptRow.group(ToolGroupPresentation(group))
+        group.tools[1].tool.result = .string(String(repeating: "streamed output", count: 1000))
+        let streamed = TranscriptRow.group(ToolGroupPresentation(group))
+        XCTAssertEqual(original, streamed)
+        XCTAssertEqual(streamed.spacing(after: original), 8)
+        group.summary.errorCount += 1
+        XCTAssertNotEqual(original, .group(ToolGroupPresentation(group)))
     }
 
     func testInspectorCommandKeepsTheCompleteScript() {

@@ -388,7 +388,7 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-sol')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
-            expect(screen.getByTestId('permission-mode')).toHaveTextContent('safe-yolo')
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
         })
     })
 
