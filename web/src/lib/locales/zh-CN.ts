@@ -756,6 +756,7 @@ export default {
   'toast.ready.title': '等待输入',
   'toast.ready.body': '{agent} 正在 {session} 等待你的输入',
   'toast.permission.title': '权限请求',
+  'toast.input.title': '{agent} 需要你回答',
   'toast.task.completed': '任务完成',
   'toast.task.failed': '任务失败',
 

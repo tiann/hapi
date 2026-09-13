@@ -758,6 +758,7 @@ export default {
   'toast.ready.title': 'Ready for input',
   'toast.ready.body': '{agent} is waiting in {session}',
   'toast.permission.title': 'Permission Request',
+  'toast.input.title': '{agent} needs your input',
   'toast.task.completed': 'Task completed',
   'toast.task.failed': 'Task failed',
 

@@ -73,19 +73,48 @@ receipt.
 
 | Key | Example | Purpose |
 |-----|---------|---------|
-| `type` | `ready` | `ready`, `permission-request`, `task-notification` |
+| `type` | `ready` | `ready`, `permission-request`, `input-request`, `task-notification` |
 | `sessionId` | uuid | Target session |
 | `sessionName` | string | Display name (`agent - project`) |
 | `url` | `/sessions/{id}` | Deep link path |
-| `requestId` | uuid | Permission only - approve/deny |
+| `requestId` | request-id | Pending request map key: approve/deny for permission, correlation only for input |
 | `title` | string | Notification title |
 | `body` | string | Notification body |
-| `severity` | `info` | `info` (ready), `warning` (permission), `success` / `error` (task) |
+| `severity` | `info` | `info` (ready/input), `warning` (permission), `success` / `error` (task) |
 | `contractVersion` | `1` | Present on every message; see [Versioning](#versioning) |
 | `notifySummary` | JSON string | Only on `ready`: parsed `AGENT_NOTIFY_SUMMARY` line from agent text, when present |
 
 Direct FCM is data-only. Android relay messages contain the encrypted wrapper
 below; after decryption the same data contract drives rendering and actions.
+
+### Questions (`input-request`)
+
+User questions are not tool approvals. The hub emits `input-request` for
+`request_user_input`, `AskUserQuestion`, `ask_user_question`, and
+`CursorAskQuestion` (including the known `functions.` wrapper). Plan approval
+(`ExitPlanMode`), async tools and arbitrary MCP name suffixes are not classified
+as questions.
+
+The title is `<agent> needs your input`. The body starts with the first readable
+question (falling back to its `header`), then `+N more question(s)` for remaining
+readable questions, then the session name. Whitespace is flattened within each
+line. The body is capped at 280 Unicode code points, with at most 80 for the
+session name, truncating only at grapheme boundaries. No options, prefilled
+answers, protocol IDs or raw tool arguments appear in the preview. Malformed
+input falls back to `Open the session to view and answer the question.`
+
+Clients render this type with **tap-to-open only**: no Allow/Deny and no ordinary
+message Reply, even when `requestId` is present. Users answer using the existing
+session question form. Android routes it to the separate `input_requests`
+HIGH-importance channel; iOS assigns no action category. Apple Watch currently
+mirrors the preview, with answering left to the phone (no watchOS app or inline
+answer flow). The `input-request-<sessionId>` identity keeps questions separate
+from permission notifications.
+
+This is an additive type in contract version 1. Existing unknown-type handling
+already renders title/body without type-specific actions. The hub retains the
+current first-pending selection and debounce behavior; this does not change
+request scheduling, answer APIs or notification withdrawal.
 
 ### Client actions (native - not hub)
 
