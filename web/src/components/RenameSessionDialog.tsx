@@ -6,6 +6,7 @@ import {
     DialogTitle
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { ApiError } from '@/api/client'
 import { useTranslation } from '@/lib/use-translation'
 
 type RenameSessionDialogProps = {
@@ -14,8 +15,33 @@ type RenameSessionDialogProps = {
     currentName: string
     onRename: (newName: string) => Promise<void>
     onSuggestTitle?: () => Promise<string>
-    onUpdateSummary?: (text: string) => Promise<void>
+    onUpdateSummary?: (text: string, clearName?: boolean) => Promise<void>
     isPending: boolean
+}
+
+function extractTitleSuggestionErrorDetail(error: ApiError): string | null {
+    if (!error.body) return null
+
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(error.body) as unknown
+    } catch {
+        return null
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const message = (parsed as { error?: unknown }).error
+    if (typeof message !== 'string') return null
+
+    const detail = message
+        .replace(/\s+/g, ' ')
+        .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+        .replace(/([?&](?:api[-_ ]?key|token|secret|password)=)[^&\s]+/gi, '$1[redacted]')
+        .replace(/\b((?:api[-_ ]?key|token|secret|password)(?:\s+provided)?)\b\s*[:=]\s*["']?[^,\s}"']+/gi, '$1: [credential redacted]')
+        .trim()
+
+    if (!detail) return null
+    return detail.length > 240 ? `${detail.slice(0, 239)}…` : detail
 }
 
 export function RenameSessionDialog(props: RenameSessionDialogProps) {
@@ -68,9 +94,18 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             if (!suggested) throw new Error('Empty title suggestion')
             setName(suggested)
             setDraftSource('generated')
-        } catch {
+        } catch (error) {
             if (generation === generationRef.current) {
-                setError(t('dialog.rename.generateError'))
+                if (error instanceof ApiError && error.code === 'unavailable') {
+                    setError(t('dialog.rename.generateUnavailable'))
+                } else {
+                    const detail = error instanceof ApiError
+                        ? extractTitleSuggestionErrorDetail(error)
+                        : null
+                    setError(detail
+                        ? t('dialog.rename.generateErrorWithReason', { reason: detail })
+                        : t('dialog.rename.generateError'))
+                }
             }
         } finally {
             if (generation === generationRef.current) {
@@ -89,7 +124,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
         setError(null)
         try {
             if (draftSource === 'generated' && onUpdateSummary) {
-                await onUpdateSummary(trimmed)
+                await onUpdateSummary(trimmed, true)
             } else {
                 await onRename(trimmed)
             }
@@ -136,31 +171,31 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                         </div>
                     ) : null}
 
-                    <div className="flex items-center justify-between gap-2">
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            onClick={handleClose}
-                            disabled={busy}
-                        >
-                            {t('button.cancel')}
-                        </Button>
-                        <div className="flex gap-2">
-                            {onSuggestTitle ? (
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={() => void handleGenerate()}
-                                    disabled={busy}
-                                >
-                                    {isGenerating ? t('dialog.rename.generating') : t('dialog.rename.generate')}
-                                </Button>
-                            ) : null}
+                    <div className="flex items-center gap-2">
+                        {onSuggestTitle ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleGenerate()}
+                                disabled={busy}
+                            >
+                                {isGenerating ? t('dialog.rename.generating') : t('dialog.rename.generate')}
+                            </Button>
+                        ) : null}
+                        <div className="ml-auto flex gap-2">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                onClick={handleClose}
+                                disabled={busy}
+                            >
+                                {t('button.cancel')}
+                            </Button>
                             <Button
                                 type="submit"
                                 disabled={busy || !name.trim()}
                             >
-                                {isPending ? t('dialog.rename.saving') : t('button.save')}
+                                {isGenerating ? t('button.save') : isPending ? t('dialog.rename.saving') : t('button.save')}
                             </Button>
                         </div>
                     </div>
