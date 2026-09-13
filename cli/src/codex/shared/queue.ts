@@ -165,7 +165,11 @@ export class SharedCodexQueue {
     enqueue(id: string, input: QueueInput, resumeInterrupted = false): Promise<void> {
         return this.serial(async () => {
             const existing = this.entries[id];
-            if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
+            // Successful cancel is terminal for this localId. Auto-steer rejection
+            // falls through to enqueue; cancel can win that race (rejected → canceled)
+            // before the fallback runs — never resurrect via thread/queue/add.
+            if (existing?.state === 'canceled') return;
+            if (existing && !['rejected', 'released'].includes(existing.state)) {
                 if (existing.state === 'consumed') this.consumed([id]);
                 else await this.reconcileNow();
                 return;

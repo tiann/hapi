@@ -137,4 +137,24 @@ describe('shared native queue', () => {
         expect(consumed).toHaveBeenCalledWith(['peer-1'], true);
         expect(rpc.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
     });
+    it('does not queue/add after cancel wins the auto-steer rejection race', async () => {
+        const { queue, rpc } = await fixture();
+        let rejectSteer!: (error: Error) => void;
+        const blocked = new Promise<never>((_, reject) => { rejectSteer = reject; });
+        rpc.mockImplementation(async method => {
+            if (method === 'turn/steer') return blocked;
+            throw new Error(`Unexpected request: ${method}`);
+        });
+        const steerPromise = queue.steer('peer-1', 'turn-live', input);
+        await vi.waitFor(() => expect(queue.state('peer-1')).toBe('unknown'));
+        const cancelPromise = queue.cancel('peer-1');
+        rejectSteer(new Error('steer refused'));
+        expect(await steerPromise).toMatchObject({ steered: false });
+        expect(await cancelPromise).toBe(true);
+        expect(queue.state('peer-1')).toBe('canceled');
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'peer-1' } });
+        await queue.enqueue('peer-1', input);
+        expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(0);
+        expect(queue.state('peer-1')).toBe('canceled');
+    });
 });

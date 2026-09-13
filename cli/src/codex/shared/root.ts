@@ -128,6 +128,8 @@ export class SharedCodexRoot {
                 if (message.meta?.deliveryMode === 'steer' && turnId) {
                     const result = await this.queue.steer(id, turnId, input);
                     if (result.steered || result.indeterminate) return;
+                    // Explicit refuse → ordinary queue, unless cancel already won.
+                    if (this.queue.state(id) === 'canceled') return;
                 }
                 await this.queue.enqueue(id, input, this.interrupted);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
