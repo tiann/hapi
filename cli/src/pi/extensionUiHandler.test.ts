@@ -6,6 +6,7 @@ type PermissionHandler = (response: unknown) => Promise<void>;
 function createHarness() {
     let permissionHandler: PermissionHandler | null = null;
     let state: Record<string, unknown> = { requests: {}, completedRequests: {} };
+    let capturedUpdater: ((metadata: Record<string, unknown> | null) => Record<string, unknown>) | null = null;
     const session = {
         rpcHandlerManager: {
             registerHandler: vi.fn((_method: unknown, handler: PermissionHandler) => { permissionHandler = handler; }),
@@ -13,8 +14,11 @@ function createHarness() {
         updateAgentState: vi.fn((updater: (current: never) => unknown) => { state = updater(state as never) as Record<string, unknown>; }),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
-        getMetadata: vi.fn(() => null),
-        updateMetadata: vi.fn(),
+        getMetadata: vi.fn((): Record<string, unknown> | null => null),
+        updateMetadata: vi.fn((updater: (metadata: Record<string, unknown> | null) => Record<string, unknown>) => {
+            capturedUpdater = updater;
+            updater(null);
+        }),
     };
     const sendResponse = vi.fn();
     const handler = new PiExtensionUiHandler({ session: session as never, sendResponse });
@@ -23,6 +27,7 @@ function createHarness() {
         session,
         sendResponse,
         state: () => state,
+        lastUpdater: () => capturedUpdater,
         respond: async (response: unknown) => permissionHandler?.(response),
     };
 }
@@ -184,6 +189,27 @@ describe('PiExtensionUiHandler', () => {
         harness.handler.handle({ type: 'extension_ui_request', id: 'notice', method: 'notify', message: 'Heads up', notifyType: 'warning' });
         harness.handler.handle({ type: 'extension_ui_request', id: 'status', method: 'setStatus', statusKey: 'x', statusText: 'busy' });
         expect(harness.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: '[Pi warning] Heads up' });
+    });
+
+    it('setTitle keeps a manual metadata.name and updates the summary fallback', () => {
+        const harness = createHarness();
+        // A session renamed through the web holds a manual metadata.name; the
+        // extension title must go to the summary slot so the manual name survives
+        // (hub/src/sync/sessionCache.ts: "A manually chosen name must continue to win").
+        harness.session.getMetadata.mockReturnValue({ path: '/workspace', host: 'h', name: 'My custom HAPI title' });
+        harness.handler.handle({
+            type: 'extension_ui_request', id: 'title-1', method: 'setTitle', title: 'Agent auto title',
+        });
+
+        expect(harness.session.updateMetadata).toHaveBeenCalledTimes(1);
+        const updater = harness.lastUpdater()!;
+        const next = updater({ path: '/workspace', host: 'h', name: 'My custom HAPI title' });
+        expect(next).toMatchObject({
+            // Manual name survives unchanged.
+            name: 'My custom HAPI title',
+            // Agent title lands in the generated/summary fallback slot.
+            summary: { text: 'Agent auto title' },
+        });
     });
 });
 
